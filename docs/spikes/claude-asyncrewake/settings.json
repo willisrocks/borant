@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "<spike-dir>/wait-msg.sh", "asyncRewake": true, "timeout": 10 } ] }
+    ]
+  }
+}
