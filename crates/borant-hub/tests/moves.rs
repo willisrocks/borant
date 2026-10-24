@@ -273,6 +273,34 @@ async fn planned_move_waits_for_move_ready() {
 }
 
 #[tokio::test]
+async fn planned_move_to_a_full_host_fails_and_keeps_the_session() {
+    let fx = Fx::new();
+    let (_owner, w) = setup(&fx).await;
+    for a in ["x1", "x2", "x3", "x4"] {
+        fx.register("h2", Some(a), None).await;
+    }
+    let mut h1 = fx.commands("h1").await;
+    let err = fx
+        .call(
+            None,
+            ToolCall::Move {
+                selector: MoveSelector::Agent(w.agent.clone()),
+                to: MoveTarget {
+                    host: Some(name("h2")),
+                    harness: None,
+                },
+            },
+        )
+        .await
+        .expect_err("h2 is full");
+    assert!(
+        err.to_string().contains("no host can take agent w"),
+        "{err}"
+    );
+    assert!(next_cmd(&mut h1).await.is_none());
+}
+
+#[tokio::test]
 async fn drain_moves_all_agents() {
     let fx = Fx::new();
     let (owner, w) = setup(&fx).await;
@@ -343,6 +371,8 @@ async fn stale_end_session_does_not_take_the_lease() {
     // w now runs on h2.
     let w2 = fx.register("h2", Some("w"), None).await;
     let mut h3 = fx.commands("h2").await;
+    // h1 comes back, so it can take w again.
+    fx.heartbeat("h1", &[]).await;
     fx.call(
         None,
         ToolCall::Move {
