@@ -83,7 +83,8 @@ impl Launcher for TmuxLauncher {
             "tmux".to_owned(),
             "attach".to_owned(),
             "-t".to_owned(),
-            handle.id.clone(),
+            // `=` matches the name exactly, so agent `a` never attaches to `a1`.
+            format!("={}", handle.id),
         ])
     }
 }
@@ -166,7 +167,7 @@ mod tests {
         assert!(again.is(borant_core::ports::PortErrorKind::Conflict));
         assert_eq!(
             launcher.attach_command(&handle).unwrap(),
-            ["tmux", "attach", "-t", handle.id.as_str()]
+            ["tmux", "attach", "-t", format!("={}", handle.id).as_str()]
         );
 
         launcher.stop(&handle).await.unwrap();

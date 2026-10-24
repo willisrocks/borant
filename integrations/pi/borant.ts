@@ -47,6 +47,7 @@ interface LocalSession {
   state: "attached" | "detached";
   movable: boolean;
   channels: string[];
+  fenced?: string | null;
 }
 
 type Reply<T = unknown> = { ok: T } | { error: { code: string; message: string } };
@@ -184,6 +185,8 @@ function request<T>(
 
 const RETRY_MS = 5000;
 const EVENT_TIMEOUT_MS = 2000;
+// The daemon waits up to 3 s for the hub on registration.
+const REGISTER_TIMEOUT_MS = 10000;
 const CALL_TIMEOUT_MS = 30000;
 const SHUTDOWN_WAIT_MS = 1500;
 // Longest wait for the harness's own first prompt (omp connects MCP servers first).
@@ -225,6 +228,8 @@ const HarnessName = StringEnum(
 interface Session {
   id: string;
   socket: string;
+  /** omp wakes an idle agent only without `deliverAs`; Pi needs it when busy. */
+  omp: boolean;
   ctx: ExtensionContext;
   fenced: string | null;
   closed: boolean;
@@ -251,8 +256,11 @@ export default function borant(pi: ExtensionAPI) {
       return;
     }
     try {
-      // Pi throws and drops the message when busy without deliverAs.
-      if (s.ctx.isIdle()) pi.sendUserMessage(text);
+      // Pi: "steer" starts a run when idle and steers when busy. Without it,
+      // a second message while the first run starts throws and is lost.
+      // omp: without `deliverAs`, it starts a run when idle and queues a
+      // steer when busy; an explicit "steer" never wakes an idle omp.
+      if (s.omp) pi.sendUserMessage(text);
       else pi.sendUserMessage(text, { deliverAs: "steer" });
     } catch (e) {
       console.error("borant: could not deliver a message:", e);
@@ -485,13 +493,27 @@ export default function borant(pi: ExtensionAPI) {
     );
   }
 
+  let starting: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
   pi.on("session_start", async (_event, ctx) => {
+    stopped = false;
+    await start(ctx);
+  });
+
+  /** Registers with the daemon, and retries every 5 s while it fails. */
+  async function start(ctx: ExtensionContext): Promise<void> {
+    if (stopped || sess) return;
     // omp re-binds extensions in subagent sessions; connect only the main one.
     const agent = (ctx as { agent?: { kind?: string } }).agent;
     if (agent && agent.kind !== "main") return;
     const socket = socketPath();
     // No socket means no daemon here: stay silent (AGENTS.md).
     if (!fs.existsSync(socket)) return;
+    const retry = () => {
+      starting = setTimeout(() => void start(ctx), 5000);
+      starting.unref?.();
+    };
     let r: Reply<LocalSession>;
     try {
       r = await request<LocalSession>(
@@ -506,19 +528,22 @@ export default function borant(pi: ExtensionAPI) {
           agent: process.env.BORANT_AGENT || undefined,
           channel: process.env.BORANT_CHANNEL || undefined,
         },
-        EVENT_TIMEOUT_MS,
+        REGISTER_TIMEOUT_MS,
       );
     } catch (e) {
       warnOnce(`host daemon not reachable at ${socket}: ${(e as Error).message}`);
+      retry();
       return;
     }
     if ("error" in r) {
       warnOnce(`session registration failed: ${r.error.message}`);
+      retry();
       return;
     }
     const s: Session = {
       id: r.ok.session,
       socket,
+      omp: Boolean(agent),
       ctx,
       fenced: null,
       closed: false,
@@ -532,7 +557,7 @@ export default function borant(pi: ExtensionAPI) {
     registerTools();
     openStream(s);
     if (r.ok.state === "detached") watchAttach(s);
-  });
+  }
 
   pi.on("agent_start", () => {
     if (sess) release(sess);
@@ -543,8 +568,17 @@ export default function borant(pi: ExtensionAPI) {
     if (sess && typeof prompt === "string") void post(sess, promptEvents(prompt));
   });
 
-  pi.on("tool_call", () => {
-    if (sess?.fenced) return { block: true, reason: sess.fenced };
+  pi.on("tool_call", async () => {
+    const s = sess;
+    if (!s) return;
+    // Ask the daemon, so a pause that began while the agent was idle counts.
+    try {
+      const r = await request<LocalSession>(s.socket, "GET", `/v1/sessions/${s.id}`, undefined, 1000);
+      if ("ok" in r) s.fenced = r.ok.fenced ?? null;
+    } catch {
+      // Keep the last known state.
+    }
+    if (s.fenced) return { block: true, reason: s.fenced };
   });
 
   pi.on("tool_result", (event) => {
@@ -556,6 +590,8 @@ export default function borant(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    stopped = true;
+    clearTimeout(starting);
     const s = sess;
     if (!s) return;
     sess = undefined;

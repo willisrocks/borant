@@ -221,16 +221,32 @@ impl BorantMcp {
     async fn forward(&self, call: Value) -> Result<String, String> {
         let call: ToolCall = serde_json::from_value(strip_nulls(call))
             .map_err(|e| format!("invalid arguments: {e}"))?;
-        let session = self.session().await?;
-        match self
-            .client
-            .post::<_, Value>("/v1/call", &json!({"session": session, "call": call}), CALL)
-            .await
-        {
-            Outcome::Reply(Ok(v)) => Ok(serde_json::to_string_pretty(&v).unwrap_or_default()),
-            Outcome::Reply(Err(e)) => Err(e.message),
-            Outcome::Down(e) => Err(format!("The Borant host daemon is not reachable: {e}")),
+        // After `/clear`, Claude Code keeps this process, but the daemon has
+        // a new session. Look the session up again once.
+        for attempt in 0..2 {
+            let session = self.session().await?;
+            match self
+                .client
+                .post::<_, Value>("/v1/call", &json!({"session": session, "call": call}), CALL)
+                .await
+            {
+                Outcome::Reply(Ok(v)) => {
+                    return Ok(serde_json::to_string_pretty(&v).unwrap_or_default());
+                }
+                Outcome::Reply(Err(e))
+                    if attempt == 0
+                        && e.code == borant_core::proto::ApiErrorCode::NotFound
+                        && e.message.contains("no local session") =>
+                {
+                    *self.session.lock().await = None;
+                }
+                Outcome::Reply(Err(e)) => return Err(e.message),
+                Outcome::Down(e) => {
+                    return Err(format!("The Borant host daemon is not reachable: {e}"));
+                }
+            }
         }
+        Err("Borant does not know this session.".into())
     }
 
     #[tool(description = "Show your Borant agent ID, host, channels, and the channels you own.")]

@@ -34,6 +34,9 @@ pub fn command(harness: Harness, prompt: &str, cfg: &HarnessCommands) -> Vec<Str
         None => default.iter().map(|s| (*s).to_owned()).collect(),
     };
     if harness != Harness::Fake {
+        // `--` ends the options, so a prompt that starts with `-` stays a
+        // prompt. Claude Code, Pi, and omp accept it.
+        argv.push("--".to_owned());
         argv.push(prompt.to_owned());
     }
     argv
@@ -52,13 +55,18 @@ mod tests {
         let cfg = HarnessCommands::default();
         assert_eq!(
             command(Harness::ClaudeCode, "hi", &cfg),
-            v(&["claude", "--dangerously-skip-permissions", "hi"])
+            v(&["claude", "--dangerously-skip-permissions", "--", "hi"])
         );
-        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi", "hi"]));
-        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "hi"]));
+        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi", "--", "hi"]));
+        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "--", "hi"]));
         assert_eq!(
             command(Harness::Codex, "hi", &cfg),
-            v(&["codex", "--dangerously-bypass-approvals-and-sandbox", "hi"])
+            v(&[
+                "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--",
+                "hi"
+            ])
         );
         assert_eq!(
             command(Harness::Fake, "hi", &cfg),
@@ -73,10 +81,10 @@ mod tests {
         };
         assert_eq!(
             command(Harness::ClaudeCode, "hi", &cfg),
-            v(&["/opt/claude", "--model", "x", "hi"])
+            v(&["/opt/claude", "--model", "x", "--", "hi"])
         );
-        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi-dev", "hi"]));
-        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "hi"]));
+        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi-dev", "--", "hi"]));
+        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "--", "hi"]));
         assert_eq!(
             command(Harness::Fake, "hi", &cfg),
             v(&["/bin/fake", "--fast"])

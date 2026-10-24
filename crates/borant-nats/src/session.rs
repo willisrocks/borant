@@ -48,9 +48,12 @@ impl SessionStore for NatsSession {
         self.stream().await?;
         let payload =
             serde_json::to_vec(ev).map_err(|e| PortError::other(format!("encode event: {e}")))?;
+        // The event ID removes a duplicate when an append is retried.
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", ev.id.to_string().as_str());
         let ack = self
             .js
-            .publish(subject(agent), payload.into())
+            .publish_with_headers(subject(agent), headers, payload.into())
             .await
             .map_err(|e| unavailable("append session event", e))?
             .await

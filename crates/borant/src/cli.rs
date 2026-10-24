@@ -236,7 +236,12 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
 pub fn attach_command(launcher: &str, agent: &AgentId) -> Option<Vec<String>> {
     let name = format!("borant-{agent}");
     match launcher {
-        "tmux" => Some(vec!["tmux".into(), "attach".into(), "-t".into(), name]),
+        "tmux" => Some(vec![
+            "tmux".into(),
+            "attach".into(),
+            "-t".into(),
+            format!("={name}"),
+        ]),
         "zellij" => Some(vec!["zellij".into(), "attach".into(), name]),
         _ => None,
     }
@@ -327,7 +332,7 @@ mod tests {
         let a: AgentId = "w1".parse().unwrap();
         assert_eq!(
             attach_command("tmux", &a).unwrap(),
-            ["tmux", "attach", "-t", "borant-w1"]
+            ["tmux", "attach", "-t", "=borant-w1"]
         );
         assert_eq!(attach_command("orca", &a), None);
     }
