@@ -322,6 +322,8 @@ pub struct TaskEvent {
     pub kind: TaskEventKind,
     pub status: TaskStatus,
     pub attention_msg: Option<String>,
+    /// The owner of the channel when the event happened.
+    pub owner: AgentId,
 }
 
 /// A message or an event on the bus.

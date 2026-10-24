@@ -3,18 +3,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use crate::ids::{AgentId, ChannelName};
-use crate::model::{Envelope, EnvelopeKind, Target, TaskStatus};
+use crate::ids::AgentId;
+use crate::model::{Envelope, EnvelopeKind, TaskStatus};
 use crate::time::Timestamp;
 
 /// Direct messages wake. Broadcasts wake only when urgent. Task events wake
 /// only the owner of the channel, and only for closed, stuck, and
 /// needs-human tasks.
-pub fn should_wake(
-    env: &Envelope,
-    recipient: &AgentId,
-    owner_of: &dyn Fn(&ChannelName) -> Option<AgentId>,
-) -> bool {
+pub fn should_wake(env: &Envelope, recipient: &AgentId) -> bool {
     match env.kind {
         EnvelopeKind::Direct => true,
         EnvelopeKind::Broadcast => env.urgent,
@@ -24,11 +20,7 @@ pub fn should_wake(
                 ev.status,
                 TaskStatus::Closed | TaskStatus::Stuck | TaskStatus::NeedsHuman
             );
-            let channel = match &env.to {
-                Target::Channel(c) => c,
-                Target::Agent(_) => &ev.channel,
-            };
-            attention && owner_of(channel).as_ref() == Some(recipient)
+            attention && ev.owner == *recipient
         }
     }
 }
@@ -67,8 +59,8 @@ impl WakeLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{MessageId, TaskId};
-    use crate::model::{Sender, TaskEvent, TaskEventKind};
+    use crate::ids::{ChannelName, MessageId, TaskId};
+    use crate::model::{Sender, Target, TaskEvent, TaskEventKind};
 
     fn env(kind: EnvelopeKind, to: Target, urgent: bool, event: Option<TaskEvent>) -> Envelope {
         Envelope {
@@ -90,29 +82,24 @@ mod tests {
     #[test]
     fn broadcast_wakes_only_when_urgent() {
         let api: ChannelName = "api".parse().unwrap();
-        let none = |_: &ChannelName| None;
         let to = Target::Channel(api);
         assert!(!should_wake(
             &env(EnvelopeKind::Broadcast, to.clone(), false, None),
-            &id("w"),
-            &none
+            &id("w")
         ));
         assert!(should_wake(
             &env(EnvelopeKind::Broadcast, to, true, None),
-            &id("w"),
-            &none
+            &id("w")
         ));
         assert!(should_wake(
             &env(EnvelopeKind::Direct, Target::Agent(id("w")), false, None),
-            &id("w"),
-            &none
+            &id("w")
         ));
     }
 
     #[test]
     fn task_events_wake_owner_only_for_attention() {
         let api: ChannelName = "api".parse().unwrap();
-        let owner = |_: &ChannelName| Some(id("boss"));
         let ev = |status| TaskEvent {
             channel: api.clone(),
             task: TaskId::new(),
@@ -120,6 +107,7 @@ mod tests {
             kind: TaskEventKind::Updated,
             status,
             attention_msg: None,
+            owner: id("boss"),
         };
         let to = Target::Channel(api.clone());
         let stuck = env(
@@ -134,9 +122,9 @@ mod tests {
             false,
             Some(ev(TaskStatus::InProgress)),
         );
-        assert!(should_wake(&stuck, &id("boss"), &owner));
-        assert!(!should_wake(&stuck, &id("worker"), &owner));
-        assert!(!should_wake(&progress, &id("boss"), &owner));
+        assert!(should_wake(&stuck, &id("boss")));
+        assert!(!should_wake(&stuck, &id("worker")));
+        assert!(!should_wake(&progress, &id("boss")));
     }
 
     #[test]

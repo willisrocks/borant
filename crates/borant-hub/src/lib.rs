@@ -1,1 +1,217 @@
-//! borant-hub
+//! The Borant hub daemon: the only writer of control-plane state.
+//!
+//! [`Hub::handle`] serves one request at a time behind a mutex, so the rules
+//! that span several keys (cycle checks, claims, leases) are safe.
+
+mod calls;
+pub mod export;
+mod leases;
+mod moves;
+mod store;
+mod tasks;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use borant_core::model::{HubLease, MoveReason};
+use borant_core::ports::{MessageBus, SessionStore, StateStore};
+use borant_core::proto::{ApiError, CtlRequest, MoveTarget, Reply};
+use borant_core::rules::lease::LeaseConfig;
+use borant_core::{AgentId, Clock, FencingToken, HostName, Timestamp, keys, subjects};
+use futures::StreamExt;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+
+use crate::store::Store;
+
+#[derive(Debug, Clone)]
+pub struct HubConfig {
+    pub lease: LeaseConfig,
+    /// A name for this hub instance, stored in `lease.hub`.
+    pub instance: String,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            lease: LeaseConfig::default(),
+            instance: format!("hub-{}", ulid::Ulid::generate()),
+        }
+    }
+}
+
+/// A planned move that waits for the old session to stop.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingMove {
+    pub target: MoveTarget,
+    pub reason: MoveReason,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Memory {
+    /// The last heartbeat of each host, on the hub clock.
+    pub hosts_seen: HashMap<HostName, Timestamp>,
+    pub pending_moves: HashMap<AgentId, PendingMove>,
+    /// Hosts where a launch failed, for each agent, until the agent registers.
+    pub failed_hosts: HashMap<AgentId, HashSet<HostName>>,
+    /// Idle expired agents whose session log was already checked.
+    pub idle_checked: HashSet<AgentId>,
+    /// When the hub last read the pending messages of an idle agent.
+    pub wake_checked: HashMap<AgentId, Timestamp>,
+    pub maintenance: bool,
+}
+
+#[derive(Debug)]
+pub struct Hub {
+    pub(crate) store: Store,
+    pub(crate) bus: Arc<dyn MessageBus>,
+    pub(crate) sessions: Arc<dyn SessionStore>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) cfg: HubConfig,
+    pub(crate) mem: Mutex<Memory>,
+}
+
+impl Hub {
+    pub fn new(
+        state: Arc<dyn StateStore>,
+        bus: Arc<dyn MessageBus>,
+        sessions: Arc<dyn SessionStore>,
+        clock: Arc<dyn Clock>,
+        cfg: HubConfig,
+    ) -> Self {
+        Self {
+            store: Store(state),
+            bus,
+            sessions,
+            clock,
+            cfg,
+            mem: Mutex::new(Memory::default()),
+        }
+    }
+
+    pub fn now(&self) -> Timestamp {
+        self.clock.now()
+    }
+
+    /// Handles one request. Requests run one at a time.
+    pub async fn handle(&self, req: CtlRequest) -> Reply {
+        let mut mem = self.mem.lock().await;
+        if mem.maintenance && !matches!(req, CtlRequest::Maintenance { .. }) {
+            return Reply::Error(ApiError::unavailable("the hub is in maintenance mode"));
+        }
+        let result = self.dispatch(&mut mem, req).await;
+        if let Err(e) = &result {
+            tracing::debug!("request failed: {e}");
+        }
+        result.into()
+    }
+
+    /// One pass of lease expiry, takeovers, and claim timeouts.
+    pub async fn tick(&self) -> Result<(), ApiError> {
+        let mut mem = self.mem.lock().await;
+        if mem.maintenance {
+            return Ok(());
+        }
+        self.tick_leases(&mut mem).await
+    }
+
+    /// Takes the hub lease, gives every held agent lease a new expiry, then
+    /// serves requests and runs the tick loop until `shutdown`.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) -> anyhow::Result<()> {
+        let token = self.take_hub_lease().await?;
+        self.restart_grace().await?;
+        let mut requests = self
+            .bus
+            .serve(subjects::CTL)
+            .await
+            .map_err(|e| anyhow::anyhow!("serve {}: {e}", subjects::CTL))?;
+        tracing::info!(instance = %self.cfg.instance, "hub is serving {}", subjects::CTL);
+
+        let ticker = {
+            let hub = self.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(Duration::from_secs(1));
+                let mut renew = tokio::time::interval(hub.cfg.lease.heartbeat);
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = every.tick() => {
+                            if let Err(e) = hub.tick().await {
+                                tracing::warn!("tick failed: {e}");
+                            }
+                        }
+                        _ = renew.tick() => {
+                            if let Err(e) = hub.renew_hub_lease(token).await {
+                                tracing::error!("hub lease renewal failed: {e}");
+                            }
+                        }
+                    }
+                }
+            })
+        };
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                next = requests.next() => {
+                    let Some(req) = next else { break };
+                    let hub = self.clone();
+                    tokio::spawn(async move {
+                        let reply = match serde_json::from_slice::<CtlRequest>(&req.payload) {
+                            Ok(r) => hub.handle(r).await,
+                            Err(e) => Reply::Error(ApiError::invalid(format!("bad request: {e}"))),
+                        };
+                        let bytes = serde_json::to_vec(&reply).unwrap_or_default();
+                        if let Err(e) = req.responder.respond(bytes.into()).await {
+                            tracing::debug!("reply failed: {e}");
+                        }
+                    });
+                }
+            }
+        }
+        ticker.abort();
+        Ok(())
+    }
+
+    async fn take_hub_lease(&self) -> anyhow::Result<FencingToken> {
+        let now = self.now();
+        let key = keys::lease_hub();
+        let current = self.store.get::<HubLease>(&key).await?;
+        let (token, rev) = match &current {
+            Some(d) if d.value.expires > now && d.value.holder != self.cfg.instance => {
+                anyhow::bail!(
+                    "another hub ({}) holds the hub lease until {}",
+                    d.value.holder,
+                    d.value.expires
+                );
+            }
+            Some(d) => (FencingToken(d.value.token.0 + 1), Some(d.revision)),
+            None => (FencingToken(1), None),
+        };
+        let lease = HubLease {
+            holder: self.cfg.instance.clone(),
+            token,
+            expires: now.plus(self.cfg.lease.lease),
+        };
+        self.store.put(&key, &lease, rev).await?;
+        Ok(token)
+    }
+
+    async fn renew_hub_lease(&self, token: FencingToken) -> Result<(), ApiError> {
+        let key = keys::lease_hub();
+        let lease = HubLease {
+            holder: self.cfg.instance.clone(),
+            token,
+            expires: self.now().plus(self.cfg.lease.lease),
+        };
+        self.store.upsert(&key, &lease).await.map(|_| ())
+    }
+
+    /// Releases the hub lease, for example before a hub move.
+    pub async fn release_hub_lease(&self) -> Result<(), ApiError> {
+        self.store.delete(&keys::lease_hub()).await
+    }
+}

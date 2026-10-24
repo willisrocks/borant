@@ -197,6 +197,7 @@ pub async fn message_bus_contract(bus: &dyn MessageBus) {
         kind: TaskEventKind::Updated,
         status: TaskStatus::Stuck,
         attention_msg: None,
+        owner: agent.clone(),
     });
     bus.publish(&subjects[2], &event)
         .await

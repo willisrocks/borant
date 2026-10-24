@@ -18,6 +18,13 @@ impl Timestamp {
         )
     }
 
+    pub fn minus(self, d: Duration) -> Self {
+        Self(
+            self.0
+                .saturating_sub(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        )
+    }
+
     /// The time from `earlier` to `self`, or zero if `earlier` is later.
     pub fn since(self, earlier: Timestamp) -> Duration {
         Duration::from_millis(u64::try_from(self.0 - earlier.0).unwrap_or(0))
