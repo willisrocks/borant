@@ -165,8 +165,11 @@ prompts off, and hosts need the same logins and tools.
 
 ## Releases
 
-A maintainer starts a release from the Actions tab: run the `Release` workflow
-on `main`, type `release` to confirm, and pick `patch`, `minor`, or `major`.
+A maintainer starts a release with `just release <patch|minor|major>
+[notes.md]`, or from the Actions tab: run the `Release` workflow on `main`,
+type `release` to confirm, and pick the bump. `just changes` prints the commits
+since the last release, as input for notes that you write with a model on your
+machine. Without a notes file, the release uses GitHub's generated notes.
 
 1. The workflow requires a green `ci` run at the tip of `main`.
 2. It computes the next version from the newest `vX.Y.Z` tag. The first

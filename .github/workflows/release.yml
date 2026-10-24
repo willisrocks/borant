@@ -11,8 +11,9 @@ name: Release
 # 3. image: pushes ghcr.io/<owner>/borant:X.Y.Z and :latest, built from the
 #    release binaries for amd64 and arm64.
 # 4. publish: tags the commit vX.Y.Z and publishes a GitHub Release with the
-#    archives, their SHA-256 files, and GitHub's generated notes since the
-#    previous tag. It is marked Latest.
+#    archives and their SHA-256 files. The notes are the `notes` input when it
+#    is set, else GitHub's generated notes since the previous tag. It is
+#    marked Latest.
 # 5. bump: writes the version into the manifests on main with a
 #    `chore(release): vX.Y.Z` commit. A failure before publish leaves main
 #    and the tags as they were.
@@ -29,6 +30,14 @@ on:
         default: patch
         type: choice
         options: [patch, minor, major]
+      notes:
+        description: >-
+          Optional Markdown release notes, for example written with a model on
+          your machine (`just release patch notes.md`). Empty uses GitHub's
+          generated notes.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -192,6 +201,7 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       SHA: ${{ needs.plan.outputs.sha }}
       PREVIOUS: ${{ needs.plan.outputs.previous }}
+      NOTES: ${{ inputs.notes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -215,7 +225,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$tag" \
+          if [[ -n "$NOTES" ]]; then
+            printf '%s\n' "$NOTES" > generated.md
+          elif ! gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$tag" \
               -f target_commitish="$SHA" ${PREVIOUS:+-f previous_tag_name="$PREVIOUS"} --jq .body > generated.md; then
             echo "GitHub could not generate notes for this release." > generated.md
           fi
