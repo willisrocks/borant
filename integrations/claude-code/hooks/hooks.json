@@ -2,25 +2,84 @@
   "description": "Borant: register the session, log events, checkpoint the tree, and deliver messages",
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "borant hook session-start", "timeout": 10 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook session-start",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "borant hook stop-wait",
+            "asyncRewake": true,
+            "timeout": 604800
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "borant hook user-prompt-submit", "timeout": 10 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook user-prompt-submit",
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "borant hook pre-tool-use", "timeout": 10 } ] }
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "borant hook post-tool-use", "timeout": 10 } ] }
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook post-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [
-        { "type": "command", "command": "borant hook stop", "timeout": 10 },
-        { "type": "command", "command": "borant hook stop-wait", "asyncRewake": true, "timeout": 604800 }
-      ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook stop",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "borant hook stop-wait",
+            "asyncRewake": true,
+            "timeout": 604800
+          }
+        ]
+      }
     ],
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "borant hook session-end", "timeout": 10 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "borant hook session-end",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

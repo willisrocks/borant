@@ -392,7 +392,9 @@ pub enum SessionEventBody {
     Move {
         from_host: Option<HostName>,
         to_host: HostName,
-        harness: Harness,
+        /// The harness of the new session. The event's own `harness` field
+        /// names the harness that wrote the event.
+        to_harness: Harness,
         reason: MoveReason,
     },
 }
@@ -428,6 +430,27 @@ mod tests {
         assert_eq!(v["token"], 3);
         let back: Lease = serde_json::from_value(v).unwrap();
         assert_eq!(back, lease);
+    }
+
+    #[test]
+    fn move_event_round_trips() {
+        let ev = SessionEvent {
+            id: EventId::new(),
+            agent: "a".parse().unwrap(),
+            session: None,
+            harness: Harness::Pi,
+            host: "h".parse().unwrap(),
+            turn: 0,
+            at: Timestamp(1),
+            body: SessionEventBody::Move {
+                from_host: None,
+                to_host: "h2".parse().unwrap(),
+                to_harness: Harness::Omp,
+                reason: MoveReason::Takeover,
+            },
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<SessionEvent>(&s).unwrap(), ev);
     }
 
     #[test]

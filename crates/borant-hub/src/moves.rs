@@ -107,7 +107,11 @@ impl Hub {
             SessionEventBody::Checkpoint { sha, .. } => Some(sha.clone()),
             _ => None,
         });
-        let from_harness = events.iter().rev().map(|(_, e)| e.harness).next();
+        let from_harness = events
+            .iter()
+            .rev()
+            .find(|(_, e)| e.session.is_some())
+            .map(|(_, e)| e.harness);
         let prompt = match (reason, prompt) {
             (MoveReason::Spawn, Some(p)) => p,
             (_, Some(p)) => p,
@@ -135,7 +139,7 @@ impl Hub {
             body: SessionEventBody::Move {
                 from_host: agent.host.clone(),
                 to_host: host.clone(),
-                harness,
+                to_harness: harness,
                 reason,
             },
         };

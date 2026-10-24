@@ -272,9 +272,16 @@ async fn session_start(ctx: &Ctx) -> i32 {
 /// The idle waiter (`asyncRewake`). It waits for messages that wake the
 /// session, prints them to stderr, and exits 2 to start a new turn.
 async fn stop_wait(ctx: &Ctx) -> i32 {
-    let Some(id) = ctx.session().await else {
-        return 0;
-    };
+    // At session start, this waiter can run before the registration ends.
+    let mut found = None;
+    for _ in 0..30 {
+        found = ctx.session().await;
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let Some(id) = found else { return 0 };
     let run = config::home().join("run");
     let _ = std::fs::create_dir_all(&run);
     let pidfile = run.join(format!("waiter-{id}.pid"));
