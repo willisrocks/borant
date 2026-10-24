@@ -86,6 +86,7 @@ impl Host {
                 },
             );
         }
+        self.save();
         if !self.try_attach(id).await {
             let host = self.clone();
             tokio::spawn(async move {
@@ -156,6 +157,7 @@ impl Host {
             .get(&id)
             .map(|s| s.cwd.to_string_lossy().into_owned())
             .unwrap_or_default();
+        self.save();
         self.append(&agent, Some(id), SessionEventBody::SessionStart { cwd })
             .await;
         self.load_log(&agent, id).await;
@@ -167,7 +169,7 @@ impl Host {
     /// Fills the duplicate filter from the session log, and queues messages
     /// that the log holds but that no session got yet, for example after a
     /// move.
-    async fn load_log(&self, agent: &AgentId, id: SessionId) {
+    pub(crate) async fn load_log(&self, agent: &AgentId, id: SessionId) {
         let Ok(events) = self.inner.store.read(agent).await else {
             return;
         };
@@ -362,6 +364,7 @@ impl Host {
         };
         s.cancel.cancel();
         s.notify.notify_waiters();
+        self.save();
         if let Some(r) = &s.reg {
             self.append(
                 &r.agent,
@@ -404,6 +407,7 @@ impl Host {
                 s.launch.clone(),
             )
         };
+        self.save();
         if !kill {
             return;
         }
@@ -529,6 +533,7 @@ impl Host {
             return;
         };
         s.cancel.cancel();
+        self.save();
         let Some(reg) = s.reg.clone() else { return };
         self.append(
             &reg.agent,

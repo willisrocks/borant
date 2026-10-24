@@ -8,6 +8,7 @@ pub mod client;
 mod commands;
 mod delivery;
 pub mod outbox;
+mod persist;
 mod sessions;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -225,6 +226,7 @@ impl Host {
     /// Runs the background loops until `shutdown`: heartbeats, PID checks,
     /// the outbox flusher, host commands, and the notifier.
     pub async fn run(&self, shutdown: CancellationToken) {
+        self.restore().await;
         let mut tasks = vec![
             tokio::spawn(self.clone().heartbeat_loop(shutdown.clone())),
             tokio::spawn(self.clone().liveness_loop(shutdown.clone())),

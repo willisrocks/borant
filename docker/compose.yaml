@@ -1,0 +1,86 @@
+# Multi-host test swarm: one NATS server, one hub, one git server, and three
+# hosts that run the fake harness with the process launcher. Timings are short
+# so takeovers happen in seconds.
+name: borant-e2e
+
+x-image: &image
+  image: borant:e2e
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+
+x-timing: &timing
+  BORANT_NATS_URL: nats://natshub:4222
+  BORANT_LEASE_SECS: "6"
+  BORANT_GRACE_SECS: "6"
+  BORANT_HEARTBEAT_SECS: "2"
+  BORANT_RESERVE_SECS: "30"
+  BORANT_LOG: info,async_nats=warn
+
+x-host: &host
+  <<: *image
+  command: ["borant", "host"]
+  depends_on: [nats, git]
+
+services:
+  nats:
+    image: nats:2.11
+    command: ["-js", "-sd", "/data"]
+    networks:
+      default:
+        aliases: [natshub]
+
+  nats2:
+    image: nats:2.11
+    command: ["-js", "-sd", "/data"]
+    profiles: [move]
+    networks:
+      default:
+        aliases: [natshub]
+
+  git:
+    <<: *image
+    command: ["sh", "/scripts/git-server.sh"]
+    volumes:
+      - ./git-server.sh:/scripts/git-server.sh:ro
+
+  hub:
+    <<: *image
+    command: ["borant", "hub"]
+    environment:
+      <<: *timing
+    depends_on: [nats]
+
+  hub2:
+    <<: *image
+    command: ["sleep", "infinity"]
+    profiles: [move]
+    environment:
+      <<: *timing
+
+  host-a:
+    <<: *host
+    hostname: host-a
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-a
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+
+  host-b:
+    <<: *host
+    hostname: host-b
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-b
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+
+  host-c:
+    <<: *host
+    hostname: host-c
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-c
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake

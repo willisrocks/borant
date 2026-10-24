@@ -390,3 +390,41 @@ async fn wake_limit_notifies_sender_once() {
         .unwrap();
     assert_eq!(got.messages.len(), 4, "all messages still arrive");
 }
+
+#[tokio::test]
+async fn restart_restores_live_sessions() {
+    let fx = Fx::new(true, |_| {}).await;
+    let cwd = fx.dir.path().join("wr");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let s = fx
+        .host
+        .register(LocalRegister {
+            harness: Harness::Fake,
+            harness_session_id: Some("native-r".into()),
+            // This test process stands in for the harness process.
+            pid: Some(std::process::id()),
+            cwd: cwd.to_string_lossy().into_owned(),
+            agent: Some(agent("r")),
+            channel: None,
+        })
+        .await
+        .unwrap();
+    // A second daemon on the same home, as after a restart.
+    let again = borant_host::Host::new(
+        fx.host.config().clone(),
+        std::sync::Arc::new(fx.bus.clone()),
+        std::sync::Arc::new(fx.sessions.clone()),
+        std::sync::Arc::new(borant_core::SystemClock),
+        Box::new(borant_launch::ProcessLauncher::new(
+            fx.dir.path().join("logs"),
+        )),
+        None,
+        borant_host::outbox::Outbox::in_memory().unwrap(),
+    );
+    again.restore().await;
+    let view = again.local_view(s.session).unwrap();
+    assert_eq!(view.state, LocalState::Attached);
+    again.heartbeat_once().await;
+    let reply = again.event(s.session, LocalEvent::TurnStart).await.unwrap();
+    assert_eq!(reply.fenced, None, "the lease must still be valid");
+}

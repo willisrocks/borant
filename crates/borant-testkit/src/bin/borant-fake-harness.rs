@@ -5,7 +5,9 @@
 //! one per line:
 //!
 //! - `WRITE <path> <text>`: write a file, as a tool call
+//! - `CHANNEL <name>` and `JOIN <name>`: create or join a channel
 //! - `CREATE <channel> <title>`: create a task
+//! - `AFTER <channel> <blocker> <title>`: create a task blocked by another
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
 //! - `SEND <agent|#channel> <text>`
 //! - `HISTORY`: read the session history
@@ -72,9 +74,17 @@ impl Fake {
         match cmd {
             "WRITE" => {
                 std::fs::write(&a, format!("{b}\n")).with_context(|| format!("write {a}"))?;
-                self.event(LocalEvent::ToolCall { name: "write".into(), input: json!({"path": a}).to_string() }).await?;
+                self.event(LocalEvent::ToolCall {
+                    name: "write".into(),
+                    input: json!({"path": a}).to_string(),
+                })
+                .await?;
                 let r = self
-                    .event(LocalEvent::ToolResult { name: "write".into(), output: format!("wrote {a}"), is_error: false })
+                    .event(LocalEvent::ToolResult {
+                        name: "write".into(),
+                        output: format!("wrote {a}"),
+                        is_error: false,
+                    })
                     .await?;
                 if let Some(f) = r.fenced {
                     self.line(&format!("FENCED {f}"));
@@ -82,30 +92,76 @@ impl Fake {
                 self.line(&format!("WROTE {a}"));
             }
             "CREATE" => {
-                let v = self.call(json!({"tool": "task_create", "channel": a, "task": {"title": b}})).await?;
-                self.line(&format!("CREATED {} {}", v["id"].as_str().unwrap_or("?"), b));
+                let v = self
+                    .call(json!({"tool": "task_create", "channel": a, "task": {"title": b}}))
+                    .await?;
+                self.line(&format!(
+                    "CREATED {} {}",
+                    v["id"].as_str().unwrap_or("?"),
+                    b
+                ));
+            }
+            "CHANNEL" => {
+                let r = self
+                    .call(json!({"tool": "channel_create", "name": a}))
+                    .await;
+                self.line(&format!(
+                    "CHANNEL {a} {}",
+                    if r.is_ok() { "ok" } else { "failed" }
+                ));
+            }
+            "JOIN" => {
+                let r = self.call(json!({"tool": "channel_join", "name": a})).await;
+                self.line(&format!(
+                    "JOIN {a} {}",
+                    if r.is_ok() { "ok" } else { "failed" }
+                ));
+            }
+            "AFTER" => {
+                let (blocker, title) = b.split_once(' ').unwrap_or((b.as_str(), "task"));
+                let v = self
+                    .call(json!({"tool": "task_create", "channel": a, "task": {"title": title, "blocked_by": [blocker]}}))
+                    .await?;
+                self.line(&format!(
+                    "CREATED {} {}",
+                    v["id"].as_str().unwrap_or("?"),
+                    title
+                ));
             }
             "CLAIM" => {
-                let r = self.call(json!({"tool": "task_claim", "channel": a, "id": b})).await;
-                self.line(&format!("CLAIM {b} {}", if r.is_ok() { "ok" } else { "failed" }));
+                let r = self
+                    .call(json!({"tool": "task_claim", "channel": a, "id": b}))
+                    .await;
+                self.line(&format!(
+                    "CLAIM {b} {}",
+                    if r.is_ok() { "ok" } else { "failed" }
+                ));
             }
             "CLOSE" => {
                 let r = self
                     .call(json!({"tool": "task_close", "channel": a, "id": b, "reason": "done", "message": "done by the fake harness"}))
                     .await;
-                self.line(&format!("CLOSE {b} {}", if r.is_ok() { "ok" } else { "failed" }));
+                self.line(&format!(
+                    "CLOSE {b} {}",
+                    if r.is_ok() { "ok" } else { "failed" }
+                ));
             }
             "SEND" => {
                 let to = match a.strip_prefix('#') {
                     Some(c) => json!({"type": "channel", "id": c}),
                     None => json!({"type": "agent", "id": a}),
                 };
-                self.call(json!({"tool": "send", "to": to, "text": b})).await?;
+                self.call(json!({"tool": "send", "to": to, "text": b}))
+                    .await?;
                 self.line(&format!("SENT {a}"));
             }
             "HISTORY" => self.history().await?,
             "EXIT" => {
-                let _ = self.event(LocalEvent::End { reason: "fake harness exit".into() }).await;
+                let _ = self
+                    .event(LocalEvent::End {
+                        reason: "fake harness exit".into(),
+                    })
+                    .await;
                 self.line("EXIT");
                 return Ok(false);
             }
@@ -115,14 +171,20 @@ impl Fake {
     }
 
     async fn history(&mut self) -> anyhow::Result<()> {
-        let v = self.call(json!({"tool": "session_history", "page": 0, "page_size": 500})).await?;
+        let v = self
+            .call(json!({"tool": "session_history", "page": 0, "page_size": 500}))
+            .await?;
         let events = v["events"].as_array().cloned().unwrap_or_default();
         let wrote: Vec<String> = events
             .iter()
             .filter(|e| e["kind"] == "tool_result")
             .filter_map(|e| e["output"].as_str().map(str::to_owned))
             .collect();
-        self.line(&format!("HISTORY total={} tool_results={}", v["total"], wrote.join("|")));
+        self.line(&format!(
+            "HISTORY total={} tool_results={}",
+            v["total"],
+            wrote.join("|")
+        ));
         Ok(())
     }
 
@@ -130,7 +192,12 @@ impl Fake {
         self.event(LocalEvent::TurnStart).await?;
         let mut go_on = true;
         for m in msgs {
-            self.line(&format!("MSG from={} kind={:?} {}", m.from, m.kind, m.text.replace('\n', " / ")));
+            self.line(&format!(
+                "MSG from={} kind={:?} {}",
+                m.from,
+                m.kind,
+                m.text.replace('\n', " / ")
+            ));
             for line in m.text.lines() {
                 match self.run_command(line.trim()).await {
                     Ok(true) => {}
@@ -151,11 +218,18 @@ async fn register(client: &LocalClient) -> anyhow::Result<LocalSession> {
         harness_session_id: Some(format!("fake-{}", std::process::id())),
         pid: Some(std::process::id()),
         cwd,
-        agent: std::env::var("BORANT_AGENT").ok().and_then(|a| a.parse().ok()),
-        channel: std::env::var("BORANT_CHANNEL").ok().and_then(|c| c.parse().ok()),
+        agent: std::env::var("BORANT_AGENT")
+            .ok()
+            .and_then(|a| a.parse().ok()),
+        channel: std::env::var("BORANT_CHANNEL")
+            .ok()
+            .and_then(|c| c.parse().ok()),
     };
     for _ in 0..60 {
-        match client.post::<_, LocalSession>("/v1/sessions", &reg, CALL).await {
+        match client
+            .post::<_, LocalSession>("/v1/sessions", &reg, CALL)
+            .await
+        {
             Outcome::Reply(r) => return Ok(r?),
             Outcome::Down(_) => tokio::time::sleep(Duration::from_secs(1)).await,
         }
@@ -175,20 +249,41 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if let Outcome::Reply(Ok(v)) = client.get::<LocalSession>(&format!("/v1/sessions/{}", s.session), CALL).await {
+        if let Outcome::Reply(Ok(v)) = client
+            .get::<LocalSession>(&format!("/v1/sessions/{}", s.session), CALL)
+            .await
+        {
             s = v;
         }
     }
-    let agent = s.agent.clone().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into());
+    let agent = s
+        .agent
+        .clone()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "unknown".into());
     let dir = home().join("fake");
     std::fs::create_dir_all(&dir)?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{agent}.log")))?;
-    let mut fake = Fake { client, session: s.session, log };
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{agent}.log")))?;
+    let mut fake = Fake {
+        client,
+        session: s.session,
+        log,
+    };
     let host = s.host.to_string();
-    fake.line(&format!("START agent={agent} host={host} session={} pid={}", s.session, std::process::id()));
+    fake.line(&format!(
+        "START agent={agent} host={host} session={} pid={}",
+        s.session,
+        std::process::id()
+    ));
 
     if let Ok(prompt) = std::env::var("BORANT_PROMPT") {
-        fake.event(LocalEvent::UserPrompt { text: prompt.clone() }).await?;
+        fake.event(LocalEvent::UserPrompt {
+            text: prompt.clone(),
+        })
+        .await?;
         fake.line(&format!("PROMPT {prompt}"));
         if prompt.contains("You continue Borant agent") {
             fake.history().await?;
@@ -211,7 +306,8 @@ async fn main() -> anyhow::Result<()> {
         };
         match got {
             Outcome::Reply(Ok(v)) => {
-                let msgs: Vec<Envelope> = serde_json::from_value(v["messages"].clone()).unwrap_or_default();
+                let msgs: Vec<Envelope> =
+                    serde_json::from_value(v["messages"].clone()).unwrap_or_default();
                 if msgs.is_empty() {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
