@@ -77,7 +77,14 @@ pub async fn run_hub() -> anyhow::Result<()> {
 
 pub async fn run_host() -> anyhow::Result<()> {
     let file = config::host_file()?;
-    let cfg = config::host_config(&file)?;
+    let mut cfg = config::host_config(&file)?;
+    cfg.socket = Some(config::socket());
+    if tokio::net::UnixStream::connect(cfg.socket()).await.is_ok() {
+        anyhow::bail!(
+            "another host daemon is running on {}; stop it first",
+            cfg.socket().display()
+        );
+    }
     tokio::fs::create_dir_all(&cfg.home).await?;
     let nats =
         borant_nats::connect(&file.nats.to_config(&format!("borant-host-{}", cfg.name))).await?;
@@ -115,7 +122,12 @@ pub async fn run_host() -> anyhow::Result<()> {
         })
     };
     host.run(shutdown.clone()).await;
-    api.await.context("local API task")??;
+    // Long polls of idle waiters can hold the API open for minutes, so the
+    // graceful shutdown gets a short limit.
+    match tokio::time::timeout(Duration::from_secs(3), api).await {
+        Ok(r) => r.context("local API task")??,
+        Err(_) => tracing::info!("closing open API connections"),
+    }
     Ok(())
 }
 

@@ -99,6 +99,10 @@ impl Host {
                 "BORANT_HOME".to_owned(),
                 cfg.home.to_string_lossy().into_owned(),
             ),
+            (
+                "BORANT_SOCKET".to_owned(),
+                cfg.socket().to_string_lossy().into_owned(),
+            ),
         ];
         if let Some(c) = o.channels.first() {
             env.push(("BORANT_CHANNEL".to_owned(), c.to_string()));

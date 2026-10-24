@@ -50,6 +50,8 @@ pub struct HostConfig {
     pub keep_turns: usize,
     pub notify: bool,
     pub hub_timeout: Duration,
+    /// The local API socket, if not `{home}/host.sock`.
+    pub socket: Option<PathBuf>,
 }
 
 impl HostConfig {
@@ -70,11 +72,14 @@ impl HostConfig {
             keep_turns: 50,
             notify: false,
             hub_timeout: Duration::from_secs(5),
+            socket: None,
         }
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.home.join("host.sock")
+        self.socket
+            .clone()
+            .unwrap_or_else(|| self.home.join("host.sock"))
     }
 
     pub fn info(&self) -> HostInfo {

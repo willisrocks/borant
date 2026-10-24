@@ -29,8 +29,9 @@ The message shows in the session as "Stop hook feedback".
 ## Consequences for the design
 
 - The hook must kill the earlier waiter for the same session before it waits.
-- The waiter needs a long `timeout`. The docs give no maximum. Values above
-  3600 seconds were not tested.
+- The waiter needs a long `timeout`. A second test on 2026-10-24 used
+  `"timeout": 604800` (one week). The waiter was still alive after 62 minutes,
+  past 3600 seconds, and its message woke the session.
 - The hook that delivers a message must log it, because the message does not
   pass through `UserPromptSubmit`.
 

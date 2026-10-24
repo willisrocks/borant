@@ -199,3 +199,16 @@ async fn prepare_move_on_idle_session_sends_move_ready() {
     let lease = &agents[0]["lease"]["state"];
     assert_ne!(lease, "held", "{agents}");
 }
+
+#[tokio::test]
+async fn second_daemon_on_same_socket_is_refused() {
+    let fx = Fx::new(true, |_| {}).await;
+    let (c, _stop) = serve(&fx).await;
+    let err = borant_host::api::serve(fx.host.clone(), c.socket(), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("another host daemon"), "{err}");
+    // The first daemon still answers.
+    let health: Value = ok(c.get("/v1/health", Duration::from_secs(2)).await);
+    assert_eq!(health["host"], "h1");
+}

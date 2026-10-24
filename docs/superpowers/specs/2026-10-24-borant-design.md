@@ -785,7 +785,7 @@ The builder must test these before the related parts are built:
 | Item | Result on 2026-10-24 |
 |---|---|
 | `borant mcp` can learn its Claude Code session | Verified. Hooks and MCP servers are direct children of the Claude Code process. See section 7. |
-| An `asyncRewake` waiter with a `timeout` of one week stays alive past 3600 seconds | See `docs/spikes/claude-asyncrewake/README.md` |
+| An `asyncRewake` waiter with a `timeout` of one week stays alive past 3600 seconds | Verified. The waiter was alive after 62 minutes and woke the session. See `docs/spikes/claude-asyncrewake/README.md`. |
 | A push of a checkpoint commit to `refs/borant/...` on GitHub works | Not tested. A test needs a new GitHub repository, and the designer did not create one without the user. The checkpoint remote is configurable. |
 | A Pi and omp extension can hold an SSE stream on a Unix socket and wake an idle session | Verified in Pi 1.4.0 and omp 18.12.6, from idle and while busy. See `docs/spikes/pi-sse-wake/`. |
 

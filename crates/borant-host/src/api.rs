@@ -161,6 +161,12 @@ pub async fn serve(host: Host, socket: &Path, shutdown: CancellationToken) -> an
         tokio::fs::create_dir_all(dir).await?;
     }
     if socket.exists() {
+        if tokio::net::UnixStream::connect(socket).await.is_ok() {
+            anyhow::bail!(
+                "another host daemon is running on {}; stop it first",
+                socket.display()
+            );
+        }
         tokio::fs::remove_file(socket).await?;
     }
     let listener = tokio::net::UnixListener::bind(socket)?;
