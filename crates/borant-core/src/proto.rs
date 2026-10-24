@@ -383,6 +383,9 @@ pub struct LocalSession {
     pub state: LocalState,
     pub movable: bool,
     pub channels: Vec<ChannelName>,
+    /// Set when the session must stop using tools.
+    #[serde(default)]
+    pub fenced: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

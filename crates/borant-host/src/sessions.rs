@@ -24,7 +24,34 @@ const RETRY_ATTACH: Duration = Duration::from_secs(5);
 impl Host {
     /// Registers a harness session. If the hub is unreachable, the session is
     /// detached and the daemon retries in the background.
-    pub async fn register(&self, req: LocalRegister) -> Result<LocalSession, ApiError> {
+    pub async fn register(&self, mut req: LocalRegister) -> Result<LocalSession, ApiError> {
+        // The same native session registering again (a hook retry) gets the
+        // same local session. A new native session in the same process, for
+        // example after `/clear` in Claude Code, replaces the old one and
+        // keeps its agent.
+        let previous = req.pid.and_then(|pid| {
+            self.state()
+                .sessions
+                .values()
+                .find(|s| s.pid == Some(pid) && s.harness == req.harness)
+                .map(|s| {
+                    (
+                        s.id,
+                        s.harness_session_id.clone(),
+                        s.reg.as_ref().map(|r| r.agent.clone()),
+                    )
+                })
+        });
+        if let Some((old, hsid, agent)) = previous {
+            if hsid.is_some() && hsid == req.harness_session_id {
+                return self.local_view(old);
+            }
+            if req.agent.is_none() {
+                req.agent = agent;
+            }
+            self.end_session(old, "replaced by a new session in the same process")
+                .await;
+        }
         let id = SessionId::new();
         let cwd = PathBuf::from(&req.cwd);
         let repo = checkpoint::detect(&cwd, self.inner.cfg.checkpoint_remote.as_deref()).await;
@@ -182,6 +209,12 @@ impl Host {
                 .as_ref()
                 .map(|r| r.channels.clone())
                 .unwrap_or_default(),
+            fenced: s.fenced.clone().or_else(|| {
+                s.paused.then(|| {
+                    "The Borant hub is unreachable, so tools are paused until it returns."
+                        .to_owned()
+                })
+            }),
         })
     }
 
