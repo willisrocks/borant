@@ -73,11 +73,13 @@ async fn create_skips_unchanged_tree() {
         .await
         .unwrap()
         .unwrap();
+    let again = checkpoint::create(&work, r, &agent(), Some(&tree))
+        .await
+        .unwrap();
     assert!(
-        checkpoint::create(&work, r, &agent(), Some(&tree))
-            .await
-            .unwrap()
-            .is_none()
+        again.is_none(),
+        "first key {tree}, second {again:?}, status {}",
+        git(&work, &["status", "--porcelain", "--ignored"])
     );
 }
 
