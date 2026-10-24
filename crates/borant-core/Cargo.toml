@@ -1,0 +1,28 @@
+[package]
+name = "borant-core"
+description = "Borant domain model, rules, and ports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+jsonschema.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+ulid.workspace = true
+
+[features]
+testing = ["dep:tokio"]
+
+[dev-dependencies]
+tokio.workspace = true

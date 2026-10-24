@@ -1,0 +1,8 @@
+{
+  "name": "borant",
+  "version": "0.1.0",
+  "description": "Borant: messages, tasks, and host moves for coding agents. Needs the borant binary on PATH and a running `borant host`.",
+  "author": {
+    "name": "Borant"
+  }
+}

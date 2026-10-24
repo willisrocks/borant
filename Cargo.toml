@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+borant-core = { path = "crates/borant-core" }
+borant-memory = { path = "crates/borant-memory" }
+borant-nats = { path = "crates/borant-nats" }
+borant-hub = { path = "crates/borant-hub" }
+borant-host = { path = "crates/borant-host" }
+borant-launch = { path = "crates/borant-launch" }
+
+anyhow = "1.0.104"
+async-nats = "0.50.0"
+async-trait = "0.1.92"
+axum = "0.8.9"
+bytes = { version = "1.12.1", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dirs = "7.0.0"
+futures = "0.3.34"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+jsonschema = { version = "0.60.1", default-features = false }
+regex = "1.13.1"
+rmcp = "3.7.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sysinfo = "0.39.6"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7.20"
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ulid = { version = "3.0.0", features = ["serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

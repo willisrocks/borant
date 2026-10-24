@@ -1,0 +1,17 @@
+[package]
+name = "borant-testkit"
+description = "Test tools for Borant end-to-end tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+borant-core.workspace = true
+borant-host.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

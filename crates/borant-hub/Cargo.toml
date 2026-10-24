@@ -1,0 +1,27 @@
+[package]
+name = "borant-hub"
+description = "Borant hub daemon: the control-plane writer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+borant-core.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+borant-core = { workspace = true, features = ["testing"] }
+borant-memory.workspace = true
