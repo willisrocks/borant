@@ -101,10 +101,50 @@ pub fn tick(lease: &Lease, now: Timestamp, _cfg: &LeaseConfig) -> Option<Lease> 
         LeaseState::Reserved { until, .. } => now > *until,
         LeaseState::Expired { .. } | LeaseState::Released { .. } => false,
     };
+    let last_session = match &lease.state {
+        LeaseState::Held { session, .. } => Some(*session),
+        _ => None,
+    };
     ended.then(|| Lease {
         agent: lease.agent.clone(),
         token: FencingToken(lease.token.0 + 1),
-        state: LeaseState::Expired { since: now },
+        state: LeaseState::Expired {
+            since: now,
+            last_session,
+        },
+    })
+}
+
+/// Gives the lease back to the session that held it when the tick expired
+/// it, for example after a sleep or a network drop with no takeover. The
+/// token stays at the one the expiry set, one above the session's token. A
+/// lease that this session already took back (the host lost the reply) gives
+/// the same result again.
+pub fn reclaim(
+    lease: &Lease,
+    session: SessionId,
+    token: FencingToken,
+    host: &HostName,
+    now: Timestamp,
+    cfg: &LeaseConfig,
+) -> Option<Lease> {
+    let next = lease.token.0 == token.0 + 1;
+    let ours = match &lease.state {
+        LeaseState::Expired {
+            last_session: Some(s),
+            ..
+        } => *s == session,
+        LeaseState::Held { session: s, .. } => *s == session,
+        _ => false,
+    };
+    (next && ours).then(|| Lease {
+        agent: lease.agent.clone(),
+        token: lease.token,
+        state: LeaseState::Held {
+            session,
+            host: host.clone(),
+            expires: now.plus(cfg.lease),
+        },
     })
 }
 
@@ -205,6 +245,85 @@ mod tests {
     }
 
     #[test]
+    fn reclaim_after_expiry_keeps_the_raised_token() {
+        let s = SessionId::new();
+        let h = host("h");
+        let l = acquire(&agent(), None, s, &h, Timestamp(0), &cfg()).unwrap();
+        let expired = tick(&l, Timestamp(30_001), &cfg()).unwrap();
+        assert_eq!(
+            expired.state,
+            LeaseState::Expired {
+                since: Timestamp(30_001),
+                last_session: Some(s),
+            }
+        );
+        let back = reclaim(&expired, s, l.token, &h, Timestamp(40_000), &cfg()).unwrap();
+        assert_eq!(back.token, FencingToken(2));
+        assert_eq!(
+            back.state,
+            LeaseState::Held {
+                session: s,
+                host: h.clone(),
+                expires: Timestamp(70_000),
+            }
+        );
+        // A retry with the old token, after a lost reply, gets the same lease.
+        let again = reclaim(&back, s, l.token, &h, Timestamp(41_000), &cfg()).unwrap();
+        assert_eq!(again.token, FencingToken(2));
+        // The new token renews normally and does not reclaim.
+        assert!(renew(&back, s, FencingToken(2), Timestamp(41_000), &cfg()).is_ok());
+        assert_eq!(
+            reclaim(&back, s, FencingToken(2), &h, Timestamp(41_000), &cfg()),
+            None
+        );
+    }
+
+    #[test]
+    fn reclaim_rejects_other_cases() {
+        let s = SessionId::new();
+        let h = host("h");
+        let l = acquire(&agent(), None, s, &h, Timestamp(0), &cfg()).unwrap();
+        let expired = tick(&l, Timestamp(30_001), &cfg()).unwrap();
+        let t = l.token;
+        let now = Timestamp(40_000);
+        // Another session.
+        assert_eq!(
+            reclaim(&expired, SessionId::new(), t, &h, now, &cfg()),
+            None
+        );
+        // No last session, for example a lapsed reservation.
+        let anon = Lease {
+            state: LeaseState::Expired {
+                since: Timestamp(1),
+                last_session: None,
+            },
+            ..expired.clone()
+        };
+        assert_eq!(reclaim(&anon, s, t, &h, now, &cfg()), None);
+        // A token gap of two.
+        let gap = Lease {
+            token: FencingToken(t.0 + 2),
+            ..expired.clone()
+        };
+        assert_eq!(reclaim(&gap, s, t, &h, now, &cfg()), None);
+        // Reserved and released leases.
+        let r = reserve(&expired, &host("b"), MoveReason::Takeover, now, &cfg());
+        assert_eq!(reclaim(&r, s, t, &h, now, &cfg()), None);
+        let rel = Lease {
+            token: expired.token,
+            ..release(&l, now)
+        };
+        assert_eq!(reclaim(&rel, s, t, &h, now, &cfg()), None);
+        // A held lease of another session.
+        let other = acquire(&agent(), Some(&expired), SessionId::new(), &h, now, &cfg()).unwrap();
+        let other = Lease {
+            token: expired.token,
+            ..other
+        };
+        assert_eq!(reclaim(&other, s, t, &h, now, &cfg()), None);
+    }
+
+    #[test]
     fn held_lease_cannot_be_acquired() {
         let l = acquire(
             &agent(),
@@ -269,7 +388,13 @@ mod tests {
                 .plus(Duration::from_millis(1)),
             &cfg(),
         );
-        assert!(matches!(ended.unwrap().state, LeaseState::Expired { .. }));
+        assert!(matches!(
+            ended.unwrap().state,
+            LeaseState::Expired {
+                last_session: None,
+                ..
+            }
+        ));
     }
 
     #[test]

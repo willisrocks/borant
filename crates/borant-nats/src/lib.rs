@@ -57,6 +57,12 @@ pub async fn connect(cfg: &NatsConfig) -> Result<Nats, PortError> {
             &cfg.name
         })
         .retry_on_initial_connect()
+        // The client drops a connection after two missed pings. With the
+        // default of 60 s, a host that was cut off for a minute or two keeps
+        // its dead TCP connection, and TCP retransmit backoff then delays
+        // every request for up to a minute after the network returns. 5 s
+        // finds a dead connection well inside the 30 s lease.
+        .ping_interval(Duration::from_secs(5))
         .request_timeout(Some(Duration::from_secs(10)))
         .require_tls(cfg.tls_required);
     if let Some(path) = &cfg.creds_file {

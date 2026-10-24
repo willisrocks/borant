@@ -163,6 +163,22 @@ pub async fn message_bus_contract(bus: &dyn MessageBus) {
         d.acker.ack().await.expect("ack");
     }
 
+    // A message published just after a pull returns arrives at the next pull,
+    // not at a redelivery after the ack wait.
+    for text in ["three", "four"] {
+        let env = envelope(Target::Agent(agent.clone()), text);
+        bus.publish(&subjects[0], &env).await.expect("publish");
+        let got = bus
+            .pull(&agent, 10, Duration::from_secs(2))
+            .await
+            .expect("pull");
+        let texts: Vec<&str> = got.iter().map(|d| d.envelope.text.as_str()).collect();
+        assert_eq!(texts, vec![text]);
+        for d in got {
+            d.acker.ack().await.expect("ack");
+        }
+    }
+
     // Requests and replies.
     let subject = unique("borant.test.");
     let mut served = bus.serve(&subject).await.expect("serve");

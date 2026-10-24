@@ -1,7 +1,9 @@
 //! Hosts, sessions, leases, and takeovers (spec sections 7, 11, 13).
 
 use borant_core::model::{Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session};
-use borant_core::proto::{ApiError, HeartbeatReply, RegisterSession, Registered, SessionLeaseRef};
+use borant_core::proto::{
+    ApiError, HeartbeatReply, RegisterSession, Registered, RenewedLease, SessionLeaseRef,
+};
 use borant_core::rules::{lease, session_log, wake};
 use borant_core::{AgentId, FencingToken, HostName, SessionId, keys};
 use serde_json::{Value, json};
@@ -53,20 +55,43 @@ impl Hub {
         let now = self.now();
         mem.hosts_seen.insert(host.clone(), now);
         let mut lost = Vec::new();
+        let mut renewed = Vec::new();
         for s in sessions {
             let key = keys::lease_agent(&s.agent);
             let Some(doc) = self.store.get::<Lease>(&key).await? else {
                 lost.push(s.session);
                 continue;
             };
-            match lease::renew(&doc.value, s.session, s.token, now, &self.cfg.lease) {
-                Ok(l) => {
-                    self.store.put(&key, &l, Some(doc.revision)).await?;
-                }
-                Err(_) => lost.push(s.session),
+            if let Ok(l) = lease::renew(&doc.value, s.session, s.token, now, &self.cfg.lease) {
+                self.store.put(&key, &l, Some(doc.revision)).await?;
+                continue;
             }
+            // A sleep or a network drop expired the lease, but nobody took
+            // the agent, so the session continues with the raised token.
+            let Some(l) =
+                lease::reclaim(&doc.value, s.session, s.token, host, now, &self.cfg.lease)
+            else {
+                lost.push(s.session);
+                continue;
+            };
+            self.store.put(&key, &l, Some(doc.revision)).await?;
+            if let Ok(mut a) = self.agent(&s.agent).await
+                && a.value.session != Some(s.session)
+            {
+                a.value.session = Some(s.session);
+                self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+            }
+            mem.expired_at.remove(&s.agent);
+            mem.claims_released.remove(&s.agent);
+            mem.idle_checked.remove(&s.agent);
+            mem.wake_checked.remove(&s.agent);
+            tracing::info!(agent = %s.agent, session = %s.session, token = l.token.0, "lease reclaimed after expiry");
+            renewed.push(RenewedLease {
+                session: s.session,
+                token: l.token,
+            });
         }
-        Ok(HeartbeatReply { lost })
+        Ok(HeartbeatReply { lost, renewed })
     }
 
     pub(crate) async fn new_agent_id(&self, harness: Harness) -> Result<AgentId, ApiError> {
@@ -261,6 +286,7 @@ impl Hub {
                     // A launch did not register in time. Place again at once.
                     next.state = LeaseState::Expired {
                         since: now.minus(cfg.grace),
+                        last_session: None,
                     };
                     tracing::warn!(agent = %agent_id, "launch reservation ended without a session");
                 }
@@ -276,7 +302,7 @@ impl Hub {
                 continue;
             }
             let since = match doc.value.state {
-                LeaseState::Expired { since } | LeaseState::Released { since } => since,
+                LeaseState::Expired { since, .. } | LeaseState::Released { since } => since,
                 _ => continue,
             };
             let Ok(agent) = self.agent(&agent_id).await else {

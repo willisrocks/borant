@@ -3,7 +3,7 @@ mod common;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use borant_core::model::{Envelope, Harness, Target};
+use borant_core::model::{Envelope, Harness, HostInfo, Target};
 use borant_core::ports::MessageBus;
 use borant_core::proto::{CtlRequest, HostCommand, LocalRegister, LocalSession, ToolCall};
 use borant_core::subjects;
@@ -171,6 +171,22 @@ async fn prepare_move_on_idle_session_sends_move_ready() {
     let fx = Fx::new(true, |_| {}).await;
     let (c, _stop) = serve(&fx).await;
     let a = register(&c, &fx, "a", None).await;
+    // The hub refuses a move that no host can take, so h1 must be known.
+    fx.hub
+        .handle(CtlRequest::RegisterHost {
+            info: HostInfo {
+                name: "h1".parse().unwrap(),
+                harnesses: vec![Harness::Fake],
+                launcher: "process".into(),
+                max_agents: 4,
+                always_on: false,
+                draining: false,
+                ssh: None,
+            },
+        })
+        .await
+        .into_result()
+        .unwrap();
     // The hub sends PrepareMove to h1 and waits for MoveReady.
     let _: Value = ok(c
         .post(

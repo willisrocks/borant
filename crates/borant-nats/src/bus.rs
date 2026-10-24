@@ -80,6 +80,28 @@ impl NatsBus {
     }
 }
 
+/// Reads one pull request to its end and keeps the envelopes.
+async fn take(agent: &AgentId, mut batch: pull::Batch, out: &mut Vec<Delivery>) -> PortResult<()> {
+    while let Some(m) = batch.next().await {
+        let m = match m {
+            Ok(m) => m,
+            Err(e) if out.is_empty() => return Err(unavailable("pull message", e)),
+            Err(_) => break,
+        };
+        match serde_json::from_slice::<Envelope>(&m.payload) {
+            Ok(envelope) => out.push(Delivery {
+                envelope,
+                acker: Box::new(NatsAck(m)),
+            }),
+            Err(e) => {
+                tracing::warn!(%agent, "drop bad envelope: {e}");
+                let _ = m.ack().await;
+            }
+        }
+    }
+    Ok(())
+}
+
 struct NatsAck(jetstream::Message);
 
 #[async_trait::async_trait]
@@ -175,45 +197,28 @@ impl MessageBus for NatsBus {
 
     async fn pull(&self, agent: &AgentId, max: usize, wait: Duration) -> PortResult<Vec<Delivery>> {
         let consumer = self.consumer(agent).await?;
-        let mut batch = consumer
+        // Every pull request must end before this returns. The server keeps
+        // sending to an open request after the client drops it, and those
+        // messages come back only after the ack wait. So wait for one
+        // message, then take what is ready with a no-wait fetch, and read
+        // both requests to their end.
+        let first = consumer
             .batch()
-            .max_messages(max.max(1))
+            .max_messages(1)
             .expires(wait.max(Duration::from_millis(100)))
             .messages()
             .await
             .map_err(|e| unavailable("pull", e))?;
         let mut out = Vec::new();
-        loop {
-            // Wait for the first message up to `wait`. After it, take only
-            // what arrives at once, so a single message is not delayed.
-            let next = if out.is_empty() {
-                batch.next().await
-            } else {
-                match tokio::time::timeout(Duration::from_millis(20), batch.next()).await {
-                    Ok(n) => n,
-                    Err(_) => break,
-                }
-            };
-            let Some(m) = next else { break };
-            let m = match m {
-                Ok(m) => m,
-                Err(e) => {
-                    if out.is_empty() {
-                        return Err(unavailable("pull message", e));
-                    }
-                    break;
-                }
-            };
-            match serde_json::from_slice::<Envelope>(&m.payload) {
-                Ok(envelope) => out.push(Delivery {
-                    envelope,
-                    acker: Box::new(NatsAck(m)),
-                }),
-                Err(e) => {
-                    tracing::warn!(%agent, "drop bad envelope: {e}");
-                    let _ = m.ack().await;
-                }
-            }
+        take(agent, first, &mut out).await?;
+        if !out.is_empty() && max > 1 {
+            let rest = consumer
+                .fetch()
+                .max_messages(max - 1)
+                .messages()
+                .await
+                .map_err(|e| unavailable("pull", e))?;
+            take(agent, rest, &mut out).await?;
         }
         Ok(out)
     }

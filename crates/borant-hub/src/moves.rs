@@ -197,6 +197,8 @@ impl Hub {
         target: MoveTarget,
     ) -> Result<Vec<AgentId>, ApiError> {
         let mut moved = Vec::new();
+        // Slots that earlier agents of this move take on their target.
+        let mut planned: HashMap<HostName, u32> = HashMap::new();
         for id in self.selected(selector).await? {
             let lease = self.store.get::<Lease>(&keys::lease_agent(&id)).await?;
             match lease.map(|l| l.value.state) {
@@ -204,6 +206,27 @@ impl Hub {
                     if target.host.as_ref() == Some(&host) && target.harness.is_none() {
                         continue;
                     }
+                    // Check the target before the session stops. A session
+                    // stopped for a full target stays down until a slot opens.
+                    let agent = self.agent(&id).await?.value;
+                    let mut views = self.host_views(mem, &id).await?;
+                    for v in &mut views {
+                        if v.info.name == host {
+                            v.active_agents = v.active_agents.saturating_sub(1);
+                        }
+                        v.active_agents += planned.get(&v.info.name).copied().unwrap_or(0);
+                    }
+                    let Some((to, _)) = schedule::place(
+                        agent.preferred_harness,
+                        target.host.as_ref(),
+                        target.harness,
+                        &views,
+                    ) else {
+                        return Err(ApiError::unavailable(format!(
+                            "no host can take agent {id} now"
+                        )));
+                    };
+                    *planned.entry(to).or_default() += 1;
                     let cmd = HostCommand::PrepareMove {
                         agent: id.clone(),
                         session,
@@ -318,6 +341,7 @@ impl Hub {
                 token: FencingToken(0),
                 state: LeaseState::Expired {
                     since: self.now().minus(self.cfg.lease.grace),
+                    last_session: None,
                 },
             };
             self.store.upsert(&keys::lease_agent(&id), &lease).await?;
@@ -378,7 +402,10 @@ impl Hub {
                 let expired = Lease {
                     agent: agent.clone(),
                     token: d.value.token,
-                    state: LeaseState::Expired { since: self.now() },
+                    state: LeaseState::Expired {
+                        since: self.now(),
+                        last_session: None,
+                    },
                 };
                 self.store.put(&key, &expired, Some(d.revision)).await?;
             }
@@ -413,6 +440,7 @@ impl Hub {
                 token: d.value.token,
                 state: LeaseState::Expired {
                     since: self.now().minus(self.cfg.lease.grace),
+                    last_session: None,
                 },
             };
             self.store.put(&key, &expired, Some(d.revision)).await?;

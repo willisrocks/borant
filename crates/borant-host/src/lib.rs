@@ -275,10 +275,12 @@ impl Host {
         match self.hub(&req).await {
             Ok(v) => {
                 *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-                let lost: Vec<SessionId> =
-                    serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
-                        .map(|r| r.lost)
-                        .unwrap_or_default();
+                let reply = serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
+                    .unwrap_or_default();
+                let lost = reply.lost;
+                // Store the new tokens before the pause ends, so the next
+                // tool call and heartbeat use them.
+                self.apply_renewed(&reply.renewed);
                 // Fence the lost sessions before the pause ends, so no lost
                 // session runs a tool in between.
                 for sid in &lost {
