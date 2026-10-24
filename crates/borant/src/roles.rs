@@ -95,11 +95,24 @@ pub async fn run_host() -> anyhow::Result<()> {
         Some(Box::new(DesktopNotifier)),
         outbox,
     );
+    if socket.as_os_str().len() > 100 {
+        anyhow::bail!(
+            "the socket path {} is too long for a Unix socket; set BORANT_SOCKET to a shorter path",
+            socket.display()
+        );
+    }
     let shutdown = shutdown_on_signal();
     let api = {
         let host = host.clone();
         let shutdown = shutdown.clone();
-        tokio::spawn(async move { borant_host::api::serve(host, &socket, shutdown).await })
+        tokio::spawn(async move {
+            let r = borant_host::api::serve(host, &socket, shutdown.clone()).await;
+            if let Err(e) = &r {
+                tracing::error!("local API failed: {e:#}");
+                shutdown.cancel();
+            }
+            r
+        })
     };
     host.run(shutdown.clone()).await;
     api.await.context("local API task")??;

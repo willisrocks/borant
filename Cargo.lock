@@ -386,6 +386,13 @@ dependencies = [
 [[package]]
 name = "borant-testkit"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "borant-core",
+ "borant-host",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "borrow-or-share"

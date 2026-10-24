@@ -183,7 +183,18 @@ impl MessageBus for NatsBus {
             .await
             .map_err(|e| unavailable("pull", e))?;
         let mut out = Vec::new();
-        while let Some(m) = batch.next().await {
+        loop {
+            // Wait for the first message up to `wait`. After it, take only
+            // what arrives at once, so a single message is not delayed.
+            let next = if out.is_empty() {
+                batch.next().await
+            } else {
+                match tokio::time::timeout(Duration::from_millis(20), batch.next()).await {
+                    Ok(n) => n,
+                    Err(_) => break,
+                }
+            };
+            let Some(m) = next else { break };
             let m = match m {
                 Ok(m) => m,
                 Err(e) => {

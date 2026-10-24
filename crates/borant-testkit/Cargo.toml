@@ -10,3 +10,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
+borant-core.workspace = true
+borant-host.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
