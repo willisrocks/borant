@@ -1,0 +1,266 @@
+name: Release
+
+# Publishes Borant vX.Y.Z from the green tip of main, by hand.
+#
+# 1. plan: requires main and the typed confirmation, requires a green `ci`
+#    run at main's tip, and computes the next version from the newest vX.Y.Z
+#    tag with the `bump` input (.github/scripts/next-version.sh). The first
+#    release is 0.1.0.
+# 2. build: builds `borant` for four targets at that commit, with the version
+#    set at build time, and checks `borant --version`.
+# 3. image: pushes ghcr.io/<owner>/borant:X.Y.Z and :latest, built from the
+#    release binaries for amd64 and arm64.
+# 4. publish: tags the commit vX.Y.Z and publishes a GitHub Release with the
+#    archives, their SHA-256 files, and GitHub's generated notes since the
+#    previous tag. It is marked Latest.
+# 5. bump: writes the version into the manifests on main with a
+#    `chore(release): vX.Y.Z` commit. A failure before publish leaves main
+#    and the tags as they were.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type release to confirm.
+        required: true
+        type: string
+      bump:
+        description: Semantic version increment.
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require main and confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "release must run from main" >&2; exit 1; }
+          [[ "$CONFIRM" == release ]] || { echo "confirm must be release" >&2; exit 1; }
+      - name: Require a green CI run at the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: bash .github/scripts/require-green-ci.sh
+      - name: Compute the version
+        id: plan
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          json="$(bash .github/scripts/next-version.sh)"
+          version="$(jq -r .nextVersion <<<"$json")"
+          previous="$(jq -r .currentVersion <<<"$json")"
+          if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+            echo "release_tag_exists: v$version" >&2
+            exit 1
+          fi
+          {
+            echo "sha=$GITHUB_SHA"
+            echo "version=$version"
+            echo "previous=${previous:+v$previous}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version at \`$GITHUB_SHA\` (previous: ${previous:-none})." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, arch: amd64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, arch: arm64 }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      BORANT_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p borant --target ${{ matrix.target }}
+      - name: Check the version
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          got="$(target/${{ matrix.target }}/release/borant --version)"
+          [[ "$got" == "borant $BORANT_RELEASE_VERSION" ]] || { echo "version mismatch: $got" >&2; exit 1; }
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="borant-v${BORANT_RELEASE_VERSION}-${{ matrix.target }}"
+          mkdir -p "$name" out
+          cp target/${{ matrix.target }}/release/borant README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar -czf "out/$name.tar.gz" "$name"
+          (cd out && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          if [[ -n "${{ matrix.arch }}" ]]; then
+            mkdir -p "dist/${{ matrix.arch }}"
+            cp target/${{ matrix.target }}/release/borant "dist/${{ matrix.arch }}/borant"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: out/*
+      - if: matrix.arch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arch }}
+          path: dist/
+
+  image:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: dist
+          merge-multiple: true
+      - run: chmod +x dist/*/borant
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Name the image
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/release.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ needs.plan.outputs.version }}
+            ${{ steps.name.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+
+  publish:
+    needs: [plan, build, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: out
+          merge-multiple: true
+      - name: Package the integrations
+        run: |
+          set -euo pipefail
+          name="borant-integrations-v${VERSION}"
+          mkdir -p "$name"
+          cp -R integrations/claude-code "$name/claude-code"
+          mkdir -p "$name/pi"
+          cp integrations/pi/borant.ts integrations/pi/README.md "$name/pi/"
+          tar -czf "out/$name.tar.gz" "$name"
+          (cd out && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$tag" \
+              -f target_commitish="$SHA" ${PREVIOUS:+-f previous_tag_name="$PREVIOUS"} --jq .body > generated.md; then
+            echo "GitHub could not generate notes for this release." > generated.md
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          {
+            echo "Borant $tag, built from \`$SHA\`."
+            echo
+            echo '```bash'
+            echo "gh release download $tag --repo $GITHUB_REPOSITORY --pattern 'borant-$tag-aarch64-apple-darwin.tar.gz*'"
+            echo "shasum -a 256 -c borant-$tag-aarch64-apple-darwin.tar.gz.sha256"
+            echo "tar -xzf borant-$tag-aarch64-apple-darwin.tar.gz"
+            echo "install -m 0755 borant-$tag-aarch64-apple-darwin/borant ~/.local/bin/borant"
+            echo '```'
+            echo
+            echo "Container image for hubs and hosts: \`$image\`."
+            echo
+            cat generated.md
+          } > notes.md
+          gh release create "$tag" out/* --target "$SHA" --title "Borant $tag" --notes-file notes.md --latest
+          echo "Released [$tag](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$tag)." >> "$GITHUB_STEP_SUMMARY"
+
+  bump:
+    needs: [plan, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+      - name: Write the version on main
+        run: |
+          set -euo pipefail
+          bash .github/scripts/set-version.sh
+          if git diff --quiet; then
+            echo "main already has version $VERSION."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --quiet -am "chore(release): v$VERSION"
+          git push origin HEAD:main

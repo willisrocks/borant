@@ -14,10 +14,18 @@ use serde_json::{Value, json};
 
 use crate::config;
 
+/// The version that `borant --version` prints. A release build sets
+/// `BORANT_RELEASE_VERSION` to the release tag without the `v`. Other builds
+/// print the crate version.
+pub const VERSION: &str = match option_env!("BORANT_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Debug, Parser)]
 #[command(
     name = "borant",
-    version,
+    version = VERSION,
     about = "Messaging, tasks, and mobility for coding agents"
 )]
 pub struct Cli {

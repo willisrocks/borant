@@ -162,3 +162,32 @@ See section 20 of the design. In short: the hub is a single point of
 failure, a crash between a write and its event loses the event, the session
 log lacks the thinking of Claude Code, launched sessions run with permission
 prompts off, and hosts need the same logins and tools.
+
+## Releases
+
+A maintainer starts a release from the Actions tab: run the `Release` workflow
+on `main`, type `release` to confirm, and pick `patch`, `minor`, or `major`.
+
+1. The workflow requires a green `ci` run at the tip of `main`.
+2. It computes the next version from the newest `vX.Y.Z` tag. The first
+   release is `0.1.0`.
+3. It builds `borant` for Linux x86-64, Linux arm64, macOS arm64, and macOS
+   x86-64, with SHA-256 files.
+4. It pushes `ghcr.io/willisrocks/borant:X.Y.Z` and `:latest` for amd64 and
+   arm64.
+5. It tags the commit and publishes a GitHub Release with GitHub's generated
+   notes, plus an archive with the Claude Code plugin and the Pi extension.
+6. It writes the version into the manifests on `main` with a
+   `chore(release): vX.Y.Z` commit.
+
+A failure before step 5 changes no tag and no file on `main`.
+
+To install a release on macOS arm64:
+
+```sh
+tag=v0.1.0
+gh release download $tag --repo willisrocks/borant --pattern "borant-$tag-aarch64-apple-darwin.tar.gz*"
+shasum -a 256 -c "borant-$tag-aarch64-apple-darwin.tar.gz.sha256"
+tar -xzf "borant-$tag-aarch64-apple-darwin.tar.gz"
+install -m 0755 "borant-$tag-aarch64-apple-darwin/borant" ~/.local/bin/borant
+```
