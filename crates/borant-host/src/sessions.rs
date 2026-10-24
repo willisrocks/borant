@@ -1,0 +1,531 @@
+//! Local sessions: registration, events from harness adapters, fencing, and
+//! checkpoints.
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use borant_core::model::{SessionEventBody, Target};
+use borant_core::proto::{
+    ApiError, CtlRequest, EventReply, LocalEvent, LocalRegister, LocalSession, LocalState,
+    RegisterSession, Registered, SessionLeaseRef,
+};
+use borant_core::rules::{redact::redact, session_log};
+use borant_core::{AgentId, SessionId};
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
+
+use crate::checkpoint;
+use crate::{Host, LocalSess, Queued, terminate};
+
+const RETRY_ATTACH: Duration = Duration::from_secs(5);
+
+impl Host {
+    /// Registers a harness session. If the hub is unreachable, the session is
+    /// detached and the daemon retries in the background.
+    pub async fn register(&self, req: LocalRegister) -> Result<LocalSession, ApiError> {
+        let id = SessionId::new();
+        let cwd = PathBuf::from(&req.cwd);
+        let repo = checkpoint::detect(&cwd, self.inner.cfg.checkpoint_remote.as_deref()).await;
+        {
+            let mut st = self.state();
+            let shared_dir = st.sessions.values().any(|s| s.cwd == cwd);
+            st.sessions.insert(
+                id,
+                LocalSess {
+                    id,
+                    harness: req.harness,
+                    harness_session_id: req.harness_session_id.clone(),
+                    pid: req.pid,
+                    cwd,
+                    agent_hint: req.agent.clone(),
+                    channel_hint: req.channel.clone(),
+                    repo,
+                    shared_dir,
+                    reg: None,
+                    queue: VecDeque::new(),
+                    notify: Arc::new(Notify::new()),
+                    turn: 0,
+                    busy: false,
+                    fenced: None,
+                    paused: false,
+                    moving: false,
+                    last_tree: None,
+                    checkpointing: false,
+                    dirty: false,
+                    launch: None,
+                    cancel: CancellationToken::new(),
+                },
+            );
+        }
+        if !self.try_attach(id).await {
+            let host = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(RETRY_ATTACH).await;
+                    let gone = !host.state().sessions.contains_key(&id);
+                    if gone || host.try_attach(id).await {
+                        return;
+                    }
+                }
+            });
+        }
+        self.local_view(id)
+    }
+
+    /// Registers a local session with the hub. Returns true on success.
+    pub(crate) async fn try_attach(&self, id: SessionId) -> bool {
+        let req = {
+            let st = self.state();
+            let Some(s) = st.sessions.get(&id) else {
+                return true;
+            };
+            if s.reg.is_some() {
+                return true;
+            }
+            RegisterSession {
+                session: id,
+                host: self.inner.cfg.name.clone(),
+                harness: s.harness,
+                harness_session_id: s.harness_session_id.clone(),
+                pid: s.pid,
+                cwd: s.cwd.to_string_lossy().into_owned(),
+                repo: s.repo.as_ref().map(|r| r.info.clone()),
+                agent: s.agent_hint.clone(),
+                channel: s.channel_hint.clone(),
+                shared_dir: s.shared_dir,
+            }
+        };
+        let reg: Registered = match self.hub(&CtlRequest::RegisterSession(req)).await {
+            Ok(v) => match serde_json::from_value(v) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("bad registration reply: {e}");
+                    return false;
+                }
+            },
+            Err(e) => {
+                tracing::info!(session = %id, "registration failed, will retry: {}", e.message);
+                return false;
+            }
+        };
+        let agent = reg.agent.clone();
+        let cancel = {
+            let mut st = self.state();
+            let launch = st.pending_launch.remove(&agent);
+            let Some(s) = st.sessions.get_mut(&id) else {
+                return true;
+            };
+            s.reg = Some(reg);
+            if launch.is_some() {
+                s.launch = launch;
+            }
+            s.cancel.clone()
+        };
+        let cwd = self
+            .state()
+            .sessions
+            .get(&id)
+            .map(|s| s.cwd.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.append(&agent, Some(id), SessionEventBody::SessionStart { cwd })
+            .await;
+        self.load_log(&agent, id).await;
+        tokio::spawn(self.clone().inbox_loop(agent.clone(), id, cancel));
+        tracing::info!(session = %id, %agent, "session attached");
+        true
+    }
+
+    /// Fills the duplicate filter from the session log, and queues messages
+    /// that the log holds but that no session got yet, for example after a
+    /// move.
+    async fn load_log(&self, agent: &AgentId, id: SessionId) {
+        let Ok(events) = self.inner.store.read(agent).await else {
+            return;
+        };
+        let events: Vec<_> = events.into_iter().map(|(_, e)| e).collect();
+        let undelivered = session_log::undelivered(&events);
+        let mut st = self.state();
+        let seen = st.seen.entry(agent.clone()).or_default();
+        for e in &events {
+            if let SessionEventBody::SwarmMessage { envelope } = &e.body {
+                seen.insert(envelope.id);
+            }
+        }
+        if let Some(s) = st.sessions.get_mut(&id) {
+            for env in undelivered {
+                s.queue.push_back(Queued { env, wake: false });
+            }
+            s.turn = events.iter().map(|e| e.turn).max().unwrap_or(0);
+        }
+    }
+
+    pub fn local_view(&self, id: SessionId) -> Result<LocalSession, ApiError> {
+        let st = self.state();
+        let s = st
+            .sessions
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+        Ok(LocalSession {
+            session: id,
+            agent: s.reg.as_ref().map(|r| r.agent.clone()),
+            host: self.inner.cfg.name.clone(),
+            state: if s.reg.is_some() {
+                LocalState::Attached
+            } else {
+                LocalState::Detached
+            },
+            movable: s.movable(),
+            channels: s
+                .reg
+                .as_ref()
+                .map(|r| r.channels.clone())
+                .unwrap_or_default(),
+        })
+    }
+
+    /// The session whose harness PID is one of `ancestors`, nearest first.
+    pub fn resolve_pid(&self, ancestors: &[u32]) -> Option<SessionId> {
+        let st = self.state();
+        ancestors.iter().find_map(|p| {
+            st.sessions
+                .values()
+                .find(|s| s.pid == Some(*p))
+                .map(|s| s.id)
+        })
+    }
+
+    /// The session with this native harness session ID, if any.
+    pub fn resolve_harness_session(&self, hsid: &str) -> Option<SessionId> {
+        self.state()
+            .sessions
+            .values()
+            .find(|s| s.harness_session_id.as_deref() == Some(hsid))
+            .map(|s| s.id)
+    }
+
+    pub(crate) fn lease_refs(&self) -> Vec<SessionLeaseRef> {
+        self.state()
+            .sessions
+            .values()
+            .filter(|s| s.fenced.is_none())
+            .filter_map(|s| {
+                s.reg.as_ref().map(|r| SessionLeaseRef {
+                    session: s.id,
+                    agent: r.agent.clone(),
+                    token: r.token,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_paused(&self, on: bool) {
+        let mut st = self.state();
+        for s in st.sessions.values_mut() {
+            if s.paused != on {
+                s.paused = on;
+                s.notify.notify_waiters();
+            }
+        }
+    }
+
+    /// Handles one event from a harness adapter.
+    pub async fn event(&self, id: SessionId, ev: LocalEvent) -> Result<EventReply, ApiError> {
+        let (agent, start_turn) = {
+            let mut st = self.state();
+            let s = st
+                .sessions
+                .get_mut(&id)
+                .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+            let start = match &ev {
+                LocalEvent::TurnStart => true,
+                LocalEvent::UserPrompt { .. } => !s.busy,
+                _ => false,
+            };
+            if start {
+                s.turn += 1;
+                s.busy = true;
+            }
+            if matches!(ev, LocalEvent::TurnEnd) {
+                s.busy = false;
+            }
+            (s.reg.as_ref().map(|r| r.agent.clone()), start)
+        };
+        if let Some(agent) = &agent {
+            if start_turn {
+                self.append(agent, Some(id), SessionEventBody::TurnStart)
+                    .await;
+            }
+            let cut = |t: &str| session_log::cut(&redact(t), session_log::MAX_TOOL_BYTES);
+            let body = match &ev {
+                LocalEvent::UserPrompt { text } => {
+                    Some(SessionEventBody::UserPrompt { text: cut(text) })
+                }
+                LocalEvent::ToolCall { name, input } => Some(SessionEventBody::ToolCall {
+                    name: name.clone(),
+                    input: cut(input),
+                }),
+                LocalEvent::ToolResult {
+                    name,
+                    output,
+                    is_error,
+                } => Some(SessionEventBody::ToolResult {
+                    name: name.clone(),
+                    output: cut(output),
+                    is_error: *is_error,
+                }),
+                LocalEvent::AssistantMessage { text } => {
+                    Some(SessionEventBody::AssistantMessage { text: cut(text) })
+                }
+                _ => None,
+            };
+            if let Some(b) = body {
+                self.append(agent, Some(id), b).await;
+            }
+        }
+        match &ev {
+            LocalEvent::ToolResult { .. } => self.schedule_checkpoint(id),
+            LocalEvent::TurnEnd => {
+                self.schedule_checkpoint(id);
+                let moving = self.state().sessions.get(&id).is_some_and(|s| s.moving);
+                if moving {
+                    let host = self.clone();
+                    tokio::spawn(async move { host.finish_move(id).await });
+                }
+            }
+            LocalEvent::End { reason } => {
+                self.end_session(id, reason).await;
+                return Ok(EventReply::default());
+            }
+            _ => {}
+        }
+        let deliver = !matches!(ev, LocalEvent::TurnEnd);
+        let messages = if deliver {
+            self.drain(id).await
+        } else {
+            Vec::new()
+        };
+        Ok(EventReply {
+            messages,
+            fenced: self.fence_reason(id),
+        })
+    }
+
+    pub(crate) fn fence_reason(&self, id: SessionId) -> Option<String> {
+        let st = self.state();
+        let s = st.sessions.get(&id)?;
+        s.fenced.clone().or_else(|| {
+            s.paused.then(|| {
+                "The Borant hub is unreachable, so tools are paused until it returns.".to_owned()
+            })
+        })
+    }
+
+    /// Ends a local session and tells the hub.
+    pub async fn end_session(&self, id: SessionId, reason: &str) {
+        let Some(s) = self.state().sessions.remove(&id) else {
+            return;
+        };
+        s.cancel.cancel();
+        s.notify.notify_waiters();
+        if let Some(r) = &s.reg {
+            self.append(
+                &r.agent,
+                Some(id),
+                SessionEventBody::SessionEnd {
+                    reason: reason.into(),
+                },
+            )
+            .await;
+            if s.fenced.is_none() {
+                let req = CtlRequest::EndSession {
+                    session: id,
+                    agent: r.agent.clone(),
+                    token: r.token,
+                    reason: reason.into(),
+                };
+                if let Err(e) = self.hub(&req).await {
+                    tracing::warn!(session = %id, "could not tell the hub about the end: {}", e.message);
+                }
+            }
+        }
+        tracing::info!(session = %id, reason, "session ended");
+    }
+
+    /// Blocks the tools of a session. With `kill`, the daemon also saves the
+    /// work of the lost turn to a stale ref and stops the harness process.
+    pub(crate) async fn fence(&self, id: SessionId, reason: String, kill: bool) {
+        let info = {
+            let mut st = self.state();
+            let Some(s) = st.sessions.get_mut(&id) else {
+                return;
+            };
+            s.fenced = Some(reason);
+            s.cancel.cancel();
+            s.notify.notify_waiters();
+            (
+                s.reg.as_ref().map(|r| r.agent.clone()),
+                s.repo.clone(),
+                s.pid,
+                s.launch.clone(),
+            )
+        };
+        if !kill {
+            return;
+        }
+        let (agent, repo, pid, launch) = info;
+        if let (Some(agent), Some(repo)) = (&agent, &repo) {
+            let remote = self.remote_for(&repo.info.remote_url);
+            match checkpoint::save_stale(&repo.root, &remote, agent, self.inner.clock.now()).await {
+                Ok(sha) => tracing::info!(%agent, sha, "saved the lost turn to a stale ref"),
+                Err(e) => tracing::warn!(%agent, "could not save stale work: {e}"),
+            }
+        }
+        // The session stays known, so its hooks keep blocking tools until
+        // the harness process exits.
+        self.stop_process(pid, launch.as_ref()).await;
+    }
+
+    pub(crate) async fn stop_process(
+        &self,
+        pid: Option<u32>,
+        launch: Option<&borant_core::ports::LaunchHandle>,
+    ) {
+        if let Some(h) = launch {
+            if let Err(e) = self.inner.launcher.stop(h).await {
+                tracing::warn!("launcher stop failed: {e}");
+            }
+        } else if let Some(p) = pid {
+            terminate(p);
+        }
+    }
+
+    pub(crate) fn remote_for(&self, origin: &str) -> String {
+        self.inner
+            .cfg
+            .checkpoint_remote
+            .clone()
+            .unwrap_or_else(|| origin.to_owned())
+    }
+
+    /// Starts a checkpoint in the background, or marks the tree dirty if one
+    /// is running. One checkpoint runs at a time for each session.
+    pub(crate) fn schedule_checkpoint(&self, id: SessionId) {
+        {
+            let mut st = self.state();
+            let Some(s) = st.sessions.get_mut(&id) else {
+                return;
+            };
+            if !s.movable() || s.fenced.is_some() {
+                return;
+            }
+            if s.checkpointing {
+                s.dirty = true;
+                return;
+            }
+            s.checkpointing = true;
+        }
+        let host = self.clone();
+        tokio::spawn(async move {
+            loop {
+                host.checkpoint_now(id).await;
+                let mut st = host.state();
+                let Some(s) = st.sessions.get_mut(&id) else {
+                    return;
+                };
+                if s.dirty {
+                    s.dirty = false;
+                    continue;
+                }
+                s.checkpointing = false;
+                return;
+            }
+        });
+    }
+
+    /// Runs one checkpoint now and logs it.
+    pub(crate) async fn checkpoint_now(&self, id: SessionId) {
+        let (agent, repo, last) = {
+            let st = self.state();
+            let Some(s) = st.sessions.get(&id) else {
+                return;
+            };
+            let (Some(r), Some(repo)) = (&s.reg, &s.repo) else {
+                return;
+            };
+            (r.agent.clone(), repo.clone(), s.last_tree.clone())
+        };
+        let remote = self.remote_for(&repo.info.remote_url);
+        match checkpoint::create(&repo.root, &remote, &agent, last.as_deref()).await {
+            Ok(Some((tree, sha))) => {
+                if let Some(s) = self.state().sessions.get_mut(&id) {
+                    s.last_tree = Some(tree);
+                }
+                self.append(
+                    &agent,
+                    Some(id),
+                    SessionEventBody::Checkpoint {
+                        git_ref: checkpoint::wip_ref(&agent),
+                        sha,
+                    },
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(%agent, "checkpoint failed: {e}"),
+        }
+    }
+
+    /// Finishes a planned move: waits for a running checkpoint, writes a
+    /// final one, stops the session, and tells the hub.
+    pub(crate) async fn finish_move(&self, id: SessionId) {
+        for _ in 0..100 {
+            let busy = self
+                .state()
+                .sessions
+                .get(&id)
+                .is_some_and(|s| s.checkpointing);
+            if !busy {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.checkpoint_now(id).await;
+        let Some(s) = self.state().sessions.remove(&id) else {
+            return;
+        };
+        s.cancel.cancel();
+        let Some(reg) = s.reg.clone() else { return };
+        self.append(
+            &reg.agent,
+            Some(id),
+            SessionEventBody::SessionEnd {
+                reason: "planned move".into(),
+            },
+        )
+        .await;
+        self.stop_process(s.pid, s.launch.as_ref()).await;
+        let req = CtlRequest::MoveReady {
+            agent: reg.agent.clone(),
+            session: id,
+            token: reg.token,
+        };
+        match self.hub(&req).await {
+            Ok(_) => tracing::info!(agent = %reg.agent, "planned move: session stopped"),
+            Err(e) => tracing::warn!(agent = %reg.agent, "move_ready failed: {}", e.message),
+        }
+    }
+
+    /// Notifies an agent that it hit its wake limit, once.
+    pub(crate) async fn wake_limit_notice(&self, agent: &AgentId, sender: Option<&AgentId>) {
+        let first = self.state().limit_noticed.insert(agent.clone());
+        let Some(to) = sender.filter(|_| first) else {
+            return;
+        };
+        let text = format!("Borant: agent {agent} reached its wake limit.");
+        let _ = self
+            .send(None, Target::Agent(to.clone()), text, false)
+            .await;
+    }
+}

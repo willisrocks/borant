@@ -10,3 +10,27 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+borant-core.workspace = true
+borant-launch.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+nix = { version = "0.31", features = ["signal", "process"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+borant-core = { workspace = true, features = ["testing"] }
+borant-hub.workspace = true
+borant-memory.workspace = true
