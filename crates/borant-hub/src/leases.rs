@@ -180,6 +180,8 @@ impl Hub {
         self.refresh_inbox(&agent).await?;
 
         mem.failed_hosts.remove(&agent_id);
+        mem.expired_at.remove(&agent_id);
+        mem.claims_released.remove(&agent_id);
         mem.idle_checked.remove(&agent_id);
         mem.wake_checked.remove(&agent_id);
         mem.pending_moves.remove(&agent_id);
@@ -203,10 +205,12 @@ impl Hub {
     ) -> Result<(), ApiError> {
         let now = self.now();
         let key = keys::lease_agent(agent);
+        let mut released = false;
         if let Some(doc) = self.store.get::<Lease>(&key).await?
             && matches!(&doc.value.state, LeaseState::Held { session: s, .. } if *s == session)
             && doc.value.token == token
         {
+            released = true;
             self.store
                 .put(&key, &lease::release(&doc.value, now), Some(doc.revision))
                 .await?;
@@ -219,7 +223,9 @@ impl Hub {
             self.store.put(&s.key, &s.value, Some(s.revision)).await?;
         }
         tracing::info!(%agent, %session, reason, "session ended");
-        if let Some(p) = mem.pending_moves.get(agent).cloned() {
+        // A stale end, for example from a host that lost the lease, must not
+        // start a move.
+        if released && let Some(p) = mem.pending_moves.get(agent).cloned() {
             let a = self.agent(agent).await?.value;
             self.place_agent(mem, &a, p.reason, p.target, p.prompt)
                 .await?;
@@ -237,17 +243,18 @@ impl Hub {
                 self.store.put(&doc.key, &l, Some(doc.revision)).await?;
             }
         }
-        let mut mem = self.mem.lock().await;
-        for h in self.store.list::<HostInfo>(keys::HOST_PREFIX).await? {
-            mem.hosts_seen.insert(h.value.name, now);
-        }
+        // Hosts must send a heartbeat before the hub places agents again, so
+        // a host that died while the hub was down is not chosen.
+        self.mem.lock().await.started = Some(now);
         Ok(())
     }
 
     pub(crate) async fn tick_leases(&self, mem: &mut Memory) -> Result<(), ApiError> {
         let now = self.now();
         let cfg = self.cfg.lease;
+        let quiet = mem.started.is_some_and(|t| now.since(t) < cfg.lease);
         for doc in self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await? {
+            let agent_id = doc.value.agent.clone();
             if let Some(mut next) = lease::tick(&doc.value, now, &cfg) {
                 let was_held = matches!(doc.value.state, LeaseState::Held { .. });
                 if matches!(doc.value.state, LeaseState::Reserved { .. }) {
@@ -255,57 +262,75 @@ impl Hub {
                     next.state = LeaseState::Expired {
                         since: now.minus(cfg.grace),
                     };
-                    tracing::warn!(agent = %doc.value.agent, "launch reservation ended without a session");
+                    tracing::warn!(agent = %agent_id, "launch reservation ended without a session");
                 }
                 self.store.put(&doc.key, &next, Some(doc.revision)).await?;
-                if was_held && let Ok(mut a) = self.agent(&doc.value.agent).await {
-                    a.value.session = None;
-                    self.store.put(&a.key, &a.value, Some(a.revision)).await?;
-                    tracing::info!(agent = %a.value.id, "lease expired");
+                if was_held {
+                    mem.expired_at.entry(agent_id.clone()).or_insert(now);
+                    if let Ok(mut a) = self.agent(&agent_id).await {
+                        a.value.session = None;
+                        self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+                        tracing::info!(agent = %a.value.id, "lease expired");
+                    }
                 }
                 continue;
             }
-            let LeaseState::Expired { since } = doc.value.state else {
-                continue;
+            let since = match doc.value.state {
+                LeaseState::Expired { since } | LeaseState::Released { since } => since,
+                _ => continue,
             };
-            let idle = now.since(since);
-            if idle < cfg.grace {
-                continue;
-            }
-            let Ok(agent) = self.agent(&doc.value.agent).await else {
+            let Ok(agent) = self.agent(&agent_id).await else {
                 continue;
             };
             let agent = agent.value;
-            if !agent.movable || agent.channels.is_empty() {
+
+            // Claims return to open when no session held the agent for the
+            // claim timeout, measured from the first expiry.
+            let base = mem.expired_at.get(&agent_id).copied().unwrap_or(since);
+            if now.since(base) >= cfg.claim_timeout && mem.claims_released.insert(agent_id.clone())
+            {
+                let n = self.unclaim_everywhere(&agent_id).await?;
+                if n > 0 {
+                    tracing::warn!(agent = %agent_id, n, "claims returned to open after the claim timeout");
+                }
+            }
+
+            let expired = matches!(doc.value.state, LeaseState::Expired { .. });
+            let pending = mem.pending_moves.get(&agent_id).cloned();
+            if quiet || now.since(since) < cfg.grace {
                 continue;
             }
-            let mut claims = self.has_claims(&agent.id, &agent.channels).await?;
-            if claims && idle >= cfg.claim_timeout {
-                let n = self.unclaim_all(&agent.id, &agent.channels).await?;
-                tracing::warn!(agent = %agent.id, n, "claims returned to open after the claim timeout");
-                claims = false;
+            if let Some(p) = pending {
+                // A spawn or a planned move that is not placed yet.
+                self.place_agent(mem, &agent, p.reason, p.target, p.prompt)
+                    .await?;
+                continue;
             }
-            let mut needs = claims || mem.pending_moves.contains_key(&agent.id);
-            if !needs && self.bus.inbox_pending(&agent.id).await.unwrap_or(0) > 0 {
+            if !expired || !agent.movable || agent.channels.is_empty() {
+                continue;
+            }
+            let mut needs = !mem.claims_released.contains(&agent_id)
+                && self.has_claims(&agent_id, &agent.channels).await?;
+            if !needs && self.bus.inbox_pending(&agent_id).await.unwrap_or(0) > 0 {
                 let due = mem
                     .wake_checked
-                    .get(&agent.id)
+                    .get(&agent_id)
                     .is_none_or(|t| now.since(*t) >= WAKE_CHECK_EVERY);
                 if due {
-                    mem.wake_checked.insert(agent.id.clone(), now);
+                    mem.wake_checked.insert(agent_id.clone(), now);
                     needs = self
                         .bus
-                        .unacked(&agent.id)
+                        .unacked(&agent_id)
                         .await
                         .unwrap_or_default()
                         .iter()
-                        .any(|e| wake::should_wake(e, &agent.id));
+                        .any(|e| wake::should_wake(e, &agent_id));
                 }
             }
-            if !needs && mem.idle_checked.insert(agent.id.clone()) {
+            if !needs && mem.idle_checked.insert(agent_id.clone()) {
                 let events: Vec<_> = self
                     .sessions
-                    .read(&agent.id)
+                    .read(&agent_id)
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -313,15 +338,11 @@ impl Hub {
                     .collect();
                 needs = !session_log::undelivered(&events).is_empty();
                 if needs {
-                    mem.idle_checked.remove(&agent.id);
+                    mem.idle_checked.remove(&agent_id);
                 }
             }
             if needs {
-                let (target, prompt) = match mem.pending_moves.get(&agent.id) {
-                    Some(p) => (p.target.clone(), p.prompt.clone()),
-                    None => (Default::default(), None),
-                };
-                self.place_agent(mem, &agent, MoveReason::Takeover, target, prompt)
+                self.place_agent(mem, &agent, MoveReason::Takeover, Default::default(), None)
                     .await?;
             }
         }

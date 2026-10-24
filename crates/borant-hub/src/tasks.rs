@@ -140,6 +140,22 @@ impl Hub {
                 return Err(CoreError::SelfEdge.into());
             }
             self.task(channel, &parent).await?;
+            // The new parent must not be a child of this task.
+            let all = self.tasks(channel).await?;
+            let mut at = Some(parent);
+            let mut path = vec![*id, parent];
+            while let Some(p) = at {
+                at = all.iter().find(|x| x.id == p).and_then(|x| x.parent);
+                if let Some(next) = at {
+                    path.push(next);
+                    if next == *id {
+                        return Err(CoreError::Cycle { path }.into());
+                    }
+                    if path.len() > all.len() + 2 {
+                        break;
+                    }
+                }
+            }
             t.parent = Some(parent);
         }
         if let Some(props) = patch.properties {
@@ -267,6 +283,23 @@ impl Hub {
             }
         }
         Ok(n)
+    }
+
+    /// Clears every claim of an agent in every channel.
+    pub(crate) async fn unclaim_everywhere(&self, agent: &AgentId) -> Result<usize, ApiError> {
+        let channels: Vec<ChannelName> = self
+            .store
+            .list::<serde_json::Value>(keys::CHANNEL_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|d| d.key.matches('.').count() == 1)
+            .filter_map(|d| {
+                d.key
+                    .strip_prefix(keys::CHANNEL_PREFIX)
+                    .and_then(|c| c.parse().ok())
+            })
+            .collect();
+        self.unclaim_all(agent, &channels).await
     }
 
     /// True if the agent has a claim on an open task in one of its channels.

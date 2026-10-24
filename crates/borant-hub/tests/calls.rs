@@ -289,3 +289,25 @@ async fn heartbeat_reports_lost_sessions() {
     fx.hub.tick().await.unwrap();
     assert_eq!(fx.heartbeat("h1", &[&r]).await.lost, vec![r.session]);
 }
+
+#[tokio::test]
+async fn parent_cycle_is_rejected() {
+    let fx = Fx::new();
+    let owner = with_channel(&fx).await;
+    let a = create_task(&fx, &owner, "a", vec![]).await;
+    let b = create_task(&fx, &owner, "b", vec![]).await;
+    let set_parent = |id, parent| ToolCall::TaskUpdate {
+        channel: api(),
+        id,
+        patch: borant_core::model::TaskPatch {
+            parent: Some(parent),
+            ..Default::default()
+        },
+    };
+    fx.call(Some(&owner), set_parent(b.id, a.id)).await.unwrap();
+    let err = fx
+        .call(Some(&owner), set_parent(a.id, b.id))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("cycle"), "{}", err.message);
+}

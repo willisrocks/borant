@@ -60,6 +60,12 @@ pub(crate) struct Memory {
     pub idle_checked: HashSet<AgentId>,
     /// When the hub last read the pending messages of an idle agent.
     pub wake_checked: HashMap<AgentId, Timestamp>,
+    /// When the lease of each agent first expired, for the claim timeout.
+    pub expired_at: HashMap<AgentId, Timestamp>,
+    /// Agents whose claims the claim timeout already released.
+    pub claims_released: HashSet<AgentId>,
+    /// When this hub started serving, for the quiet period after a restart.
+    pub started: Option<Timestamp>,
     pub maintenance: bool,
 }
 
@@ -129,9 +135,12 @@ impl Hub {
             .map_err(|e| anyhow::anyhow!("serve {}: {e}", subjects::CTL))?;
         tracing::info!(instance = %self.cfg.instance, "hub is serving {}", subjects::CTL);
 
+        // Cancelled when another hub takes the hub lease.
+        let lost = CancellationToken::new();
         let ticker = {
             let hub = self.clone();
             let shutdown = shutdown.clone();
+            let lost = lost.clone();
             tokio::spawn(async move {
                 let mut every = tokio::time::interval(Duration::from_secs(1));
                 let mut renew = tokio::time::interval(hub.cfg.lease.heartbeat);
@@ -144,8 +153,14 @@ impl Hub {
                             }
                         }
                         _ = renew.tick() => {
-                            if let Err(e) = hub.renew_hub_lease(token).await {
-                                tracing::error!("hub lease renewal failed: {e}");
+                            match hub.renew_hub_lease(token).await {
+                                Ok(()) => {}
+                                Err(e) if e.code == borant_core::proto::ApiErrorCode::StaleToken => {
+                                    tracing::error!("stepping down: {}", e.message);
+                                    lost.cancel();
+                                    break;
+                                }
+                                Err(e) => tracing::error!("hub lease renewal failed: {e}"),
                             }
                         }
                     }
@@ -156,6 +171,10 @@ impl Hub {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
+                _ = lost.cancelled() => {
+                    ticker.abort();
+                    anyhow::bail!("another hub took the hub lease");
+                }
                 next = requests.next() => {
                     let Some(req) = next else { break };
                     let hub = self.clone();
@@ -202,12 +221,24 @@ impl Hub {
 
     async fn renew_hub_lease(&self, token: FencingToken) -> Result<(), ApiError> {
         let key = keys::lease_hub();
+        let current = self.store.get::<HubLease>(&key).await?;
+        if let Some(d) = &current
+            && (d.value.holder != self.cfg.instance || d.value.token != token)
+        {
+            return Err(ApiError::new(
+                borant_core::proto::ApiErrorCode::StaleToken,
+                format!("hub {} took the hub lease", d.value.holder),
+            ));
+        }
         let lease = HubLease {
             holder: self.cfg.instance.clone(),
             token,
             expires: self.now().plus(self.cfg.lease.lease),
         };
-        self.store.upsert(&key, &lease).await.map(|_| ())
+        self.store
+            .put(&key, &lease, current.map(|d| d.revision))
+            .await
+            .map(|_| ())
     }
 
     /// Releases the hub lease, for example before a hub move.

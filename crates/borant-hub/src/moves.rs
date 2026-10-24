@@ -92,6 +92,13 @@ impl Hub {
 
         let key = keys::lease_agent(&agent.id);
         let doc = self.store.get::<Lease>(&key).await?;
+        if let Some(d) = &doc
+            && matches!(d.value.state, LeaseState::Held { .. })
+        {
+            // A live session holds the agent. Never take its lease.
+            tracing::warn!(agent = %agent.id, "placement skipped: a live session holds the lease");
+            return Ok(false);
+        }
         let base = doc.as_ref().map(|d| d.value.clone()).unwrap_or(Lease {
             agent: agent.id.clone(),
             token: FencingToken(0),
@@ -151,7 +158,8 @@ impl Hub {
         self.bus
             .send(&subjects::host_cmd(&host), payload.into())
             .await?;
-        mem.pending_moves.remove(&agent.id);
+        // A pending move or spawn stays until the agent registers, so a failed
+        // launch is placed again with the same target and prompt.
         tracing::info!(agent = %agent.id, %host, %harness, ?reason, "launch order sent");
         Ok(true)
     }
@@ -288,18 +296,32 @@ impl Hub {
             .map_err(|e| ApiError::new(e.code, format!("agent {id}: {}", e.message)))?;
         self.join(&id, channel).await?;
         let agent = self.agent(&id).await?.value;
+        let target = MoveTarget {
+            host,
+            harness: Some(harness),
+        };
+        mem.pending_moves.insert(
+            id.clone(),
+            PendingMove {
+                target: target.clone(),
+                reason: MoveReason::Spawn,
+                prompt: Some(prompt.clone()),
+            },
+        );
         let placed = self
-            .place_agent(
-                mem,
-                &agent,
-                MoveReason::Spawn,
-                MoveTarget {
-                    host,
-                    harness: Some(harness),
-                },
-                Some(prompt),
-            )
+            .place_agent(mem, &agent, MoveReason::Spawn, target, Some(prompt))
             .await?;
+        if !placed {
+            // The tick places the agent when a host qualifies.
+            let lease = Lease {
+                agent: id.clone(),
+                token: FencingToken(0),
+                state: LeaseState::Expired {
+                    since: self.now().minus(self.cfg.lease.grace),
+                },
+            };
+            self.store.upsert(&keys::lease_agent(&id), &lease).await?;
+        }
         Ok(json!({ "agent": id, "placed": placed }))
     }
 
@@ -376,6 +398,12 @@ impl Hub {
             .entry(agent.clone())
             .or_default()
             .insert(host.clone());
+        // A forced host that failed must not block the next placement.
+        if let Some(p) = mem.pending_moves.get_mut(agent)
+            && p.target.host.as_ref() == Some(host)
+        {
+            p.target.host = None;
+        }
         let key = keys::lease_agent(agent);
         if let Some(d) = self.store.get::<Lease>(&key).await?
             && matches!(&d.value.state, LeaseState::Reserved { host: h, .. } if h == host)

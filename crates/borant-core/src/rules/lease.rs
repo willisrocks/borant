@@ -108,12 +108,15 @@ pub fn tick(lease: &Lease, now: Timestamp, _cfg: &LeaseConfig) -> Option<Lease> 
     })
 }
 
-/// After a hub start, held leases get a full lease time from `now`, so a hub
-/// restart never causes a mass takeover.
+/// After a hub start, held leases get a full lease time from `now`, and
+/// reservations a full reservation time, so a hub restart never causes a mass
+/// takeover.
 pub fn restart_grace(lease: &Lease, now: Timestamp, cfg: &LeaseConfig) -> Lease {
     let mut out = lease.clone();
-    if let LeaseState::Held { expires, .. } = &mut out.state {
-        *expires = now.plus(cfg.lease);
+    match &mut out.state {
+        LeaseState::Held { expires, .. } => *expires = now.plus(cfg.lease),
+        LeaseState::Reserved { until, .. } => *until = now.plus(cfg.reserve),
+        LeaseState::Expired { .. } | LeaseState::Released { .. } => {}
     }
     out
 }
