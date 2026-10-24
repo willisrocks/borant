@@ -4,7 +4,11 @@ pub mod error;
 pub mod ids;
 pub mod keys;
 pub mod model;
+pub mod ports;
+pub mod proto;
 pub mod rules;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod time;
 
 pub use error::CoreError;
