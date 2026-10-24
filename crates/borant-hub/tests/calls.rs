@@ -287,6 +287,8 @@ async fn heartbeat_reports_lost_sessions() {
     assert!(fx.heartbeat("h1", &[&r]).await.lost.is_empty());
     fx.advance(31);
     fx.hub.tick().await.unwrap();
+    // A new session takes the expired agent, so the old one cannot reclaim.
+    fx.register("h1", Some("a"), None).await;
     assert_eq!(fx.heartbeat("h1", &[&r]).await.lost, vec![r.session]);
 }
 

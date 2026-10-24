@@ -266,6 +266,8 @@ async fn lost_lease_fences_session() {
     let a = fx.session("a", "wa").await;
     fx.hub_clock.advance(Duration::from_secs(31));
     fx.hub.tick().await.unwrap();
+    // A new session takes the expired agent.
+    fx.session("a", "wb").await;
     fx.host.heartbeat_once().await;
     let reply = fx
         .host
@@ -280,6 +282,40 @@ async fn lost_lease_fences_session() {
         .unwrap();
     let reason = reply.fenced.expect("fenced");
     assert!(reason.contains("lost its lease"), "{reason}");
+}
+
+#[tokio::test]
+async fn expired_lease_with_no_takeover_is_reclaimed() {
+    let fx = Fx::new(true, |_| {}).await;
+    let a = fx.session("a", "wa").await;
+    let token = |fx: &Fx| -> u64 {
+        let table: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fx.dir.path().join("sessions.json")).unwrap())
+                .unwrap();
+        table[0]["reg"]["token"].as_u64().unwrap()
+    };
+    let before = token(&fx);
+    fx.hub_clock.advance(Duration::from_secs(31));
+    fx.hub.tick().await.unwrap();
+    fx.host.heartbeat_once().await;
+    assert_eq!(token(&fx), before + 1, "the new token is saved");
+    let reply = fx
+        .host
+        .event(a.session, LocalEvent::TurnStart)
+        .await
+        .unwrap();
+    assert_eq!(reply.fenced, None);
+    // A second expiry works only if the host sends the new token.
+    fx.hub_clock.advance(Duration::from_secs(31));
+    fx.hub.tick().await.unwrap();
+    fx.host.heartbeat_once().await;
+    assert_eq!(token(&fx), before + 2);
+    let reply = fx
+        .host
+        .event(a.session, LocalEvent::TurnStart)
+        .await
+        .unwrap();
+    assert_eq!(reply.fenced, None);
 }
 
 #[tokio::test]

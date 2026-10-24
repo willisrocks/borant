@@ -131,10 +131,20 @@ pub struct SessionLeaseRef {
     pub token: FencingToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeartbeatReply {
     /// Sessions that lost their lease and must stop.
     pub lost: Vec<SessionId>,
+    /// Sessions that took their lease back after an expiry with no takeover.
+    /// They continue with the new token.
+    #[serde(default)]
+    pub renewed: Vec<RenewedLease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenewedLease {
+    pub session: SessionId,
+    pub token: FencingToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

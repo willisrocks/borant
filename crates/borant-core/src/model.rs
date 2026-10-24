@@ -115,6 +115,11 @@ pub enum LeaseState {
     },
     Expired {
         since: Timestamp,
+        /// The session that held the lease when the tick expired it. Only
+        /// this session can take the lease back (`lease::reclaim`), and only
+        /// while nobody else took the agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_session: Option<SessionId>,
     },
     Reserved {
         host: HostName,
@@ -423,13 +428,26 @@ mod tests {
             token: FencingToken(3),
             state: LeaseState::Expired {
                 since: Timestamp(5),
+                last_session: None,
             },
         };
         let v = serde_json::to_value(&lease).unwrap();
         assert_eq!(v["state"], "expired");
         assert_eq!(v["token"], 3);
+        assert!(v.get("last_session").is_none());
         let back: Lease = serde_json::from_value(v).unwrap();
         assert_eq!(back, lease);
+        let s = SessionId::new();
+        let held_before = Lease {
+            state: LeaseState::Expired {
+                since: Timestamp(5),
+                last_session: Some(s),
+            },
+            ..lease
+        };
+        let v = serde_json::to_value(&held_before).unwrap();
+        let back: Lease = serde_json::from_value(v).unwrap();
+        assert_eq!(back, held_before);
     }
 
     #[test]

@@ -514,3 +514,69 @@ async fn restarted_hub_waits_for_heartbeats_before_placing() {
         Some(HostCommand::Launch(_))
     ));
 }
+
+#[tokio::test]
+async fn expired_session_with_no_takeover_takes_its_lease_back() {
+    let fx = Fx::new();
+    let (owner, w) = setup(&fx).await;
+    claim(&fx, &owner, &w).await;
+    let mut h2 = fx.commands("h2").await;
+    // Past the lease, so the tick expires it, but inside the grace period.
+    h1_sleeps(&fx, 60).await;
+    let reply = fx.heartbeat("h1", &[&w]).await;
+    assert!(reply.lost.is_empty(), "{reply:?}");
+    assert_eq!(reply.renewed.len(), 1);
+    assert_eq!(reply.renewed[0].session, w.session);
+    assert_eq!(reply.renewed[0].token.0, w.token.0 + 1);
+    let w_new = borant_core::proto::Registered {
+        token: reply.renewed[0].token,
+        ..w.clone()
+    };
+    // The new token renews normally.
+    let next = fx.heartbeat("h1", &[&w_new]).await;
+    assert!(next.lost.is_empty() && next.renewed.is_empty(), "{next:?}");
+    // The agent runs on h1 again, so no takeover follows.
+    for _ in 0..20 {
+        fx.advance(10);
+        fx.heartbeat("h1", &[&w_new]).await;
+        fx.heartbeat("h2", &[]).await;
+        fx.hub.tick().await.unwrap();
+    }
+    assert!(next_cmd(&mut h2).await.is_none(), "no takeover");
+    assert!(fx.heartbeat("h1", &[&w_new]).await.lost.is_empty());
+}
+
+#[tokio::test]
+async fn lost_reclaim_reply_gives_the_same_token_again() {
+    let fx = Fx::new();
+    let (_owner, w) = setup(&fx).await;
+    h1_sleeps(&fx, 60).await;
+    let first = fx.heartbeat("h1", &[&w]).await;
+    let second = fx.heartbeat("h1", &[&w]).await;
+    assert!(first.lost.is_empty() && second.lost.is_empty());
+    assert_eq!(first.renewed.len(), 1);
+    assert_eq!(first.renewed, second.renewed);
+    assert_eq!(first.renewed[0].token.0, w.token.0 + 1);
+}
+
+#[tokio::test]
+async fn expired_session_after_takeover_stays_lost() {
+    let fx = Fx::new();
+    let (owner, w) = setup(&fx).await;
+    claim(&fx, &owner, &w).await;
+    let mut h2 = fx.commands("h2").await;
+    h1_sleeps(&fx, 160).await;
+    assert!(matches!(
+        next_cmd(&mut h2).await,
+        Some(HostCommand::Launch(_))
+    ));
+    // The lease is reserved for h2.
+    let reply = fx.heartbeat("h1", &[&w]).await;
+    assert_eq!(reply.lost, vec![w.session]);
+    assert!(reply.renewed.is_empty());
+    // The new session on h2 holds it.
+    let _w2 = fx.register("h2", Some("w"), None).await;
+    let reply = fx.heartbeat("h1", &[&w]).await;
+    assert_eq!(reply.lost, vec![w.session]);
+    assert!(reply.renewed.is_empty());
+}

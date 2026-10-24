@@ -9,7 +9,7 @@ use std::time::Duration;
 use borant_core::model::{SessionEventBody, Target};
 use borant_core::proto::{
     ApiError, CtlRequest, EventReply, LocalEvent, LocalRegister, LocalSession, LocalState,
-    RegisterSession, Registered, SessionLeaseRef,
+    RegisterSession, Registered, RenewedLease, SessionLeaseRef,
 };
 use borant_core::rules::{redact::redact, session_log};
 use borant_core::{AgentId, SessionId};
@@ -262,6 +262,30 @@ impl Host {
                 })
             })
             .collect()
+    }
+
+    /// Takes the new tokens of sessions whose lease the hub gave back after
+    /// an expiry, and saves the table.
+    pub(crate) fn apply_renewed(&self, renewed: &[RenewedLease]) {
+        if renewed.is_empty() {
+            return;
+        }
+        {
+            let mut st = self.state();
+            for r in renewed {
+                let Some(s) = st.sessions.get_mut(&r.session) else {
+                    continue;
+                };
+                if s.fenced.is_some() {
+                    continue;
+                }
+                if let Some(reg) = &mut s.reg {
+                    tracing::info!(session = %r.session, token = r.token.0, "lease reclaimed after expiry");
+                    reg.token = r.token;
+                }
+            }
+        }
+        self.save();
     }
 
     pub(crate) fn set_paused(&self, on: bool) {

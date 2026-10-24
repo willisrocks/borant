@@ -341,6 +341,7 @@ impl Hub {
                 token: FencingToken(0),
                 state: LeaseState::Expired {
                     since: self.now().minus(self.cfg.lease.grace),
+                    last_session: None,
                 },
             };
             self.store.upsert(&keys::lease_agent(&id), &lease).await?;
@@ -401,7 +402,10 @@ impl Hub {
                 let expired = Lease {
                     agent: agent.clone(),
                     token: d.value.token,
-                    state: LeaseState::Expired { since: self.now() },
+                    state: LeaseState::Expired {
+                        since: self.now(),
+                        last_session: None,
+                    },
                 };
                 self.store.put(&key, &expired, Some(d.revision)).await?;
             }
@@ -436,6 +440,7 @@ impl Hub {
                 token: d.value.token,
                 state: LeaseState::Expired {
                     since: self.now().minus(self.cfg.lease.grace),
+                    last_session: None,
                 },
             };
             self.store.put(&key, &expired, Some(d.revision)).await?;
