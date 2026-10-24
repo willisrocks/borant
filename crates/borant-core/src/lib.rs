@@ -4,6 +4,7 @@ pub mod error;
 pub mod ids;
 pub mod keys;
 pub mod model;
+pub mod rules;
 pub mod time;
 
 pub use error::CoreError;
