@@ -1,0 +1,12 @@
+[package]
+name = "borant"
+description = "Borant CLI, daemons, MCP server, and hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

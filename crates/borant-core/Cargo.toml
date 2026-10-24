@@ -1,0 +1,12 @@
+[package]
+name = "borant-core"
+description = "Borant domain model, rules, and ports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
