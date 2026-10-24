@@ -820,3 +820,29 @@ Each line is a decision record.
 - Decision: the multi-host tests in Docker use a fake harness. Evidence: real
   harnesses need logins that a container does not have. The real Claude
   Code, Pi, and omp adapters get tests on the Mac. Reversible: yes.
+
+### Decisions during the build
+
+- Decision: the host daemon saves its local session table to
+  `$BORANT_HOME/sessions.json` and restores live sessions at start.
+  Evidence: a daemon restart forgot live sessions, and their leases then
+  expired. Reversible: yes.
+- Decision: the Claude Code idle waiter also starts at `SessionStart`.
+  Evidence: a session that never had a turn had no waiter and did not wake.
+  Reversible: yes.
+- Decision: `borant host` refuses to start when another daemon answers on its
+  socket. Evidence: a second daemon deleted the socket of the first one.
+  Reversible: yes.
+- Decision: the wake-limit notice goes to the agent that sent the message
+  over the limit, not to a channel owner. Evidence: a direct message has no
+  channel, and the sender is the agent that causes the wakes. Reversible:
+  yes.
+- Decision: `spawn` is an agent tool only, not a CLI command. Evidence: a
+  spawn copies the repository of the calling agent, and a human call has no
+  agent. Reversible: yes.
+- Decision: the `messages` tool is out of v1. Evidence: the bus port has no
+  history read. Reversible: yes.
+- Decision: the `move` session event names the new harness `to_harness`.
+  Evidence: the name `harness` clashed with the field of the outer event, and
+  those events failed to parse. Reversible: no, it is a log format change
+  before the first release.
