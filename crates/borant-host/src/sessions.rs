@@ -20,6 +20,8 @@ use crate::checkpoint;
 use crate::{Host, LocalSess, Queued, terminate};
 
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
+/// How long a registration call waits for the first attach attempt.
+const FIRST_ATTACH_WAIT: Duration = Duration::from_secs(3);
 
 impl Host {
     /// Registers a harness session. If the hub is unreachable, the session is
@@ -87,18 +89,25 @@ impl Host {
             );
         }
         self.save();
-        if !self.try_attach(id).await {
-            let host = self.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(RETRY_ATTACH).await;
-                    let gone = !host.state().sessions.contains_key(&id);
-                    if gone || host.try_attach(id).await {
-                        return;
-                    }
+        // The attach runs in its own task, so a caller that gives up does not
+        // cancel it, and the retries continue in the background.
+        let (first, done) = tokio::sync::oneshot::channel();
+        let host = self.clone();
+        tokio::spawn(async move {
+            let ok = host.try_attach(id).await;
+            let _ = first.send(());
+            if ok {
+                return;
+            }
+            loop {
+                tokio::time::sleep(RETRY_ATTACH).await;
+                let gone = !host.state().sessions.contains_key(&id);
+                if gone || host.try_attach(id).await {
+                    return;
                 }
-            });
-        }
+            }
+        });
+        let _ = tokio::time::timeout(FIRST_ATTACH_WAIT, done).await;
         self.local_view(id)
     }
 
@@ -335,7 +344,14 @@ impl Host {
             }
             _ => {}
         }
-        let deliver = !matches!(ev, LocalEvent::TurnEnd);
+        // Only events whose hook can show text to the model take messages.
+        let deliver = matches!(
+            ev,
+            LocalEvent::TurnStart
+                | LocalEvent::UserPrompt { .. }
+                | LocalEvent::ToolCall { .. }
+                | LocalEvent::ToolResult { .. }
+        );
         let messages = if deliver {
             self.drain(id).await
         } else {
@@ -389,10 +405,9 @@ impl Host {
         tracing::info!(session = %id, reason, "session ended");
     }
 
-    /// Blocks the tools of a session. With `kill`, the daemon also saves the
-    /// work of the lost turn to a stale ref and stops the harness process.
-    pub(crate) async fn fence(&self, id: SessionId, reason: String, kill: bool) {
-        let info = {
+    /// Blocks the tools of a session and stops its inbox.
+    pub(crate) fn mark_fenced(&self, id: SessionId, reason: String) {
+        {
             let mut st = self.state();
             let Some(s) = st.sessions.get_mut(&id) else {
                 return;
@@ -400,6 +415,18 @@ impl Host {
             s.fenced = Some(reason);
             s.cancel.cancel();
             s.notify.notify_waiters();
+        }
+        self.save();
+    }
+
+    /// Saves the work of the lost turn of a fenced session to a stale ref and
+    /// stops its harness process.
+    pub(crate) async fn stop_fenced(&self, id: SessionId) {
+        let info = {
+            let st = self.state();
+            let Some(s) = st.sessions.get(&id) else {
+                return;
+            };
             (
                 s.reg.as_ref().map(|r| r.agent.clone()),
                 s.repo.clone(),
@@ -407,21 +434,26 @@ impl Host {
                 s.launch.clone(),
             )
         };
-        self.save();
-        if !kill {
-            return;
-        }
         let (agent, repo, pid, launch) = info;
         if let (Some(agent), Some(repo)) = (&agent, &repo) {
             let remote = self.remote_for(&repo.info.remote_url);
             match checkpoint::save_stale(&repo.root, &remote, agent, self.inner.clock.now()).await {
                 Ok(sha) => tracing::info!(%agent, sha, "saved the lost turn to a stale ref"),
-                Err(e) => tracing::warn!(%agent, "could not save stale work: {e}"),
+                Err(e) => tracing::warn!(%agent, "could not save stale work: {e:#}"),
             }
         }
         // The session stays known, so its hooks keep blocking tools until
         // the harness process exits.
         self.stop_process(pid, launch.as_ref()).await;
+    }
+
+    /// Fences a session. With `kill`, it also saves the stale work and stops
+    /// the harness process.
+    pub(crate) async fn fence(&self, id: SessionId, reason: String, kill: bool) {
+        self.mark_fenced(id, reason);
+        if kill {
+            self.stop_fenced(id).await;
+        }
     }
 
     pub(crate) async fn stop_process(
@@ -466,7 +498,7 @@ impl Host {
         let host = self.clone();
         tokio::spawn(async move {
             loop {
-                host.checkpoint_now(id).await;
+                let _ = host.checkpoint_now(id).await;
                 let mut st = host.state();
                 let Some(s) = st.sessions.get_mut(&id) else {
                     return;
@@ -482,14 +514,15 @@ impl Host {
     }
 
     /// Runs one checkpoint now and logs it.
-    pub(crate) async fn checkpoint_now(&self, id: SessionId) {
+    /// Returns false if a checkpoint was due and failed.
+    pub(crate) async fn checkpoint_now(&self, id: SessionId) -> bool {
         let (agent, repo, last) = {
             let st = self.state();
             let Some(s) = st.sessions.get(&id) else {
-                return;
+                return true;
             };
             let (Some(r), Some(repo)) = (&s.reg, &s.repo) else {
-                return;
+                return true;
             };
             (r.agent.clone(), repo.clone(), s.last_tree.clone())
         };
@@ -510,14 +543,19 @@ impl Host {
                 .await;
             }
             Ok(None) => {}
-            Err(e) => tracing::warn!(%agent, "checkpoint failed: {e}"),
+            Err(e) => {
+                tracing::warn!(%agent, "checkpoint failed: {e:#}");
+                return false;
+            }
         }
+        true
     }
 
     /// Finishes a planned move: waits for a running checkpoint, writes a
     /// final one, stops the session, and tells the hub.
     pub(crate) async fn finish_move(&self, id: SessionId) {
-        for _ in 0..100 {
+        // A running checkpoint ends within the git timeout.
+        for _ in 0..700 {
             let busy = self
                 .state()
                 .sessions
@@ -528,7 +566,14 @@ impl Host {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        self.checkpoint_now(id).await;
+        if !self.checkpoint_now(id).await {
+            // A planned move must lose nothing, so the session keeps running.
+            if let Some(s) = self.state().sessions.get_mut(&id) {
+                s.moving = false;
+            }
+            tracing::error!(session = %id, "planned move stopped: the final checkpoint failed");
+            return;
+        }
         let Some(s) = self.state().sessions.remove(&id) else {
             return;
         };

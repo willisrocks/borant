@@ -9,6 +9,9 @@ use borant_core::model::RepoInfo;
 use borant_core::{AgentId, Timestamp};
 use tokio::process::Command;
 
+/// The limit for one git command, including a push over the network.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub fn wip_ref(agent: &AgentId) -> String {
     format!("refs/borant/{agent}/wip")
 }
@@ -24,9 +27,10 @@ async fn git(dir: &Path, args: &[&str], index: Option<&Path>) -> anyhow::Result<
     if let Some(i) = index {
         cmd.env("GIT_INDEX_FILE", i);
     }
-    let out = cmd
-        .output()
+    cmd.kill_on_drop(true);
+    let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| anyhow::anyhow!("git {} timed out after {GIT_TIMEOUT:?}", args.join(" ")))?
         .with_context(|| format!("run git {}", args.join(" ")))?;
     if !out.status.success() {
         bail!(
@@ -106,7 +110,8 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
 }
 
 /// Creates a checkpoint and pushes it to the WIP ref of the agent. Returns
-/// `None` if the tree is the same as `last_tree`.
+/// a key for the tree and `HEAD`, and the commit SHA, or `None` if the key
+/// equals `last`.
 pub async fn create(
     cwd: &Path,
     remote: &str,
@@ -114,12 +119,18 @@ pub async fn create(
     last_tree: Option<&str>,
 ) -> anyhow::Result<Option<(String, String)>> {
     let (tree, sha) = snapshot(cwd, &format!("borant checkpoint of {agent}")).await?;
-    if last_tree == Some(tree.as_str()) {
+    // A new commit with the same tree still needs a checkpoint, or a restore
+    // returns to the old parent and loses the commit.
+    let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD"], None)
+        .await
+        .unwrap_or_default();
+    let key = format!("{tree} {head}");
+    if last_tree == Some(key.as_str()) {
         return Ok(None);
     }
     let refspec = format!("{sha}:{}", wip_ref(agent));
     git(cwd, &["push", "--force", "--quiet", remote, &refspec], None).await?;
-    Ok(Some((tree, sha)))
+    Ok(Some((key, sha)))
 }
 
 /// Pushes the current tree to a stale ref, for the lost turn of a session

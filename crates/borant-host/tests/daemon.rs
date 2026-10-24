@@ -428,3 +428,69 @@ async fn restart_restores_live_sessions() {
     let reply = again.event(s.session, LocalEvent::TurnStart).await.unwrap();
     assert_eq!(reply.fenced, None, "the lease must still be valid");
 }
+
+#[tokio::test]
+async fn turn_end_events_do_not_take_messages() {
+    let fx = Fx::new(true, |_| {}).await;
+    let a = fx.session("a", "wa").await;
+    let b = fx.session("b", "wb").await;
+    let api: ChannelName = "api".parse().unwrap();
+    fx.host
+        .call(
+            Some(a.session),
+            ToolCall::ChannelCreate {
+                name: api.clone(),
+                schema: None,
+            },
+        )
+        .await
+        .unwrap();
+    fx.host
+        .call(Some(b.session), ToolCall::ChannelJoin { name: api.clone() })
+        .await
+        .unwrap();
+    send(&fx, &a, Target::Channel(api), "for the next turn").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let r = fx
+        .host
+        .event(
+            b.session,
+            LocalEvent::AssistantMessage {
+                text: "done".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(r.messages.is_empty(), "the Stop hook cannot show messages");
+    let r = fx.host.event(b.session, LocalEvent::TurnEnd).await.unwrap();
+    assert!(r.messages.is_empty());
+    let r = fx
+        .host
+        .event(b.session, LocalEvent::TurnStart)
+        .await
+        .unwrap();
+    assert_eq!(r.messages.len(), 1);
+}
+
+#[tokio::test]
+async fn paused_session_does_not_take_messages() {
+    let mut fx = Fx::new(true, |c| c.lease = Duration::from_millis(300)).await;
+    let b = fx.session("b", "wb").await;
+    fx.host.heartbeat_once().await;
+    fx.hub_stop.take().unwrap().cancel();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    assert!(fx.host.local_view(b.session).unwrap().fenced.is_some());
+    let env = testing::envelope(Target::Agent(agent("b")), "not for a paused session");
+    fx.bus
+        .publish(&subjects::agent(&agent("b")), &env)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let left = fx.bus.unacked(&agent("b")).await.unwrap();
+    assert_eq!(
+        left.len(),
+        1,
+        "the message stays in the inbox for the next holder"
+    );
+}

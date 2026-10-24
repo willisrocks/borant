@@ -275,19 +275,25 @@ impl Host {
         match self.hub(&req).await {
             Ok(v) => {
                 *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-                self.set_paused(false);
                 let lost: Vec<SessionId> =
                     serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
                         .map(|r| r.lost)
                         .unwrap_or_default();
-                for sid in lost {
+                // Fence the lost sessions before the pause ends, so no lost
+                // session runs a tool in between.
+                for sid in &lost {
                     tracing::warn!(session = %sid, "session lost its lease");
-                    self.fence(
-                        sid,
+                    self.mark_fenced(
+                        *sid,
                         "This agent lost its lease. Another host now runs it.".into(),
-                        true,
-                    )
-                    .await;
+                    );
+                }
+                self.set_paused(false);
+                // Saving the stale work can take a network push, so it runs
+                // outside the heartbeat loop.
+                for sid in lost {
+                    let host = self.clone();
+                    tokio::spawn(async move { host.stop_fenced(sid).await });
                 }
             }
             Err(e) => {

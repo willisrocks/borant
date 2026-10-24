@@ -145,3 +145,21 @@ async fn detect_reports_subdir_and_branch() {
     assert_eq!(facts.info.branch, "main");
     assert!(checkpoint::detect(Path::new("/"), None).await.is_none());
 }
+
+#[tokio::test]
+async fn create_checkpoints_a_new_commit_with_the_same_tree() {
+    let (_d, remote, work) = setup();
+    std::fs::write(work.join("a.txt"), "two\n").unwrap();
+    let r = remote.to_str().unwrap();
+    let (key, _) = checkpoint::create(&work, r, &agent(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    git(&work, &["commit", "-q", "-am", "two"]);
+    let (_, sha) = checkpoint::create(&work, r, &agent(), Some(&key))
+        .await
+        .unwrap()
+        .expect("a commit changes HEAD, so a checkpoint is due");
+    let parent = git(&remote, &["rev-parse", &format!("{sha}^")]);
+    assert_eq!(parent, git(&work, &["rev-parse", "HEAD"]));
+}

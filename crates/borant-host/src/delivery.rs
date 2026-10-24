@@ -24,6 +24,19 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 impl Host {
     pub(crate) async fn inbox_loop(self, agent: AgentId, id: SessionId, cancel: CancellationToken) {
         loop {
+            // A paused or fenced session must not take messages: after a
+            // takeover, the new session owns the inbox.
+            let blocked = self
+                .state()
+                .sessions
+                .get(&id)
+                .is_none_or(|s| s.paused || s.fenced.is_some());
+            if blocked {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             let pulled = tokio::select! {
                 _ = cancel.cancelled() => return,
                 r = self.inner.bus.pull(&agent, 16, Duration::from_secs(5)) => r,
@@ -47,6 +60,16 @@ impl Host {
 
     /// Logs a received message, acks it, and queues it for the session.
     async fn receive(&self, agent: &AgentId, id: SessionId, d: Delivery) {
+        // A pull that started before a pause or a fence must not take the
+        // message. Without an ack, the bus delivers it again later.
+        let blocked = self
+            .state()
+            .sessions
+            .get(&id)
+            .is_none_or(|s| s.paused || s.fenced.is_some());
+        if blocked {
+            return;
+        }
         let env = d.envelope;
         let own_broadcast =
             env.from == Sender::Agent(agent.clone()) && env.kind != EnvelopeKind::Direct;
@@ -122,10 +145,9 @@ impl Host {
         msgs
     }
 
-    /// Waits until a message that wakes the session is queued, then returns
-    /// it with every other queued message. Returns empty at the timeout, or
-    /// at once when the session is fenced or paused.
-    pub async fn wait(&self, id: SessionId, timeout: Duration) -> Result<Vec<Envelope>, ApiError> {
+    /// Waits until a message that wakes the session is queued. Returns false
+    /// at the timeout, or at once when the session is fenced or paused.
+    async fn wait_ready(&self, id: SessionId, timeout: Duration) -> Result<bool, ApiError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notify = {
@@ -139,55 +161,83 @@ impl Host {
             let notified = notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let ready = {
+            {
                 let st = self.state();
                 let Some(s) = st.sessions.get(&id) else {
-                    return Ok(Vec::new());
+                    return Ok(false);
                 };
                 if s.fenced.is_some() || s.paused {
-                    return Ok(Vec::new());
+                    return Ok(false);
                 }
-                s.queue.iter().any(|q| q.wake)
-            };
-            if ready {
-                return Ok(self.drain(id).await);
+                if s.queue.iter().any(|q| q.wake) {
+                    return Ok(true);
+                }
             }
             tokio::select! {
                 _ = &mut notified => {}
-                _ = tokio::time::sleep_until(deadline) => return Ok(Vec::new()),
+                _ = tokio::time::sleep_until(deadline) => return Ok(false),
             }
         }
     }
 
+    /// Waits until a message that wakes the session is queued, then returns
+    /// it with every other queued message. Returns empty at the timeout, or
+    /// at once when the session is fenced or paused.
+    pub async fn wait(&self, id: SessionId, timeout: Duration) -> Result<Vec<Envelope>, ApiError> {
+        if self.wait_ready(id, timeout).await? {
+            Ok(self.drain(id).await)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Takes the oldest queued message and logs its delivery.
+    async fn take_one(&self, id: SessionId) -> Option<Envelope> {
+        let (agent, env) = {
+            let mut st = self.state();
+            let s = st.sessions.get_mut(&id)?;
+            let env = s.queue.pop_front()?.env;
+            (s.reg.as_ref().map(|r| r.agent.clone()), env)
+        };
+        if let Some(agent) = agent {
+            self.append(
+                &agent,
+                Some(id),
+                SessionEventBody::Delivered { message: env.id },
+            )
+            .await;
+        }
+        Some(env)
+    }
+
     /// Messages for a session as they arrive, for the Pi and omp extension.
+    /// When a message that wakes the session arrives, the stream sends it with
+    /// every other queued message. Each message is logged as delivered only
+    /// when the stream sends it, so a dropped connection loses nothing.
     pub fn stream(&self, id: SessionId) -> BoxStream<'static, Envelope> {
         let host = self.clone();
-        futures::stream::unfold(
-            (host, Vec::<Envelope>::new()),
-            move |(host, mut buf)| async move {
-                loop {
-                    if let Some(e) = buf.pop() {
-                        return Some((e, (host, buf)));
+        futures::stream::unfold((host, false), move |(host, mut draining)| async move {
+            loop {
+                if draining {
+                    if let Some(e) = host.take_one(id).await {
+                        return Some((e, (host, true)));
                     }
-                    match host.wait(id, Duration::from_secs(30)).await {
-                        Ok(msgs) => {
-                            buf = msgs;
-                            buf.reverse();
-                            if buf.is_empty() && !host.state().sessions.contains_key(&id) {
-                                return None;
-                            }
-                            if buf.is_empty() {
-                                let fenced = host.fence_reason(id).is_some();
-                                if fenced {
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                }
-                            }
-                        }
-                        Err(_) => return None,
-                    }
+                    draining = false;
                 }
-            },
-        )
+                match host.wait_ready(id, Duration::from_secs(30)).await {
+                    Ok(true) => draining = true,
+                    Ok(false) => {
+                        if !host.state().sessions.contains_key(&id) {
+                            return None;
+                        }
+                        if host.fence_reason(id).is_some() {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                    Err(_) => return None,
+                }
+            }
+        })
         .boxed()
     }
 
