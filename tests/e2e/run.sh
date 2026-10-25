@@ -283,6 +283,11 @@ scenario_sandbox() {
   if ! sandbox_offered; then
     echo "  the host dropped its sandbox:"
     dc logs --no-color host-sandbox 2>/dev/null | grep "start check failed" | tail -1
+    echo "  bwrap inside the host container:"
+    on host-sandbox sh -c 'bwrap --ro-bind / / true; echo "exit=$?"' 2>&1 | tail -3
+    on host-sandbox sh -c \
+      'cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null;
+       cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null'
     echo "SKIP sandbox: bwrap cannot create a user namespace in this container"
     return 0
   fi
