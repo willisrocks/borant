@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{BundleName, MemberName};
+use crate::ids::MemberName;
 use crate::model::{MemberState, UsageWindow};
 use crate::time::Timestamp;
 
@@ -65,7 +65,7 @@ pub fn pick(
         .collect();
     // Rule 3: the member of the agent keeps the bundle when it is free.
     if let Some(current) = current
-        && free.iter().any(|m| *m == current)
+        && free.contains(&current)
     {
         return Pick::Member(current.clone());
     }

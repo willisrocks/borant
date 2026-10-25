@@ -272,10 +272,13 @@ impl Hub {
                     .collect();
                 to_value(&projects)
             }
-            // The member assignment task adds these.
-            ToolCall::UsageReport { .. } | ToolCall::ListMembers => {
-                Err(ApiError::invalid("not built yet"))
-            }
+            // The member assignment of the launch path.
+            ToolCall::UsageReport {
+                bundle,
+                member,
+                windows,
+            } => self.usage_report(mem, bundle, member, windows).await,
+            ToolCall::ListMembers => self.list_members(mem).await,
         }
     }
 
