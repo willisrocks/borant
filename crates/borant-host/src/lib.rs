@@ -23,8 +23,8 @@ use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionSt
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
-    AgentId, ChannelName, Clock, CollectionName, HostName, MessageId, PoolName, RoleName, SessionId,
-    Tag, Timestamp, subjects,
+    AgentId, ChannelName, Clock, CollectionName, HostName, MessageId, PoolName, RoleName,
+    SessionId, Tag, Timestamp, subjects,
 };
 use borant_launch::harness::HarnessCommands;
 use borant_secrets::{StoreConfig, open_store};

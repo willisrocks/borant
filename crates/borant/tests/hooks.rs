@@ -49,9 +49,7 @@ fn daemon_down_exits_zero_quickly() {
 
 /// Reads one HTTP request from a Unix socket and answers it with an error
 /// reply. Returns the body of the request.
-fn one_request(
-    listener: std::os::unix::net::UnixListener,
-) -> std::io::Result<String> {
+fn one_request(listener: std::os::unix::net::UnixListener) -> std::io::Result<String> {
     use std::io::{BufRead, BufReader, Read};
 
     let (mut stream, _) = listener.accept()?;
