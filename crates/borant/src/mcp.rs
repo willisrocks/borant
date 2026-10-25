@@ -195,6 +195,34 @@ fn target(to: &str) -> Value {
     }
 }
 
+/// The call that the MCP spawn tool forwards: the `TaskBinding` is untagged,
+/// so an existing task is `{channel, id}` and a new one `{channel, title}`.
+fn spawn_request(a: &Spawn) -> Result<Value, String> {
+    let task = match (a.task.as_deref(), a.task_title.as_deref()) {
+        (Some(text), _) => {
+            let (channel, id) = text
+                .split_once('/')
+                .ok_or_else(|| format!("{text} is not CHANNEL/ID"))?;
+            Some(json!({ "channel": channel, "id": id }))
+        }
+        (None, Some(title)) => Some(json!({ "channel": a.channel, "title": title })),
+        (None, None) => None,
+    };
+    Ok(json!({
+        "tool": "spawn",
+        "channel": a.channel,
+        "prompt": a.prompt,
+        "harness": a.harness,
+        "host": a.host,
+        "name": a.name,
+        "model": a.model,
+        "key": a.key,
+        "task": task,
+        "stop_on_close": a.stop_on_close,
+        "priority": a.priority,
+    }))
+}
+
 fn strip_nulls(v: Value) -> Value {
     match v {
         Value::Object(m) => Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).collect()),
@@ -397,30 +425,7 @@ impl BorantMcp {
 
     #[tool(description = "Start a new worker agent in a channel on a host that Borant picks.")]
     async fn spawn(&self, Parameters(a): Parameters<Spawn>) -> Result<String, String> {
-        let task = match (a.task.as_deref(), a.task_title.as_deref()) {
-            (Some(text), _) => {
-                let (channel, id) = text
-                    .split_once('/')
-                    .ok_or_else(|| format!("{text} is not CHANNEL/ID"))?;
-                Some(json!({ "channel": channel, "id": id }))
-            }
-            (None, Some(title)) => Some(json!({ "channel": a.channel, "title": title })),
-            (None, None) => None,
-        };
-        self.forward(json!({
-            "tool": "spawn",
-            "channel": a.channel,
-            "prompt": a.prompt,
-            "harness": a.harness,
-            "host": a.host,
-            "name": a.name,
-            "model": a.model,
-            "key": a.key,
-            "task": task,
-            "stop_on_close": a.stop_on_close,
-            "priority": a.priority,
-        }))
-        .await
+        self.forward(spawn_request(&a)?).await
     }
 
     #[tool(description = "List all projects: git repositories that spawns clone.")]
@@ -510,5 +515,71 @@ mod tests {
             strip_nulls(json!({"status": "stuck", "attention_msg": "need creds", "title": null}));
         let call: ToolCall = serde_json::from_value(json!({"tool": "task_update", "channel": "api", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "patch": patch})).unwrap();
         assert!(matches!(call, ToolCall::TaskUpdate { .. }));
+    }
+
+    #[test]
+    fn spawn_passes_the_key_the_task_and_the_flags() {
+        let a = Spawn {
+            channel: "api".into(),
+            prompt: "go".into(),
+            harness: None,
+            host: None,
+            name: None,
+            model: None,
+            key: Some("k1".into()),
+            task: Some("api/01M5S3PATRKMGFD9C0HB1CS4ZK".into()),
+            task_title: None,
+            stop_on_close: Some(false),
+            priority: Some(3),
+        };
+        let call: ToolCall =
+            serde_json::from_value(strip_nulls(spawn_request(&a).unwrap())).unwrap();
+        match call {
+            ToolCall::Spawn {
+                task,
+                key,
+                stop_on_close,
+                priority,
+                ..
+            } => {
+                assert_eq!(key.as_deref(), Some("k1"));
+                assert_eq!(stop_on_close, Some(false));
+                assert_eq!(priority, Some(3));
+                assert_eq!(
+                    task,
+                    Some(borant_core::model::TaskBinding::Existing {
+                        channel: "api".parse().unwrap(),
+                        id: "01M5S3PATRKMGFD9C0HB1CS4ZK".parse().unwrap(),
+                    })
+                );
+            }
+            other => panic!("not a spawn: {other:?}"),
+        }
+
+        // A title binds a new task in the channel of the spawn.
+        let titled = Spawn {
+            task: None,
+            task_title: Some("Fix the parser".into()),
+            ..a
+        };
+        let call: ToolCall =
+            serde_json::from_value(strip_nulls(spawn_request(&titled).unwrap())).unwrap();
+        match call {
+            ToolCall::Spawn { task, .. } => assert_eq!(
+                task,
+                Some(borant_core::model::TaskBinding::New {
+                    channel: "api".parse().unwrap(),
+                    title: "Fix the parser".into(),
+                })
+            ),
+            other => panic!("not a spawn: {other:?}"),
+        }
+
+        // A task without a channel is refused before the call.
+        let bad = Spawn {
+            task: Some("api".into()),
+            ..titled
+        };
+        assert_eq!(spawn_request(&bad).unwrap_err(), "api is not CHANNEL/ID");
     }
 }
