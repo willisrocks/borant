@@ -132,6 +132,13 @@ fn draw_agents(frame: &mut Frame, area: Rect, view: &SwarmView) {
                 Cell::from(agent.agent.to_string()),
                 Cell::from(
                     agent
+                        .role
+                        .as_ref()
+                        .map(|role| role.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                Cell::from(
+                    agent
                         .harness
                         .map(|h| h.as_str().to_owned())
                         .unwrap_or_else(|| "-".into()),
@@ -151,6 +158,7 @@ fn draw_agents(frame: &mut Frame, area: Rect, view: &SwarmView) {
         .collect();
     let header = Row::new(vec![
         "AGENT",
+        "ROLE",
         "HARNESS",
         "HOST",
         "LEASE",
@@ -162,6 +170,7 @@ fn draw_agents(frame: &mut Frame, area: Rect, view: &SwarmView) {
         rows,
         [
             Constraint::Length(22),
+            Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(16),
             Constraint::Length(9),
@@ -284,6 +293,11 @@ mod tests {
                 session: Some(SessionId::new()),
                 busy: true,
                 claim: None,
+                role: Some("chief".parse().unwrap()),
+                collection: Some("personal".parse().unwrap()),
+                pinned: true,
+                retired: false,
+                model: None,
             }],
             inboxes: vec![InboxStatus {
                 agent,
@@ -306,10 +320,11 @@ mod tests {
         terminal.draw(|frame| draw(frame, &view, None)).unwrap();
         let text = buffer_text(terminal.backend().buffer());
         for column in [
-            "HOST", "ONLINE", "LOAD", "AGENT", "HARNESS", "LEASE", "STATE",
+            "HOST", "ONLINE", "LOAD", "AGENT", "ROLE", "HARNESS", "LEASE", "STATE",
         ] {
             assert!(text.contains(column), "the screen shows {column}:\n{text}");
         }
+        assert!(text.contains("chief"), "the role of the agent:\n{text}");
         assert!(text.contains("INBOX p/a/r"), "the inbox column:\n{text}");
         assert!(text.contains("api-owner"), "{text}");
         assert!(text.contains("borant-1"), "{text}");

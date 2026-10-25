@@ -906,6 +906,11 @@ impl Hub {
                 "channels": a.value.channels,
                 "movable": a.value.movable,
                 "lease": lease.map(|l| l.value),
+                "role": a.value.role,
+                "collection": a.value.collection,
+                "pinned": a.value.pinned,
+                "retired": a.value.retired,
+                "model": a.value.model,
             }));
         }
         Ok(Value::Array(out))

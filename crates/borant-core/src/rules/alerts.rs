@@ -445,6 +445,11 @@ mod tests {
             session: None,
             busy: true,
             claim: None,
+            role: None,
+            collection: None,
+            pinned: false,
+            retired: false,
+            model: None,
         });
         assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
     }
