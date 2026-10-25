@@ -1,6 +1,7 @@
 //! Domain records. Each one is stored as JSON in the state store or sent on
 //! the bus.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -8,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ids::{
-    AgentId, ChannelName, EventId, FencingToken, HostName, MessageId, ProjectName, SessionId,
-    TaskId,
+    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
+    ProjectName, SessionId, TaskId,
 };
 use crate::time::Timestamp;
 
@@ -93,6 +94,10 @@ pub struct Agent {
     /// The project of the channel that the agent was spawned in.
     #[serde(default)]
     pub project: Option<ProjectName>,
+    /// The member of each bundle with several members, for example
+    /// `claude_auth -> a`. Names only.
+    #[serde(default)]
+    pub members: BTreeMap<BundleName, MemberName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +119,8 @@ pub enum MoveReason {
     Takeover,
     Planned,
     Spawn,
+    /// A session stopped at a usage limit and moved to another member.
+    Limit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +176,40 @@ pub struct HostInfo {
     pub draining: bool,
     /// The SSH destination for `borant attach`, for example `me@vps-1`.
     pub ssh: Option<String>,
+    /// The bundles of this host with two or more members.
+    #[serde(default)]
+    pub members: BTreeMap<BundleName, MemberBundle>,
+}
+
+/// The bundles of a host that have several members, and the harnesses whose
+/// defaults include the bundle (`"*"` expanded).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberBundle {
+    pub members: Vec<MemberName>,
+    pub harnesses: Vec<Harness>,
+}
+
+/// The state of one bundle member, at the key `member.<bundle>.<member>`.
+/// Written only by the hub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemberState {
+    pub bundle: BundleName,
+    pub member: MemberName,
+    /// Until when this member is limited, when a session reported a limit.
+    #[serde(default)]
+    pub limited_until: Option<Timestamp>,
+    /// The agents that wait for this member to reset, so a hub restart still
+    /// wakes them.
+    #[serde(default)]
+    pub waiting: Vec<AgentId>,
+}
+
+/// One usage window of a member's latest report. `used` is a share from 0 to 1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+    pub name: String,
+    pub used: f64,
+    pub resets_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -435,6 +476,11 @@ pub enum SessionEventBody {
         /// names the harness that wrote the event.
         to_harness: Harness,
         reason: MoveReason,
+    },
+    /// The bundles that a launch issued. Names only, never a value.
+    SecretsIssued {
+        bundles: Vec<BundleName>,
+        members: BTreeMap<BundleName, MemberName>,
     },
 }
 

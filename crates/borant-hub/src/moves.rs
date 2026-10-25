@@ -155,6 +155,7 @@ impl Hub {
             model,
             project,
             reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
+            members: agent.members.clone(),
         };
         let move_event = SessionEvent {
             id: EventId::new(),
@@ -350,6 +351,7 @@ impl Hub {
             model_harness: model.as_ref().map(|_| harness),
             model,
             project: ch.project,
+            members: Default::default(),
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

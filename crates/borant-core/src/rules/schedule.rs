@@ -64,6 +64,7 @@ mod tests {
                 always_on,
                 draining: false,
                 ssh: None,
+                members: Default::default(),
             },
             online: true,
             active_agents: active,

@@ -1,16 +1,22 @@
 //! Wire types: requests to the hub, commands to hosts, and the local API of
 //! the host daemon.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::CoreError;
-use crate::ids::{AgentId, ChannelName, FencingToken, HostName, ProjectName, SessionId, TaskId};
+use crate::ids::{
+    AgentId, BundleName, ChannelName, FencingToken, HostName, MemberName, ProjectName, SessionId,
+    TaskId,
+};
 use crate::model::{
     CloseReason, Envelope, Harness, HostInfo, MoveReason, NewTask, Project, RepoInfo, Target,
-    TaskPatch,
+    TaskPatch, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
+use crate::time::Timestamp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -300,6 +306,14 @@ pub enum ToolCall {
         name: ProjectName,
     },
     ProjectList,
+    /// The latest usage report of one bundle member, from a human.
+    UsageReport {
+        bundle: BundleName,
+        member: MemberName,
+        windows: Vec<UsageWindow>,
+    },
+    /// The members of each bundle, with their state and their latest report.
+    ListMembers,
 }
 
 fn default_page_size() -> usize {
@@ -366,6 +380,16 @@ pub enum CtlRequest {
     Snapshot {
         out: std::path::PathBuf,
     },
+    /// A session stopped at the usage limit of its bundle member.
+    MemberLimited {
+        agent: AgentId,
+        session: SessionId,
+        token: FencingToken,
+        bundle: BundleName,
+        member: MemberName,
+        /// When the member resets, when the harness knows.
+        resets_at: Option<Timestamp>,
+    },
 }
 
 /// Commands from the hub to one host on `subjects::host_cmd`.
@@ -401,6 +425,9 @@ pub struct LaunchOrder {
     /// launches the agent again. The host fits the setup inside it.
     #[serde(default)]
     pub reserve_secs: Option<u64>,
+    /// The member of each bundle with several members, picked by the hub.
+    #[serde(default)]
+    pub members: BTreeMap<BundleName, MemberName>,
 }
 
 // ---- Local API of the host daemon ----

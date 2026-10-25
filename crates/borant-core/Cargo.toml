@@ -20,9 +20,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 ulid.workspace = true
+zeroize.workspace = true
 
 [features]
 testing = ["dep:tokio"]
 
 [dev-dependencies]
+# The tests of this crate run its own contract suites.
+borant-core = { path = ".", features = ["testing"] }
 tokio.workspace = true
