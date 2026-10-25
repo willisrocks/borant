@@ -32,6 +32,7 @@ fn order(agent: &str) -> LaunchOrder {
         members: Default::default(),
         bundles: Vec::new(),
         git_author: None,
+        sandbox: None,
     }
 }
 

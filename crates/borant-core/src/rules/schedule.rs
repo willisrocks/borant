@@ -1,9 +1,14 @@
 //! Placement of agents on hosts (spec section 14).
 
 use std::cmp::Ordering;
+use std::fmt;
 
 use crate::ids::{BundleName, HostName, PoolName, Tag};
-use crate::model::{Harness, HostInfo};
+use crate::model::{Harness, HostInfo, SandboxKind};
+
+/// The memory that a host keeps free when `reserve_mem_mb` is unset, and the
+/// reserve of a v0.7.0 host that reports none.
+pub const DEFAULT_RESERVE_MEM_MB: u32 = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostView {
@@ -13,12 +18,55 @@ pub struct HostView {
     /// False if the host reported that it cannot reach the git remote of the
     /// agent. True when the agent has no repository.
     pub has_repo_access: bool,
+    /// True if a move to this host failed recently, for example because its
+    /// clone could not reach the remote.
+    pub recently_failed: bool,
     /// The pool that created the host. `None` for a static host.
     pub pool: Option<PoolName>,
+    /// The memory available on the host, from its last heartbeat. `None` for a
+    /// host that reports no stats, which passes the memory rule.
+    pub mem_avail_mb: Option<u64>,
+}
+
+/// Why a host did not take an agent. The first failed rule of a host is its
+/// reason, and `Display` is what `borant ps --queued` prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reject {
+    Offline,
+    Draining,
+    Full { active: u32, max: u32 },
+    NoRepo,
+    NoHarness,
+    MissingTag(Tag),
+    MissingBundle(BundleName),
+    LowMemory { avail_mb: u64, reserve_mb: u32 },
+    NoSandbox,
+    RecentlyFailed,
+}
+
+impl fmt::Display for Reject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Offline => f.write_str("offline"),
+            Self::Draining => f.write_str("draining"),
+            Self::Full { active, max } => write!(f, "full ({active}/{max})"),
+            Self::NoRepo => f.write_str("cannot reach the repo"),
+            Self::NoHarness => f.write_str("no harness"),
+            Self::MissingTag(tag) => write!(f, "missing tag {tag}"),
+            Self::MissingBundle(bundle) => write!(f, "missing bundle {bundle}"),
+            Self::LowMemory {
+                avail_mb,
+                reserve_mb,
+            } => write!(f, "low memory ({avail_mb} MB free, {reserve_mb} reserved)"),
+            Self::NoSandbox => f.write_str("no sandbox"),
+            Self::RecentlyFailed => f.write_str("failed recently"),
+        }
+    }
 }
 
 /// What a placement asks of a host: one host by name, the tags that a host
-/// must have, and the tags that make a host more or less suitable.
+/// must have, the tags that make a host more or less suitable, and the sandbox
+/// that the launch needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlacementReq {
     /// A host that the hub names. No other host qualifies.
@@ -29,20 +77,13 @@ pub struct PlacementReq {
     pub prefer: Vec<Tag>,
     /// Tags that make a host less suitable. A soft rule.
     pub avoid: Vec<Tag>,
-}
-
-fn qualifies(h: &HostView) -> bool {
-    h.online && !h.info.draining && h.active_agents < h.info.max_agents && h.has_repo_access
+    /// The sandbox that the launch needs. `None` needs none.
+    pub sandbox: Option<SandboxKind>,
 }
 
 /// How many of `tags` the host carries.
 fn held(h: &HostView, tags: &[Tag]) -> usize {
     tags.iter().filter(|t| h.info.tags.contains(t)).count()
-}
-
-/// True if a host has every `tag` and defines every `bundle` of the launch.
-fn fits(h: &HostView, req: &PlacementReq, bundles: &[BundleName]) -> bool {
-    held(h, &req.require) == req.require.len() && bundles.iter().all(|b| h.info.bundles.contains(b))
 }
 
 fn pick_harness(h: &HostView, preferred: Harness, forced: Option<Harness>) -> Option<Harness> {
@@ -97,30 +138,99 @@ fn order(
         .then_with(|| x.info.name.cmp(&y.info.name))
 }
 
-/// Picks a host and a harness. The filter keeps hosts that are online, not
-/// draining, below their limit, that can reach the repository, that have
-/// every `require` tag of `req`, and that define every bundle of the launch.
-/// The score is `order`.
+/// The first rule that `h` fails, in the order of the rules: the reason that
+/// `borant ps --queued` prints for it.
+fn reject(
+    h: &HostView,
+    req: &PlacementReq,
+    bundles: &[BundleName],
+    forced_harness: Option<Harness>,
+) -> Option<Reject> {
+    if !h.online {
+        return Some(Reject::Offline);
+    }
+    if h.info.draining {
+        return Some(Reject::Draining);
+    }
+    if h.active_agents >= h.info.max_agents {
+        return Some(Reject::Full {
+            active: h.active_agents,
+            max: h.info.max_agents,
+        });
+    }
+    if !h.has_repo_access {
+        return Some(Reject::NoRepo);
+    }
+    if h.recently_failed {
+        return Some(Reject::RecentlyFailed);
+    }
+    if forced_harness.is_some_and(|f| !h.info.harnesses.contains(&f)) {
+        return Some(Reject::NoHarness);
+    }
+    if let Some(tag) = req.require.iter().find(|t| !h.info.tags.contains(t)) {
+        return Some(Reject::MissingTag(tag.clone()));
+    }
+    if let Some(bundle) = bundles.iter().find(|b| !h.info.bundles.contains(b)) {
+        return Some(Reject::MissingBundle(bundle.clone()));
+    }
+    // A host that reports no memory passes: a v0.7.0 host keeps working.
+    if let Some(avail_mb) = h.mem_avail_mb {
+        let reserve_mb = h.info.reserve_mem_mb.unwrap_or(DEFAULT_RESERVE_MEM_MB);
+        if avail_mb < u64::from(reserve_mb) {
+            return Some(Reject::LowMemory {
+                avail_mb,
+                reserve_mb,
+            });
+        }
+    }
+    if let Some(kind) = req.sandbox
+        && !h.info.sandboxes.contains(&kind)
+    {
+        return Some(Reject::NoSandbox);
+    }
+    None
+}
+
+/// Picks a host and a harness. A host qualifies when no rule of `reject`
+/// fails, that is: it is online, not draining, below its limit, can reach the
+/// repository, was not recently failed, has the forced harness, every
+/// `require` tag of `req`, every bundle of the launch, enough free memory for
+/// its reserve, and the sandbox of the request. The score is `order`.
+///
+/// The error lists every host that was asked, with its first failed rule, so
+/// that a refused placement can name them all.
 pub fn place(
     preferred: Harness,
     forced_harness: Option<Harness>,
     req: &PlacementReq,
     bundles: &[BundleName],
     hosts: &[HostView],
-) -> Option<(HostName, Harness)> {
-    hosts
+) -> Result<(HostName, Harness), Vec<(HostName, Reject)>> {
+    let mut rejected: Vec<(HostName, Reject)> = Vec::new();
+    let candidates: Vec<(&HostView, Harness)> = hosts
         .iter()
         .filter(|h| req.host.as_ref().is_none_or(|f| *f == h.info.name))
-        .filter(|h| qualifies(h))
-        .filter(|h| fits(h, req, bundles))
-        .filter_map(|h| pick_harness(h, preferred, forced_harness).map(|harness| (h, harness)))
+        .filter_map(|h| match reject(h, req, bundles, forced_harness) {
+            Some(reason) => {
+                rejected.push((h.info.name.clone(), reason));
+                None
+            }
+            None => pick_harness(h, preferred, forced_harness).map(|harness| (h, harness)),
+        })
+        .collect();
+    candidates
+        .into_iter()
         .min_by(|a, b| order(*a, *b, preferred, req))
         .map(|(h, harness)| (h.info.name.clone(), harness))
+        .ok_or(rejected)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{HostStats, SandboxKind, Sender, SpawnRecord, SpawnState};
+    use crate::rules::roles::{Resolved, RoleConfig};
+    use crate::time::Timestamp;
 
     fn host(name: &str, harnesses: &[Harness], active: u32, always_on: bool) -> HostView {
         HostView {
@@ -135,7 +245,9 @@ mod tests {
             online: true,
             active_agents: active,
             has_repo_access: true,
+            recently_failed: false,
             pool: None,
+            mem_avail_mb: None,
         }
     }
 
@@ -168,7 +280,21 @@ mod tests {
         h
     }
 
-    /// A placement with no tags, no bundles, and no named host.
+    /// `place` as an option, where a test only asks which host wins: `Some` is
+    /// a placement and `None` a refusal. The tests of the reject reasons call
+    /// `super::place` for the reasons themselves.
+    fn place(
+        preferred: Harness,
+        forced: Option<Harness>,
+        req: &PlacementReq,
+        bundles: &[BundleName],
+        hosts: &[HostView],
+    ) -> Option<(HostName, Harness)> {
+        super::place(preferred, forced, req, bundles, hosts).ok()
+    }
+
+    /// A placement with no tags, no bundles, and no named host, as an option:
+    /// the score tests ask which host wins, not why the others lost.
     fn pick(preferred: Harness, hosts: &[HostView]) -> Option<(HostName, Harness)> {
         place(preferred, None, &PlacementReq::default(), &[], hosts)
     }
@@ -205,7 +331,21 @@ mod tests {
         offline.online = false;
         let mut no_repo = host("d", &[Harness::Pi], 0, true);
         no_repo.has_repo_access = false;
-        assert_eq!(pick(Harness::Pi, &[draining, full, offline, no_repo]), None);
+        let hosts = [draining, full, offline, no_repo];
+        assert_eq!(pick(Harness::Pi, &hosts), None);
+        // Each host names its first failed rule.
+        let err =
+            super::place(Harness::Pi, None, &PlacementReq::default(), &[], &hosts).unwrap_err();
+        let reasons: Vec<String> = err.iter().map(|(h, r)| format!("{h}: {r}")).collect();
+        assert_eq!(
+            reasons,
+            vec![
+                "a: draining",
+                "b: full (4/4)",
+                "c: offline",
+                "d: cannot reach the repo"
+            ]
+        );
     }
 
     #[test]
@@ -392,5 +532,223 @@ mod tests {
             host("c", &[Harness::Pi], 1, true),
         ];
         assert_eq!(pick(Harness::Pi, &hosts), Some((name("c"), Harness::Pi)));
+    }
+
+    /// A host that passes every rule of the reject chain of the tests below.
+    fn ready(host_name: &str) -> HostView {
+        let mut h = tagged(host(host_name, &[Harness::Omp], 0, true), &["vps"]);
+        h.info.bundles = vec!["github-work".parse().unwrap()];
+        h.info.reserve_mem_mb = Some(DEFAULT_RESERVE_MEM_MB);
+        h.info.sandboxes = vec![SandboxKind::Namespace];
+        h.mem_avail_mb = Some(4096);
+        h
+    }
+
+    /// What the tests of the reject reasons ask: a vps host with the bundle,
+    /// the forced harness, and the namespace sandbox.
+    fn ready_req() -> PlacementReq {
+        PlacementReq {
+            require: tags(&["vps"]),
+            sandbox: Some(SandboxKind::Namespace),
+            ..Default::default()
+        }
+    }
+
+    fn ready_bundles() -> Vec<BundleName> {
+        vec!["github-work".parse().unwrap()]
+    }
+
+    /// Rule: a reject names the first failed rule of each host, in the order
+    /// of the rules.
+    #[test]
+    fn a_reject_lists_every_host_in_the_order_of_the_rules() {
+        let mut offline = ready("offline");
+        offline.online = false;
+        let mut draining = ready("draining");
+        draining.info.draining = true;
+        let mut full = ready("full");
+        full.active_agents = 4;
+        let mut no_repo = ready("no-repo");
+        no_repo.has_repo_access = false;
+        let mut failed = ready("failed");
+        failed.recently_failed = true;
+        let no_harness = tagged(host("no-harness", &[Harness::Pi], 0, true), &["vps"]);
+        let no_tag = {
+            let mut h = ready("no-tag");
+            h.info.tags = Vec::new();
+            h
+        };
+        let no_bundle = {
+            let mut h = ready("no-bundle");
+            h.info.bundles = Vec::new();
+            h
+        };
+        let low_memory = {
+            let mut h = ready("low-memory");
+            h.mem_avail_mb = Some(700);
+            h
+        };
+        let no_sandbox = {
+            let mut h = ready("no-sandbox");
+            h.info.sandboxes = Vec::new();
+            h
+        };
+        let hosts = [
+            offline, draining, full, no_repo, failed, no_harness, no_tag, no_bundle, low_memory,
+            no_sandbox,
+        ];
+        let err = super::place(
+            Harness::Omp,
+            Some(Harness::Omp),
+            &ready_req(),
+            &ready_bundles(),
+            &hosts,
+        )
+        .unwrap_err();
+        let reasons: Vec<String> = err.iter().map(|(h, r)| format!("{h}: {r}")).collect();
+        assert_eq!(
+            reasons,
+            vec![
+                "offline: offline",
+                "draining: draining",
+                "full: full (4/4)",
+                "no-repo: cannot reach the repo",
+                "failed: failed recently",
+                "no-harness: no harness",
+                "no-tag: missing tag vps",
+                "no-bundle: missing bundle github-work",
+                "low-memory: low memory (700 MB free, 1024 reserved)",
+                "no-sandbox: no sandbox",
+            ]
+        );
+    }
+
+    /// Rule: a host with too little free memory takes no new agent, and a
+    /// host with no stats passes, so a v0.7.0 host keeps working.
+    #[test]
+    fn low_memory_needs_stats() {
+        let mut low = ready("low");
+        low.mem_avail_mb = Some(700);
+        let place_one = |h: HostView| {
+            super::place(
+                Harness::Omp,
+                Some(Harness::Omp),
+                &ready_req(),
+                &ready_bundles(),
+                &[h],
+            )
+        };
+        let err = place_one(low).expect_err("700 MB is under the reserve");
+        assert_eq!(
+            err[0].1.to_string(),
+            "low memory (700 MB free, 1024 reserved)"
+        );
+
+        // Enough memory takes the agent.
+        let mut enough = ready("enough");
+        enough.mem_avail_mb = Some(2048);
+        assert!(place_one(enough).is_ok(), "2 GB is above the reserve");
+
+        // No stats: the memory rule passes.
+        let mut old = ready("old");
+        old.mem_avail_mb = None;
+        assert!(place_one(old).is_ok(), "unknown memory passes");
+
+        // The reserve of the host is what counts.
+        let mut big = ready("big");
+        big.mem_avail_mb = Some(2048);
+        big.info.reserve_mem_mb = Some(4096);
+        let err = place_one(big).expect_err("2 GB is under a 4 GB reserve");
+        assert_eq!(
+            err[0].1.to_string(),
+            "low memory (2048 MB free, 4096 reserved)"
+        );
+    }
+
+    /// Rule: a launch that asks for a sandbox needs a host that offers it.
+    #[test]
+    fn a_sandbox_must_be_offered() {
+        let mut plain = ready("plain");
+        plain.info.sandboxes = Vec::new();
+        let req = ready_req();
+        let err = super::place(
+            Harness::Omp,
+            Some(Harness::Omp),
+            &req,
+            &ready_bundles(),
+            &[plain.clone()],
+        )
+        .expect_err("the host offers no sandbox");
+        assert_eq!(err[0].1, Reject::NoSandbox);
+        // A launch that asks for none lands there.
+        assert!(
+            super::place(
+                Harness::Omp,
+                Some(Harness::Omp),
+                &PlacementReq::default(),
+                &[],
+                &[plain]
+            )
+            .is_ok()
+        );
+    }
+
+    /// Rule: the new fields are optional, so a v0.7.0 daemon and a v0.8.0 hub
+    /// keep talking during a deploy.
+    #[test]
+    fn old_records_parse_without_the_new_fields() {
+        let stats: HostStats = serde_json::from_value(serde_json::json!({
+            "version": "0.7.0",
+            "load1": 0.2,
+            "cpus": 4,
+            "mem_used_pct": 31.0,
+            "outbox_depth": 0,
+            "nats_reconnects": 0,
+            "sessions": []
+        }))
+        .expect("a v0.7.0 heartbeat");
+        assert_eq!(stats.mem_avail_mb, None);
+        assert_eq!(stats.disk_avail_mb, None);
+
+        let info: HostInfo = serde_json::from_value(serde_json::json!({
+            "name": "h1",
+            "harnesses": ["pi"],
+            "launcher": "tmux",
+            "max_agents": 4,
+            "always_on": true,
+            "draining": false,
+            "ssh": null
+        }))
+        .expect("a v0.7.0 host");
+        assert_eq!(info.reserve_mem_mb, None);
+        assert!(info.sandboxes.is_empty());
+
+        let role: RoleConfig =
+            serde_json::from_value(serde_json::json!({ "spawns": [] })).expect("a v0.7.0 role");
+        assert_eq!(role.sandbox, None);
+
+        // A v0.7.0 queue record holds one reason string and no host.
+        let mut record = SpawnRecord {
+            agent: "w1".parse().unwrap(),
+            spec: serde_json::from_value(serde_json::json!({ "channel": "api" }))
+                .expect("a spawn spec"),
+            resolved: Resolved::default(),
+            by: Sender::Human,
+            queued_at: Timestamp(1),
+            priority: 0,
+            state: SpawnState::Queued,
+            attempts: 1,
+            last_reject: vec![(name("h1"), "full (4/4)".to_owned())],
+        };
+        let mut json = serde_json::to_value(&record).expect("a queue record");
+        json["last_reject"] = serde_json::json!("no host qualifies");
+        let old: SpawnRecord = serde_json::from_value(json).expect("a v0.7.0 queue record");
+        assert!(old.last_reject.is_empty(), "the one string has no host");
+        // The list of this version round-trips.
+        record.attempts = 2;
+        let round: SpawnRecord =
+            serde_json::from_value(serde_json::to_value(&record).expect("a record"))
+                .expect("a queue record");
+        assert_eq!(round.last_reject, record.last_reject);
     }
 }

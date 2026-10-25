@@ -185,6 +185,8 @@ async fn fixture() -> (Fx, Registered, Registered, Task, Task) {
             pool: None,
             tags: vec![],
             bundles: vec![],
+            reserve_mem_mb: None,
+            sandboxes: vec![],
         },
     })
     .await

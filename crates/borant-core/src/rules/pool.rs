@@ -529,7 +529,9 @@ mod tests {
             online,
             active_agents: active,
             has_repo_access: true,
+            recently_failed: false,
             pool: Some("workers".parse().unwrap()),
+            mem_avail_mb: None,
         }
     }
 

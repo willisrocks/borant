@@ -292,8 +292,7 @@ impl Hub {
             let harness = move_.target.harness.unwrap_or(agent.preferred_harness);
             let req = self.placement_req(&agent, None).await;
             let bundles = self.launch_bundles(&agent);
-            if schedule::place(agent.preferred_harness, Some(harness), &req, &bundles, live)
-                .is_some()
+            if schedule::place(agent.preferred_harness, Some(harness), &req, &bundles, live).is_ok()
             {
                 continue;
             }
@@ -791,6 +790,8 @@ mod tests {
             pool: Some(pool.parse().unwrap()),
             tags: vec!["vps".parse().unwrap()],
             bundles: Vec::new(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
         };
         fx.hub
             .handle(CtlRequest::RegisterHost { info })
