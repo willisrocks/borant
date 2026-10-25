@@ -61,6 +61,12 @@ harnesses = ["claude-code", "pi", "omp"]
 session = "borant"
 program = "herdr"
 
+# Only with `launcher = "tmux"`: the tmux server that holds this host's
+# sessions. It is separate from the default server, so an agent's own `tmux`
+# commands never reach, or end, a Borant session.
+[tmux]
+socket = "borant"
+
 # Only when agents of a role with `sandbox = "namespace"` run here: the host
 # offers a bubblewrap file-system sandbox. At start it runs
 # `<program> --ro-bind / / true`; if that fails it logs a warn and offers no
