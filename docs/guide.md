@@ -252,6 +252,7 @@ to agents.
 | `borant move --from <host> --here` | Move all agents of a host to this host |
 | `borant move --channel <channel> --here` | Move all members of a channel |
 | `borant drain <host>` | Move all agents away from a host |
+| `borant undrain <host>` | Place agents on a drained host again, and place the spawns that waited for it |
 | `borant project add <name> <remote_url> [--branch B] [--setup CMD] [--test CMD]` | Add or replace a project |
 | `borant project add <name> --from-cwd` | Add the repository of this directory as a project |
 | `borant project list` | List projects |

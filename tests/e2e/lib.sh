@@ -82,6 +82,14 @@ not_at() {
 
 ref_exists() { on git git -C /srv/git/demo.git for-each-ref --format='%(refname)' "$1" | grep -q .; }
 
+# True when the hub reports the host as online and not draining, so placement
+# offers it again.
+host_takes_agents() {
+  borant_on host-a hosts 2>/dev/null \
+    | jq -e --arg h "$1" \
+      'any(.[]; .host.name == $h and .online and .host.draining == false)' >/dev/null
+}
+
 # Retries a command once per second until it succeeds.
 wait_for() {
   local desc=$1
