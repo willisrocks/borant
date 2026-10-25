@@ -114,6 +114,33 @@ pub struct Agent {
     pub parent: Option<AgentId>,
 }
 
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: an agent always has an ID.
+#[cfg(any(test, feature = "testing"))]
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            id: "test-agent".parse().expect("a valid agent ID"),
+            preferred_harness: Harness::ClaudeCode,
+            repo: None,
+            movable: false,
+            channels: Vec::new(),
+            session: None,
+            host: None,
+            harness_session_id: None,
+            created: Timestamp(0),
+            model: None,
+            model_harness: None,
+            project: None,
+            members: BTreeMap::new(),
+            pinned: false,
+            role: None,
+            collection: None,
+            parent: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
@@ -206,6 +233,27 @@ pub struct HostInfo {
     /// Every bundle that the host defines, for a launch of a collection.
     #[serde(default)]
     pub bundles: Vec<BundleName>,
+}
+
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: a host always names itself.
+#[cfg(any(test, feature = "testing"))]
+impl Default for HostInfo {
+    fn default() -> Self {
+        Self {
+            name: "test-host".parse().expect("a valid host name"),
+            harnesses: Vec::new(),
+            launcher: String::new(),
+            max_agents: 0,
+            always_on: false,
+            draining: false,
+            ssh: None,
+            members: BTreeMap::new(),
+            pool: None,
+            tags: Vec::new(),
+            bundles: Vec::new(),
+        }
+    }
 }
 
 /// The author and committer of the commits of an agent, from its collection.

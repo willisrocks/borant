@@ -265,15 +265,11 @@ async fn pinned_new_session_is_refused() {
             session: SessionId::new(),
             host: host(),
             harness: Harness::Fake,
-            harness_session_id: None,
             pid: Some(2),
             cwd: "/work".into(),
             repo: Some(common::repo()),
             agent: Some(who.agent.clone()),
-            channel: None,
-            shared_dir: false,
-            role: None,
-            collection: None,
+            ..Default::default()
         }))
         .await
         .unwrap_err();
@@ -291,15 +287,11 @@ async fn pinned_same_session_reclaims() {
             session: who.session,
             host: host(),
             harness: Harness::Fake,
-            harness_session_id: None,
             pid: Some(1),
             cwd: "/work".into(),
             repo: Some(common::repo()),
             agent: Some(who.agent.clone()),
-            channel: None,
-            shared_dir: false,
-            role: None,
-            collection: None,
+            ..Default::default()
         }))
         .await
         .unwrap();

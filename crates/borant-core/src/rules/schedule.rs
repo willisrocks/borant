@@ -89,12 +89,7 @@ mod tests {
                 launcher: "tmux".into(),
                 max_agents: 4,
                 always_on,
-                draining: false,
-                ssh: None,
-                members: Default::default(),
-                pool: None,
-                tags: Vec::new(),
-                bundles: Vec::new(),
+                ..Default::default()
             },
             online: true,
             active_agents: active,

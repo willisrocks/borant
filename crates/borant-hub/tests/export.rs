@@ -29,21 +29,9 @@ fn agent_doc(id: &AgentId, channels: Vec<ChannelName>) -> Agent {
     Agent {
         id: id.clone(),
         preferred_harness: Harness::Fake,
-        repo: None,
-        movable: false,
         channels,
-        session: None,
-        host: None,
-        harness_session_id: None,
         created: Timestamp(1),
-        model: None,
-        model_harness: None,
-        project: None,
-        members: Default::default(),
-        pinned: false,
-        role: None,
-        collection: None,
-        parent: None,
+        ..Default::default()
     }
 }
 

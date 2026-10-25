@@ -65,13 +65,9 @@ async fn register_when_hub_down_detaches_then_attaches() {
         .host
         .register(LocalRegister {
             harness: Harness::Fake,
-            harness_session_id: None,
-            pid: None,
             cwd,
             agent: Some(agent("a")),
-            channel: None,
-            role: None,
-            collection: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -449,13 +445,10 @@ async fn dead_pid_ends_session() {
         .host
         .register(LocalRegister {
             harness: Harness::Fake,
-            harness_session_id: None,
             pid: Some(pid),
             cwd: fx.dir.path().to_string_lossy().into_owned(),
             agent: Some(agent("a")),
-            channel: None,
-            role: None,
-            collection: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -540,9 +533,7 @@ async fn restart_restores_live_sessions() {
             pid: Some(std::process::id()),
             cwd: cwd.to_string_lossy().into_owned(),
             agent: Some(agent("r")),
-            channel: None,
-            role: None,
-            collection: None,
+            ..Default::default()
         })
         .await
         .unwrap();

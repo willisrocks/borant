@@ -147,6 +147,20 @@ pub struct SessionLeaseRef {
     pub idle_since: Option<Timestamp>,
 }
 
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: a lease always names its session.
+#[cfg(any(test, feature = "testing"))]
+impl Default for SessionLeaseRef {
+    fn default() -> Self {
+        Self {
+            session: SessionId::default(),
+            agent: "test-agent".parse().expect("a valid agent ID"),
+            token: FencingToken(0),
+            idle_since: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeartbeatReply {
     /// Sessions that lost their lease and must stop.
@@ -182,6 +196,28 @@ pub struct RegisterSession {
     /// The collection that the session reports.
     #[serde(default)]
     pub collection: Option<CollectionName>,
+}
+
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: a session always names itself.
+#[cfg(any(test, feature = "testing"))]
+impl Default for RegisterSession {
+    fn default() -> Self {
+        Self {
+            session: SessionId::default(),
+            host: "test-host".parse().expect("a valid host name"),
+            harness: Harness::ClaudeCode,
+            harness_session_id: None,
+            pid: None,
+            cwd: String::new(),
+            repo: None,
+            agent: None,
+            channel: None,
+            shared_dir: false,
+            role: None,
+            collection: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +512,31 @@ pub struct LaunchOrder {
     pub git_author: Option<GitAuthor>,
 }
 
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: an order always names its agent.
+#[cfg(any(test, feature = "testing"))]
+impl Default for LaunchOrder {
+    fn default() -> Self {
+        Self {
+            agent: "test-agent".parse().expect("a valid agent ID"),
+            harness: Harness::ClaudeCode,
+            repo: None,
+            wip: None,
+            channels: Vec::new(),
+            prompt: String::new(),
+            reason: MoveReason::Spawn,
+            from_harness: None,
+            from_host: None,
+            model: None,
+            project: None,
+            reserve_secs: None,
+            members: BTreeMap::new(),
+            bundles: Vec::new(),
+            git_author: None,
+        }
+    }
+}
+
 // ---- Local API of the host daemon ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +557,24 @@ pub struct LocalRegister {
     /// The collection that a person started this session in.
     #[serde(default)]
     pub collection: Option<CollectionName>,
+}
+
+/// A record with placeholder values, for tests that fill the fields they
+/// read. Production code has none: a session always names its directory.
+#[cfg(any(test, feature = "testing"))]
+impl Default for LocalRegister {
+    fn default() -> Self {
+        Self {
+            harness: Harness::ClaudeCode,
+            harness_session_id: None,
+            pid: None,
+            cwd: String::new(),
+            agent: None,
+            channel: None,
+            role: None,
+            collection: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

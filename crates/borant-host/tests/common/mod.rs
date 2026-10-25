@@ -99,13 +99,9 @@ impl Fx {
             .host
             .register(LocalRegister {
                 harness: Harness::Fake,
-                harness_session_id: None,
-                pid: None,
                 cwd: cwd.to_string_lossy().into_owned(),
                 agent: Some(agent.parse().unwrap()),
-                channel: None,
-                role: None,
-                collection: None,
+                ..Default::default()
             })
             .await
             .unwrap();

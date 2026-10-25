@@ -67,21 +67,9 @@ fn secrets_old_json_parses_without_the_new_fields() {
     let agent = Agent {
         id: "w1".parse().unwrap(),
         preferred_harness: Harness::Fake,
-        repo: None,
-        movable: false,
         channels: vec!["api".parse::<ChannelName>().unwrap()],
-        session: None,
-        host: None,
-        harness_session_id: None,
         created: Timestamp(1_000),
-        model: None,
-        model_harness: None,
-        project: None,
-        members: BTreeMap::new(),
-        pinned: false,
-        role: None,
-        collection: None,
-        parent: None,
+        ..Default::default()
     };
     let old = without(&agent, "members");
     let parsed: Agent = serde_json::from_value(old).expect("old agent JSON parses");
@@ -92,13 +80,9 @@ fn secrets_old_json_parses_without_the_new_fields() {
         harnesses: vec![Harness::Fake],
         launcher: "process".into(),
         max_agents: 4,
-        always_on: false,
-        draining: false,
-        ssh: None,
-        members: BTreeMap::new(),
         pool: Some("workers".parse().unwrap()),
         tags: vec!["vps".parse().unwrap()],
-        bundles: vec![],
+        ..Default::default()
     };
     let old = without(&host, "members");
     let parsed: HostInfo = serde_json::from_value(old).expect("old host JSON parses");
@@ -112,19 +96,8 @@ fn secrets_old_json_parses_without_the_new_fields() {
     let order = LaunchOrder {
         agent: "w1".parse().unwrap(),
         harness: Harness::Fake,
-        repo: None,
-        wip: None,
-        channels: vec![],
         prompt: "go".into(),
-        reason: MoveReason::Spawn,
-        from_harness: None,
-        from_host: None,
-        model: None,
-        project: None,
-        reserve_secs: None,
-        members: BTreeMap::new(),
-        bundles: vec![],
-        git_author: None,
+        ..Default::default()
     };
     let old = without(&order, "members");
     let parsed: LaunchOrder = serde_json::from_value(old).expect("old launch order JSON parses");

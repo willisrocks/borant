@@ -22,21 +22,14 @@ fn agent() -> Agent {
     Agent {
         id: "worker-1".parse().unwrap(),
         preferred_harness: Harness::Fake,
-        repo: None,
-        movable: false,
         channels: vec!["work-api".parse::<ChannelName>().unwrap()],
-        session: None,
-        host: None,
-        harness_session_id: None,
         created: Timestamp(1_000),
         model: Some("m".into()),
         model_harness: Some(Harness::Fake),
-        project: None,
-        members: BTreeMap::new(),
-        pinned: false,
         role: Some("worker".parse().unwrap()),
         collection: Some("work".parse().unwrap()),
         parent: Some("chief".parse().unwrap()),
+        ..Default::default()
     }
 }
 
@@ -92,9 +85,6 @@ fn roles_old_json_of_every_record_parses() {
         harnesses: vec![Harness::Fake],
         launcher: "process".into(),
         max_agents: 4,
-        always_on: false,
-        draining: false,
-        ssh: None,
         members: BTreeMap::from([(
             "claude_auth".parse::<BundleName>().unwrap(),
             MemberBundle {
@@ -102,9 +92,8 @@ fn roles_old_json_of_every_record_parses() {
                 harnesses: vec![Harness::ClaudeCode],
             },
         )]),
-        pool: None,
-        tags: vec![],
         bundles: vec!["github".parse().unwrap()],
+        ..Default::default()
     };
     let parsed: HostInfo = serde_json::from_value(without(&host, "bundles")).unwrap();
     assert!(parsed.bundles.is_empty());
@@ -119,21 +108,13 @@ fn roles_old_json_of_every_record_parses() {
             branch: "main".into(),
             subdir: String::new(),
         }),
-        wip: None,
-        channels: vec![],
         prompt: "go".into(),
-        reason: borant_core::model::MoveReason::Spawn,
-        from_harness: None,
-        from_host: None,
-        model: None,
-        project: None,
-        reserve_secs: None,
-        members: BTreeMap::new(),
         bundles: vec!["github-work".parse().unwrap()],
         git_author: Some(GitAuthor {
             name: "Chris".into(),
             email: "you@work.example".into(),
         }),
+        ..Default::default()
     };
     let old = without(&order, "bundles");
     let old = without(&old, "git_author");
@@ -149,15 +130,12 @@ fn roles_old_json_of_every_record_parses() {
         session: SessionId::new(),
         host: "h1".parse().unwrap(),
         harness: Harness::Fake,
-        harness_session_id: None,
         pid: Some(1),
         cwd: "/work".into(),
-        repo: None,
         agent: Some("worker-1".parse().unwrap()),
-        channel: None,
-        shared_dir: false,
         role: Some("worker".parse::<RoleName>().unwrap()),
         collection: Some("work".parse::<CollectionName>().unwrap()),
+        ..Default::default()
     };
     let old = without(&register, "role");
     let old = without(&old, "collection");

@@ -74,13 +74,8 @@ impl Fx {
                 harnesses: harnesses.to_vec(),
                 launcher: "process".into(),
                 max_agents: 4,
-                always_on: false,
-                draining: false,
-                ssh: None,
-                members: Default::default(),
                 pool: pool.map(|p| p.parse().unwrap()),
-                tags: Vec::new(),
-                bundles: Vec::new(),
+                ..Default::default()
             },
         })
         .await
@@ -99,15 +94,12 @@ impl Fx {
                 session: SessionId::new(),
                 host: name(host),
                 harness: Harness::Fake,
-                harness_session_id: None,
                 pid: Some(1),
                 cwd: "/work".into(),
                 repo: with_repo.then(repo),
                 agent: agent.map(|a| a.parse().unwrap()),
                 channel: channel.map(|c| c.parse().unwrap()),
-                shared_dir: false,
-                role: None,
-                collection: None,
+                ..Default::default()
             }))
             .await?;
         Ok(serde_json::from_value(v).unwrap())

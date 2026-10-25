@@ -281,15 +281,11 @@ async fn takeover_in_another_harness_drops_the_model() {
             session: SessionId::new(),
             host: name("h2"),
             harness: Harness::Pi,
-            harness_session_id: None,
             pid: Some(2),
             cwd: "/work".into(),
             repo: Some(repo()),
             agent: Some("helper".parse().unwrap()),
-            channel: None,
-            shared_dir: false,
-            role: None,
-            collection: None,
+            ..Default::default()
         }))
         .await
         .unwrap();
