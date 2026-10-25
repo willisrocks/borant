@@ -382,6 +382,10 @@ pub struct LaunchOrder {
     /// The project of the agent, for its setup command and checkpoint remote.
     #[serde(default)]
     pub project: Option<Project>,
+    /// How long the hub waits for the session to register before it
+    /// launches the agent again. The host fits the setup inside it.
+    #[serde(default)]
+    pub reserve_secs: Option<u64>,
 }
 
 // ---- Local API of the host daemon ----

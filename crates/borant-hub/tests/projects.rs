@@ -2,8 +2,10 @@ mod common;
 
 use borant_core::model::{Agent, Harness, NewTask, Project, Task};
 use borant_core::ports::StateStore;
-use borant_core::proto::{ApiErrorCode, HostCommand, LaunchOrder, Registered, ToolCall};
-use borant_core::{ChannelName, ProjectName, keys};
+use borant_core::proto::{
+    ApiErrorCode, CtlRequest, HostCommand, LaunchOrder, RegisterSession, Registered, ToolCall,
+};
+use borant_core::{ChannelName, ProjectName, SessionId, keys};
 use common::{Fx, name, next_cmd, repo};
 
 fn api() -> ChannelName {
@@ -150,6 +152,7 @@ async fn spawn_in_project_channel_clones_the_project() {
     assert_eq!(r.branch, "feat/health");
     assert_eq!(r.subdir, "");
     assert_eq!(o.project, Some(project()));
+    assert_eq!(o.reserve_secs, Some(300));
     // The agent record keeps the repository and the project for moves.
     let doc = fx
         .state
@@ -231,4 +234,93 @@ async fn model_survives_a_takeover() {
     let o = launch(&mut h1).await;
     assert_eq!(o.agent, helper.agent);
     assert_eq!(o.model.as_deref(), Some("opus"));
+}
+
+#[tokio::test]
+async fn takeover_in_another_harness_drops_the_model() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.host("h2", &[Harness::Pi]).await;
+    let owner = fx.register("h1", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: api(),
+            schema: None,
+            project: None,
+            branch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut h2 = fx.commands("h2").await;
+    fx.heartbeat("h1", &[]).await;
+    fx.heartbeat("h2", &[]).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::Spawn {
+            channel: api(),
+            prompt: "Fix the build".into(),
+            harness: Some(Harness::Pi),
+            host: Some(name("h2")),
+            name: Some("helper".parse().unwrap()),
+            model: Some("opus".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let o = launch(&mut h2).await;
+    assert_eq!((o.harness, o.model.as_deref()), (Harness::Pi, Some("opus")));
+
+    // The helper runs in Pi on h2 and claims a task, then h2 goes silent.
+    let v = fx
+        .req(CtlRequest::RegisterSession(RegisterSession {
+            session: SessionId::new(),
+            host: name("h2"),
+            harness: Harness::Pi,
+            harness_session_id: None,
+            pid: Some(2),
+            cwd: "/work".into(),
+            repo: Some(repo()),
+            agent: Some("helper".parse().unwrap()),
+            channel: None,
+            shared_dir: false,
+        }))
+        .await
+        .unwrap();
+    let helper: Registered = serde_json::from_value(v).unwrap();
+    let t: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskCreate {
+                channel: api(),
+                task: NewTask {
+                    title: "t".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    fx.call(
+        Some(&helper),
+        ToolCall::TaskClaim {
+            channel: api(),
+            id: t.id,
+        },
+    )
+    .await
+    .unwrap();
+    let mut h1 = fx.commands("h1").await;
+    for _ in 0..16 {
+        fx.advance(10);
+        fx.heartbeat("h1", &[&owner]).await;
+        fx.hub.tick().await.unwrap();
+    }
+    // Only h1 is left, and it has no Pi.
+    let o = launch(&mut h1).await;
+    assert_eq!(o.agent, helper.agent);
+    assert_eq!((o.harness, o.model), (Harness::Fake, None));
 }

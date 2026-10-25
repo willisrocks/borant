@@ -133,6 +133,15 @@ impl Hub {
                 .map(|d| d.value),
             None => None,
         };
+        // A model name belongs to one harness. Another harness gets none.
+        let model = match (&agent.model, agent.model_harness) {
+            (Some(m), Some(h)) if h == harness => Some(m.clone()),
+            (Some(m), _) => {
+                tracing::warn!(agent = %agent.id, model = %m, %harness, "the model is for another harness; launching without it");
+                None
+            }
+            (None, _) => None,
+        };
         let order = LaunchOrder {
             agent: agent.id.clone(),
             harness,
@@ -143,8 +152,9 @@ impl Hub {
             reason,
             from_harness,
             from_host: agent.host.clone(),
-            model: agent.model.clone(),
+            model,
             project,
+            reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
         };
         let move_event = SessionEvent {
             id: EventId::new(),
@@ -337,6 +347,7 @@ impl Hub {
             host: None,
             harness_session_id: None,
             created: self.now(),
+            model_harness: model.as_ref().map(|_| harness),
             model,
             project: ch.project,
         };

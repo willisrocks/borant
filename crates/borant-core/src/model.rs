@@ -86,6 +86,10 @@ pub struct Agent {
     /// The model that `spawn` asked for. Moves and takeovers keep it.
     #[serde(default)]
     pub model: Option<String>,
+    /// The harness that `model` was chosen for. A launch in another harness
+    /// gets no model.
+    #[serde(default)]
+    pub model_harness: Option<Harness>,
     /// The project of the channel that the agent was spawned in.
     #[serde(default)]
     pub project: Option<ProjectName>,

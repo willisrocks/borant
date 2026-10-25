@@ -166,6 +166,7 @@ impl Hub {
                     harness_session_id: None,
                     created: now,
                     model: None,
+                    model_harness: None,
                     project: None,
                 },
                 None,
