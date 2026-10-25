@@ -399,6 +399,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "borant-secrets"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "borant-core",
+ "serde",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "borant-testkit"
 version = "0.5.0"
 dependencies = [
