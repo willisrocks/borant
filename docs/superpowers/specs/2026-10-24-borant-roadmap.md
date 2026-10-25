@@ -98,9 +98,10 @@ skill) shipped in v0.3.0.
    unit for the first-run screens only.
 4. Token pools, after the `SecretStore` port, as the
    [token pools design](2026-10-25-token-pools-design.md) decides: 3 Claude
-   Code accounts in one pool, fill first with the soonest reset first, a
-   new account-usage port with an exec adapter on the laptop host, and a
-   restart on another account at a limit. When every account is limited,
+   Code accounts in one pool, a restart on another account at a limit,
+   and, when outside tools push fresh usage reports through
+   `borant usage report`, fill first with the soonest reset first. Borant
+   ships no usage adapter. When every account is limited,
    the agent waits and Borant sends an alert. LunaRoute needs no pool.
 5. Done when `just create borant-3` gives a working host with no login, and
    no secret value shows in `ps`, the session log, or NATS.

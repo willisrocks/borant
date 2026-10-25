@@ -14,21 +14,25 @@ differs from the recommendation below, the decision wins.
 
 1. The pool has 3 Claude accounts. Chris keeps a 4th account in reserve,
    outside the pool. Borant never uses it.
-2. Selection is fill first, not spread. The hub fills one account until its
-   limit. It picks the account whose limit resets soonest, so that capacity
-   which is about to reset gets used first. This replaces the pick rule of
-   section 4.2:
-   1. Keep only members that the target host defines and that are not
-      limited now.
-   2. Pick the member with the earliest next reset, from the latest usage
-      snapshot. A member with no snapshot comes last.
-   3. On a tie, pick the first name.
-3. Usage data comes from a new account-usage port in `borant-core::ports`,
-   with neutral types (an account, its usage, its next reset). The first
-   adapter is an exec plugin around Chris's tool `aiusage` (`~/Code/aiusage`,
-   `aiusage --json` and `aiusage --expiring`). `aiusage` reads the macOS
-   Keychain, so the plugin runs on the laptop host. The laptop host sends
-   usage snapshots to the hub. No core type or config key names `aiusage`.
+2. Selection depends on the size of the pool, and balancing is optional.
+   - A pool with one member uses that member. It needs no selection logic
+     and no usage data.
+   - With several members and fresh usage reports, the hub fills one
+     account until its limit. It picks the account whose limit resets
+     soonest, so that capacity which is about to reset gets used first.
+     This replaces the pick rule of section 4.2: keep only members that
+     the target host defines and that are not limited now, pick the member
+     with the earliest next reset, and on a tie pick the first name.
+   - With several members and no fresh usage reports, the hub uses only
+     the limits that sessions report when they reach one (section 4.3). It
+     restarts the agent on the next free member in name order.
+3. Borant does not depend on `aiusage`, not even as a bundled exec plugin.
+   Borant exposes a neutral API that accepts usage information: a
+   `borant usage report` CLI command and a matching call. A report names
+   the pool and the member, and gives, for each limit window, the used
+   share and the reset time. Any outside tool can push reports into it.
+   Chris feeds it from `aiusage` on the laptop with his own script, outside
+   Borant. The phase 1 spec sets when a report stops being fresh.
 4. When every account is limited, the agent waits until the earliest reset,
    and Borant sends an alert. There is no fallback to an `ANTHROPIC_API_KEY`.
 5. The loss of the failed turn and of the native context at a restart is
