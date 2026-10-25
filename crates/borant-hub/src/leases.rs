@@ -321,6 +321,11 @@ impl Hub {
         agent.host = Some(r.host.clone());
         agent.harness_session_id = r.harness_session_id.clone();
         agent.preferred_harness = r.harness;
+        // A role pins its agents when it says so: a chief that a person
+        // starts with BORANT_ROLE=chief is the main pinned agent.
+        if let Some(role) = &role {
+            agent.pinned = self.cfg.roles.get(role).is_some_and(|c| c.pinned);
+        }
         agent.role = role;
         agent.collection = collection;
         self.store.put(&agent_key, &agent, rev).await?;

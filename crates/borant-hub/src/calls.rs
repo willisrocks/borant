@@ -75,32 +75,42 @@ impl Hub {
         }
     }
 
+    /// Verifies the session of the actor and checks the `tools_deny` of its
+    /// role. A human has no role and passes.
+    pub(crate) async fn authorize(
+        &self,
+        actor: &Option<Actor>,
+        call: &ToolCall,
+    ) -> Result<(), ApiError> {
+        let Some(a) = actor else {
+            return Ok(());
+        };
+        self.verify_actor(a).await?;
+        let agent = self.agent(&a.agent).await?;
+        let tool = tool_name(call);
+        if !roles::may_call(agent.value.role.as_ref(), &tool, &self.cfg.roles) {
+            return Err(ApiError::denied(format!(
+                "the role of {} may not call {tool}",
+                a.agent
+            )));
+        }
+        Ok(())
+    }
+
     async fn call(
         &self,
         mem: &mut Memory,
         actor: Option<Actor>,
         call: ToolCall,
     ) -> Result<Value, ApiError> {
-        match &actor {
-            Some(a) => self.verify_actor(a).await?,
-            None if !call.allowed_for_human() => {
-                return Err(ApiError::invalid(
-                    "this call needs an agent session; run it from a harness",
-                ));
-            }
-            None => {}
+        if actor.is_none() && !call.allowed_for_human() {
+            return Err(ApiError::invalid(
+                "this call needs an agent session; run it from a harness",
+            ));
         }
+        self.authorize(&actor, &call).await?;
         let me = actor.as_ref().map(|a| a.agent.clone());
         let sender = me.clone().map_or(Sender::Human, Sender::Agent);
-        if let Some(who) = &me {
-            let agent = self.agent(who).await?;
-            let tool = tool_name(&call);
-            if !roles::may_call(agent.value.role.as_ref(), &tool, &self.cfg.roles) {
-                return Err(ApiError::denied(format!(
-                    "the role of {who} may not call {tool}"
-                )));
-            }
-        }
         match call {
             ToolCall::Whoami => {
                 let a = actor.ok_or_else(|| ApiError::invalid("whoami needs a session"))?;

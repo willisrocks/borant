@@ -57,6 +57,14 @@ fn roles() -> BTreeMap<RoleName, RoleConfig> {
     );
     roles.insert(rname("outsider"), RoleConfig::default());
     roles.insert(
+        rname("auditor"),
+        RoleConfig {
+            tools_deny: vec!["prune_agents".into()],
+            ..Default::default()
+        },
+    );
+    roles.insert(rname("planner"), RoleConfig::default());
+    roles.insert(
         rname("orchestrator"),
         RoleConfig {
             one_per: Some(OnePerRule::Project),
@@ -191,6 +199,66 @@ async fn roles_spawn_applies_the_role() {
     assert_eq!(kid.preferred_harness, Harness::Omp);
     assert_eq!(kid.model.as_deref(), Some("lunaroute/deepseek:auto"));
     assert!(!kid.pinned);
+}
+
+#[tokio::test]
+async fn roles_registration_sets_the_pin_from_the_role() {
+    let fx = fx();
+    register(
+        &fx,
+        SessionId::new(),
+        "chief1",
+        Some("chief"),
+        Some("personal"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent(&fx, "chief1").await.pinned,
+        "a role with pinned = true pins the agent it registers"
+    );
+
+    register(
+        &fx,
+        SessionId::new(),
+        "wrk",
+        Some("worker"),
+        Some("personal"),
+    )
+    .await
+    .unwrap();
+    assert!(!agent(&fx, "wrk").await.pinned);
+}
+
+#[tokio::test]
+async fn roles_prune_obeys_tools_deny() {
+    let fx = fx();
+    let auditor = register(&fx, SessionId::new(), "audit", Some("auditor"), None)
+        .await
+        .unwrap();
+    let err = fx
+        .call(
+            Some(&auditor),
+            ToolCall::PruneAgents {
+                older_than_secs: 86_400,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Denied);
+
+    // A role that does not deny prune_agents still prunes.
+    let worker = register(&fx, SessionId::new(), "wrk", Some("worker"), None)
+        .await
+        .unwrap();
+    fx.call(
+        Some(&worker),
+        ToolCall::PruneAgents {
+            older_than_secs: 86_400,
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

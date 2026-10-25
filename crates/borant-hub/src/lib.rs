@@ -160,9 +160,8 @@ impl Hub {
             } => {
                 drop(mem);
                 let result = async {
-                    if let Some(a) = &actor {
-                        self.verify_actor(a).await?;
-                    }
+                    self.authorize(&actor, &ToolCall::PruneAgents { older_than_secs })
+                        .await?;
                     prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
                 }
                 .await;
