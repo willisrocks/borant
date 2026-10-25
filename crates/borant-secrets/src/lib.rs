@@ -5,8 +5,10 @@
 
 mod config;
 mod env;
+mod exec;
 mod file;
 
 pub use config::{StoreConfig, open_store};
 pub use env::EnvStore;
+pub use exec::ExecStore;
 pub use file::FileStore;

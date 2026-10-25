@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "borant-exec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "borant-core",
  "serde_json",
@@ -404,7 +404,9 @@ version = "0.5.0"
 dependencies = [
  "async-trait",
  "borant-core",
+ "borant-exec",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",
