@@ -183,6 +183,8 @@ async fn prepare_move_on_idle_session_sends_move_ready() {
                 draining: false,
                 ssh: None,
                 members: Default::default(),
+                pool: None,
+                tags: Vec::new(),
             },
         })
         .await

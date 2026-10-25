@@ -95,6 +95,16 @@ name_type!(
     MemberName,
     "member name"
 );
+name_type!(
+    /// A pool of elastic hosts, one `[[pools]]` entry of `hub.toml`.
+    PoolName,
+    "pool name"
+);
+name_type!(
+    /// A host tag, for the `avoid` rules of later phases.
+    Tag,
+    "tag"
+);
 
 macro_rules! ulid_type {
     ($(#[$meta:meta])* $name:ident) => {

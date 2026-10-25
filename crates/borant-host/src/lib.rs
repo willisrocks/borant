@@ -21,7 +21,9 @@ use borant_core::model::{Envelope, Harness, HostInfo};
 use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
-use borant_core::{AgentId, ChannelName, Clock, HostName, MessageId, SessionId, subjects};
+use borant_core::{
+    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, subjects,
+};
 use borant_launch::harness::HarnessCommands;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -40,6 +42,10 @@ pub struct HostConfig {
     pub launcher: String,
     pub max_agents: u32,
     pub always_on: bool,
+    /// The pool that created this host. `None` for a static host.
+    pub pool: Option<PoolName>,
+    /// The tags of this host, for example `vps` for a pool host.
+    pub tags: Vec<Tag>,
     pub ssh: Option<String>,
     pub harnesses: Vec<Harness>,
     pub commands: HarnessCommands,
@@ -63,6 +69,8 @@ impl HostConfig {
             launcher: "tmux".into(),
             max_agents: 4,
             always_on: false,
+            pool: None,
+            tags: Vec::new(),
             ssh: None,
             harnesses: vec![Harness::ClaudeCode, Harness::Pi, Harness::Omp],
             commands: HarnessCommands::default(),
@@ -93,6 +101,8 @@ impl HostConfig {
             draining: false,
             ssh: self.ssh.clone(),
             members: Default::default(),
+            pool: self.pool.clone(),
+            tags: self.tags.clone(),
         }
     }
 }

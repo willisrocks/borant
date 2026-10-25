@@ -92,10 +92,17 @@ fn secrets_old_json_parses_without_the_new_fields() {
         draining: false,
         ssh: None,
         members: BTreeMap::new(),
+        pool: Some("workers".parse().unwrap()),
+        tags: vec!["vps".parse().unwrap()],
     };
     let old = without(&host, "members");
     let parsed: HostInfo = serde_json::from_value(old).expect("old host JSON parses");
     assert!(parsed.members.is_empty());
+    // A host from before pools and tags reports neither.
+    let old = without(&without(&host, "pool"), "tags");
+    let parsed: HostInfo = serde_json::from_value(old).expect("old host JSON parses");
+    assert_eq!(parsed.pool, None);
+    assert!(parsed.tags.is_empty());
 
     let order = LaunchOrder {
         agent: "w1".parse().unwrap(),

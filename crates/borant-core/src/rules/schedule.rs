@@ -1,6 +1,8 @@
 //! Placement of agents on hosts (spec section 14).
 
-use crate::ids::HostName;
+use std::cmp::Ordering;
+
+use crate::ids::{HostName, PoolName};
 use crate::model::{Harness, HostInfo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +13,8 @@ pub struct HostView {
     /// False if the host reported that it cannot reach the git remote of the
     /// agent. True when the agent has no repository.
     pub has_repo_access: bool,
+    /// The pool that created the host. `None` for a static host.
+    pub pool: Option<PoolName>,
 }
 
 fn qualifies(h: &HostView) -> bool {
@@ -25,9 +29,35 @@ fn pick_harness(h: &HostView, preferred: Harness, forced: Option<Harness>) -> Op
     }
 }
 
+/// Orders two candidates. Fill first: a static host (no pool) wins over a pool
+/// host, and among pool hosts the one with more active agents wins, so that a
+/// pool host goes idle and can be deleted. Among static hosts the order is the
+/// one of before: the same harness, then fewer active agents, then always-on
+/// hosts, then the name.
+fn order(a: (&HostView, Harness), b: (&HostView, Harness), preferred: Harness) -> Ordering {
+    let (x, y) = (a.0, b.0);
+    match (x.pool.is_some(), y.pool.is_some()) {
+        (false, true) => return Ordering::Less,
+        (true, false) => return Ordering::Greater,
+        (true, true) => {
+            return y
+                .active_agents
+                .cmp(&x.active_agents)
+                .then_with(|| (a.1 != preferred).cmp(&(b.1 != preferred)))
+                .then_with(|| x.info.name.cmp(&y.info.name));
+        }
+        (false, false) => {}
+    }
+    (a.1 != preferred)
+        .cmp(&(b.1 != preferred))
+        .then_with(|| x.active_agents.cmp(&y.active_agents))
+        .then_with(|| (!x.info.always_on).cmp(&(!y.info.always_on)))
+        .then_with(|| x.info.name.cmp(&y.info.name))
+}
+
 /// Picks a host and a harness. The filter keeps hosts that are online, not
 /// draining, below their limit, and that can reach the repository. The score
-/// prefers the same harness, then fewer active agents, then always-on hosts.
+/// is `order`.
 pub fn place(
     preferred: Harness,
     forced_host: Option<&HostName>,
@@ -39,14 +69,7 @@ pub fn place(
         .filter(|h| forced_host.is_none_or(|f| *f == h.info.name))
         .filter(|h| qualifies(h))
         .filter_map(|h| pick_harness(h, preferred, forced_harness).map(|harness| (h, harness)))
-        .min_by_key(|(h, harness)| {
-            (
-                *harness != preferred,
-                h.active_agents,
-                !h.info.always_on,
-                h.info.name.clone(),
-            )
-        })
+        .min_by(|a, b| order(*a, *b, preferred))
         .map(|(h, harness)| (h.info.name.clone(), harness))
 }
 
@@ -65,10 +88,21 @@ mod tests {
                 draining: false,
                 ssh: None,
                 members: Default::default(),
+                pool: None,
+                tags: Vec::new(),
             },
             online: true,
             active_agents: active,
             has_repo_access: true,
+            pool: None,
+        }
+    }
+
+    /// A host of the `workers` pool.
+    fn pool_host(name: &str, harnesses: &[Harness], active: u32) -> HostView {
+        HostView {
+            pool: Some("workers".parse().unwrap()),
+            ..host(name, harnesses, active, false)
         }
     }
 
@@ -149,6 +183,53 @@ mod tests {
         assert_eq!(
             place(Harness::Pi, None, Some(Harness::Omp), &hosts),
             Some((name("b"), Harness::Omp))
+        );
+    }
+
+    #[test]
+    fn static_host_beats_pool_host() {
+        // The static host is already paid for, even when it runs another
+        // harness and is busier than the pool host.
+        let hosts = [
+            pool_host("p", &[Harness::ClaudeCode], 0),
+            host("s", &[Harness::Pi], 3, true),
+        ];
+        assert_eq!(
+            place(Harness::ClaudeCode, None, None, &hosts),
+            Some((name("s"), Harness::Pi))
+        );
+    }
+
+    #[test]
+    fn busier_pool_host_beats_emptier_one() {
+        let hosts = [
+            pool_host("a", &[Harness::Pi], 0),
+            pool_host("b", &[Harness::Pi], 3),
+            pool_host("c", &[Harness::Pi], 1),
+        ];
+        assert_eq!(
+            place(Harness::Pi, None, None, &hosts),
+            Some((name("b"), Harness::Pi))
+        );
+    }
+
+    #[test]
+    fn static_hosts_keep_todays_order() {
+        // Among static hosts the emptiest always-on host still wins; the pool
+        // host does not change that.
+        let hosts = [
+            host("a", &[Harness::Pi], 2, true),
+            pool_host("p", &[Harness::Pi], 0),
+            host("b", &[Harness::Pi], 1, false),
+            host("c", &[Harness::Pi], 1, true),
+        ];
+        assert_eq!(
+            place(Harness::Pi, None, None, &hosts),
+            Some((name("c"), Harness::Pi))
+        );
+        assert_eq!(
+            place(Harness::Pi, None, None, &hosts[..2]),
+            Some((name("a"), Harness::Pi))
         );
     }
 }

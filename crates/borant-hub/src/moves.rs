@@ -64,6 +64,7 @@ impl Hub {
                         .is_some_and(|t| now.since(*t) <= self.cfg.lease.lease),
                     active_agents: active.get(&name).copied().unwrap_or(0),
                     has_repo_access: failed.is_none_or(|f| !f.contains(&name)),
+                    pool: d.value.pool.clone(),
                     info: d.value,
                 }
             })

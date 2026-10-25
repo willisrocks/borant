@@ -73,6 +73,8 @@ impl Fx {
                 draining: false,
                 ssh: None,
                 members: Default::default(),
+                pool: None,
+                tags: Vec::new(),
             },
         })
         .await
