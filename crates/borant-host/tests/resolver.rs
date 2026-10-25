@@ -191,6 +191,9 @@ async fn rig(secrets: Option<HostSecrets>) -> Rig {
     let root = dir.path().join("run/agents");
     let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf());
     cfg.harnesses = vec![Harness::Fake];
+    // A launch now checks that the program of its harness exists, and the
+    // testkit binary is not installed on the box that runs the tests.
+    cfg.commands.fake = Some(vec!["true".to_owned()]);
     cfg.hub_timeout = Duration::from_millis(500);
     cfg.secrets_root = Some(root.clone());
     cfg.secrets = secrets;
@@ -295,7 +298,7 @@ async fn resolver_launch_writes_the_directory_and_hides_the_values() {
     assert_eq!(spec.program[1], "secret-exec");
     assert_eq!(Path::new(&spec.program[2]), dir);
     assert_eq!(spec.program[3], "--");
-    assert_eq!(&spec.program[4..], ["borant-fake-harness"]);
+    assert_eq!(&spec.program[4..], ["true"]);
 
     // Only the path of the values reaches the launch: the tmux launcher turns
     // each `env` pair into `-e KEY=VALUE` and appends `program` as is.
@@ -442,7 +445,7 @@ async fn resolver_absent_leaves_the_launch_as_today() {
     let rig = rig(None).await;
     rig.host.launch(order("w1", BTreeMap::new())).await.unwrap();
     let spec = rig.rec.last();
-    assert_eq!(spec.program, ["borant-fake-harness"]);
+    assert_eq!(spec.program, ["true"]);
     assert!(!env_of(&spec).contains_key("BORANT_SECRETS_DIR"));
     assert!(
         !rig.root.exists(),
