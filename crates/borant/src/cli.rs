@@ -45,7 +45,10 @@ pub enum Command {
     /// Show the local daemon, the hosts, and the agents.
     Status,
     /// List all agents.
-    Agents,
+    Agents {
+        #[command(subcommand)]
+        cmd: Option<AgentsCmd>,
+    },
     /// List all hosts.
     Hosts,
     /// List the tasks of a channel.
@@ -99,6 +102,19 @@ pub enum Command {
     Mcp,
     /// Handle one Claude Code hook event (Claude Code runs this).
     Hook { event: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentsCmd {
+    /// List the agents that a prune would remove, without changing anything.
+    Prune {
+        /// Show the candidates. Real deletion is not available yet.
+        #[arg(long)]
+        dry_run: bool,
+        /// Agents whose lease ended more than this many hours ago.
+        #[arg(long, default_value_t = 24)]
+        older_than_hours: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -177,6 +193,54 @@ fn pretty(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
+/// Prints the reply of `agents prune`: one line per candidate with the keys
+/// that a prune removes, the reason each other agent stays, and the totals.
+fn print_prune(v: &Value) {
+    print!("{}", render_prune(v));
+}
+
+fn render_prune(v: &Value) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let candidates = v["candidates"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let kept = v["kept"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let _ = writeln!(out, "Candidates ({}):", candidates.len());
+    for c in candidates {
+        let keys = c["keys"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let _ = writeln!(
+            out,
+            "  {:<24} since={} keys={} bytes={}",
+            c["agent"].as_str().unwrap_or("?"),
+            c["since"],
+            keys.len(),
+            c["bytes"].as_u64().unwrap_or(0),
+        );
+        for k in keys {
+            let _ = writeln!(out, "    {}", k.as_str().unwrap_or("?"));
+        }
+    }
+    let _ = writeln!(out, "Kept ({}):", kept.len());
+    for k in kept {
+        let _ = writeln!(
+            out,
+            "  {:<24} {}",
+            k["agent"].as_str().unwrap_or("?"),
+            k["reason"].as_str().unwrap_or("?"),
+        );
+    }
+    let t = &v["totals"];
+    let _ = writeln!(
+        out,
+        "Totals: candidates={} keys={} bytes={}",
+        t["candidates"].as_u64().unwrap_or(0),
+        t["keys"].as_u64().unwrap_or(0),
+        t["bytes"].as_u64().unwrap_or(0),
+    );
+    out.push_str("Dry run: nothing was deleted.\n");
+    out
+}
+
 pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
     let c = client();
     match cmd {
@@ -208,7 +272,26 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
                 );
             }
         }
-        Command::Agents => pretty(&call(&c, ToolCall::ListAgents).await?),
+        Command::Agents { cmd: None } => pretty(&call(&c, ToolCall::ListAgents).await?),
+        Command::Agents {
+            cmd:
+                Some(AgentsCmd::Prune {
+                    dry_run,
+                    older_than_hours,
+                }),
+        } => {
+            if !dry_run {
+                bail!("only --dry-run is available");
+            }
+            let v = call(
+                &c,
+                ToolCall::PruneAgents {
+                    older_than_secs: older_than_hours.saturating_mul(60 * 60),
+                },
+            )
+            .await?;
+            print_prune(&v);
+        }
         Command::Hosts => pretty(&call(&c, ToolCall::ListHosts).await?),
         Command::Tasks { channel, ready } => pretty(
             &call(
@@ -384,6 +467,8 @@ mod tests {
             "borant host",
             "borant status",
             "borant agents",
+            "borant agents prune --dry-run",
+            "borant agents prune --dry-run --older-than-hours 48",
             "borant hosts",
             "borant tasks api --ready",
             "borant send #api ship it --urgent",
@@ -420,5 +505,37 @@ mod tests {
             ["tmux", "attach", "-t", "=borant-w1"]
         );
         assert_eq!(attach_command("orca", &a), None);
+    }
+
+    #[tokio::test]
+    async fn prune_needs_dry_run() {
+        let err = run_user_command(Command::Agents {
+            cmd: Some(AgentsCmd::Prune {
+                dry_run: false,
+                older_than_hours: 24,
+            }),
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "only --dry-run is available");
+    }
+
+    #[test]
+    fn prints_prune_candidates_and_kept() {
+        let v = json!({
+            "candidates": [{
+                "agent": "old",
+                "since": 1_000,
+                "keys": ["agent.old", "lease.agent.old"],
+                "bytes": 42,
+            }],
+            "kept": [{ "agent": "busy", "reason": "session" }],
+            "totals": { "candidates": 1, "keys": 2, "bytes": 42 },
+        });
+        let out = render_prune(&v);
+        assert_eq!(
+            out,
+            "Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\nKept (1):\n  busy                     session\nTotals: candidates=1 keys=2 bytes=42\nDry run: nothing was deleted.\n"
+        );
     }
 }
