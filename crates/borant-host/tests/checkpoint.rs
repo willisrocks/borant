@@ -69,10 +69,14 @@ async fn create_skips_unchanged_tree() {
     let (_d, remote, work) = setup();
     std::fs::write(work.join("a.txt"), "two\n").unwrap();
     let r = remote.to_str().unwrap();
-    let (tree, _) = checkpoint::create(&work, r, &agent(), None)
+    let (tree, sha) = checkpoint::create(&work, r, &agent(), None)
         .await
         .unwrap()
         .unwrap();
+    // The edit has the size of the old file and lands in the second of the
+    // index entry, so a snapshot that trusts stale stat data commits the old
+    // blob instead.
+    assert_eq!(git(&remote, &["show", &format!("{sha}:a.txt")]), "two");
     let again = checkpoint::create(&work, r, &agent(), Some(&tree))
         .await
         .unwrap();
