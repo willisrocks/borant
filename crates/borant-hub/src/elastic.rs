@@ -100,7 +100,7 @@ impl Hub {
         self.write_spend(&pass.spend, now).await?;
         // Free the pool hosts first: an idle host goes only with no agent.
         for pool in &pass.pools {
-            if let Err(e) = self.park_idle(pool.idle_timeout).await {
+            if let Err(e) = self.park_idle(Some(&pool.name), pool.idle_timeout).await {
                 tracing::warn!(pool = %pool.name, "park failed: {e}");
             }
         }
@@ -568,7 +568,7 @@ mod tests {
     use super::*;
     use borant_core::model::{Harness, HostInfo, MoveReason};
     use borant_core::proto::{CtlRequest, MoveTarget};
-    use borant_core::{FencingToken, ManualClock};
+    use borant_core::{FencingToken, ManualClock, SessionId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
     use crate::HubConfig;
@@ -682,8 +682,13 @@ mod tests {
         );
     }
 
-    /// Registers a host and marks it seen now.
+    /// Registers a host of the `workers` pool and marks it seen now.
     async fn register(fx: &Fx, host: &str, max_agents: u32) {
+        register_in(fx, host, "workers", max_agents).await;
+    }
+
+    /// Registers a host of `pool` and marks it seen now.
+    async fn register_in(fx: &Fx, host: &str, pool: &str, max_agents: u32) {
         let info = HostInfo {
             name: name(host),
             harnesses: vec![Harness::ClaudeCode],
@@ -693,7 +698,7 @@ mod tests {
             draining: false,
             ssh: None,
             members: Default::default(),
-            pool: Some("workers".parse().unwrap()),
+            pool: Some(pool.parse().unwrap()),
             tags: vec!["vps".parse().unwrap()],
             bundles: Vec::new(),
         };
@@ -702,6 +707,56 @@ mod tests {
             .await
             .into_result()
             .expect("register");
+    }
+
+    /// An agent that holds a session on `host` and has been idle since
+    /// `since`, as the host last reported at `at`.
+    async fn idle_agent(fx: &Fx, agent: &str, host: &str, since: Timestamp, at: Timestamp) {
+        let id: AgentId = agent.parse().unwrap();
+        let session = SessionId::new();
+        let a = Agent {
+            id: id.clone(),
+            preferred_harness: Harness::ClaudeCode,
+            repo: None,
+            movable: true,
+            channels: vec!["api".parse().unwrap()],
+            session: Some(session),
+            host: Some(name(host)),
+            harness_session_id: None,
+            created: at.minus(Duration::from_secs(3600)),
+            model: None,
+            model_harness: None,
+            project: None,
+            members: Default::default(),
+            pinned: false,
+            role: None,
+            collection: None,
+            parent: None,
+        };
+        fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
+        let lease = Lease {
+            agent: id.clone(),
+            token: FencingToken(1),
+            state: LeaseState::Held {
+                session,
+                host: name(host),
+                expires: at.plus(Duration::from_secs(60)),
+            },
+        };
+        fx.hub
+            .store
+            .upsert(&keys::lease_agent(&id), &lease)
+            .await
+            .unwrap();
+        fx.hub.mem.lock().await.idle.insert(
+            id,
+            crate::IdleReport {
+                session,
+                host: name(host),
+                since: Some(since),
+                at,
+            },
+        );
     }
 
     fn provider_spec(host: &str) -> HostSpec {
@@ -978,6 +1033,45 @@ mod tests {
         let fx = hub_with(Some(elastic(Vec::new(), &prov2)), prov2.clone());
         fx.hub.tick_elastic().await.unwrap();
         assert!(fx.prov.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn elastic_parks_with_the_timeout_and_hosts_of_each_pool() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let mut fast = pool();
+        fast.name = "fast".parse().unwrap();
+        fast.idle_timeout = Duration::from_secs(5 * 60);
+        let mut slow = pool();
+        slow.name = "slow".parse().unwrap();
+        slow.idle_timeout = Duration::from_secs(20 * 60);
+        let fx = hub_with(Some(elastic(vec![fast, slow], &prov)), prov.clone());
+        register_in(&fx, "f1", "fast", 2).await;
+        register_in(&fx, "s1", "slow", 2).await;
+        // One agent on each host, each idle for six minutes: past the timeout
+        // of the fast pool, not of the slow one.
+        let six = NOW.minus(Duration::from_secs(6 * 60));
+        idle_agent(&fx, "wf", "f1", six, NOW).await;
+        idle_agent(&fx, "ws", "s1", six, NOW).await;
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let parked: Vec<AgentId> = fx.hub.mem.lock().await.park_sent.keys().cloned().collect();
+        assert_eq!(
+            parked,
+            vec!["wf".parse::<AgentId>().unwrap()],
+            "the fast pool's timeout parks its own agent, and only that one"
+        );
+
+        // Past the slow pool's own timeout, its agent is parked too.
+        let long = NOW.minus(Duration::from_secs(21 * 60));
+        idle_agent(&fx, "ws", "s1", long, NOW).await;
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick_elastic().await.unwrap();
+        let parked: Vec<AgentId> = fx.hub.mem.lock().await.park_sent.keys().cloned().collect();
+        assert!(
+            parked.contains(&"ws".parse::<AgentId>().unwrap()),
+            "the slow pool's agent is parked by its own timeout: {parked:?}"
+        );
     }
 
     #[test]

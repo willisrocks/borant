@@ -106,7 +106,7 @@ async fn parks_an_idle_agent_on_a_pool_host() {
     let mut p1 = fx.commands("p1").await;
     let idle = fx.clock.now();
     beat_worker(&fx, &w, Some(idle), IDLE_TIMEOUT.as_secs() + BEAT).await;
-    let parked = fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap();
+    let parked = fx.hub.park_idle(None, IDLE_TIMEOUT).await.unwrap();
     assert_eq!(parked, vec![w.agent.clone()]);
     match next_cmd(&mut p1).await {
         Some(HostCommand::Park { session }) => assert_eq!(session, w.session),
@@ -120,7 +120,13 @@ async fn does_not_park_a_session_in_a_turn() {
     let (_owner, w) = setup(&fx).await;
     let mut p1 = fx.commands("p1").await;
     beat_worker(&fx, &w, None, IDLE_TIMEOUT.as_secs() + BEAT).await;
-    assert!(fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap().is_empty());
+    assert!(
+        fx.hub
+            .park_idle(None, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(next_cmd(&mut p1).await.is_none());
 }
 
@@ -132,7 +138,13 @@ async fn does_not_park_an_agent_with_a_claim() {
     let mut p1 = fx.commands("p1").await;
     let idle = fx.clock.now();
     beat_worker(&fx, &w, Some(idle), IDLE_TIMEOUT.as_secs() + BEAT).await;
-    assert!(fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap().is_empty());
+    assert!(
+        fx.hub
+            .park_idle(None, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(next_cmd(&mut p1).await.is_none());
 }
 
@@ -148,7 +160,13 @@ async fn does_not_park_an_agent_with_an_unacked_message() {
     let mut p1 = fx.commands("p1").await;
     let idle = fx.clock.now();
     beat_worker(&fx, &w, Some(idle), IDLE_TIMEOUT.as_secs() + BEAT).await;
-    assert!(fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap().is_empty());
+    assert!(
+        fx.hub
+            .park_idle(None, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(next_cmd(&mut p1).await.is_none());
 }
 
@@ -162,7 +180,13 @@ async fn does_not_park_an_agent_on_a_static_host() {
     // agent that is idle past the timeout.
     beat_worker(&fx, &w, None, IDLE_TIMEOUT.as_secs() + BEAT).await;
     fx.heartbeat_idle("s1", &[(&owner, Some(idle))]).await;
-    assert!(fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap().is_empty());
+    assert!(
+        fx.hub
+            .park_idle(None, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(next_cmd(&mut s1).await.is_none());
 }
 
@@ -175,7 +199,13 @@ async fn does_not_park_an_agent_with_a_stale_report() {
     // tell whether the agent started a turn, so it does not park it.
     fx.heartbeat_idle("p1", &[(&w, Some(fx.clock.now()))]).await;
     fx.advance(IDLE_TIMEOUT.as_secs() + BEAT);
-    assert!(fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap().is_empty());
+    assert!(
+        fx.hub
+            .park_idle(None, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(next_cmd(&mut p1).await.is_none());
 }
 
@@ -184,7 +214,7 @@ async fn park_and_end(fx: &Fx, w: &Registered, reason: &str) -> Lease {
     let idle = fx.clock.now();
     beat_worker(fx, w, Some(idle), IDLE_TIMEOUT.as_secs() + BEAT).await;
     assert_eq!(
-        fx.hub.park_idle(IDLE_TIMEOUT).await.unwrap(),
+        fx.hub.park_idle(None, IDLE_TIMEOUT).await.unwrap(),
         vec![w.agent.clone()]
     );
     fx.req(CtlRequest::EndSession {

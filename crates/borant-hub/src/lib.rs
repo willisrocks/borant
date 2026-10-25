@@ -217,7 +217,10 @@ impl Hub {
         // with no pool keeps the one timeout for its hosts.
         match &self.cfg.elastic {
             Some(elastic) if !elastic.pools.is_empty() => self.tick_elastic().await,
-            _ => self.park_idle(park::DEFAULT_IDLE_TIMEOUT).await.map(|_| ()),
+            _ => self
+                .park_idle(None, park::DEFAULT_IDLE_TIMEOUT)
+                .await
+                .map(|_| ()),
         }
     }
 

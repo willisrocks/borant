@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use borant_core::model::{Agent, HostInfo, Lease, LeaseState};
 use borant_core::proto::{ApiError, HostCommand};
-use borant_core::{AgentId, HostName, SessionId, Timestamp, keys, subjects};
+use borant_core::{AgentId, HostName, PoolName, SessionId, Timestamp, keys, subjects};
 
 use crate::Hub;
 
@@ -29,13 +29,20 @@ const PARK_RETRY: Duration = Duration::from_secs(60);
 
 impl Hub {
     /// Parks the agents that stayed idle past `idle_timeout` and returns them.
-    /// Public for tests.
-    pub async fn park_idle(&self, idle_timeout: Duration) -> Result<Vec<AgentId>, ApiError> {
+    /// Only the hosts of `pool` are considered, so one pool's timeout never
+    /// parks another pool's agents; `None` accepts every host that has a
+    /// pool, for a hub whose `hub.toml` names no `[[pools]]`. Public for
+    /// tests.
+    pub async fn park_idle(
+        &self,
+        pool: Option<&PoolName>,
+        idle_timeout: Duration,
+    ) -> Result<Vec<AgentId>, ApiError> {
         let mut parked = Vec::new();
         if self.mem.lock().await.maintenance {
             return Ok(parked);
         }
-        let pools = self.pool_hosts().await?;
+        let pools = self.pool_hosts(pool).await?;
         if pools.is_empty() {
             return Ok(parked);
         }
@@ -84,14 +91,19 @@ impl Hub {
         Ok(parked)
     }
 
-    /// The names of the hosts that belong to a pool.
-    async fn pool_hosts(&self) -> Result<BTreeSet<HostName>, ApiError> {
+    /// The names of the hosts that belong to `pool`, or of every host that
+    /// belongs to a pool when `pool` is `None`.
+    async fn pool_hosts(&self, pool: Option<&PoolName>) -> Result<BTreeSet<HostName>, ApiError> {
         Ok(self
             .store
             .list::<HostInfo>(keys::HOST_PREFIX)
             .await?
             .into_iter()
-            .filter(|d| d.value.pool.is_some())
+            .filter(|d| match (pool, &d.value.pool) {
+                (Some(want), Some(have)) => want == have,
+                (None, have) => have.is_some(),
+                (Some(_), None) => false,
+            })
             .map(|d| d.value.name)
             .collect())
     }
