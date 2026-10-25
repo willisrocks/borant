@@ -27,6 +27,8 @@ pub enum ApiErrorCode {
     StaleToken,
     Unavailable,
     Internal,
+    /// The role of the caller does not allow the request.
+    Denied,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -59,6 +61,10 @@ impl ApiError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ApiErrorCode::Internal, message)
     }
+
+    pub fn denied(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorCode::Denied, message)
+    }
 }
 
 impl From<CoreError> for ApiError {
@@ -80,10 +86,7 @@ impl From<PortError> for ApiError {
             PortErrorKind::Conflict => ApiErrorCode::Conflict,
             PortErrorKind::Unavailable | PortErrorKind::Timeout => ApiErrorCode::Unavailable,
             PortErrorKind::Invalid => ApiErrorCode::Invalid,
-            // The wire has no code for a refusal, and a new code would need a
-            // release on every host and the hub first. The caller of a port
-            // reads the kind itself.
-            PortErrorKind::Denied => ApiErrorCode::Invalid,
+            PortErrorKind::Denied => ApiErrorCode::Denied,
             PortErrorKind::Other => ApiErrorCode::Internal,
         };
         Self::new(code, e.message)

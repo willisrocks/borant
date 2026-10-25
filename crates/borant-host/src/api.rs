@@ -30,6 +30,7 @@ impl IntoResponse for ApiFail {
             ApiErrorCode::Conflict | ApiErrorCode::StaleToken => StatusCode::CONFLICT,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiErrorCode::Denied => StatusCode::FORBIDDEN,
         };
         (status, Json(Reply::Error(self.0))).into_response()
     }

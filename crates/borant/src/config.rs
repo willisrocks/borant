@@ -13,7 +13,8 @@ use borant_core::ports::provision::Provisioner;
 use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::pool::PoolConfig;
-use borant_core::{BundleName, HostName, MemberName, PoolName, Tag};
+use borant_core::rules::roles::RoleConfig;
+use borant_core::{BundleName, HostName, MemberName, PoolName, RoleName, Tag};
 use borant_exec::ExecConfig;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
@@ -242,6 +243,9 @@ pub struct HubFile {
     /// `[[pools]]`, the shapes of the hosts that the hub creates.
     #[serde(default)]
     pub pools: Vec<PoolFile>,
+    /// The roles of the swarm, from `[roles.<name>]`.
+    #[serde(default)]
+    pub roles: BTreeMap<RoleName, RoleConfig>,
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
@@ -886,6 +890,40 @@ omp = ["lunaroute"]
             toml::from_str::<HostFile>("[secrets.bundles.x]\nstore = \"s\"\nnope = 1\n").is_err(),
             "deny_unknown_fields stays"
         );
+    }
+
+    #[test]
+    fn hub_file_parses_roles() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [roles.chief]
+            harness = "claude-code"
+            model = "opus"
+            pinned = true
+            one_per = "collection"
+            spawns = ["worker"]
+            skill = "borant:chief-of-staff"
+
+            [roles.worker]
+            harness = "omp"
+            tools_deny = ["spawn", "move"]
+            spawns = []
+            "#,
+        )
+        .unwrap();
+        let chief = f.roles.get(&"chief".parse().unwrap()).unwrap();
+        assert_eq!(chief.harness, Some(Harness::ClaudeCode));
+        assert_eq!(chief.model.as_deref(), Some("opus"));
+        assert!(chief.pinned);
+        assert_eq!(
+            chief.one_per,
+            Some(borant_core::rules::roles::OnePer::Collection)
+        );
+        assert_eq!(chief.spawns, vec!["worker".parse().unwrap()]);
+        assert_eq!(chief.skill.as_deref(), Some("borant:chief-of-staff"));
+        let worker = f.roles.get(&"worker".parse().unwrap()).unwrap();
+        assert_eq!(worker.tools_deny, vec!["spawn", "move"]);
+        assert!(worker.spawns.is_empty());
     }
 }
 

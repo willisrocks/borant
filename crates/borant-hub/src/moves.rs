@@ -6,11 +6,15 @@ use borant_core::model::{
     Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, SessionEvent,
     SessionEventBody,
 };
-use borant_core::proto::{ApiError, HostCommand, LaunchOrder, MoveSelector, MoveTarget};
+use borant_core::proto::{
+    ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
+};
 use borant_core::rules::lease;
+use borant_core::rules::roles::{self, SpawnInput};
 use borant_core::rules::schedule::{self, HostView, PlacementReq};
 use borant_core::{
-    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, SessionId, keys, subjects,
+    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, RoleName, SessionId, keys,
+    subjects,
 };
 use serde_json::{Value, json};
 
@@ -420,9 +424,53 @@ impl Hub {
         host: Option<HostName>,
         name: Option<AgentId>,
         model: Option<String>,
+        role: Option<RoleName>,
     ) -> Result<Value, ApiError> {
         let ch = self.channel(channel).await?.value;
         let parent = self.agent(by).await?.value;
+        // The role of the child explains the harness, the model, the pin, and
+        // the brief. Explicit values of the call win.
+        let resolved = roles::resolve(
+            &SpawnInput {
+                role,
+                harness,
+                model,
+            },
+            Some(&parent),
+            &self.cfg.roles,
+        )
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+        if !roles::may_spawn(
+            parent.role.as_ref(),
+            resolved.role.as_ref(),
+            &self.cfg.roles,
+        ) {
+            return Err(ApiError::denied(format!(
+                "the role of {by} may not spawn this agent"
+            )));
+        }
+        if let Some(role) = &resolved.role
+            && let Some(one_per) = resolved.one_per
+            && self
+                .role_taken(
+                    mem,
+                    role,
+                    one_per,
+                    resolved.collection.as_ref(),
+                    ch.project.as_ref(),
+                    None,
+                )
+                .await?
+        {
+            let scope = match one_per {
+                roles::OnePer::Collection => "collection",
+                roles::OnePer::Project => "project",
+            };
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("only one {role} per {scope}"),
+            ));
+        }
         // A channel with a project gives the repository. Without one, the
         // new agent works in the repository of its parent.
         let repo = match &ch.project {
@@ -436,7 +484,15 @@ impl Hub {
             }
             None => parent.repo.clone(),
         };
-        let harness = harness.unwrap_or(parent.preferred_harness);
+        let harness = resolved.harness.unwrap_or(parent.preferred_harness);
+        let model = resolved.model;
+        let prompt = roles::brief(&prompt, resolved.skill.as_deref());
+        // A helper role runs on the host of its parent.
+        let host = match host {
+            Some(host) => Some(host),
+            None if resolved.placement.on_parent_host => parent.host.clone(),
+            None => None,
+        };
         let id = match name {
             Some(n) => n,
             None => self.new_agent_id(harness).await?,
@@ -455,10 +511,10 @@ impl Hub {
             model,
             project: ch.project,
             members: Default::default(),
-            pinned: false,
-            role: None,
-            collection: None,
-            parent: None,
+            pinned: resolved.pinned,
+            role: resolved.role,
+            collection: resolved.collection,
+            parent: Some(by.clone()),
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

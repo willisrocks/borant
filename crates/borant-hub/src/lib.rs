@@ -46,7 +46,7 @@ pub struct HubConfig {
     /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of
     /// `hub.toml`. `None`, or no pool, keeps today's hub.
     pub elastic: Option<ElasticConfig>,
-    /// The `[roles]` of `hub.toml`, for the placement rule of each role.
+    /// The roles from `hub.toml`, for spawns, calls, and registrations.
     pub roles: BTreeMap<RoleName, RoleConfig>,
 }
 
@@ -160,9 +160,8 @@ impl Hub {
             } => {
                 drop(mem);
                 let result = async {
-                    if let Some(a) = &actor {
-                        self.verify_actor(a).await?;
-                    }
+                    self.authorize(&actor, &ToolCall::PruneAgents { older_than_secs })
+                        .await?;
                     prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
                 }
                 .await;
