@@ -69,7 +69,6 @@ struct Fx {
     state: MemoryState,
     log: Arc<MemoryEventLog>,
     writes: Arc<AtomicUsize>,
-    host: borant_core::HostName,
     agent: AgentId,
     channel: ChannelName,
     task: TaskId,
@@ -186,7 +185,6 @@ impl Fx {
             state,
             log,
             writes,
-            host,
             agent,
             channel,
             task: first,
@@ -430,7 +428,8 @@ async fn http_graph_lists_the_tasks_with_the_stage_of_their_path() {
     let claimed: AgentId = fx.agent.clone();
     let mut blocked = task(later, TaskStatus::InProgress, vec![fx.task]);
     blocked.claimed_by = Some(claimed.clone());
-    fx.state.seed(&keys::task(&fx.channel, &later), bytes(&blocked));
+    fx.state
+        .seed(&keys::task(&fx.channel, &later), bytes(&blocked));
 
     let (status, body) = fx.get("/api/channels/roadmap/graph").await;
     assert_eq!(status, StatusCode::OK);
@@ -558,6 +557,66 @@ async fn http_events_streams_the_log_from_since() {
     let text = String::from_utf8_lossy(&data);
     assert!(text.contains("event: swarm"), "the frame:\n{text}");
     assert!(text.contains("hub.started"), "the frame:\n{text}");
+}
+
+#[tokio::test]
+async fn http_serve_answers_over_a_tcp_socket() {
+    let fx = Fx::new();
+    // A free port: the listener takes it after this one lets go.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = taken.local_addr().expect("the address");
+    drop(taken);
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server = tokio::spawn(serve(fx.hub.clone(), addr, shutdown.clone()));
+    // The listener binds on its own task, so the first connect may race it.
+    let mut stream = None;
+    for _ in 0..100 {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let mut stream = stream.expect("the listener answers");
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: hub.test\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("the request");
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).await.expect("the reply");
+    let reply = String::from_utf8_lossy(&reply);
+    assert!(reply.starts_with("HTTP/1.1 200"), "the reply:\n{reply}");
+    assert!(reply.ends_with("ok"), "the reply:\n{reply}");
+
+    shutdown.cancel();
+    server
+        .await
+        .expect("the listener task")
+        .expect("a clean stop");
+}
+
+#[tokio::test]
+async fn http_serve_reports_an_address_in_use() {
+    let fx = Fx::new();
+    let taken = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let addr = taken.local_addr().expect("the address");
+    let error = serve(
+        fx.hub.clone(),
+        addr,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect_err("the bind fails");
+    assert!(
+        error.downcast_ref::<std::io::Error>().is_some(),
+        "{error:#}"
+    );
 }
 
 #[tokio::test]
