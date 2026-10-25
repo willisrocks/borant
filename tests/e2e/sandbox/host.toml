@@ -1,0 +1,14 @@
+# The one host of the sandbox e2e scenario that offers the namespace sandbox.
+# At start it runs `bwrap --ro-bind / / true`; when the container refuses a
+# user namespace the host logs a warn, drops the sandbox, and the scenario
+# skips with that line.
+
+[sandbox]
+enabled = true
+program = "bwrap"
+# A real host keeps the harness in ~/.local, which the wrap binds itself. The
+# e2e image installs it in /usr/local/bin and it is a Debian ELF, so the test
+# host binds the system tree that a NixOS host takes from /nix/store. These
+# binds hold no secret: the agent's home, its credentials, and the other
+# agents' clones stay outside.
+ro = ["/usr", "/lib"]

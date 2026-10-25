@@ -34,7 +34,8 @@ FROM docker:27-cli AS dockercli
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates procps tmux jq \
+ && apt-get install -y --no-install-recommends git ca-certificates procps tmux jq bubblewrap \
+ && mkdir -p /nix/store /run/current-system \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=build /usr/local/bin/borant /usr/local/bin/borant-fake-harness /usr/local/bin/

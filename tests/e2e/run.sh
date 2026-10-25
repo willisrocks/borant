@@ -28,6 +28,13 @@ affected() {
     echo "$ALL"
     return 0
   fi
+  # The sandbox files map to the sandbox scenario. It needs bubblewrap and its
+  # own swarm, so it is never part of ALL.
+  if printf '%s\n' "$files" |
+    grep -qE '^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs)$'; then
+    echo sandbox
+    return 0
+  fi
   if printf '%s\n' "$files" |
     grep -qvE '^(docs/|integrations/|crates/borant-memory/|LICENSE|[^/]*\.md$)'; then
     echo "$ALL"
@@ -46,10 +53,11 @@ case "${1:-}" in
 esac
 
 SCENARIOS=${*:-$ALL}
-# The elastic scenario swaps the swarm for a hub with no worker hosts, so it
-# runs alone and never in the default list.
+# The elastic and sandbox scenarios swap the swarm for their own, so each runs
+# alone and neither is in the default list.
 for s in $SCENARIOS; do
   if [ "$s" = "elastic" ]; then SCENARIOS=elastic; fi
+  if [ "$s" = "sandbox" ]; then SCENARIOS=sandbox; fi
 done
 
 cleanup() {
@@ -67,7 +75,15 @@ if [ "${BUILD:-1}" = "1" ]; then
   dc build hub >/dev/null || { echo "FAIL build"; exit 1; }
 fi
 
-if [ "$SCENARIOS" = "elastic" ]; then
+if [ "$SCENARIOS" = "sandbox" ]; then
+  # One host without [sandbox], so the first sandboxed spawn is refused; the
+  # scenario starts the sandbox host itself after that.
+  echo "Starting the sandbox swarm..."
+  dc --profile sandbox up -d nats git hub-sandbox host-a >/dev/null \
+    || { echo "FAIL start"; dc --profile sandbox logs --no-color 2>/dev/null | tail -200; exit 1; }
+  hosts_online() { borant_on host-a hosts | jq -e 'length == 1 and all(.online)'; }
+  wait_for "host daemons" hosts_online || exit 1
+elif [ "$SCENARIOS" = "elastic" ]; then
   echo "Starting the elastic swarm..."
   dc --profile elastic up -d nats git hub-elastic host-control >/dev/null \
     || { echo "FAIL start"; dc --profile elastic logs --no-color 2>/dev/null | tail -200; exit 1; }
@@ -213,6 +229,92 @@ scenario_hub_move() {
   WAIT=90 wait_for "hosts see the moved hub" task_survived || return 1
   start_agent host-c ghost
   WAIT=90 wait_for "the pending message survived the move" log_has host-c ghost "hello-ghost" || return 1
+}
+
+# The sandbox scenario of phase 5, on its own swarm (see the start block). The
+# hub has a role that asks for a namespace sandbox, so the first spawn waits
+# with `no sandbox` while only a host without [sandbox] is up; the sandbox host
+# then takes it, and the agent inside its namespace reads its own clone and
+# neither the host's marker file nor a sibling's clone.
+scenario_sandbox() {
+  local target=host-sandbox
+
+  start_agent host-a boss
+  wait_for "boss registered" is_at boss host-a || return 1
+  borant_on host-a project add demo git://git/demo.git --branch main >/dev/null || return 1
+  borant_on host-a send boss "CHANNEL demo demo" >/dev/null
+  wait_for "the channel with its project" log_has host-a boss "CHANNEL demo ok" || return 1
+
+  on host-a sh -c 'printf "look around\n" > /tmp/prompt' || return 1
+  # The spawn is not placed: the placement refusal names the one host and
+  # why it cannot take the agent. (The spawn queue is not built yet, so the
+  # event is the record.)
+  borant_on host-a spawn --channel demo --role sandboxed --name boxed \
+    --prompt-file /tmp/prompt >/dev/null 2>&1 || true
+  wait_for "the spawn refused for no sandbox" refused_no_sandbox || return 1
+
+  # The one host that offers the sandbox comes up. When the container refuses
+  # a user namespace, the host drops its sandbox at start and the scenario
+  # skips instead of failing (phase 5 spec, the e2e task).
+  dc --profile sandbox up -d host-sandbox >/dev/null || return 1
+  sandbox_host_up() {
+    borant_on host-a hosts 2>/dev/null | jq -e 'length == 2 and all(.online)'
+  }
+  wait_for "the sandbox host" sandbox_host_up || return 1
+  if ! sandbox_offered; then
+    echo "  the host dropped its sandbox:"
+    dc logs --no-color host-sandbox 2>/dev/null | grep "start check failed" | tail -1
+    echo "SKIP sandbox: bwrap cannot create a user namespace in this container"
+    return 0
+  fi
+
+  wait_for "the queued spawn on the sandbox host" is_at boxed "$target" || return 1
+  wait_for "the clone of the sandboxed agent" cloned boxed || return 1
+
+  # A marker outside the clone, and a sibling agent with a clone of its own on
+  # the same host.
+  on "$target" sh -c 'mkdir -p /root/.ssh && echo host-secret > /root/.ssh/marker' || return 1
+  start_agent "$target" sib
+  wait_for "the sibling registered" is_at sib "$target" || return 1
+  borant_on host-a send sib "WRITE notes.txt sibling-secret" >/dev/null
+  wait_for "the sibling clone" log_has "$target" sib "WROTE notes.txt" || return 1
+
+  borant_on host-a send boxed "WRITE own.txt mine
+READ own.txt
+READ /root/.ssh/marker
+READ /work/sib/notes.txt" >/dev/null
+  wait_for "the sandboxed reads" sandbox_reads || return 1
+  echo "  the agent read only its own clone:"
+  on "$target" cat "/root/.borant/work/boxed/demo/reads.log" || return 1
+}
+
+# The pending spawn names the refusal of the only host: it offers no sandbox.
+refused_no_sandbox() {
+  local events
+  events=$(borant_on host-a events --json --kind placement.refused 2>/dev/null) || return 1
+  printf '%s\n' "$events" |
+    jq -e 'select(.kind == "placement.refused" and .agent == "boxed"
+                  and (.rejected | any(.why == "no sandbox")))' >/dev/null
+}
+
+# The host advertises the namespace sandbox once its start check passed.
+sandbox_offered() {
+  borant_on host-a hosts 2>/dev/null |
+    jq -e 'any(.[]; .host.name == "host-sandbox"
+                  and (.host.sandboxes | index("namespace")) != null)' >/dev/null
+}
+
+# The clone of the agent exists on the host that runs it.
+cloned() { on host-sandbox test -d "/root/.borant/work/$1/demo/.git"; }
+
+# The results that the sandboxed agent wrote into its own clone: its file is
+# there, and the host marker and the sibling's clone are not.
+sandbox_reads() {
+  local logged
+  logged=$(on host-sandbox cat /root/.borant/work/boxed/demo/reads.log 2>/dev/null) || return 1
+  printf '%s\n' "$logged" | grep -q '^READ own.txt ok' &&
+    printf '%s\n' "$logged" | grep -q '^READ /root/.ssh/marker failed' &&
+    printf '%s\n' "$logged" | grep -q '^READ /work/sib/notes.txt failed'
 }
 
 # The elastic scenario of the elastic compute design ("Tests"): a hub with no
