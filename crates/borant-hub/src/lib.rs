@@ -135,6 +135,8 @@ pub(crate) struct Memory {
     pub last_elastic: Option<Timestamp>,
     /// When the alert pass last ran.
     pub last_alerts: Option<Timestamp>,
+    /// When the deadline pass last ran.
+    pub last_deadlines: Option<Timestamp>,
     /// The provisioner refusals that the alerts report, per pool.
     pub elastic_refused: BTreeMap<PoolName, borant_core::rules::alerts::Refusal>,
     /// When a failed create lets the pool create again.

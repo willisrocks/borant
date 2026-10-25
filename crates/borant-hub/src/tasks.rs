@@ -1,5 +1,7 @@
 //! Task calls (spec section 9).
 
+use std::time::Duration;
+
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
@@ -12,6 +14,9 @@ use serde_json::{Map, Value};
 
 use crate::store::Doc;
 use crate::{Hub, Memory};
+
+/// The deadline pass runs at most this often.
+const DEADLINE_EVERY: Duration = Duration::from_secs(10);
 
 impl Hub {
     pub(crate) async fn tasks(&self, channel: &ChannelName) -> Result<Vec<Task>, ApiError> {
@@ -146,7 +151,7 @@ impl Hub {
                 // reopen starts the count again.
                 let from = t.status;
                 if at_retry_limit(t) {
-                    if !is_owner(&ch.value.owner, by) {
+                    if !is_owner_or_person(&ch.value.owner, by) {
                         return Err(ApiError::new(
                             ApiErrorCode::Conflict,
                             format!(
@@ -352,7 +357,7 @@ impl Hub {
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         // Only the owner of the channel and a person close a task as done.
-        if reason == CloseReason::Done && !is_owner(&ch.value.owner, by) {
+        if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
             return Err(ApiError::new(
                 ApiErrorCode::Denied,
                 "only the owner closes a task as done",
@@ -460,6 +465,18 @@ impl Hub {
     /// owner. It reassigns nothing (phase 6 spec, "Tasks").
     pub(crate) async fn tick_deadlines(&self) -> Result<(), ApiError> {
         let now = self.now();
+        {
+            // The pass lists every task, so it runs at most every
+            // [`DEADLINE_EVERY`]; a deadline is minutes away, not seconds.
+            let mut mem = self.mem.lock().await;
+            if mem
+                .last_deadlines
+                .is_some_and(|last| now.since(last) < DEADLINE_EVERY)
+            {
+                return Ok(());
+            }
+            mem.last_deadlines = Some(now);
+        }
         for (channel, task) in self.all_tasks().await? {
             let Some(deadline) = task.deadline else {
                 continue;
@@ -606,9 +623,8 @@ impl Hub {
     }
 }
 
-/// Whether `by` may close a task as done: the owner of the channel, or a
-/// person.
-fn is_owner(owner: &AgentId, by: &Sender) -> bool {
+/// Whether `by` is the owner of the channel or a person.
+fn is_owner_or_person(owner: &AgentId, by: &Sender) -> bool {
     match by {
         Sender::Human => true,
         Sender::Agent(agent) => agent == owner,
