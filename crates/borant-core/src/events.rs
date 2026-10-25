@@ -152,6 +152,9 @@ pub enum SwarmEventBody {
     },
     #[serde(rename = "session.paused")]
     SessionPaused { why: String },
+    /// The hub is back: the tools of the session work again.
+    #[serde(rename = "session.resumed")]
+    SessionResumed {},
     #[serde(rename = "session.fenced")]
     SessionFenced { why: String },
     #[serde(rename = "agent.spawned")]
@@ -428,6 +431,7 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::SessionStarted { .. } => "session.started",
         SwarmEventBody::SessionEnded { .. } => "session.ended",
         SwarmEventBody::SessionPaused { .. } => "session.paused",
+        SwarmEventBody::SessionResumed { .. } => "session.resumed",
         SwarmEventBody::SessionFenced { .. } => "session.fenced",
         SwarmEventBody::AgentSpawned { .. } => "agent.spawned",
         SwarmEventBody::AgentPruned { .. } => "agent.pruned",

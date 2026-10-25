@@ -547,6 +547,7 @@ async fn restart_restores_live_sessions() {
             fx.dir.path().join("logs"),
         )),
         None,
+        None,
         borant_host::outbox::Outbox::in_memory().unwrap(),
     );
     again.restore().await;

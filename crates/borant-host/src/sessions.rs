@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{SessionEventBody, Target};
 use borant_core::proto::{
     ApiError, CtlRequest, EventReply, LocalEvent, LocalRegister, LocalSession, LocalState,
@@ -22,6 +23,9 @@ use crate::{Host, LocalSess, Queued, terminate};
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
 /// How long a registration call waits for the first attach attempt.
 const FIRST_ATTACH_WAIT: Duration = Duration::from_secs(3);
+/// Why a session pauses, and what its tools report: the hub is unreachable.
+pub(crate) const HUB_DOWN_WHY: &str =
+    "The Borant hub is unreachable, so tools are paused until it returns.";
 
 impl Host {
     /// Registers a harness session. If the hub is unreachable, the session is
@@ -226,12 +230,10 @@ impl Host {
                 .as_ref()
                 .map(|r| r.channels.clone())
                 .unwrap_or_default(),
-            fenced: s.fenced.clone().or_else(|| {
-                s.paused.then(|| {
-                    "The Borant hub is unreachable, so tools are paused until it returns."
-                        .to_owned()
-                })
-            }),
+            fenced: s
+                .fenced
+                .clone()
+                .or_else(|| s.paused.then(|| HUB_DOWN_WHY.to_owned())),
         })
     }
 
@@ -297,22 +299,49 @@ impl Host {
     }
 
     pub(crate) fn set_paused(&self, on: bool) {
-        let mut st = self.state();
-        // A pause after a full recovery is a new outage: its sessions get one
-        // wake message when the hub is back. A pause during the same outage,
-        // which a flapping hub causes, does not.
-        let arm = on && st.outage_over;
-        if arm {
-            st.outage_over = false;
+        let now = self.inner.clock.now();
+        let mut changed: Vec<AgentId> = Vec::new();
+        {
+            let mut st = self.state();
+            // A pause after a full recovery is a new outage: its sessions get
+            // one wake message when the hub is back. A pause during the same
+            // outage, which a flapping hub causes, does not.
+            let arm = on && st.outage_over;
+            if arm {
+                st.outage_over = false;
+            }
+            for s in st.sessions.values_mut() {
+                if arm && s.fenced.is_none() {
+                    s.wake_pending = true;
+                }
+                if s.paused != on {
+                    s.paused = on;
+                    s.notify.notify_waiters();
+                    if let Some(reg) = &s.reg {
+                        changed.push(reg.agent.clone());
+                    }
+                }
+            }
         }
-        for s in st.sessions.values_mut() {
-            if arm && s.fenced.is_none() {
-                s.wake_pending = true;
-            }
-            if s.paused != on {
-                s.paused = on;
-                s.notify.notify_waiters();
-            }
+        // The event goes out after the write, and a failed publish waits in
+        // the outbox, so a pause of an outage still arrives.
+        for agent in changed {
+            let host = self.clone();
+            tokio::spawn(async move {
+                let (severity, body) = if on {
+                    (
+                        Severity::Warn,
+                        SwarmEventBody::SessionPaused {
+                            why: HUB_DOWN_WHY.into(),
+                        },
+                    )
+                } else {
+                    (Severity::Info, SwarmEventBody::SessionResumed {})
+                };
+                let event =
+                    SwarmEvent::host(now, &host.inner.cfg.name, severity, body).about_agent(agent);
+                host.emit_event(event).await;
+            });
         }
     }
 
@@ -411,11 +440,9 @@ impl Host {
     pub(crate) fn fence_reason(&self, id: SessionId) -> Option<String> {
         let st = self.state();
         let s = st.sessions.get(&id)?;
-        s.fenced.clone().or_else(|| {
-            s.paused.then(|| {
-                "The Borant hub is unreachable, so tools are paused until it returns.".to_owned()
-            })
-        })
+        s.fenced
+            .clone()
+            .or_else(|| s.paused.then(|| HUB_DOWN_WHY.to_owned()))
     }
 
     /// Ends a local session and tells the hub.
