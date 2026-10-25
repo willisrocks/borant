@@ -174,6 +174,11 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
 - A worker bound to a task (`--task` or `--task-title`) stops when the task
   closes (`--no-stop-on-close` keeps it), which frees its slot for the next
   spawn.
+- `--continue N` (with a bound task) sends the worker "continue" when it goes
+  idle while its task is still `in_progress` and claimed by it, at most N times
+  per spawn and never after `--continue-hours H` of session; then the task goes
+  `needs_human`. One idle period gets one continue. A worker that is done calls
+  the `wait` tool on its task for `closed`, and the continues stop.
 - A launch that does not register fails after `launch_timeout_secs` in
   `[timing]` (default 90 s). The hub runs at most 3 launches for a spawn, then
   the spawn waits for a person.
@@ -229,7 +234,7 @@ to agents.
 | `borant doctor [--json]` | The readiness of this host, read-only: the daemon socket, NATS, each harness command, the launcher, the disk of `BORANT_HOME`, the sandbox, and the exec plugins of `host.toml`. Each check is one `ok`, `warn`, or `fail` line, and the exit code is 1 when one fails |
 | `borant events [--follow] [--since 1h] [--kind lease.*] [--agent A] [--channel C] [--host H] [--severity warn] [--json]` | The swarm event stream, one line per event or JSON |
 | `borant send <agent\|#channel> <text> [--urgent]` | Send a message as a human |
-| `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--priority N] [--name N] [--key K] [--bundle B] [--json]` | Start an agent in a channel |
+| `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--continue N [--continue-hours H]] [--priority N] [--name N] [--key K] [--bundle B] [--json]` | Start an agent in a channel |
 | `borant wait <agent> \| --task C/ID [--timeout 2h]` | Wait for work: exit 0 done, 1 closed otherwise, 2 at the timeout |
 | `borant cancel <agent> [--close-task REASON]` | Stop an agent and cancel its queued spawn |
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |
