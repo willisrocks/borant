@@ -250,6 +250,20 @@ fn detail(event: &SwarmEvent) -> String {
             Some(git_ref) => format!("session {session} at {git_ref}"),
             None => format!("session {session}"),
         },
+        B::AgentPaused { by, why } => format!("by {by}: {why}"),
+        B::AgentResumed => String::new(),
+        B::ChangeUpdated {
+            state,
+            head,
+            checks,
+            review,
+        } => format!(
+            "{} at {} checks={} review={}",
+            word(state),
+            head,
+            checks_word(checks),
+            word(review)
+        ),
         B::PlacementChosen { harness, reason } => {
             let host = event.host.as_ref().map(ToString::to_string);
             format!(
@@ -364,6 +378,18 @@ fn word<T: serde::Serialize>(value: &T) -> String {
         Ok(serde_json::Value::String(text)) => text,
         Ok(other) => other.to_string(),
         Err(_) => "?".to_owned(),
+    }
+}
+
+/// The checks of a change, as one phrase: `pass`, `fail: ci, lint`,
+/// `pending`, or `none`.
+fn checks_word(checks: &borant_core::ports::CheckState) -> String {
+    use borant_core::ports::CheckState;
+    match checks {
+        CheckState::Pass {} => "pass".to_owned(),
+        CheckState::Fail { failed } => format!("fail: {}", failed.join(", ")),
+        CheckState::Pending {} => "pending".to_owned(),
+        CheckState::None {} => "none".to_owned(),
     }
 }
 
@@ -772,6 +798,36 @@ mod tests {
         assert_eq!(
             render(&task),
             "12:00:00 info  task.status            w1             in_progress -> needs_human by w1 (decide the storage)"
+        );
+    }
+
+    #[test]
+    fn events_text_shows_pauses_and_changes() {
+        let paused = event(SwarmEventBody::AgentPaused {
+            by: borant_core::model::Sender::Human,
+            why: "cap: 200 turns today".to_owned(),
+        })
+        .about_agent("w1".parse().unwrap());
+        assert_eq!(
+            render(&paused),
+            "12:00:00 info  agent.paused           w1             by human: cap: 200 turns today"
+        );
+        let resumed = event(SwarmEventBody::AgentResumed).about_agent("w1".parse().unwrap());
+        assert_eq!(render(&resumed), "12:00:00 info  agent.resumed          w1");
+
+        let changed = event(SwarmEventBody::ChangeUpdated {
+            state: borant_core::ports::ChangeState::Open,
+            head: "abc123".to_owned(),
+            checks: borant_core::ports::CheckState::Fail {
+                failed: vec!["ci".to_owned(), "lint".to_owned()],
+            },
+            review: borant_core::ports::ReviewState::ChangesRequested,
+        })
+        .about_task(borant_core::TaskId::new());
+        assert!(
+            render(&changed).contains("open at abc123 checks=fail: ci, lint review=changes_requested"),
+            "{}",
+            render(&changed)
         );
     }
 
