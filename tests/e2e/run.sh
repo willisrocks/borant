@@ -25,6 +25,8 @@ SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/san
 # scenario loads skip the run, and every other path runs the whole set.
 #
 #   docs/, *.md, integrations/, crates/borant-memory/, LICENSE -> none
+#   crates/borant-hub/src/members.rs, crates/borant-core/src/rules/members.rs
+#     -> members (the only scenario that builds a bundle)
 #   everything else, and any change under crates/borant-core,
 #   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
 #   the sandbox and its scenario -> sandbox, or all when other paths changed
@@ -47,8 +49,13 @@ affected() {
     return 0
   fi
   if printf '%s\n' "$files" |
-    grep -qvE '^(docs/|integrations/|crates/borant-memory/|LICENSE|[^/]*\.md$)'; then
+    grep -qvE '^(docs/|integrations/|crates/borant-memory/|LICENSE|[^/]*\.md$|crates/borant-hub/src/members\.rs|crates/borant-core/src/rules/members\.rs)'; then
     echo "$ALL"
+    return 0
+  fi
+  if printf '%s\n' "$files" |
+    grep -qE '^(crates/borant-hub/src/members\.rs|crates/borant-core/src/rules/members\.rs)'; then
+    echo members
   fi
 }
 
@@ -64,12 +71,15 @@ case "${1:-}" in
 esac
 
 SCENARIOS=${*:-$ALL}
-# The elastic scenario swaps the swarm for a hub with no worker hosts, so it
-# runs alone. The sandbox scenario has its own swarm as well, and it can share
-# a run with the default set: the default scenarios run first in a child, then
-# this script continues with the sandbox swarm.
+# The elastic and members scenarios bring their own swarm (a hub with no
+# worker hosts, and one host with a bundle), so each runs alone. The sandbox
+# scenario has its own swarm as well, and it can share a run with the default
+# set: the default scenarios run first in a child, then this script continues
+# with the sandbox swarm.
 for s in $SCENARIOS; do
-  if [ "$s" = "elastic" ]; then SCENARIOS=elastic; fi
+  case "$s" in
+    elastic|members) SCENARIOS=$s ;;
+  esac
 done
 case " $SCENARIOS " in
   *" sandbox "*)
@@ -138,6 +148,12 @@ elif [ "$SCENARIOS" = "elastic" ]; then
     dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
     exit 1
   fi
+elif [ "$SCENARIOS" = "members" ]; then
+  echo "Starting the members swarm..."
+  dc --profile members up -d nats git hub host-members >/dev/null \
+    || { echo "FAIL start"; dc --profile members logs --no-color 2>/dev/null | tail -200; exit 1; }
+  hosts_online() { borant_on host-members hosts | jq -e 'length == 1 and all(.online)'; }
+  wait_for "host daemons" hosts_online || exit 1
 else
   echo "Starting the swarm..."
   dc up -d nats git hub host-a host-b host-c >/dev/null \
@@ -585,6 +601,174 @@ agent_on_pool() {
 
 container_gone() { ! docker inspect "$1" >/dev/null 2>&1; }
 
+# The members scenario of the token pools design: one host with the fake-auth
+# bundle of three members of the fake harness. Fill-first (decision 2 of the
+# design) gives every launch the first free member in name order, so the three
+# spawns share member a; a reported limit moves the agent to the next free
+# member of the same host, and with every member limited the agent waits, the
+# members_limited alert fires, and the agent wakes at the earliest reset.
+# Nothing real is touched: the values are fakes.
+scenario_members() {
+  start_agent host-members boss
+  wait_for "boss registered" members_placed boss || return 1
+  borant_on host-members send boss "CHANNEL pool" >/dev/null
+  wait_for "channel pool" log_has host-members boss "CHANNEL pool ok" || return 1
+
+  local i
+  for i in 1 2 3; do
+    borant_on host-members send boss "SPAWN pool wait-for-work" >/dev/null
+  done
+  wait_for "three spawns" members_three_spawns || return 1
+  local a1 a2 a3 a
+  a1=$(members_agents | sed -n 1p)
+  a2=$(members_agents | sed -n 2p)
+  a3=$(members_agents | sed -n 3p)
+  for a in "$a1" "$a2" "$a3"; do
+    [ -n "$a" ] || { echo "  a spawn gave no agent id" >&2; return 1; }
+    wait_for "$a on the members host" members_placed "$a" || return 1
+    [ -n "$(member_of "$a")" ] || {
+      echo "  $a holds no member of fake-auth" >&2
+      return 1
+    }
+  done
+  echo "  agents: $(members_agents | tr '\n' ' ')"
+  echo "  members in use: $(members_in_use | tr '\n' ' ')"
+  wait_for "the spawns share the first member" members_share_first || {
+    echo "  fill-first did not put every agent on member a" >&2
+    return 1
+  }
+  wait_for "borant members lists a, b, c" members_three_members || return 1
+
+  # A limit of the member of an agent moves it to the next free member of the
+  # same host, through the limit path.
+  local before after
+  before=$(member_of "$a1")
+  limit_agent "$a1" 7200 >/dev/null || return 1
+  wait_for "member $before limited" member_limited "$before" || return 1
+  wait_for "$a1 on a new member" member_moved "$a1" "$before" || return 1
+  after=$(member_of "$a1")
+  echo "  $a1 moved from $before to $after after the limit"
+  members_placed "$a1" || { echo "  $a1 left its host" >&2; return 1; }
+  limit_move_logged "$a1" || {
+    echo "  no move.requested with reason limit for $a1" >&2
+    return 1
+  }
+
+  # Limit the member it holds now, and then the last free one: every member
+  # is limited, so the agent waits for the earliest reset.
+  limit_agent "$a1" 45 >/dev/null || return 1
+  wait_for "$a1 on the last free member" member_moved "$a1" "$after" || return 1
+  after=$(member_of "$a1")
+  limit_agent "$a1" 45 >/dev/null || return 1
+  wait_for "every member limited" every_member_limited || return 1
+  wait_for "$a1 waits on a member" member_waiting "$a1" || return 1
+  echo "  every member is limited and $a1 waits on $after"
+
+  # The alert of the bundle fires, and the agent wakes at the earliest reset.
+  wait_for "the members_limited alert" members_limited_alert || return 1
+  WAIT=150 wait_for "the wake at the reset" \
+    log_has host-members "$a1" "Your account limit reset. Continue your task." || return 1
+  echo "  $a1 woke at the reset"
+
+  # No fake secret reaches a container log or the event stream.
+  local logs events value
+  logs=$(dc --profile members logs --no-color 2>/dev/null)
+  events=$(borant_on host-members events --json 2>/dev/null)
+  for value in fake-a-token-not-a-secret fake-b-token-not-a-secret fake-c-token-not-a-secret; do
+    if [[ "$logs" == *"$value"* ]]; then
+      echo "  a fake secret reached a container log" >&2
+      return 1
+    fi
+    if [[ "$events" == *"$value"* ]]; then
+      echo "  a fake secret reached the event stream" >&2
+      return 1
+    fi
+  done
+}
+
+# The agents that the boss spawned.
+members_agents() { log_of host-members boss | awk '$1=="SPAWNED" {print $2}'; }
+
+members_three_spawns() { [ "$(members_agents | wc -l)" -ge 3 ]; }
+
+# The agent holds a lease on the members host.
+members_placed() { [ "$(where_on host-members "$1")" = "host-members" ]; }
+
+# A member of fake-auth waits for the agent in `borant members`.
+member_waiting() {
+  borant_on host-members members --json 2>/dev/null |
+    jq -e --arg a "$1" \
+      'any(.["fake-auth"][]?; (.waiting // []) | index($a) != null)' >/dev/null
+}
+
+# The member of the fake-auth bundle that an agent holds, or nothing.
+member_of() {
+  borant_on host-members agents 2>/dev/null |
+    jq -r --arg a "$1" '.[] | select(.agent == $a) | .members["fake-auth"] // empty'
+}
+
+# The members of fake-auth that the agents hold now.
+members_in_use() {
+  borant_on host-members agents 2>/dev/null |
+    jq -r '.[].members["fake-auth"] // empty' | sort -u
+}
+
+# Fill-first: every spawned agent holds the first member, a.
+members_share_first() { [ "$(members_in_use | tr '\n' ' ')" = "a " ]; }
+
+# `borant members` knows the bundle and the three members that the host has.
+members_three_members() {
+  [ "$(borant_on host-members members --json 2>/dev/null |
+    jq -r '.["fake-auth"][]?.member' | sort | tr '\n' ' ')" = "a b c " ]
+}
+
+# The agent moved to a member other than `$2`.
+member_moved() {
+  local now
+  now=$(member_of "$1")
+  [ -n "$now" ] && [ "$now" != "$2" ]
+}
+
+# The member holds a limit in `borant members`.
+member_limited() {
+  borant_on host-members members --json 2>/dev/null |
+    jq -e --arg m "$1" \
+      'any(.["fake-auth"][]?; .member == $m and .limited_until != null)' >/dev/null
+}
+
+# The number of members of fake-auth that are limited now.
+members_limited_count() {
+  borant_on host-members members --json 2>/dev/null |
+    jq '[.["fake-auth"][]? | select(.limited_until != null)] | length'
+}
+
+every_member_limited() { [ "$(members_limited_count)" = "3" ]; }
+
+# The hub published the alert of the bundle.
+members_limited_alert() {
+  borant_on host-members events --json 2>/dev/null |
+    jq -e 'select(.kind == "alert.fired" and .rule == "members_limited"
+                and .subject == "fake-auth")' >/dev/null
+}
+
+# The hub logged the limit move of the agent.
+limit_move_logged() {
+  borant_on host-members events --json 2>/dev/null |
+    jq -e --arg a "$1" \
+      'select(.kind == "move.requested" and .agent == $a and .reason == "limit")' >/dev/null
+}
+
+# An RFC 3339 time `$1` seconds ahead, on the clock of the host container.
+resets_in() { on host-members date -u -d "+$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
+
+# Sends LIMIT for the member that the agent holds now, and prints the time.
+limit_agent() {
+  local resets
+  resets=$(resets_in "$2") || return 1
+  borant_on host-members send "$1" "LIMIT $resets" >/dev/null
+  echo "$resets"
+}
+
 for s in $SCENARIOS; do
   if "scenario_$s"; then pass "$s"; else fail "$s"; fi
 done
@@ -615,7 +799,19 @@ if [ "$FAILED" != "0" ]; then
       echo "  hub-sandbox and host-sandbox:"
       dc --profile sandbox logs --no-color hub-sandbox host-sandbox 2>/dev/null | tail -200
     fi
-    dc --profile elastic --profile sandbox --profile move logs --no-color 2>/dev/null | tail -200
+    if [ "$SCENARIOS" = "members" ]; then
+      echo "  members:"
+      borant_on host-members members --json 2>/dev/null | head -60
+      echo "  agents:"
+      borant_on host-members agents 2>/dev/null |
+        jq -c '.[] | {agent, host, members, lease: .lease.state}' | head -10
+      echo "  the boss log:"
+      log_of host-members boss 2>/dev/null | tail -20
+      echo "  the last agent log:"
+      LAST_AGENT=$(members_agents | tail -1)
+      [ -n "$LAST_AGENT" ] && log_of host-members "$LAST_AGENT" | tail -30
+    fi
+    dc --profile elastic --profile sandbox --profile members --profile move logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
 fi

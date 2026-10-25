@@ -92,6 +92,26 @@ services:
       BORANT_HARNESSES: fake
       BORANT_MAX_AGENTS: "1"
 
+  # The one host of the members scenario, with the fake-auth bundle of three
+  # members. `[secrets]` comes from the mounted host.toml; the values are
+  # fakes in the environment of the container. E2E_ROOT is the path of the
+  # repository, set by tests/e2e/lib.sh.
+  host-members:
+    <<: *host
+    hostname: host-members
+    profiles: [members]
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-members
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "5"
+      FAKE_AUTH_TOKEN_A: fake-a-token-not-a-secret
+      FAKE_AUTH_TOKEN_B: fake-b-token-not-a-secret
+      FAKE_AUTH_TOKEN_C: fake-c-token-not-a-secret
+    volumes:
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/docker/members/host.toml:/root/.borant/host.toml:ro
+
   host-a:
     <<: *host
     hostname: host-a

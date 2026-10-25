@@ -1,0 +1,17 @@
+# host.toml of the members scenario: one env store and one bundle with three
+# members of the fake harness. The refs are variable names of the host
+# process; docker/compose.yaml sets them to fake values. Nothing real is
+# touched, and the values never reach a log.
+
+[secrets.stores.env]
+kind = "env"
+
+[secrets.bundles.fake-auth]
+store = "env"
+[secrets.bundles.fake-auth.members]
+a = { FAKE_AUTH_TOKEN = "FAKE_AUTH_TOKEN_A" }
+b = { FAKE_AUTH_TOKEN = "FAKE_AUTH_TOKEN_B" }
+c = { FAKE_AUTH_TOKEN = "FAKE_AUTH_TOKEN_C" }
+
+[secrets.harness]
+fake = ["fake-auth"]

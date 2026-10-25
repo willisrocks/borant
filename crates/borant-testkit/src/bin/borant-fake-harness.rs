@@ -14,6 +14,8 @@
 //! - `SEND <agent|#channel> <text>`
 //! - `SPAWN <channel> <prompt>`: spawn an agent, and log `SPAWNED <agent>`
 //! - `SPAWNROLE <channel> <role> <prompt>`: the same with a role of `hub.toml`
+//! - `LIMIT <resets_at>`: report the usage limit of the bundle member, as the
+//!   Claude Code `StopFailure` hook does, with the reset time in RFC 3339
 //! - `HISTORY`: read the session history
 //! - `EXIT`: end the session and exit
 //!
@@ -208,6 +210,18 @@ impl Fake {
                     .await?;
                 self.line(&format!("SPAWNED {}", spawned_agent(&v)?));
             }
+            "LIMIT" => {
+                // The same event as `borant hook stop-failure`: the bundle
+                // and the member come from the session record of the host.
+                let resets_at =
+                    iso8601_ms(&a).with_context(|| format!("LIMIT {a} is not an RFC 3339 time"))?;
+                self.event(LocalEvent::MemberLimited {
+                    bundle: None,
+                    resets_at: Some(borant_core::Timestamp(resets_at)),
+                })
+                .await?;
+                self.line(&format!("LIMITED {a}"));
+            }
             "HISTORY" => self.history().await?,
             "EXIT" => {
                 let _ = self
@@ -282,6 +296,13 @@ fn append_read(path: &str, ok: bool) -> anyhow::Result<()> {
         .open("reads.log")?;
     writeln!(log, "READ {path} {}", if ok { "ok" } else { "failed" })?;
     Ok(())
+}
+
+/// The unix milliseconds of an RFC 3339 time, the argument of `LIMIT`.
+fn iso8601_ms(text: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(text.trim())
+        .ok()
+        .map(|t| t.timestamp_millis())
 }
 
 async fn register(client: &LocalClient) -> anyhow::Result<LocalSession> {
@@ -397,5 +418,22 @@ async fn main() -> anyhow::Result<()> {
             }
             Outcome::Down(_) => tokio::time::sleep(Duration::from_secs(1)).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_takes_an_rfc_3339_time() {
+        assert_eq!(iso8601_ms("2026-10-25T12:00:00Z"), Some(1_792_929_600_000));
+        assert_eq!(iso8601_ms("2026-10-25T12:00:30Z"), Some(1_792_929_630_000));
+        assert_eq!(
+            iso8601_ms(" 2026-10-25T12:00:00Z "),
+            Some(1_792_929_600_000)
+        );
+        assert_eq!(iso8601_ms("in two hours"), None);
+        assert_eq!(iso8601_ms(""), None);
     }
 }

@@ -486,3 +486,32 @@ async fn members_a_limit_adds_a_restart_time_and_drops_an_old_one() {
     let b = state_of(&fx, "b").await.expect("the state of member b");
     assert_eq!(b.restarts.len(), 1);
 }
+
+/// The roster of `borant agents` names the member of each bundle that the
+/// launch picked, which the members e2e scenario reads.
+#[tokio::test]
+async fn members_the_agent_roster_names_the_member() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    spawn(&fx, &owner, "w1", Harness::ClaudeCode).await;
+
+    let agents = fx
+        .req(CtlRequest::Call {
+            actor: None,
+            key: None,
+            call: ToolCall::ListAgents,
+        })
+        .await
+        .unwrap();
+    let w1 = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == "w1")
+        .expect("w1 in the roster");
+    assert_eq!(
+        w1["members"][bundle().as_str()],
+        serde_json::json!(member("a").as_str()),
+        "the roster names the picked member: {w1}"
+    );
+}

@@ -1267,6 +1267,29 @@ claude-code = ["claude-auth"]
 omp = ["lunaroute"]
 "#;
 
+    /// The host.toml of the members e2e scenario: the scenario mounts it into
+    /// a container, so nothing else would notice a broken file.
+    #[test]
+    fn config_parses_the_members_scenario_host_toml() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker/members/host.toml");
+        let text = std::fs::read_to_string(&path).expect("the members host.toml");
+        let file: HostFile = toml::from_str(&text).expect("parse the members host.toml");
+        let secrets = file.secrets.expect("a [secrets] section");
+        assert!(matches!(secrets.stores["env"], StoreConfig::Env {}));
+        let name: BundleName = "fake-auth".parse().unwrap();
+        let auth = &secrets.bundles[&name];
+        assert_eq!(auth.store, "env");
+        let members: Vec<&str> = auth.members.keys().map(|m| m.as_str()).collect();
+        assert_eq!(members, ["a", "b", "c"]);
+        let a: MemberName = "a".parse().unwrap();
+        assert_eq!(
+            auth.members[&a]["FAKE_AUTH_TOKEN"],
+            SecretRef("FAKE_AUTH_TOKEN_A".into())
+        );
+        assert_eq!(secrets.harness["fake"], vec![name]);
+    }
+
     #[test]
     fn config_parses_the_spec_host_toml() {
         let file: HostFile = toml::from_str(SPEC_HOST).unwrap();
