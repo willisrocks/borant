@@ -58,6 +58,20 @@ services:
     environment:
       <<: *timing
 
+  # The hub of the elastic scenario. It starts the pool hosts of the
+  # provision-docker plugin, so it needs the socket of the Docker daemon and
+  # the plugin, which the other scenarios do not give it.
+  hub-elastic:
+    <<: *image
+    command: ["borant", "hub"]
+    profiles: [elastic]
+    environment:
+      <<: *timing
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../tests/e2e/plugins:/plugins:ro
+    depends_on: [nats]
+
   host-a:
     <<: *host
     hostname: host-a
