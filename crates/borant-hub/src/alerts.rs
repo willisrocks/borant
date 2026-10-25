@@ -347,3 +347,81 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod members_tests {
+    use super::*;
+
+    use borant_core::model::{Harness, HostInfo, MemberBundle, MemberState};
+    use borant_core::ports::StateStore;
+    use borant_core::{BundleName, ManualClock};
+    use borant_memory::{MemoryBus, MemorySession, MemoryState};
+
+    use crate::HubConfig;
+
+    const NOW: Timestamp = Timestamp(1_793_116_800_000);
+
+    /// A fresh swarm with a bundle of three members, one of them limited, as
+    /// the members e2e (#97) has it: the alert pass completes.
+    #[tokio::test]
+    async fn alerts_survive_a_bundle_with_members() {
+        let clock = Arc::new(ManualClock::new(NOW));
+        let state = Arc::new(MemoryState::new());
+        let hub = Hub::new(
+            state.clone(),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            clock,
+            HubConfig::default(),
+        );
+        let bundle: BundleName = "fake-auth".parse().unwrap();
+        let info = HostInfo {
+            name: "h1".parse().unwrap(),
+            harnesses: vec![Harness::Fake],
+            launcher: "process".into(),
+            max_agents: 4,
+            always_on: true,
+            draining: false,
+            ssh: None,
+            members: [(
+                bundle.clone(),
+                MemberBundle {
+                    members: ["a", "b", "c"].iter().map(|m| m.parse().unwrap()).collect(),
+                    harnesses: vec![Harness::Fake],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            pool: None,
+            tags: Vec::new(),
+            bundles: Vec::new(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
+        };
+        state
+            .create(
+                &keys::host(&info.name),
+                serde_json::to_vec(&info).expect("a host").into(),
+            )
+            .await
+            .expect("seed a host");
+        for (member, limited) in [("a", true), ("b", false), ("c", false)] {
+            let st = MemberState {
+                bundle: bundle.clone(),
+                member: member.parse().unwrap(),
+                limited_until: limited.then_some(NOW.plus(std::time::Duration::from_secs(600))),
+                waiting: Vec::new(),
+                restarts: Vec::new(),
+            };
+            state
+                .create(
+                    &format!("member.fake-auth.{member}"),
+                    serde_json::to_vec(&st).expect("a member").into(),
+                )
+                .await
+                .expect("seed a member");
+        }
+
+        hub.alert_pass(NOW).await.expect("the pass completes");
+    }
+}
