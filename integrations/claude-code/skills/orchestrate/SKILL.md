@@ -18,6 +18,7 @@ general plan gets wrong.
 | `spawn` returning `placed: false` means queued. The record survives a hub restart, and the hub places it on the next free slot. | Do nothing. Never spawn again for the same task: that makes a second worker. |
 | `spawn` takes `key`, an idempotency key. A retry with the same key and arguments returns the same agent. | A lost reply is safe to retry with its key. Never spawn again for the same task without the key. |
 | Each host runs a fixed number of agents, and an idle worker keeps its slot. A slot comes back two ways: a task-bound worker with `stop_on_close` (the default) stops when its task closes, and `borant cancel <agent>` stops an unbound worker or cancels a queued spawn. | Give the next ready task to an idle worker before you spawn a new one, and bind every worker to its task so its slot comes back. Spawn only for work that runs in parallel; use cancel only for a worker that has no task. |
+| A worker spawned with `--continue 5` and bound to its task gets up to 5 "Continue with task ..." messages, each when it goes idle while its task is `in_progress` and claimed by it. After the fifth, the hub sets the task `needs_human` with "continue limit reached (5)" and sends nothing more. `--continue` without a bound task is refused, and `--continue-hours H` caps the continues by session hours. | Spawn every worker with `--task` and `--continue 5`. A worker that is done calls the `wait` tool on its task, which stops the continues; a continue that ends in `needs_human` is a real question for the user. |
 | A launch that does not register fails after `launch_timeout_secs` (default 90), and the hub tries at most 3 launches. Then the spawn is Failed. | Pick a different host or harness, or `borant cancel <agent>`. A Failed spawn does not retry: it waits for a person. |
 | A direct `send` wakes an idle agent. A broadcast to `#channel` reaches members at their next turn, unless `urgent: true`. | Direct messages for orders. Broadcasts only for news that can wait, or with `urgent`. |
 | You wake when a task in your channel closes, gets stuck, or needs a human, and when anyone sends you a message. | End your turn while you wait. Do not poll `task_list` in a loop. |
@@ -91,11 +92,12 @@ After the owner says "merged", wait for your next task. Do not start other work.
 A PR gets a reviewer from the other harness: an `omp` author gets
 `--harness claude-code`, a `claude-code` author gets `--harness omp`. Create the
 review task first, then spawn the reviewer bound to it with `--task`,
-`--stop-on-close`, and a `--key` naming the PR, so a lost reply retries safely:
+`--stop-on-close`, `--continue 5`, and a `--key` naming the PR, so a lost reply
+retries safely:
 
 ```
 borant spawn --channel {channel} --prompt-file review.md --harness {other} \
-  --task {channel}/{review_task} --stop-on-close --key review-{pr}
+  --task {channel}/{review_task} --stop-on-close --continue 5 --key review-{pr}
 ```
 
 Read the findings yourself before the merge. A finding goes back to the author,
@@ -118,8 +120,17 @@ send the owner one line, then wait.
 When the hub runs roles (phase 1b), name the role on every spawn and let the role decide
 the rest:
 
-- A worker spawn: `role: "worker"`. Leave `harness` and `model` off; the role's pair is
-  the approved one. Pass them only when the user asked for that child.
+- A worker spawn: `role: "worker"`, bound to its task and passing `--continue 5`.
+  Leave `harness` and `model` off; the role's pair is the approved one. Pass them
+  only when the user asked for that child. From a shell:
+
+  ```
+  borant spawn --channel {channel} --prompt-file brief.md --role worker \
+    --task {channel}/{task} --stop-on-close --continue 5
+  ```
+
+  Every worker spawn binds the worker to its task and passes `--continue 5`, so a
+  worker that goes idle before it finishes gets a continue instead of dying quiet.
 - A helper for your own steps: `role: "helper"`. It runs on your host.
 - A spawn from a roled agent must name a role that its own role allows; the hub refuses
   the rest with `denied`.
