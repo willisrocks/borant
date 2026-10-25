@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use borant_core::model::{HubLease, MoveReason};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
-use borant_core::proto::{ApiError, CtlRequest, MoveTarget, Reply};
+use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::{AgentId, Clock, FencingToken, HostName, Timestamp, keys, subjects};
 use futures::StreamExt;
@@ -109,7 +109,12 @@ impl Hub {
         }
         let result = self.dispatch(&mut mem, req).await;
         if let Err(e) = &result {
-            tracing::debug!("request failed: {e}");
+            match e.code {
+                ApiErrorCode::Internal | ApiErrorCode::Unavailable => {
+                    tracing::warn!("request failed: {e}");
+                }
+                _ => tracing::debug!("request failed: {e}"),
+            }
         }
         result.into()
     }

@@ -143,7 +143,7 @@ impl Host {
                 }
             },
             Err(e) => {
-                tracing::info!(session = %id, "registration failed, will retry: {}", e.message);
+                tracing::warn!(session = %id, "registration failed, will retry: {}", e.message);
                 return false;
             }
         };

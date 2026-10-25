@@ -54,11 +54,17 @@ impl Host {
                 if let Err(e) = self.launch(order).await {
                     tracing::warn!(%agent, "launch failed: {e:#}");
                     let req = CtlRequest::LaunchFailed {
-                        agent,
+                        agent: agent.clone(),
                         host: self.inner.cfg.name.clone(),
                         error: format!("{e:#}"),
                     };
-                    let _ = self.hub(&req).await;
+                    if let Err(e) = self.hub(&req).await {
+                        tracing::warn!(
+                            %agent,
+                            "cannot tell the hub about the failed launch: {}",
+                            e.message
+                        );
+                    }
                 }
             }
             HostCommand::PrepareMove { session, .. } => self.prepare_move(session).await,

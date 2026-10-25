@@ -1,6 +1,7 @@
 //! The inbox of each local agent, delivery into sessions, local calls, the
 //! session log, and the outbox.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use borant_core::model::{
@@ -23,6 +24,7 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 impl Host {
     pub(crate) async fn inbox_loop(self, agent: AgentId, id: SessionId, cancel: CancellationToken) {
+        let mut failing = false;
         loop {
             // A paused or fenced session must not take messages: after a
             // takeover, the new session owns the inbox.
@@ -43,12 +45,21 @@ impl Host {
             };
             match pulled {
                 Ok(batch) => {
+                    if failing {
+                        failing = false;
+                        tracing::info!(%agent, "inbox pull recovered");
+                    }
                     for d in batch {
                         self.receive(&agent, id, d).await;
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(%agent, "inbox pull failed: {e}");
+                    if failing {
+                        tracing::debug!(%agent, "inbox pull still failing: {e}");
+                    } else {
+                        failing = true;
+                        tracing::warn!(%agent, "inbox pull failed: {e}");
+                    }
                     tokio::select! {
                         _ = cancel.cancelled() => return,
                         _ = tokio::time::sleep(Duration::from_secs(2)) => {}
@@ -79,7 +90,9 @@ impl Host {
             .get(agent)
             .is_some_and(|s| s.contains(&env.id));
         if seen || own_broadcast {
-            let _ = d.acker.ack().await;
+            if let Err(e) = d.acker.ack().await {
+                tracing::warn!(%agent, "ack failed, the message can arrive again: {e}");
+            }
             return;
         }
         let mut logged = env.clone();
@@ -91,11 +104,11 @@ impl Host {
         );
         if let Err(e) = self.inner.store.append(agent, &ev).await {
             // Without the log entry, the message must stay in the inbox.
-            tracing::debug!(%agent, "cannot log message yet: {e}");
+            tracing::warn!(%agent, "cannot log message yet: {e}");
             return;
         }
         if let Err(e) = d.acker.ack().await {
-            tracing::debug!(%agent, "ack failed, the message can arrive again: {e}");
+            tracing::warn!(%agent, "ack failed, the message can arrive again: {e}");
         }
         let now = self.inner.clock.now();
         let (wake, over_limit) = {
@@ -405,7 +418,7 @@ impl Host {
                 }
             }
             Err(e) => {
-                tracing::debug!(%agent, "session log unavailable, using the outbox: {e}");
+                tracing::warn!(%agent, "session log unavailable, using the outbox: {e}");
                 match serde_json::to_vec(&ev) {
                     Ok(p) => {
                         if let Err(e) =
@@ -441,16 +454,68 @@ impl Host {
         for item in items {
             let ok = match item.kind {
                 OutboxKind::Publish => match serde_json::from_slice::<Envelope>(&item.payload) {
-                    Ok(env) => self.inner.bus.publish(&item.target, &env).await.is_ok(),
-                    Err(_) => true,
+                    Ok(env) => match self.inner.bus.publish(&item.target, &env).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            if self.outbox_failing_now() {
+                                tracing::warn!(
+                                    subject = %item.target,
+                                    "outbox publish failed, will retry: {e}"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    subject = %item.target,
+                                    "outbox publish failed, will retry: {e}"
+                                );
+                            }
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            subject = %item.target,
+                            "drop undecodable outbox envelope: {e}"
+                        );
+                        true
+                    }
                 },
-                OutboxKind::Append => match (
-                    item.target.parse::<AgentId>(),
-                    serde_json::from_slice::<SessionEvent>(&item.payload),
-                ) {
-                    (Ok(agent), Ok(ev)) => self.inner.store.append(&agent, &ev).await.is_ok(),
-                    _ => true,
-                },
+                OutboxKind::Append => {
+                    let agent = item.target.parse::<AgentId>();
+                    let ev = serde_json::from_slice::<SessionEvent>(&item.payload);
+                    match (agent, ev) {
+                        (Ok(agent), Ok(ev)) => match self.inner.store.append(&agent, &ev).await {
+                            Ok(_) => true,
+                            Err(e) => {
+                                if self.outbox_failing_now() {
+                                    tracing::warn!(
+                                        %agent,
+                                        "outbox append failed, will retry: {e}"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        %agent,
+                                        "outbox append failed, will retry: {e}"
+                                    );
+                                }
+                                false
+                            }
+                        },
+                        (Err(e), _) => {
+                            tracing::warn!(
+                                target = %item.target,
+                                "drop outbox item with a bad agent id: {e}"
+                            );
+                            true
+                        }
+                        (_, Err(e)) => {
+                            tracing::warn!(
+                                target = %item.target,
+                                "drop undecodable outbox event: {e}"
+                            );
+                            true
+                        }
+                    }
+                }
             };
             if !ok {
                 return;
@@ -460,6 +525,14 @@ impl Host {
                 return;
             }
         }
+        if self.inner.outbox_failing.swap(false, Ordering::Relaxed) {
+            tracing::info!("outbox flush recovered");
+        }
+    }
+
+    /// True on the first failure of a run, and marks the run as failing.
+    fn outbox_failing_now(&self) -> bool {
+        !self.inner.outbox_failing.swap(true, Ordering::Relaxed)
     }
 
     pub(crate) async fn notify_loop(self, shutdown: CancellationToken) {
