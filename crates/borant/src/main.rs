@@ -66,7 +66,7 @@ fn main() -> std::process::ExitCode {
             Command::Hub {
                 cmd: Some(HubCmd::Move { ssh_host }),
             } => roles::hub_move(&ssh_host).await.map(|_| 0),
-            Command::Host => roles::run_host().await.map(|_| 0),
+            Command::Host { cmd: None } => roles::run_host().await.map(|_| 0),
             Command::Doctor { json } => doctor::run(json).await,
             Command::Mcp => mcp::run().await.map(|_| 0),
             Command::Hook { event } => Ok(hook::run(&event).await),
