@@ -750,6 +750,9 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     if file.alerts.notifier.is_some() {
         cfg.notify = true;
     }
+    // The laptop watches the hub; a box with no watch_hub stays quiet.
+    cfg.watch_hub = file.alerts.watch_hub.unwrap_or(false);
+    cfg.hub_down = Duration::from_secs(file.alerts.hub_down_minutes.unwrap_or(2) * 60);
     if let Some(v) = h.wakes_per_hour {
         cfg.wakes_per_hour = v;
     }
@@ -991,6 +994,29 @@ mod tests {
             plain.alerts.summary(),
             "notifier=desktop needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
         );
+    }
+
+    #[tokio::test]
+    async fn alerts_watch_hub_reaches_the_host_config() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "laptop"
+            harnesses = ["pi"]
+            [alerts]
+            watch_hub = true
+            hub_down_minutes = 5
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert!(cfg.watch_hub);
+        assert_eq!(cfg.hub_down, Duration::from_secs(300));
+        // A host with no [alerts] watches nothing and keeps the default.
+        let plain: HostFile = toml::from_str("[host]\nharnesses = [\"pi\"]\n").unwrap();
+        let cfg = host_config(&plain).await.unwrap();
+        assert!(!cfg.watch_hub);
+        assert_eq!(cfg.hub_down, Duration::from_secs(120));
     }
 }
 
