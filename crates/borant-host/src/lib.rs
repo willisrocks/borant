@@ -22,8 +22,7 @@ use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionSt
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
-    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, Timestamp,
-    subjects,
+    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, Timestamp, subjects,
 };
 use borant_launch::harness::HarnessCommands;
 use tokio::sync::Notify;
