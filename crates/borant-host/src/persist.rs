@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use borant_core::model::Harness;
 use borant_core::ports::LaunchHandle;
-use borant_core::proto::Registered;
+use borant_core::proto::{ApiError, Registered};
 use borant_core::{AgentId, ChannelName, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -72,6 +72,16 @@ impl Host {
     /// Loads the saved sessions whose harness process still runs, and
     /// starts their inbox loops. The next heartbeat checks their leases.
     pub async fn restore(&self) {
+        self.restore_table().await;
+        self.state().restored = true;
+    }
+
+    /// True once the saved sessions are loaded.
+    pub fn restored(&self) -> bool {
+        self.state().restored
+    }
+
+    async fn restore_table(&self) {
         let Ok(bytes) = std::fs::read(self.table_path()) else {
             return;
         };
@@ -140,5 +150,16 @@ impl Host {
             tracing::info!(restored, "restored local sessions");
         }
         self.save();
+    }
+}
+
+/// The error for a session that this host does not know. Before the restore
+/// ends, the session can still come back, so the caller must retry. Callers
+/// pass `restored` from the state guard they already hold.
+pub(crate) fn no_session(restored: bool, what: String) -> ApiError {
+    if restored {
+        ApiError::not_found(what)
+    } else {
+        ApiError::unavailable(format!("{what}: the host daemon is restoring its sessions"))
     }
 }

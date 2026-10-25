@@ -530,3 +530,15 @@ async fn paused_session_does_not_take_messages() {
         "the message stays in the inbox for the next holder"
     );
 }
+
+#[tokio::test]
+async fn unknown_session_is_unavailable_until_the_restore_ends() {
+    let fx = Fx::new(true, |_| {}).await;
+    // Before the restore, the session can still come back, so callers such
+    // as the Claude Code idle waiter must retry instead of giving up.
+    let err = fx.host.local_view(SessionId::new()).unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Unavailable, "{err}");
+    fx.host.restore().await;
+    let err = fx.host.local_view(SessionId::new()).unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::NotFound, "{err}");
+}

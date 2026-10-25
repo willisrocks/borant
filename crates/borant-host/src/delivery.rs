@@ -152,10 +152,9 @@ impl Host {
         loop {
             let notify = {
                 let st = self.state();
-                let s = st
-                    .sessions
-                    .get(&id)
-                    .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+                let s = st.sessions.get(&id).ok_or_else(|| {
+                    crate::persist::no_session(st.restored, format!("no local session {id}"))
+                })?;
                 s.notify.clone()
             };
             let notified = notify.notified();
@@ -251,10 +250,9 @@ impl Host {
             None => None,
             Some(id) => {
                 let st = self.state();
-                let s = st
-                    .sessions
-                    .get(&id)
-                    .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+                let s = st.sessions.get(&id).ok_or_else(|| {
+                    crate::persist::no_session(st.restored, format!("no local session {id}"))
+                })?;
                 if let Some(reason) = &s.fenced {
                     return Err(ApiError::invalid(reason.clone()));
                 }

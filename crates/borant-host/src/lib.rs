@@ -144,6 +144,9 @@ pub(crate) struct State {
     pub seen: HashMap<AgentId, HashSet<MessageId>>,
     pub turns_since_trim: HashMap<AgentId, usize>,
     pub host_registered: bool,
+    /// False until the saved sessions are loaded. Until then, an unknown
+    /// session can still be one that the restore brings back.
+    pub restored: bool,
 }
 
 pub(crate) struct Inner {
@@ -200,6 +203,7 @@ impl Host {
                     seen: HashMap::new(),
                     turns_since_trim: HashMap::new(),
                     host_registered: false,
+                    restored: false,
                 }),
                 last_ok: Mutex::new(Instant::now()),
             }),
