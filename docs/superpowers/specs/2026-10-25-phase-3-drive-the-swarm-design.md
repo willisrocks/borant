@@ -92,7 +92,12 @@ one-per check) counts `Queued` and `Launching` records.
 
 A worker bound to a task gets `stop_on_close = true` unless the spawn says
 false. When that task closes, the hub sets `Agent.retired`, then sends
-`HostCommand::Stop` at the next turn end of the session. A retired agent is
+`HostCommand::Stop` at the next turn end of the session, or after a grace of
+30 s when the hub cannot place the session in a turn: `idle_since` is `None`
+both for a session in a turn and for one that never reported a turn end (an
+omp session that waits for its first prompt), so a stop that waited for a turn
+end would never come. A cancel reply says `stopped: true` only when the stop
+order went out; else it says `stopping: "at the turn end"`. A retired agent is
 never placed again by a takeover, a wake, a move, or the queue. Its claims on
 other tasks go back to open.
 
