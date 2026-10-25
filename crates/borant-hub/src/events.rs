@@ -274,6 +274,8 @@ mod tests {
                             blocked_by: Vec::new(),
                             parent: None,
                             properties: Default::default(),
+                            deadline: None,
+                            max_attempts: None,
                         },
                     },
                 )
@@ -407,6 +409,8 @@ mod tests {
                     blocked_by: None,
                     parent: None,
                     properties: None,
+                    deadline: None,
+                    max_attempts: None,
                 },
             },
         )

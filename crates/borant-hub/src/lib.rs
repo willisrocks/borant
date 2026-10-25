@@ -136,6 +136,8 @@ pub(crate) struct Memory {
     pub last_elastic: Option<Timestamp>,
     /// When the alert pass last ran.
     pub last_alerts: Option<Timestamp>,
+    /// When the deadline pass last ran.
+    pub last_deadlines: Option<Timestamp>,
     /// The provisioner refusals that the alerts report, per pool.
     pub elastic_refused: BTreeMap<PoolName, borant_core::rules::alerts::Refusal>,
     /// When a failed create lets the pool create again.
@@ -301,6 +303,9 @@ impl Hub {
                 .map(|_| ()),
         };
         parked?;
+        // A passed deadline puts the task in front of its owner before the
+        // waits and the alerts see it.
+        self.tick_deadlines().await?;
         // The waits of the agents, then the alerts that see what the tick
         // changed.
         self.tick_waits().await?;

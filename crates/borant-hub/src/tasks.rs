@@ -1,5 +1,7 @@
 //! Task calls (spec section 9).
 
+use std::time::Duration;
+
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
@@ -12,6 +14,9 @@ use serde_json::{Map, Value};
 
 use crate::store::Doc;
 use crate::{Hub, Memory};
+
+/// The deadline pass runs at most this often.
+const DEADLINE_EVERY: Duration = Duration::from_secs(10);
 
 impl Hub {
     pub(crate) async fn tasks(&self, channel: &ChannelName) -> Result<Vec<Task>, ApiError> {
@@ -92,9 +97,9 @@ impl Hub {
             close_message: None,
             attention_msg: None,
             claimed_by: None,
-            deadline: None,
+            deadline: new.deadline,
             attempts: 0,
-            max_attempts: None,
+            max_attempts: new.max_attempts,
             blocked_by: new.blocked_by,
             parent: new.parent,
             properties: new.properties,
@@ -119,7 +124,7 @@ impl Hub {
     pub(crate) async fn task_update(
         &self,
         mem: &mut Memory,
-        _by: &Sender,
+        by: &Sender,
         channel: &ChannelName,
         id: &TaskId,
         patch: TaskPatch,
@@ -139,16 +144,43 @@ impl Hub {
         }
         if let Some(status) = patch.status {
             rules::check_status_change(t.status, status)?;
-            t.status = status;
             if status == TaskStatus::Open {
-                t.claimed_by = None;
+                // A reopen ends the claim that the task still holds, one
+                // attempt. A task at its retry limit stays in front of its
+                // owner until the owner or a person reopens it, and that
+                // reopen starts the count again.
+                let from = t.status;
+                if at_retry_limit(t) {
+                    if !is_owner_or_person(&ch.value.owner, by) {
+                        return Err(ApiError::new(
+                            ApiErrorCode::Conflict,
+                            format!(
+                                "task {} reached its retry limit ({} tries); only the owner reopens it",
+                                t.id, t.attempts
+                            ),
+                        ));
+                    }
+                    t.attempts = 0;
+                    t.claimed_by = None;
+                    t.status = status;
+                } else {
+                    t.status = release_claim(t, rules::AttemptEnd::Reopened(from));
+                }
+            } else {
+                t.status = status;
             }
-            if !matches!(status, TaskStatus::NeedsHuman | TaskStatus::Stuck) {
+            if !matches!(t.status, TaskStatus::NeedsHuman | TaskStatus::Stuck) {
                 t.attention_msg = None;
             }
         }
         if let Some(msg) = patch.attention_msg {
             t.attention_msg = Some(msg);
+        }
+        if let Some(deadline) = patch.deadline {
+            t.deadline = Some(deadline);
+        }
+        if let Some(max) = patch.max_attempts {
+            t.max_attempts = Some(max);
         }
         if let Some(blocked_by) = patch.blocked_by {
             let all = self.tasks(channel).await?;
@@ -261,6 +293,17 @@ impl Hub {
             Some(other) if other != agent => return Err(CoreError::Claimed(other.clone()).into()),
             _ => {}
         }
+        // At its retry limit the task waits for its owner: no claim until the
+        // owner or a person reopens it.
+        if at_retry_limit(&doc.value) {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!(
+                    "task {} reached its retry limit ({} tries); only the owner reopens it",
+                    doc.value.id, doc.value.attempts
+                ),
+            ));
+        }
         // A question or a stall belongs to its claimer: another agent may not
         // claim over it.
         if matches!(doc.value.status, TaskStatus::NeedsHuman | TaskStatus::Stuck)
@@ -314,7 +357,7 @@ impl Hub {
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         // Only the owner of the channel and a person close a task as done.
-        if reason == CloseReason::Done && !is_owner(&ch.value.owner, by) {
+        if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
             return Err(ApiError::new(
                 ApiErrorCode::Denied,
                 "only the owner closes a task as done",
@@ -376,8 +419,7 @@ impl Hub {
                     continue;
                 }
                 let before = doc.value.clone();
-                doc.value.claimed_by = None;
-                doc.value.status = TaskStatus::Open;
+                doc.value.status = release_claim(&mut doc.value, rules::AttemptEnd::ClaimEnded);
                 doc.value.updated = self.now();
                 self.store
                     .put(&doc.key, &doc.value, Some(doc.revision))
@@ -416,6 +458,105 @@ impl Hub {
             })
             .collect();
         self.unclaim_all(mem, agent, &channels).await
+    }
+
+    /// Puts every task whose deadline passed in front of its owner: `stuck`
+    /// with "deadline passed" once per miss, and one direct message to the
+    /// owner. It reassigns nothing (phase 6 spec, "Tasks").
+    pub(crate) async fn tick_deadlines(&self) -> Result<(), ApiError> {
+        let now = self.now();
+        {
+            // The pass lists every task, so it runs at most every
+            // [`DEADLINE_EVERY`]; a deadline is minutes away, not seconds.
+            let mut mem = self.mem.lock().await;
+            if mem
+                .last_deadlines
+                .is_some_and(|last| now.since(last) < DEADLINE_EVERY)
+            {
+                return Ok(());
+            }
+            mem.last_deadlines = Some(now);
+        }
+        for (channel, task) in self.all_tasks().await? {
+            let Some(deadline) = task.deadline else {
+                continue;
+            };
+            if deadline > now
+                || matches!(
+                    task.status,
+                    TaskStatus::Closed | TaskStatus::Stuck | TaskStatus::NeedsHuman
+                )
+            {
+                continue;
+            }
+            let key = keys::task(&channel, &task.id);
+            let Some(doc) = self.store.get::<Task>(&key).await? else {
+                continue;
+            };
+            // A request may have moved the task since the scan.
+            let before = doc.value;
+            if before.deadline.is_none_or(|d| d > now)
+                || matches!(
+                    before.status,
+                    TaskStatus::Closed | TaskStatus::Stuck | TaskStatus::NeedsHuman
+                )
+            {
+                continue;
+            }
+            let ch = self.channel(&channel).await?;
+            let owner = ch.value.owner;
+            let mut next = before.clone();
+            next.status = TaskStatus::Stuck;
+            next.attention_msg = Some("deadline passed".to_owned());
+            next.updated = now;
+            self.store.put(&key, &next, Some(doc.revision)).await?;
+            if let Err(e) = self
+                .task_event(
+                    &channel,
+                    &owner,
+                    &next,
+                    TaskEventKind::Updated,
+                    "deadline passed",
+                )
+                .await
+            {
+                tracing::warn!(task = %next.id, "task event lost: {e}");
+            }
+            let event = self
+                .event(
+                    now,
+                    Severity::Warn,
+                    SwarmEventBody::TaskStatus {
+                        from: before.status,
+                        to: TaskStatus::Stuck,
+                        claimed_by: next.claimed_by.clone(),
+                        attention_msg: next.attention_msg.clone(),
+                    },
+                )
+                .about_channel(channel.clone())
+                .about_task(next.id);
+            self.publish(event).await;
+            // The owner hears about the miss once; the stuck status keeps the
+            // next pass from sending it again.
+            let env = Envelope {
+                id: MessageId::new(),
+                from: Sender::Human,
+                to: Target::Agent(owner.clone()),
+                kind: EnvelopeKind::Direct,
+                text: format!(
+                    "task {channel}/{} ({}) passed its deadline; it is stuck",
+                    next.id, next.title
+                ),
+                urgent: false,
+                event: None,
+                sent: now,
+            };
+            if let Err(e) = self.bus.publish(&subjects::agent(&owner), &env).await {
+                tracing::warn!(task = %next.id, "deadline message to the owner failed: {e}");
+            }
+            tracing::warn!(task = %next.id, %channel, "the deadline passed: the task is stuck");
+        }
+        Ok(())
     }
 
     /// True if the agent has a claim on an open task in one of its channels.
@@ -482,11 +623,32 @@ impl Hub {
     }
 }
 
-/// Whether `by` may close a task as done: the owner of the channel, or a
-/// person.
-fn is_owner(owner: &AgentId, by: &Sender) -> bool {
+/// Whether `by` is the owner of the channel or a person.
+fn is_owner_or_person(owner: &AgentId, by: &Sender) -> bool {
     match by {
         Sender::Human => true,
         Sender::Agent(agent) => agent == owner,
     }
+}
+
+/// True when the task has used up its retry limit.
+fn at_retry_limit(task: &Task) -> bool {
+    task.max_attempts.is_some_and(|max| task.attempts >= max)
+}
+
+/// Applies one ended claim to the task: it counts an attempt, and at the retry
+/// limit the task goes back in front of its owner with `needs_human`. Returns
+/// the status the caller must set, and clears the claim.
+fn release_claim(task: &mut Task, transition: rules::AttemptEnd) -> TaskStatus {
+    let counted = rules::attempt_ended(task, transition);
+    task.claimed_by = None;
+    if !counted {
+        return TaskStatus::Open;
+    }
+    task.attempts += 1;
+    if at_retry_limit(task) {
+        task.attention_msg = Some(format!("retry limit reached ({} tries)", task.attempts));
+        return TaskStatus::NeedsHuman;
+    }
+    TaskStatus::Open
 }
