@@ -8,7 +8,9 @@ use borant_memory::{MemoryBus, MemoryChanges, MemoryProvisioner, MemorySession, 
 
 #[tokio::test]
 async fn state_store_contract() {
-    testing::state_store_contract(&MemoryState::new()).await;
+    let store = MemoryState::new();
+    testing::state_store_contract(&store).await;
+    testing::state_store_key_rules(&store).await;
 }
 
 #[tokio::test]
