@@ -39,6 +39,7 @@ use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, 
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::rules::schedules::Schedule;
 use borant_core::{
     AgentId, BundleName, Clock, CollectionName, FencingToken, HostName, MemberName, PoolName,
     RoleName, SessionId, Timestamp, keys, subjects,
@@ -77,6 +78,9 @@ pub struct HubConfig {
     pub alerts: AlertsConfig,
     /// `[changes]` of `hub.toml`: the PR watch. `None` watches nothing.
     pub changes: Option<ChangeWatch>,
+    /// `[schedules.<name>]` of `hub.toml`, already parsed. Empty fires
+    /// nothing.
+    pub schedules: Vec<Schedule>,
     /// `[secrets.members]`: the reset time to assume and the restart limit.
     pub member_rules: MemberRules,
     /// `[http]` of `hub.toml`: the read-only listener of the web view, off
@@ -94,6 +98,7 @@ impl Default for HubConfig {
             collections: BTreeMap::new(),
             alerts: AlertsConfig::default(),
             changes: None,
+            schedules: Vec::new(),
             member_rules: MemberRules::default(),
             http: HttpConfig::default(),
         }
