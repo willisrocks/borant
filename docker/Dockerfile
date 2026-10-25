@@ -2,6 +2,10 @@
 # Builds borant and borant-fake-harness for the multi-host tests.
 FROM rust:1.96-bookworm AS build
 WORKDIR /src
+# Thin LTO and one codegen unit are for the ship binary: they add minutes of
+# compile and link time that the test swarm does not use.
+ENV CARGO_PROFILE_RELEASE_LTO=false \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 # The manifests alone build every dependency into a layer that survives a
 # change to the sources, so a cached build only compiles the local crates.
 # `--parents` keeps the `crates/<name>/` paths of the glob, and the stub
