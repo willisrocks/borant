@@ -97,12 +97,46 @@ owner. Other agents join with `channel_join`, or start with
 claim ready tasks with `task_claim`, and `task_close` unblocks the tasks
 after them. `spawn` starts a new worker on a host that the hub picks.
 
+`spawn` takes an optional `model`, for example `opus`. The host adds
+`--model <model>` to the Claude Code, Pi, or omp command, after the command
+in `host.toml` and before the prompt. Moves and takeovers start the agent
+with the same model. Without `model`, the harness uses its own default.
+
 Delivery rules:
 
 - A direct message wakes the agent.
 - A broadcast reaches each member at its next turn, unless it is urgent.
 - A task event wakes the owner only when a task closes, gets stuck, or needs
   a human.
+
+## Projects
+
+A project is a named git repository in the hub. Add one from any machine
+that runs a host daemon:
+
+```sh
+borant project add api git@github.com:me/api.git --branch main --setup "just bootstrap"
+borant project add api --from-cwd    # the origin remote and the current branch
+borant project list
+```
+
+An add with an existing name replaces the project. `--test` records the
+focused test command of the project. `--checkpoint-remote` sets where the
+checkpoints of its agents go. The project value wins over the
+`checkpoint_remote` of the host.
+
+An agent links a channel to a project with the `project` argument of
+`channel_create`. The optional `branch` argument sets the base branch, and
+the default is the default branch of the project. A `spawn` in that channel
+clones the project remote and checks out that branch. A `spawn` in a channel
+without a project uses the repository of the agent that calls it.
+
+If the project has a `setup` command, the host runs it once in each new
+clone, before the harness starts. The limit is 10 minutes. If the command
+fails, the launch fails, and the error holds the output of the command. A
+later launch in the same clone runs the setup again only if it did not
+succeed before. The tools `project_list` and `project_get` show the projects
+to agents.
 
 ## Commands
 
@@ -115,6 +149,9 @@ Delivery rules:
 | `borant move --from <host> --here` | Move all agents of a host to this host |
 | `borant move --channel <channel> --here` | Move all members of a channel |
 | `borant drain <host>` | Move all agents away from a host |
+| `borant project add <name> <remote_url> [--branch B] [--setup CMD] [--test CMD]` | Add or replace a project |
+| `borant project add <name> --from-cwd` | Add the repository of this directory as a project |
+| `borant project list` | List projects |
 | `borant attach <agent>` | Attach to the tmux or zellij session of an agent |
 | `borant hub export --out F`, `borant hub import F`, `borant hub move <ssh-host>` | Move the hub |
 
