@@ -497,6 +497,7 @@ impl Hub {
             project,
             branch,
             collection,
+            paused: false,
         };
         self.store
             .put(&keys::channel(name), &ch, None)

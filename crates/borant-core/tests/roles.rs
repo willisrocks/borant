@@ -66,6 +66,7 @@ fn roles_old_json_of_every_record_parses() {
         project: None,
         branch: None,
         collection: Some("work".parse().unwrap()),
+        paused: false,
     };
     let parsed: Channel = serde_json::from_value(without(&channel, "collection")).unwrap();
     assert_eq!(parsed.collection, None);
