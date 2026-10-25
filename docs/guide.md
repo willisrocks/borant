@@ -100,7 +100,9 @@ after them. `spawn` starts a new worker on a host that the hub picks.
 `spawn` takes an optional `model`, for example `opus`. The host adds
 `--model <model>` to the Claude Code, Pi, or omp command, after the command
 in `host.toml` and before the prompt. Moves and takeovers start the agent
-with the same model. Without `model`, the harness uses its own default.
+with the same model. If a move starts the agent in another harness, the
+host starts it without the model. Without `model`, the harness uses its own
+default.
 
 Delivery rules:
 
@@ -125,17 +127,28 @@ focused test command of the project. `--checkpoint-remote` sets where the
 checkpoints of its agents go. The project value wins over the
 `checkpoint_remote` of the host.
 
+Upgrade all hosts before you set `checkpoint_remote` on a project. An old
+host fetches the WIP commit from `origin`, and the restore fails. Do not
+change `checkpoint_remote` on a project that has live agents. Their WIP
+commits stay on the old remote, and a move cannot find them.
+
 An agent links a channel to a project with the `project` argument of
 `channel_create`. The optional `branch` argument sets the base branch, and
 the default is the default branch of the project. A `spawn` in that channel
-clones the project remote and checks out that branch. A `spawn` in a channel
-without a project uses the repository of the agent that calls it.
+clones the project remote and checks out that branch. If the branch is not
+on the remote yet, the host creates it from the default branch of the
+project. A `spawn` in a channel without a project uses the repository of the
+agent that calls it.
 
 If the project has a `setup` command, the host runs it once in each new
-clone, before the harness starts. The limit is 10 minutes. If the command
-fails, the launch fails, and the error holds the output of the command. A
-later launch in the same clone runs the setup again only if it did not
-succeed before. The tools `project_list` and `project_get` show the projects
+clone, before the harness starts. The session must register before the
+launch reservation of the hub ends (`BORANT_RESERVE_SECS`, 300 seconds by
+default). The setup gets that time minus 60 seconds, from the start of the
+launch. If the setup needs more time, raise `BORANT_RESERVE_SECS` on the hub.
+If the command fails or runs out of time, the launch fails, and the error
+holds the end of its output. The full output is in `borant-setup.log` in the
+git directory of the clone. A later launch in the same clone runs the setup
+again only if it did not succeed before. The tools `project_list` and `project_get` show the projects
 to agents.
 
 ## Commands
