@@ -251,6 +251,14 @@ git directory of the clone. A later launch in the same clone runs the setup
 again only if it did not succeed before. The tools `project_list` and `project_get` show the projects
 to agents.
 
+Before a Claude Code launch the host marks the clone as trusted, so the
+launch never waits at the folder-trust screen: it sets
+`projects."<cwd>".hasTrustDialogAccepted` in `~/.claude.json` (or
+`$CLAUDE_CONFIG_DIR/.claude.json` when set) and keeps every other key of the
+file. The file is written with mode 0600. A launch of another harness does
+not touch it, and a write that fails logs a warning and starts the harness
+anyway.
+
 ## Commands
 
 | Command | Purpose |
