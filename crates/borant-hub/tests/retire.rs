@@ -221,6 +221,7 @@ async fn fixture() -> (Fx, Registered, Registered, Task, Task) {
             always_on: false,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: Default::default(),
             pool: None,
             tags: vec![],

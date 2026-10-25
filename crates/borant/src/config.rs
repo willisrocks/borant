@@ -634,6 +634,9 @@ pub struct HostFile {
     /// `[herdr]`: the herdr launcher of this host, when `launcher = "herdr"`.
     #[serde(default)]
     pub herdr: HerdrFile,
+    /// `[tmux]`: the tmux server of this host, when `launcher = "tmux"`.
+    #[serde(default)]
+    pub tmux: TmuxFile,
     /// `[sandbox]`: the bubblewrap sandbox of this host.
     #[serde(default)]
     pub sandbox: SandboxFile,
@@ -663,6 +666,16 @@ pub struct HerdrFile {
     pub session: Option<String>,
     /// The herdr program, for example a pinned release binary.
     pub program: Option<String>,
+}
+
+/// `[tmux]` of `host.toml`: the tmux server that holds this host's sessions.
+/// It is separate from the default server, so an agent's own `tmux` command
+/// never ends a Borant session.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TmuxFile {
+    /// The name of the tmux server, `borant` when unset.
+    pub socket: Option<String>,
 }
 
 /// `[alerts]` of `hub.toml` and `host.toml`: which notifier gets a notice,
@@ -749,6 +762,15 @@ impl HostFile {
             session: self.herdr.session.clone().unwrap_or(default.session),
             program: self.herdr.program.clone().unwrap_or(default.program),
             ssh: self.host.ssh.clone(),
+        }
+    }
+
+    /// The tmux launcher settings of `[tmux]`, with the `borant` server that
+    /// keeps the sessions off the default server.
+    pub fn tmux_config(&self) -> borant_launch::TmuxConfig {
+        let default = borant_launch::TmuxConfig::default();
+        borant_launch::TmuxConfig {
+            socket: self.tmux.socket.clone().unwrap_or(default.socket),
         }
     }
 }
@@ -898,6 +920,11 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
         cfg.always_on = v;
     }
     cfg.ssh = env("BORANT_SSH").or(h.ssh.clone());
+    // The socket only matters to the tmux launcher, and `borant attach` gets
+    // it from the host record.
+    if cfg.launcher == "tmux" {
+        cfg.tmux_socket = Some(file.tmux_config().socket);
+    }
     (cfg.pool, cfg.tags) = pool_and_tags(
         h.pool.clone(),
         h.tags.clone(),
@@ -1221,6 +1248,30 @@ mod tests {
             plain.alerts.summary(),
             "notifier=desktop needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
         );
+    }
+
+    #[test]
+    fn tmux_socket_comes_from_the_host_file() {
+        let file: HostFile = toml::from_str("[tmux]\nsocket = \"agents\"\n").unwrap();
+        assert_eq!(file.tmux_config().socket, "agents");
+        // A host that names no [tmux] keeps its sessions on the borant server.
+        let plain: HostFile = toml::from_str("").unwrap();
+        assert_eq!(
+            plain.tmux_config().socket,
+            borant_launch::DEFAULT_TMUX_SOCKET
+        );
+    }
+
+    #[tokio::test]
+    async fn tmux_socket_reaches_the_host_record() {
+        let file: HostFile =
+            toml::from_str("[host]\nlauncher = \"tmux\"\n[tmux]\nsocket = \"agents\"\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.tmux_socket.as_deref(), Some("agents"));
+        // A host with another launcher carries no tmux socket.
+        let file: HostFile = toml::from_str("[host]\nlauncher = \"process\"\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.tmux_socket, None);
     }
 
     #[tokio::test]

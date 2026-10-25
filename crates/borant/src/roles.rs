@@ -152,6 +152,7 @@ pub async fn run_host() -> anyhow::Result<()> {
         &cfg.launcher,
         cfg.home.join("logs"),
         &file.herdr_config(),
+        &file.tmux_config(),
     )
     .map_err(anyhow::Error::msg)?;
     let outbox = Outbox::open(&cfg.home.join("outbox.db"))?;

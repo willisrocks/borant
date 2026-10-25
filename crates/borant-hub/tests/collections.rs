@@ -143,6 +143,7 @@ async fn host_with_bundles(fx: &Fx, n: &str) {
             always_on: false,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: Default::default(),
             pool: None,
             tags: Vec::new(),

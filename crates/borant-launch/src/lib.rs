@@ -20,7 +20,7 @@ pub use herdr::{HerdrConfig, HerdrLauncher};
 pub use orca::OrcaLauncher;
 pub use process::ProcessLauncher;
 pub use sandbox::{SandboxPlan, wrap};
-pub use tmux::TmuxLauncher;
+pub use tmux::{DEFAULT_TMUX_SOCKET, TmuxConfig, TmuxLauncher};
 pub use zellij::ZellijLauncher;
 
 /// Returns the launcher for a host configuration `launcher` value:
@@ -28,19 +28,25 @@ pub use zellij::ZellijLauncher;
 /// or `herdr`. The process launcher writes logs to `log_dir`, and the zellij
 /// launcher writes its layout files there.
 pub fn launcher_for(kind: &str, log_dir: PathBuf) -> Result<Box<dyn Launcher>, String> {
-    launcher_for_with(kind, log_dir, &HerdrConfig::default())
+    launcher_for_with(
+        kind,
+        log_dir,
+        &HerdrConfig::default(),
+        &TmuxConfig::default(),
+    )
 }
 
-/// [`launcher_for`], with the `[herdr]` section of `host.toml` for the herdr
-/// launcher.
+/// [`launcher_for`], with the `[herdr]` and `[tmux]` sections of `host.toml`
+/// for the herdr and tmux launchers.
 pub fn launcher_for_with(
     kind: &str,
     log_dir: PathBuf,
     herdr: &HerdrConfig,
+    tmux: &TmuxConfig,
 ) -> Result<Box<dyn Launcher>, String> {
     match kind {
         "process" | "headless" => Ok(Box::new(ProcessLauncher::new(log_dir))),
-        "tmux" => Ok(Box::new(TmuxLauncher)),
+        "tmux" => Ok(Box::new(TmuxLauncher::new(tmux.clone()))),
         "zellij" => Ok(Box::new(ZellijLauncher::new(log_dir))),
         "orca" => Ok(Box::new(OrcaLauncher)),
         "herdr" => Ok(Box::new(HerdrLauncher::new(herdr.clone()))),
@@ -144,7 +150,23 @@ mod tests {
             program: "herdr-dev".into(),
             ssh: None,
         };
-        let launcher = launcher_for_with("herdr", PathBuf::from("/tmp"), &herdr).unwrap();
+        let launcher = launcher_for_with(
+            "herdr",
+            PathBuf::from("/tmp"),
+            &herdr,
+            &TmuxConfig::default(),
+        )
+        .unwrap();
         assert_eq!(launcher.kind(), "herdr");
+        let tmux = launcher_for_with(
+            "tmux",
+            PathBuf::from("/tmp"),
+            &HerdrConfig::default(),
+            &TmuxConfig {
+                socket: "check".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(tmux.kind(), "tmux");
     }
 }

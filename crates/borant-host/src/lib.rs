@@ -62,6 +62,9 @@ pub struct HostConfig {
     /// The tags of this host, for example `vps` for a pool host.
     pub tags: Vec<Tag>,
     pub ssh: Option<String>,
+    /// `[tmux] socket`: the tmux server of this host when its launcher is
+    /// `tmux`, for `borant attach`.
+    pub tmux_socket: Option<String>,
     pub harnesses: Vec<Harness>,
     pub commands: HarnessCommands,
     /// Where checkpoints go. Defaults to the `origin` remote of each repo.
@@ -106,6 +109,7 @@ impl HostConfig {
             pool: None,
             tags: Vec::new(),
             ssh: None,
+            tmux_socket: None,
             harnesses: vec![Harness::ClaudeCode, Harness::Pi, Harness::Omp],
             commands: HarnessCommands::default(),
             checkpoint_remote: None,
@@ -141,6 +145,7 @@ impl HostConfig {
             always_on: self.always_on,
             draining: false,
             ssh: self.ssh.clone(),
+            tmux_socket: self.tmux_socket.clone(),
             members: self
                 .secrets
                 .as_ref()

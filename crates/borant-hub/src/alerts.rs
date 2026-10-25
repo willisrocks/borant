@@ -325,6 +325,7 @@ mod tests {
             always_on: true,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: Default::default(),
             pool: None,
             tags: Vec::new(),
@@ -393,6 +394,7 @@ mod members_tests {
             always_on: true,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: [(
                 bundle.clone(),
                 MemberBundle {
@@ -459,6 +461,7 @@ mod members_tests {
             always_on: false,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: [(
                 bundle.clone(),
                 MemberBundle {

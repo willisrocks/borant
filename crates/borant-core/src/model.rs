@@ -336,6 +336,10 @@ pub struct HostInfo {
     pub draining: bool,
     /// The SSH destination for `borant attach`, for example `me@vps-1`.
     pub ssh: Option<String>,
+    /// The tmux server of this host, when the launcher is `tmux`, so that
+    /// `borant attach` names it with `-L`. `borant` when unset.
+    #[serde(default)]
+    pub tmux_socket: Option<String>,
     /// The bundles of this host with two or more members.
     #[serde(default)]
     pub members: BTreeMap<BundleName, MemberBundle>,
@@ -370,6 +374,7 @@ impl Default for HostInfo {
             always_on: false,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: BTreeMap::new(),
             pool: None,
             tags: Vec::new(),
