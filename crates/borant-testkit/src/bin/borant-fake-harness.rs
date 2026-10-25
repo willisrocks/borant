@@ -53,14 +53,31 @@ impl Fake {
         let _ = self.log.flush();
     }
 
-    async fn event(&self, ev: LocalEvent) -> anyhow::Result<EventReply> {
-        match self
+    /// Posts one event and writes the messages that the reply carries. The
+    /// host drains its queue into the first request that can show messages,
+    /// so a harness that drops them loses them.
+    async fn event(&mut self, ev: LocalEvent) -> anyhow::Result<EventReply> {
+        let reply = match self
             .client
             .post::<_, EventReply>(&format!("/v1/sessions/{}/events", self.session), &ev, CALL)
             .await
         {
-            Outcome::Reply(r) => Ok(r?),
-            Outcome::Down(e) => Err(e),
+            Outcome::Reply(r) => r?,
+            Outcome::Down(e) => return Err(e),
+        };
+        self.show(&reply.messages);
+        Ok(reply)
+    }
+
+    /// Writes messages the way the harness shows them to its model.
+    fn show(&mut self, msgs: &[Envelope]) {
+        for m in msgs {
+            self.line(&format!(
+                "MSG from={} kind={:?} {}",
+                m.from,
+                m.kind,
+                m.text.replace('\n', " / ")
+            ));
         }
     }
 
