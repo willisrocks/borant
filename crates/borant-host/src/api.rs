@@ -103,8 +103,9 @@ async fn resolve(
     });
     match found {
         Some(id) => Ok(Json(Reply::ok(&h.local_view(id)?))),
-        None => Err(ApiFail(ApiError::not_found(
-            "no local session for these processes",
+        None => Err(ApiFail(crate::persist::no_session(
+            h.restored(),
+            "no local session for these processes".into(),
         ))),
     }
 }

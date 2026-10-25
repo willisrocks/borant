@@ -201,10 +201,9 @@ impl Host {
 
     pub fn local_view(&self, id: SessionId) -> Result<LocalSession, ApiError> {
         let st = self.state();
-        let s = st
-            .sessions
-            .get(&id)
-            .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+        let s = st.sessions.get(&id).ok_or_else(|| {
+            crate::persist::no_session(st.restored, format!("no local session {id}"))
+        })?;
         Ok(LocalSession {
             session: id,
             agent: s.reg.as_ref().map(|r| r.agent.clone()),
@@ -302,10 +301,10 @@ impl Host {
     pub async fn event(&self, id: SessionId, ev: LocalEvent) -> Result<EventReply, ApiError> {
         let (agent, start_turn) = {
             let mut st = self.state();
-            let s = st
-                .sessions
-                .get_mut(&id)
-                .ok_or_else(|| ApiError::not_found(format!("no local session {id}")))?;
+            let restored = st.restored;
+            let s = st.sessions.get_mut(&id).ok_or_else(|| {
+                crate::persist::no_session(restored, format!("no local session {id}"))
+            })?;
             let start = match &ev {
                 LocalEvent::TurnStart => true,
                 LocalEvent::UserPrompt { .. } => !s.busy,
