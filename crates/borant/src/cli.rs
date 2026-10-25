@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::model::{CloseReason, Harness, Project, Target, TaskBinding, UsageWindow};
+use borant_core::model::{
+    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, UsageWindow,
+};
 use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
@@ -154,6 +156,13 @@ pub enum Command {
         /// Keep the session when the bound task closes.
         #[arg(long = "no-stop-on-close", conflicts_with = "stop_on_close")]
         no_stop_on_close: bool,
+        /// The most continues that an idle worker gets while its task is in
+        /// progress, at least 1. Needs a bound task.
+        #[arg(long = "continue")]
+        continues: Option<u32>,
+        /// The session hours after the spawn at which no continue is sent.
+        #[arg(long = "continue-hours")]
+        continue_hours: Option<u32>,
         /// Higher goes first in the spawn queue.
         #[arg(long)]
         priority: Option<i32>,
@@ -744,6 +753,29 @@ fn stop_on_close_flag(on: bool, off: bool) -> Option<bool> {
     }
 }
 
+/// `--continue` and `--continue-hours`, as the call takes them: a bound worker
+/// with at most `max` continues, and no continue after `max_hours` (phase 11
+/// spec). The hub refuses a spawn that asks for continues without a task.
+fn continue_policy(
+    max: Option<u32>,
+    max_hours: Option<u32>,
+    task: Option<&TaskBinding>,
+) -> anyhow::Result<Option<ContinuePolicy>> {
+    let Some(max) = max else {
+        if max_hours.is_some() {
+            bail!("--continue-hours needs --continue");
+        }
+        return Ok(None);
+    };
+    if max == 0 {
+        bail!("--continue is at least 1");
+    }
+    if task.is_none() {
+        bail!("--continue needs a bound task: --task or --task-title");
+    }
+    Ok(Some(ContinuePolicy { max, max_hours }))
+}
+
 /// The arguments of `borant spawn`, after the prompt file is read.
 struct SpawnArgs {
     channel: ChannelName,
@@ -754,6 +786,7 @@ struct SpawnArgs {
     host: Option<HostName>,
     task: Option<TaskBinding>,
     stop_on_close: Option<bool>,
+    continues: Option<ContinuePolicy>,
     priority: Option<i32>,
     name: Option<AgentId>,
     key: Option<String>,
@@ -775,7 +808,7 @@ fn spawn_call(args: SpawnArgs) -> ToolCall {
         bundles: args.bundles,
         task: args.task,
         stop_on_close: args.stop_on_close,
-        continues: None,
+        continues: args.continues,
         priority: args.priority,
     }
 }
@@ -1304,6 +1337,8 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             task_title,
             stop_on_close,
             no_stop_on_close,
+            continues,
+            continue_hours,
             priority,
             name,
             key,
@@ -1314,6 +1349,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 .with_context(|| format!("cannot read {}", prompt_file.display()))?;
             let task = task_binding(task, task_title, &channel)?;
             let stop_on_close = stop_on_close_flag(stop_on_close, no_stop_on_close);
+            let continues = continue_policy(continues, continue_hours, task.as_ref())?;
             let args = SpawnArgs {
                 channel,
                 prompt,
@@ -1323,6 +1359,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 host,
                 task,
                 stop_on_close,
+                continues,
                 priority,
                 name,
                 key,
@@ -1668,6 +1705,7 @@ mod tests {
             key,
             bundles,
             json,
+            ..
         } = cmd
         else {
             panic!("not a spawn");
@@ -1683,6 +1721,7 @@ mod tests {
             host,
             task: task_binding(task, task_title, &channel).unwrap(),
             stop_on_close: stop_on_close_flag(stop_on_close, no_stop_on_close),
+            continues: None,
             priority,
             name,
             key,
@@ -1702,6 +1741,47 @@ mod tests {
         assert_eq!(v["name"], "w1");
         assert_eq!(v["key"], "k1");
         assert_eq!(v["bundles"], json!(["github", "prod-readonly"]));
+    }
+
+    #[test]
+    fn cli_continue_flags_build_the_policy() {
+        let cmd = cli_command(&format!(
+            "borant spawn --channel api --prompt-file p.md --task api/{TASK} \
+             --continue 2 --continue-hours 4"
+        ));
+        let Command::Spawn {
+            channel,
+            task,
+            task_title,
+            continues,
+            continue_hours,
+            ..
+        } = cmd
+        else {
+            panic!("not a spawn");
+        };
+        let binding = task_binding(task, task_title, &channel).unwrap();
+        assert_eq!(
+            continue_policy(continues, continue_hours, binding.as_ref()).unwrap(),
+            Some(ContinuePolicy {
+                max: 2,
+                max_hours: Some(4)
+            })
+        );
+        // No flag asks for no policy, and the hours carry the task binding.
+        assert_eq!(continue_policy(None, None, None).unwrap(), None);
+        assert_eq!(
+            continue_policy(Some(3), None, binding.as_ref()).unwrap(),
+            Some(ContinuePolicy {
+                max: 3,
+                max_hours: None
+            })
+        );
+        // The hours need a count, the count is at least one, and either needs
+        // a bound task.
+        assert!(continue_policy(None, Some(4), binding.as_ref()).is_err());
+        assert!(continue_policy(Some(0), None, binding.as_ref()).is_err());
+        assert!(continue_policy(Some(2), None, None).is_err());
     }
 
     #[test]

@@ -181,6 +181,10 @@ pub struct Spawn {
     pub task_title: Option<String>,
     /// Stop the session when the bound task closes. True by default for a bound worker.
     pub stop_on_close: Option<bool>,
+    /// The most continues that an idle worker gets while its task is in progress, at least 1. Needs a task.
+    pub continues: Option<u32>,
+    /// The session hours after the spawn at which no continue is sent. Needs continues.
+    pub continue_hours: Option<u32>,
     /// Higher goes first in the spawn queue.
     pub priority: Option<i32>,
 }
@@ -223,6 +227,12 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
         (None, Some(title)) => Some(json!({ "channel": a.channel, "title": title })),
         (None, None) => None,
     };
+    let continues = match (a.continues, a.continue_hours) {
+        (None, None) => None,
+        (None, Some(_)) => return Err("continue_hours needs continues".into()),
+        (Some(max), Some(max_hours)) => Some(json!({"max": max, "max_hours": max_hours})),
+        (Some(max), None) => Some(json!({ "max": max })),
+    };
     Ok(json!({
         "tool": "spawn",
         "channel": a.channel,
@@ -236,6 +246,7 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
         "bundles": a.bundles,
         "task": task,
         "stop_on_close": a.stop_on_close,
+        "continues": continues,
         "priority": a.priority,
     }))
 }
@@ -584,9 +595,15 @@ mod tests {
             task: Some("api/01M5S3PATRKMGFD9C0HB1CS4ZK".into()),
             task_title: None,
             stop_on_close: Some(false),
+            continues: Some(2),
+            continue_hours: Some(4),
             priority: Some(3),
         };
         assert_eq!(spawn_request(&a).unwrap()["role"], "chief");
+        assert_eq!(
+            spawn_request(&a).unwrap()["continues"],
+            json!({"max": 2, "max_hours": 4})
+        );
         let call: ToolCall =
             serde_json::from_value(strip_nulls(spawn_request(&a).unwrap())).unwrap();
         match call {
@@ -595,12 +612,20 @@ mod tests {
                 key,
                 role,
                 stop_on_close,
+                continues,
                 priority,
                 ..
             } => {
                 assert_eq!(key.as_deref(), Some("k1"));
                 assert_eq!(role.map(|r| r.as_str().to_owned()), Some("chief".into()));
                 assert_eq!(stop_on_close, Some(false));
+                assert_eq!(
+                    continues,
+                    Some(borant_core::model::ContinuePolicy {
+                        max: 2,
+                        max_hours: Some(4)
+                    })
+                );
                 assert_eq!(priority, Some(3));
                 assert_eq!(
                     task,
@@ -612,6 +637,31 @@ mod tests {
             }
             other => panic!("not a spawn: {other:?}"),
         }
+
+        // A count alone sends the policy without the hours, and the hours
+        // need the count.
+        let counted = Spawn {
+            continue_hours: None,
+            ..a
+        };
+        assert_eq!(
+            spawn_request(&counted).unwrap()["continues"],
+            json!({"max": 2})
+        );
+        let hours_only = Spawn {
+            continues: None,
+            continue_hours: Some(4),
+            ..counted
+        };
+        assert_eq!(
+            spawn_request(&hours_only).unwrap_err(),
+            "continue_hours needs continues"
+        );
+        let a = Spawn {
+            continues: Some(2),
+            continue_hours: Some(4),
+            ..hours_only
+        };
 
         // A title binds a new task in the channel of the spawn.
         let titled = Spawn {
