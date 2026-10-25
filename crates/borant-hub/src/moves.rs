@@ -14,8 +14,8 @@ use borant_core::rules::lease;
 use borant_core::rules::roles::{self, SpawnInput};
 use borant_core::rules::schedule::{self, HostView, PlacementReq};
 use borant_core::{
-    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, RoleName, SessionId, keys,
-    subjects,
+    AgentId, BundleName, ChannelName, CollectionName, EventId, FencingToken, HostName, RoleName,
+    SessionId, keys, subjects,
 };
 use serde_json::{Value, json};
 
@@ -798,9 +798,15 @@ impl Hub {
         Ok(())
     }
 
-    pub(crate) async fn list_agents(&self) -> Result<Value, ApiError> {
+    pub(crate) async fn list_agents(
+        &self,
+        mine: Option<&CollectionName>,
+    ) -> Result<Value, ApiError> {
         let mut out = Vec::new();
         for a in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
+            if !crate::calls::allowed(mine, a.value.collection.as_ref()) {
+                continue;
+            }
             let lease = self
                 .store
                 .get::<Lease>(&keys::lease_agent(&a.value.id))

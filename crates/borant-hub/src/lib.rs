@@ -28,9 +28,10 @@ use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
-use borant_core::rules::roles::RoleConfig;
+use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{
-    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, PoolName, RoleName, SessionId,
+    AgentId, BundleName, Clock, CollectionName, FencingToken, HostName, MemberName, PoolName,
+    RoleName, SessionId,
     Timestamp, keys, subjects,
 };
 use futures::StreamExt;
@@ -50,6 +51,8 @@ pub struct HubConfig {
     pub elastic: Option<ElasticConfig>,
     /// The roles from `hub.toml`, for spawns, calls, and registrations.
     pub roles: BTreeMap<RoleName, RoleConfig>,
+    /// `[collections.<name>]` from `hub.toml`.
+    pub collections: BTreeMap<CollectionName, CollectionConfig>,
 }
 
 impl Default for HubConfig {
@@ -59,6 +62,7 @@ impl Default for HubConfig {
             instance: format!("hub-{}", ulid::Ulid::generate()),
             elastic: None,
             roles: BTreeMap::new(),
+            collections: BTreeMap::new(),
         }
     }
 }

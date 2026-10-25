@@ -106,6 +106,19 @@ impl Fx {
         channel: Option<&str>,
         with_repo: bool,
     ) -> Result<Registered, ApiError> {
+        self.try_register_in(host, agent, channel, None, with_repo)
+            .await
+    }
+
+    /// Registers a session that reports a collection.
+    pub async fn try_register_in(
+        &self,
+        host: &str,
+        agent: Option<&str>,
+        channel: Option<&str>,
+        collection: Option<&str>,
+        with_repo: bool,
+    ) -> Result<Registered, ApiError> {
         let v = self
             .req(CtlRequest::RegisterSession(RegisterSession {
                 session: SessionId::new(),
@@ -116,10 +129,23 @@ impl Fx {
                 repo: with_repo.then(repo),
                 agent: agent.map(|a| a.parse().unwrap()),
                 channel: channel.map(|c| c.parse().unwrap()),
+                collection: collection.map(|c| c.parse().unwrap()),
                 ..Default::default()
             }))
             .await?;
         Ok(serde_json::from_value(v).unwrap())
+    }
+
+    pub async fn register_in(
+        &self,
+        host: &str,
+        agent: Option<&str>,
+        channel: Option<&str>,
+        collection: Option<&str>,
+    ) -> Registered {
+        self.try_register_in(host, agent, channel, collection, true)
+            .await
+            .unwrap()
     }
 
     pub async fn register(

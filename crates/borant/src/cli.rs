@@ -6,7 +6,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use borant_core::model::{Harness, Project, Target, UsageWindow};
 use borant_core::proto::{MoveSelector, MoveTarget, ToolCall};
-use borant_core::{AgentId, BundleName, ChannelName, HostName, MemberName, ProjectName, Timestamp};
+use borant_core::{
+    AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, Timestamp,
+};
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
 use clap::{Parser, Subcommand};
@@ -191,6 +193,9 @@ pub enum ProjectCmd {
         /// Where checkpoints go, if not the remote URL.
         #[arg(long)]
         checkpoint_remote: Option<String>,
+        /// The collection that holds the project and its channels.
+        #[arg(long)]
+        collection: Option<CollectionName>,
     },
     /// List all projects.
     List,
@@ -518,6 +523,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
                     setup,
                     test,
                     checkpoint_remote,
+                    collection,
                 },
         } => {
             let (remote_url, default_branch) = if from_cwd {
@@ -539,7 +545,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
                 checkpoint_remote,
                 setup,
                 test,
-                collection: None,
+                collection,
             };
             pretty(&call(&c, ToolCall::ProjectAdd { project }).await?);
         }
@@ -693,6 +699,27 @@ mod tests {
         assert!(
             Cli::try_parse_from(["borant", "project", "add", "api", "u", "--from-cwd"]).is_err()
         );
+    }
+
+    #[test]
+    fn project_add_names_a_collection() {
+        let cli = Cli::try_parse_from([
+            "borant",
+            "project",
+            "add",
+            "api",
+            "git@github.com:me/api.git",
+            "--collection",
+            "work",
+        ])
+        .unwrap();
+        let Command::Project {
+            cmd: ProjectCmd::Add { collection, .. },
+        } = cli.command
+        else {
+            panic!("not a project add");
+        };
+        assert_eq!(collection, Some("work".parse().unwrap()));
     }
 
     #[test]
