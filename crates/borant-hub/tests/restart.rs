@@ -171,6 +171,7 @@ impl Fx {
                 closed: None,
                 project: None,
                 branch: None,
+                collection: None,
             };
             put(&self.state, &keys::channel(&name), &chan).await;
             for m in 0..MEMBERS_PER_CHANNEL {
@@ -225,6 +226,9 @@ impl Fx {
                 project: None,
                 members: Default::default(),
                 pinned: false,
+                role: None,
+                collection: None,
+                parent: None,
             };
             put(&self.state, &keys::agent(&id), &a).await;
             let lease = Lease {
@@ -342,6 +346,8 @@ async fn a_session_that_registers_during_the_tick_keeps_its_claims() {
                 agent: Some(agent(i)),
                 channel: None,
                 shared_dir: false,
+                role: None,
+                collection: None,
             }))
             .await
         }));

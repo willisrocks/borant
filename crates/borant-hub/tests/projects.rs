@@ -20,6 +20,7 @@ fn project() -> Project {
         checkpoint_remote: Some("/srv/ckpt.git".into()),
         setup: Some("just bootstrap".into()),
         test: None,
+        collection: None,
     }
 }
 
@@ -58,6 +59,7 @@ async fn spawn(fx: &Fx, owner: &Registered, model: Option<&str>) {
             host: Some(name("h2")),
             name: Some("helper".parse().unwrap()),
             model: model.map(Into::into),
+            role: None,
         },
     )
     .await
@@ -265,6 +267,7 @@ async fn takeover_in_another_harness_drops_the_model() {
             host: Some(name("h2")),
             name: Some("helper".parse().unwrap()),
             model: Some("opus".into()),
+            role: None,
         },
     )
     .await
@@ -285,6 +288,8 @@ async fn takeover_in_another_harness_drops_the_model() {
             agent: Some("helper".parse().unwrap()),
             channel: None,
             shared_dir: false,
+            role: None,
+            collection: None,
         }))
         .await
         .unwrap();

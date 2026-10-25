@@ -529,6 +529,7 @@ mod tests {
                 members: Default::default(),
                 pool: Some("workers".parse().unwrap()),
                 tags: Vec::new(),
+                bundles: Vec::new(),
             },
             online,
             active_agents: active,

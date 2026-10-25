@@ -41,6 +41,9 @@ fn agent_doc(id: &AgentId, channels: Vec<ChannelName>) -> Agent {
         project: None,
         members: Default::default(),
         pinned: false,
+        role: None,
+        collection: None,
+        parent: None,
     }
 }
 
@@ -454,6 +457,7 @@ async fn export_import_sends_pending_only_to_its_agent() {
         closed: None,
         project: None,
         branch: None,
+        collection: None,
     };
     put(&fx.state, &keys::channel(&channel), &owner).await;
     for agent in [&a, &b] {

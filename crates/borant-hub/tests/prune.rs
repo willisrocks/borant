@@ -73,6 +73,9 @@ fn agent_doc(id: &AgentId, session: Option<SessionId>) -> Agent {
         project: None,
         members: Default::default(),
         pinned: false,
+        role: None,
+        collection: None,
+        parent: None,
     }
 }
 
@@ -170,6 +173,7 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
             host: Some("nowhere".parse().unwrap()),
             name: Some("spawned".parse().unwrap()),
             model: None,
+            role: None,
         },
     )
     .await
@@ -236,6 +240,7 @@ async fn prune_keeps_a_channel_owner() {
         closed: None,
         project: None,
         branch: None,
+        collection: None,
     };
     put(&fx, &keys::channel(&api()), &channel).await;
 

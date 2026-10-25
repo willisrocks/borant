@@ -186,6 +186,7 @@ async fn pinned_pending_move_is_not_placed() {
             host: None,
             name: Some(child.clone()),
             model: None,
+            role: None,
         },
     )
     .await
@@ -271,6 +272,8 @@ async fn pinned_new_session_is_refused() {
             agent: Some(who.agent.clone()),
             channel: None,
             shared_dir: false,
+            role: None,
+            collection: None,
         }))
         .await
         .unwrap_err();
@@ -295,6 +298,8 @@ async fn pinned_same_session_reclaims() {
             agent: Some(who.agent.clone()),
             channel: None,
             shared_dir: false,
+            role: None,
+            collection: None,
         }))
         .await
         .unwrap();

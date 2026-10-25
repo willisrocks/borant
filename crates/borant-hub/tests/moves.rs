@@ -353,6 +353,7 @@ async fn spawn_places_new_agent_with_prompt() {
                 host: Some(name("h2")),
                 name: Some("helper".parse().unwrap()),
                 model: None,
+                role: None,
             },
         )
         .await
@@ -424,6 +425,7 @@ async fn failed_spawn_is_placed_again_with_its_prompt() {
             host: Some(name("h2")),
             name: Some("helper".parse().unwrap()),
             model: None,
+            role: None,
         },
     )
     .await

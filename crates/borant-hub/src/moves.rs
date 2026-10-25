@@ -194,6 +194,8 @@ impl Hub {
             project,
             reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
             members,
+            bundles: Vec::new(),
+            git_author: None,
         };
         let move_event = SessionEvent {
             id: EventId::new(),
@@ -401,6 +403,9 @@ impl Hub {
             project: ch.project,
             members: Default::default(),
             pinned: false,
+            role: None,
+            collection: None,
+            parent: None,
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

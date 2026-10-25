@@ -70,6 +70,8 @@ async fn register(fx: &Fx, cwd: &Path) -> SessionId {
             cwd: cwd.to_string_lossy().into_owned(),
             agent: Some(agent()),
             channel: None,
+            role: None,
+            collection: None,
         })
         .await
         .unwrap()

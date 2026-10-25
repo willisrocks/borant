@@ -134,6 +134,8 @@ impl Host {
                 agent: s.agent_hint.clone(),
                 channel: s.channel_hint.clone(),
                 shared_dir: s.shared_dir,
+                role: None,
+                collection: None,
             }
         };
         let reg: Registered = match self.hub(&CtlRequest::RegisterSession(req)).await {

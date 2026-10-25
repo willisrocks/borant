@@ -231,6 +231,8 @@ async fn register(client: &LocalClient) -> anyhow::Result<LocalSession> {
         channel: std::env::var("BORANT_CHANNEL")
             .ok()
             .and_then(|c| c.parse().ok()),
+        role: None,
+        collection: None,
     };
     for _ in 0..60 {
         match client
