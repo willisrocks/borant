@@ -38,6 +38,11 @@ pub fn repo() -> RepoInfo {
 
 impl Fx {
     pub fn new() -> Self {
+        Self::with(HubConfig::default())
+    }
+
+    /// A hub with `cfg`, so a test can name roles or pools.
+    pub fn with(cfg: HubConfig) -> Self {
         let state = MemoryState::new();
         let bus = MemoryBus::new();
         let sessions = MemorySession::new();
@@ -47,7 +52,7 @@ impl Fx {
             Arc::new(bus.clone()),
             Arc::new(sessions.clone()),
             clock.clone(),
-            HubConfig::default(),
+            cfg,
         ));
         Self {
             hub,
@@ -63,11 +68,22 @@ impl Fx {
     }
 
     pub async fn host(&self, n: &str, harnesses: &[Harness]) {
-        self.pool_host(n, harnesses, None).await;
+        self.tagged_host(n, harnesses, None, &[]).await;
     }
 
     /// Registers a host that belongs to `pool`, when it is one.
     pub async fn pool_host(&self, n: &str, harnesses: &[Harness], pool: Option<&str>) {
+        self.tagged_host(n, harnesses, pool, &[]).await;
+    }
+
+    /// Registers a host with a pool and the tags that a role asks for.
+    pub async fn tagged_host(
+        &self,
+        n: &str,
+        harnesses: &[Harness],
+        pool: Option<&str>,
+        tags: &[&str],
+    ) {
         self.req(CtlRequest::RegisterHost {
             info: HostInfo {
                 name: name(n),
@@ -75,6 +91,7 @@ impl Fx {
                 launcher: "process".into(),
                 max_agents: 4,
                 pool: pool.map(|p| p.parse().unwrap()),
+                tags: tags.iter().map(|t| t.parse().unwrap()).collect(),
                 ..Default::default()
             },
         })

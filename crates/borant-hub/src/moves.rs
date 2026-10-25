@@ -8,9 +8,9 @@ use borant_core::model::{
 };
 use borant_core::proto::{ApiError, HostCommand, LaunchOrder, MoveSelector, MoveTarget};
 use borant_core::rules::lease;
-use borant_core::rules::schedule::{self, HostView};
+use borant_core::rules::schedule::{self, HostView, PlacementReq};
 use borant_core::{
-    AgentId, ChannelName, EventId, FencingToken, HostName, SessionId, keys, subjects,
+    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, SessionId, keys, subjects,
 };
 use serde_json::{Value, json};
 
@@ -38,6 +38,44 @@ pub fn continue_prompt(
 }
 
 impl Hub {
+    /// What a placement asks of a host: the tags of the role of the agent,
+    /// and the host of its parent when the role runs on the parent's host.
+    /// With no role the request is empty, but for the host that the hub names.
+    pub(crate) async fn placement_req(
+        &self,
+        agent: &Agent,
+        host: Option<&HostName>,
+    ) -> PlacementReq {
+        let mut req = PlacementReq {
+            host: host.cloned(),
+            ..Default::default()
+        };
+        let Some(role) = agent.role.as_ref().and_then(|r| self.cfg.roles.get(r)) else {
+            return req;
+        };
+        req.require = role.require.clone();
+        req.prefer = role.prefer.clone();
+        req.avoid = role.avoid.clone();
+        if role.on_parent_host
+            && let Some(parent) = &agent.parent
+            && let Ok(p) = self.agent(parent).await
+        {
+            req.host = p.value.host.clone();
+        }
+        req
+    }
+
+    /// The bundles of the launch that the hub knows before it resolves the
+    /// channel: the bundles that the role of the agent adds.
+    pub(crate) fn launch_bundles(&self, agent: &Agent) -> Vec<BundleName> {
+        agent
+            .role
+            .as_ref()
+            .and_then(|r| self.cfg.roles.get(r))
+            .map(|r| r.bundles.clone())
+            .unwrap_or_default()
+    }
+
     async fn host_views(&self, mem: &Memory, agent: &AgentId) -> Result<Vec<HostView>, ApiError> {
         self.views(mem, Some(agent)).await
     }
@@ -110,8 +148,9 @@ impl Hub {
         let views = self.host_views(mem, &agent.id).await?;
         let Some((host, harness)) = schedule::place(
             agent.preferred_harness,
-            target.host.as_ref(),
             target.harness,
+            &self.placement_req(agent, target.host.as_ref()).await,
+            &self.launch_bundles(agent),
             &views,
         ) else {
             tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
@@ -299,10 +338,13 @@ impl Hub {
                         }
                         v.active_agents += planned.get(&v.info.name).copied().unwrap_or(0);
                     }
+                    let req = self.placement_req(&agent, target.host.as_ref()).await;
+                    let bundles = self.launch_bundles(&agent);
                     let Some((to, _)) = schedule::place(
                         agent.preferred_harness,
-                        target.host.as_ref(),
                         target.harness,
+                        &req,
+                        &bundles,
                         &views,
                     ) else {
                         return Err(ApiError::unavailable(format!(

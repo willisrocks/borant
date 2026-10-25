@@ -284,7 +284,11 @@ impl Hub {
                 continue;
             }
             let harness = move_.target.harness.unwrap_or(agent.preferred_harness);
-            if schedule::place(agent.preferred_harness, None, Some(harness), live).is_some() {
+            let req = self.placement_req(&agent, None).await;
+            let bundles = self.launch_bundles(&agent);
+            if schedule::place(agent.preferred_harness, Some(harness), &req, &bundles, live)
+                .is_some()
+            {
                 continue;
             }
             needs.push(PlacementNeed {

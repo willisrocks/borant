@@ -17,7 +17,6 @@ mod store;
 mod tasks;
 
 pub use elastic::ElasticConfig;
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,9 +26,10 @@ use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
+use borant_core::rules::roles::RoleConfig;
 use borant_core::{
-    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, PoolName, SessionId, Timestamp,
-    keys, subjects,
+    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, PoolName, RoleName, SessionId,
+    Timestamp, keys, subjects,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -46,6 +46,8 @@ pub struct HubConfig {
     /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of
     /// `hub.toml`. `None`, or no pool, keeps today's hub.
     pub elastic: Option<ElasticConfig>,
+    /// The `[roles]` of `hub.toml`, for the placement rule of each role.
+    pub roles: BTreeMap<RoleName, RoleConfig>,
 }
 
 impl Default for HubConfig {
@@ -54,6 +56,7 @@ impl Default for HubConfig {
             lease: LeaseConfig::default(),
             instance: format!("hub-{}", ulid::Ulid::generate()),
             elastic: None,
+            roles: BTreeMap::new(),
         }
     }
 }
