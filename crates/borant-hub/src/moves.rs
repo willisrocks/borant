@@ -150,6 +150,10 @@ impl Hub {
                         .is_some_and(|t| now.since(*t) <= self.cfg.lease.lease),
                     active_agents: active.get(&name).copied().unwrap_or(0),
                     has_repo_access: failed.is_none_or(|f| !f.contains(&name)),
+                    // The hub learns of a failed move only as a repo it cannot
+                    // reach, so a recent failure has no separate source yet.
+                    recently_failed: false,
+                    mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
                     pool: d.value.pool.clone(),
                     info: d.value,
                 }
@@ -216,7 +220,7 @@ impl Hub {
             }
         }
         let views = self.host_views(mem, &agent.id).await?;
-        let Some((host, harness)) = schedule::place(
+        let Ok((host, harness)) = schedule::place(
             agent.preferred_harness,
             target.harness,
             &self.placement_req(agent, target.host.as_ref()).await,
@@ -359,6 +363,8 @@ impl Hub {
             members,
             bundles: roles::launch_bundles(collection, role),
             git_author: roles::git_author(collection),
+            // A role asks for a sandbox once the host can build one.
+            sandbox: None,
         };
         let move_event = SessionEvent {
             id: EventId::new(),
@@ -476,7 +482,8 @@ impl Hub {
                         &req,
                         &bundles,
                         &views,
-                    ) else {
+                    )
+                    .ok() else {
                         return Err(ApiError::unavailable(format!(
                             "no host can take agent {id} now"
                         )));

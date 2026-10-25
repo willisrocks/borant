@@ -150,6 +150,8 @@ async fn host_with_bundles(fx: &Fx, n: &str) {
                 .iter()
                 .map(|b| b.parse().unwrap())
                 .collect(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
         },
     })
     .await

@@ -267,6 +267,8 @@ mod tests {
                     pool: None,
                     tags: vec![],
                     bundles: vec![],
+                    reserve_mem_mb: None,
+                    sandboxes: vec![],
                 },
                 online: true,
                 last_seen: Some(Timestamp(1_000)),

@@ -139,6 +139,11 @@ impl HostConfig {
                 .as_ref()
                 .map(|s| s.bundles.keys().cloned().collect())
                 .unwrap_or_default(),
+            // The resource rules of phase 5 fill these: a reserve from
+            // `[host] reserve_mem_mb`, and the sandboxes that `[sandbox]`
+            // enables.
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
         }
     }
 }
@@ -579,6 +584,9 @@ impl Host {
             load1: load.one,
             cpus,
             mem_used_pct,
+            // The resources task fills these from sysinfo.
+            mem_avail_mb: None,
+            disk_avail_mb: None,
             outbox_depth,
             last_heartbeat_rtt_ms,
             // The bus port has no reconnect counter yet.
