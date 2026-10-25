@@ -11,6 +11,7 @@
 //! - `CREATE <channel> <title>`: create a task
 //! - `AFTER <channel> <blocker> <title>`: create a task blocked by another
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
+//! - `WAITTASK <channel> <task>`: store a wait for the task to close
 //! - `SEND <agent|#channel> <text>`
 //! - `SPAWN <channel> <prompt>`: spawn an agent, and log `SPAWNED <agent>`
 //! - `SPAWNROLE <channel> <role> <prompt>`: the same with a role of `hub.toml`
@@ -195,6 +196,24 @@ impl Fake {
                     .await;
                 self.line(&format!(
                     "CLOSE {b} {}",
+                    if r.is_ok() { "ok" } else { "failed" }
+                ));
+            }
+            "WAITTASK" => {
+                // The worker that is done waits for the close instead of
+                // stopping: the stored wait stops the continues (phase 11
+                // spec).
+                let r = self
+                    .call(json!({
+                        "tool": "wait",
+                        "channel": a,
+                        "task": b,
+                        "until": ["closed"],
+                        "timeout_secs": 3600,
+                    }))
+                    .await;
+                self.line(&format!(
+                    "WAITTASK {b} {}",
                     if r.is_ok() { "ok" } else { "failed" }
                 ));
             }
