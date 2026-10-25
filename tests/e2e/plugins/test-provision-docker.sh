@@ -163,6 +163,22 @@ plugin '{"v": 1, "op": "create", "config": {},
 check "the spec image runs" "$(calls | grep '^run ' | tail -1 | grep -c 'borant:other')" "1"
 plugin '{"v": 1, "op": "delete", "config": {}, "id": "n3"}' >/dev/null
 
+# The flat string table of hub.toml: the command is words, the env is one key
+# per variable.
+plugin '{"v": 1, "op": "create", "config": {"image": "borant:e2e",
+  "command": "borant host", "env.BORANT_NATS_URL": "nats://natshub:4222",
+  "env.BORANT_HARNESSES": "fake"},
+  "spec": {"pool": "p1", "name": "n4", "size": "small"}}' >/dev/null
+flat=$(calls | grep '^run ' | tail -1)
+for want in "-e BORANT_NATS_URL=nats://natshub:4222" "-e BORANT_HARNESSES=fake" \
+  "borant:e2e borant host"; do
+  case "$flat" in
+  *"$want"*) pass "the flat config runs with $want" ;;
+  *) fail "the flat config runs with $want: $flat" ;;
+  esac
+done
+plugin '{"v": 1, "op": "delete", "config": {}, "id": "n4"}' >/dev/null
+
 # list
 reply=$(plugin '{"v": 1, "op": "list", "config": {}, "pool": "p1"}')
 check "list the pool" "$(jq -r '.ok | map(.name) | join(",")' <<<"$reply")" "n1"
