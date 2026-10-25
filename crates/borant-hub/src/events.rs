@@ -237,6 +237,7 @@ mod tests {
                     token: who.token,
                     idle_since: idle,
                     last_event_at: None,
+                    pinned: false,
                 }],
                 stats: None,
             })

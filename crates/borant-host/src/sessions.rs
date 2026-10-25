@@ -296,6 +296,7 @@ impl Host {
                     token: r.token,
                     idle_since: s.idle_since,
                     last_event_at: s.last_event_at,
+                    pinned: r.pinned,
                 })
             })
             .collect()

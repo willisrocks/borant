@@ -77,6 +77,23 @@ impl Hub {
             .count() as u64)
     }
 
+    /// A pin that a lost hub record dropped stays: the session of a pinned
+    /// agent reports it on every heartbeat.
+    async fn assert_pinned(&self, s: &SessionLeaseRef) -> Result<(), ApiError> {
+        if !s.pinned {
+            return Ok(());
+        }
+        let Ok(mut a) = self.agent(&s.agent).await else {
+            return Ok(());
+        };
+        if !a.value.pinned {
+            a.value.pinned = true;
+            self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+            tracing::info!(agent = %s.agent, "the agent is pinned again");
+        }
+        Ok(())
+    }
+
     pub(crate) async fn heartbeat(
         &self,
         mem: &mut Memory,
@@ -106,6 +123,7 @@ impl Hub {
             };
             if let Ok(l) = lease::renew(&doc.value, s.session, s.token, now, &self.cfg.lease) {
                 self.store.put(&key, &l, Some(doc.revision)).await?;
+                self.assert_pinned(s).await?;
                 continue;
             }
             // A sleep or a network drop expired the lease, but nobody took
@@ -117,6 +135,7 @@ impl Hub {
                 continue;
             };
             self.store.put(&key, &l, Some(doc.revision)).await?;
+            self.assert_pinned(s).await?;
             if let Ok(mut a) = self.agent(&s.agent).await
                 && a.value.session != Some(s.session)
             {
@@ -379,9 +398,12 @@ impl Hub {
         agent.harness_session_id = r.harness_session_id.clone();
         agent.preferred_harness = r.harness;
         // A role pins its agents when it says so: a chief that a person
-        // starts with BORANT_ROLE=chief is the main pinned agent.
-        if let Some(role) = &role {
-            agent.pinned = self.cfg.roles.get(role).is_some_and(|c| c.pinned);
+        // starts with BORANT_ROLE=chief is the main pinned agent. An unpinned
+        // or unknown role never clears a pin that a person set.
+        if let Some(role) = &role
+            && self.cfg.roles.get(role).is_some_and(|c| c.pinned)
+        {
+            agent.pinned = true;
         }
         agent.role = role;
         agent.collection = collection;

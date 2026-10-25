@@ -191,6 +191,7 @@ impl Fx {
                 token: r.token,
                 idle_since: *idle_since,
                 last_event_at: None,
+                pinned: false,
             })
             .collect();
         let v = self

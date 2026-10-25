@@ -151,6 +151,10 @@ pub struct SessionLeaseRef {
     /// When the session wrote its last event, for the stall alert.
     #[serde(default)]
     pub last_event_at: Option<Timestamp>,
+    /// The agent is pinned, as the host remembered it before a restart. The
+    /// hub sets the flag again when its record lost it.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -164,6 +168,7 @@ impl Default for SessionLeaseRef {
             token: FencingToken(0),
             idle_since: None,
             last_event_at: None,
+            pinned: false,
         }
     }
 }

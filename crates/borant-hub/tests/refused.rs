@@ -117,6 +117,7 @@ impl Fx {
                     token: r.token,
                     idle_since: None,
                     last_event_at: None,
+                    pinned: false,
                 }]
             })
             .unwrap_or_default();

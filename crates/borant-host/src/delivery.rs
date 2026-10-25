@@ -8,7 +8,7 @@ use borant_core::events::{SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskStatus,
 };
-use borant_core::ports::{Delivery, Notice, PortErrorKind};
+use borant_core::ports::{Delivery, Notice, PortError, PortErrorKind};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::{session_log, wake};
 use borant_core::{AgentId, EventId, MessageId, SessionId, subjects};
@@ -26,6 +26,11 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 impl Host {
     pub(crate) async fn inbox_loop(self, agent: AgentId, id: SessionId, cancel: CancellationToken) {
         let mut failing = false;
+        // A pull that outlives this limit is abandoned and retried. A NATS
+        // request sent on a connection that dies before its reply never
+        // answers, and one such pull hung the loop for good.
+        let limit = self.inner.cfg.inbox_pull_timeout;
+        let wait = limit / 2;
         loop {
             // A paused or fenced session must not take messages: after a
             // takeover, the new session owns the inbox.
@@ -42,7 +47,11 @@ impl Host {
             }
             let pulled = tokio::select! {
                 _ = cancel.cancelled() => return,
-                r = self.inner.bus.pull(&agent, 16, Duration::from_secs(5)) => r,
+                r = tokio::time::timeout(limit, self.inner.bus.pull(&agent, 16, wait)) => {
+                    r.unwrap_or_else(|_| {
+                        Err(PortError::unavailable("the inbox pull did not answer"))
+                    })
+                }
             };
             match pulled {
                 Ok(batch) => {

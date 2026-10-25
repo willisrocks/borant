@@ -75,6 +75,9 @@ pub struct HostConfig {
     pub launch_timeout: Duration,
     pub notify: bool,
     pub hub_timeout: Duration,
+    /// The hard limit of one inbox pull. A broker request that a dead
+    /// connection leaves unanswered must not stop the inbox loop.
+    pub inbox_pull_timeout: Duration,
     /// `[alerts] watch_hub`: send a notice when the hub stays unreachable.
     pub watch_hub: bool,
     /// `[alerts] hub_down_minutes`: how long the heartbeats must fail first.
@@ -113,6 +116,7 @@ impl HostConfig {
             launch_timeout: Duration::from_secs(90),
             notify: false,
             hub_timeout: Duration::from_secs(5),
+            inbox_pull_timeout: Duration::from_secs(12),
             watch_hub: false,
             hub_down: Duration::from_secs(120),
             socket: None,
