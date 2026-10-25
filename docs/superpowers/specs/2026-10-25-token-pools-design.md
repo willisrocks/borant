@@ -1,10 +1,49 @@
 # Token pools design
 
-Date: 2026-10-25. Status: research for a decision, draft for review. This doc
+Date: 2026-10-25. Status: decided by Chris on 2026-10-25 (see "Decisions").
+It is built in roadmap phase 1, after the `SecretStore` port. This doc
 extends the secrets and host bootstrap design
 (`2026-10-24-secrets-and-host-bootstrap-design.md`, "the secrets doc" below).
 It uses its `SecretStore` port, bundles, resolver mode, and harness logins as
 default bundles.
+
+## Decisions
+
+Chris answered the questions of section 8 on 2026-10-25. Where a decision
+differs from the recommendation below, the decision wins.
+
+1. The pool has 3 Claude accounts. Chris keeps a 4th account in reserve,
+   outside the pool. Borant never uses it.
+2. Selection depends on the size of the pool, and balancing is optional.
+   - A pool with one member uses that member. It needs no selection logic
+     and no usage data.
+   - With several members and fresh usage reports, the hub fills one
+     account until its limit. It picks the account whose limit resets
+     soonest, so that capacity which is about to reset gets used first.
+     This replaces the pick rule of section 4.2: keep only members that
+     the target host defines and that are not limited now, pick the member
+     with the earliest next reset, and on a tie pick the first name.
+   - With several members and no fresh usage reports, the hub uses only
+     the limits that sessions report when they reach one (section 4.3). It
+     restarts the agent on the next free member in name order.
+3. Borant does not depend on `aiusage`, not even as a bundled exec plugin.
+   Borant exposes a neutral API that accepts usage information: a
+   `borant usage report` CLI command and a matching call. A report names
+   the pool and the member, and gives, for each limit window, the used
+   share and the reset time. Any outside tool can push reports into it.
+   Chris feeds it from `aiusage` on the laptop with his own script, outside
+   Borant. The phase 1 spec sets when a report stops being fresh.
+4. When every account is limited, the agent waits until the earliest reset,
+   and Borant sends an alert. There is no fallback to an `ANTHROPIC_API_KEY`.
+5. The loss of the failed turn and of the native context at a restart is
+   acceptable. An own AI gateway can come later.
+6. LunaRoute needs no pool.
+
+Open point for the phase 1 spec: since v2.1.234, a Claude Code session waits
+for a usage-limit reset by itself (`autoContinueAtUsageLimit`). That conflicts
+with a restart on another account. Phase 2 of section 5 sets it to `false` for
+pool sessions. The phase 1 spec must make sure that this setting reaches every
+Claude Code session that Borant launches.
 
 ## Summary
 
