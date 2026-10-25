@@ -13,7 +13,7 @@ use borant_core::proto::{
 use borant_core::rules::lease;
 use borant_core::rules::redact;
 use borant_core::rules::roles::{self, SpawnInput};
-use borant_core::rules::schedule::{self, HostView, PlacementReq};
+use borant_core::rules::schedule::{self, HostView, PlacementReq, Reject};
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, EventId, FencingToken, HostName, RoleName,
     SessionId, keys, subjects,
@@ -46,35 +46,44 @@ pub fn continue_prompt(
     p
 }
 
-/// The hosts that a placement passed over, with the first plain check that
-/// failed. The rules of roles and avoid belong to `schedule::place`; this list
-/// names what a reader can act on.
-fn refused_hosts(views: &[HostView], wanted: Harness) -> Vec<RejectedHost> {
-    views
+/// The refused hosts of a placement, as the event and `borant ps --queued`
+/// read them: one line per host, with the first failed rule.
+fn rejected_hosts(rejected: &[(HostName, Reject)]) -> Vec<RejectedHost> {
+    rejected
         .iter()
-        .filter_map(|v| {
-            let why = if !v.online {
-                "offline"
-            } else if v.info.draining {
-                "draining"
-            } else if v.active_agents >= v.info.max_agents {
-                "full"
-            } else if !v.info.harnesses.contains(&wanted) {
-                "no harness"
-            } else if !v.has_repo_access {
-                "no repository access"
-            } else {
-                return None;
-            };
-            Some(RejectedHost {
-                host: v.info.name.clone(),
-                why: why.to_owned(),
-            })
+        .map(|(host, why)| RejectedHost {
+            host: host.clone(),
+            why: why.to_string(),
         })
         .collect()
 }
 
 impl Hub {
+    /// Stores the refused hosts of a placement in the spawn record of the
+    /// agent, for `borant ps --queued`. An agent without a spawn record is not
+    /// stored, and a record that another request changed is left to the next
+    /// try.
+    async fn note_reject(
+        &self,
+        agent: &AgentId,
+        rejected: &[(HostName, Reject)],
+    ) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        let mut record = doc.value;
+        record.last_reject = rejected
+            .iter()
+            .map(|(host, why)| (host.clone(), why.to_string()))
+            .collect();
+        match self.store.put(&key, &record, Some(doc.revision)).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// What a placement asks of a host: the tags of the role of the agent,
     /// and the host of its parent when the role runs on the parent's host.
     /// With no role the request is empty, but for the host that the hub names.
@@ -118,7 +127,8 @@ impl Hub {
     }
 
     /// The view of every registered host, with the agents on each. `agent`
-    /// leaves out the hosts where a launch of that agent already failed; the
+    /// marks the hosts where a launch of that agent already failed, so a
+    /// placement says `RecentlyFailed` instead of blaming the clone; the
     /// elastic rules pass `None`.
     pub(crate) async fn views(
         &self,
@@ -149,10 +159,11 @@ impl Hub {
                         .get(&name)
                         .is_some_and(|t| now.since(*t) <= self.cfg.lease.lease),
                     active_agents: active.get(&name).copied().unwrap_or(0),
-                    has_repo_access: failed.is_none_or(|f| !f.contains(&name)),
-                    // The hub learns of a failed move only as a repo it cannot
-                    // reach, so a recent failure has no separate source yet.
-                    recently_failed: false,
+                    // A failed launch is a recent failure of the host, not a
+                    // repository that the hub cannot reach: `RecentlyFailed`
+                    // says the first, and `NoRepo` would blame the clone.
+                    has_repo_access: true,
+                    recently_failed: failed.is_some_and(|f| f.contains(&name)),
                     mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
                     pool: d.value.pool.clone(),
                     info: d.value,
@@ -220,29 +231,30 @@ impl Hub {
             }
         }
         let views = self.host_views(mem, &agent.id).await?;
-        let Ok((host, harness)) = schedule::place(
+        let (host, harness) = match schedule::place(
             agent.preferred_harness,
             target.harness,
             &self.placement_req(agent, target.host.as_ref()).await,
             &self.launch_bundles(agent),
             &views,
-        ) else {
-            tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
-            let event = self
-                .event(
-                    now,
-                    Severity::Warn,
-                    SwarmEventBody::PlacementRefused {
-                        reason,
-                        rejected: refused_hosts(
-                            &views,
-                            target.harness.unwrap_or(agent.preferred_harness),
-                        ),
-                    },
-                )
-                .about_agent(agent.id.clone());
-            Self::queue(mem, event);
-            return Ok(false);
+        ) {
+            Ok(chosen) => chosen,
+            Err(rejected) => {
+                tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
+                let event = self
+                    .event(
+                        now,
+                        Severity::Warn,
+                        SwarmEventBody::PlacementRefused {
+                            reason,
+                            rejected: rejected_hosts(&rejected),
+                        },
+                    )
+                    .about_agent(agent.id.clone());
+                Self::queue(mem, event);
+                self.note_reject(&agent.id, &rejected).await?;
+                return Ok(false);
+            }
         };
 
         let key = keys::lease_agent(&agent.id);
