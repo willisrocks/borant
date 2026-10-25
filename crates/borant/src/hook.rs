@@ -261,6 +261,8 @@ async fn session_start(ctx: &Ctx) -> i32 {
         channel: std::env::var("BORANT_CHANNEL")
             .ok()
             .and_then(|c| c.parse().ok()),
+        role: None,
+        collection: None,
     };
     let Outcome::Reply(Ok(s)) = ctx
         .client

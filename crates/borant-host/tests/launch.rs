@@ -78,8 +78,11 @@ fn order(remote: &Path, setup: &str) -> LaunchOrder {
             checkpoint_remote: Some("/srv/ckpt.git".into()),
             setup: Some(setup.into()),
             test: None,
+            collection: None,
         }),
         members: Default::default(),
+        bundles: Vec::new(),
+        git_author: None,
     }
 }
 

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ids::{
-    AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
-    PoolName, ProjectName, SessionId, Tag, TaskId,
+    AgentId, BundleName, ChannelName, CollectionName, EventId, FencingToken, HostName, MemberName,
+    MessageId, PoolName, ProjectName, RoleName, SessionId, Tag, TaskId,
 };
 use crate::time::Timestamp;
 
@@ -102,6 +102,16 @@ pub struct Agent {
     /// hub starts no second session, and a paused host keeps its tools.
     #[serde(default)]
     pub pinned: bool,
+    /// The role from `[roles]` in `hub.toml`, for its harness, model,
+    /// placement, and what it may spawn.
+    #[serde(default)]
+    pub role: Option<RoleName>,
+    /// The collection that holds this agent, from its parent or its channel.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
+    /// The agent that spawned this one. A helper runs on its parent's host.
+    #[serde(default)]
+    pub parent: Option<AgentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,6 +203,16 @@ pub struct HostInfo {
     /// The tags of this host, for example `vps` for a pool host.
     #[serde(default)]
     pub tags: Vec<Tag>,
+    /// Every bundle that the host defines, for a launch of a collection.
+    #[serde(default)]
+    pub bundles: Vec<BundleName>,
+}
+
+/// The author and committer of the commits of an agent, from its collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitAuthor {
+    pub name: String,
+    pub email: String,
 }
 
 /// The bundles of a host that have several members, and the harnesses whose
@@ -239,6 +259,10 @@ pub struct Channel {
     /// The base branch for spawns. Set when `project` is set.
     #[serde(default)]
     pub branch: Option<String>,
+    /// The collection of this channel, from its project or its creator. The
+    /// field is the authority, not the name prefix.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
 }
 
 /// A named git repository that spawns clone.
@@ -256,6 +280,9 @@ pub struct Project {
     /// The focused test command of the project.
     #[serde(default)]
     pub test: Option<String>,
+    /// The collection that holds this project and its channels.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

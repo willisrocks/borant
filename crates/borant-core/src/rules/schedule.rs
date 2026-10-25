@@ -94,6 +94,7 @@ mod tests {
                 members: Default::default(),
                 pool: None,
                 tags: Vec::new(),
+                bundles: Vec::new(),
             },
             online: true,
             active_agents: active,

@@ -229,6 +229,9 @@ impl Hub {
                 host,
                 name,
                 model,
+                // The role is wired in by the roles task; a spawn uses no role
+                // for now.
+                role: _,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 let id = self
@@ -364,6 +367,7 @@ impl Hub {
             closed: None,
             project,
             branch,
+            collection: None,
         };
         self.store
             .put(&keys::channel(name), &ch, None)

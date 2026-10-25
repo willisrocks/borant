@@ -70,6 +70,8 @@ async fn register_when_hub_down_detaches_then_attaches() {
             cwd,
             agent: Some(agent("a")),
             channel: None,
+            role: None,
+            collection: None,
         })
         .await
         .unwrap();
@@ -452,6 +454,8 @@ async fn dead_pid_ends_session() {
             cwd: fx.dir.path().to_string_lossy().into_owned(),
             agent: Some(agent("a")),
             channel: None,
+            role: None,
+            collection: None,
         })
         .await
         .unwrap();
@@ -537,6 +541,8 @@ async fn restart_restores_live_sessions() {
             cwd: cwd.to_string_lossy().into_owned(),
             agent: Some(agent("r")),
             channel: None,
+            role: None,
+            collection: None,
         })
         .await
         .unwrap();

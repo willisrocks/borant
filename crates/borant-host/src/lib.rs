@@ -112,6 +112,11 @@ impl HostConfig {
                 .unwrap_or_default(),
             pool: self.pool.clone(),
             tags: self.tags.clone(),
+            bundles: self
+                .secrets
+                .as_ref()
+                .map(|s| s.bundles.keys().cloned().collect())
+                .unwrap_or_default(),
         }
     }
 }

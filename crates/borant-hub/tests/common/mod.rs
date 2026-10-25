@@ -80,6 +80,7 @@ impl Fx {
                 members: Default::default(),
                 pool: pool.map(|p| p.parse().unwrap()),
                 tags: Vec::new(),
+                bundles: Vec::new(),
             },
         })
         .await
@@ -105,6 +106,8 @@ impl Fx {
                 agent: agent.map(|a| a.parse().unwrap()),
                 channel: channel.map(|c| c.parse().unwrap()),
                 shared_dir: false,
+                role: None,
+                collection: None,
             }))
             .await?;
         Ok(serde_json::from_value(v).unwrap())

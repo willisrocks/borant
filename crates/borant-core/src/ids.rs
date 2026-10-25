@@ -105,6 +105,16 @@ name_type!(
     Tag,
     "tag"
 );
+name_type!(
+    /// A role from `[roles]` in `hub.toml`, for example for a worker.
+    RoleName,
+    "role name"
+);
+name_type!(
+    /// A collection of agents and channels, for example one person's work.
+    CollectionName,
+    "collection name"
+);
 
 macro_rules! ulid_type {
     ($(#[$meta:meta])* $name:ident) => {

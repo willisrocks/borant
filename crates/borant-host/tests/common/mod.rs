@@ -104,6 +104,8 @@ impl Fx {
                 cwd: cwd.to_string_lossy().into_owned(),
                 agent: Some(agent.parse().unwrap()),
                 channel: None,
+                role: None,
+                collection: None,
             })
             .await
             .unwrap();

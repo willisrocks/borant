@@ -49,6 +49,8 @@ async fn register(c: &LocalClient, fx: &Fx, agent: &str, pid: Option<u32>) -> Lo
             cwd: cwd.to_string_lossy().into_owned(),
             agent: Some(agent.parse().unwrap()),
             channel: None,
+            role: None,
+            collection: None,
         },
         Duration::from_secs(5),
     )
@@ -185,6 +187,7 @@ async fn prepare_move_on_idle_session_sends_move_ready() {
                 members: Default::default(),
                 pool: None,
                 tags: Vec::new(),
+                bundles: Vec::new(),
             },
         })
         .await

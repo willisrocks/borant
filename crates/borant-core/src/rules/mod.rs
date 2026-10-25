@@ -4,6 +4,7 @@ pub mod lease;
 pub mod members;
 pub mod pool;
 pub mod redact;
+pub mod roles;
 pub mod schedule;
 pub mod schema;
 pub mod session_log;

@@ -79,6 +79,9 @@ fn secrets_old_json_parses_without_the_new_fields() {
         project: None,
         members: BTreeMap::new(),
         pinned: false,
+        role: None,
+        collection: None,
+        parent: None,
     };
     let old = without(&agent, "members");
     let parsed: Agent = serde_json::from_value(old).expect("old agent JSON parses");
@@ -95,6 +98,7 @@ fn secrets_old_json_parses_without_the_new_fields() {
         members: BTreeMap::new(),
         pool: Some("workers".parse().unwrap()),
         tags: vec!["vps".parse().unwrap()],
+        bundles: vec![],
     };
     let old = without(&host, "members");
     let parsed: HostInfo = serde_json::from_value(old).expect("old host JSON parses");
@@ -119,6 +123,8 @@ fn secrets_old_json_parses_without_the_new_fields() {
         project: None,
         reserve_secs: None,
         members: BTreeMap::new(),
+        bundles: vec![],
+        git_author: None,
     };
     let old = without(&order, "members");
     let parsed: LaunchOrder = serde_json::from_value(old).expect("old launch order JSON parses");

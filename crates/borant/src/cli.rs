@@ -484,6 +484,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
                 checkpoint_remote,
                 setup,
                 test,
+                collection: None,
             };
             pretty(&call(&c, ToolCall::ProjectAdd { project }).await?);
         }

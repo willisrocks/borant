@@ -46,6 +46,7 @@ async fn host(fx: &Fx, harnesses: &[Harness], members: &[&str]) {
         )]),
         pool: None,
         tags: Vec::new(),
+        bundles: Vec::new(),
     };
     fx.req(CtlRequest::RegisterHost { info })
         .await
@@ -80,6 +81,7 @@ async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str, harne
             host: Some(name("h1")),
             name: Some(agent(who)),
             model: None,
+            role: None,
         },
     )
     .await

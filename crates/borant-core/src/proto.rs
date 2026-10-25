@@ -8,12 +8,12 @@ use serde_json::{Map, Value};
 
 use crate::error::CoreError;
 use crate::ids::{
-    AgentId, BundleName, ChannelName, FencingToken, HostName, MemberName, ProjectName, SessionId,
-    TaskId,
+    AgentId, BundleName, ChannelName, CollectionName, FencingToken, HostName, MemberName,
+    ProjectName, RoleName, SessionId, TaskId,
 };
 use crate::model::{
-    CloseReason, Envelope, Harness, HostInfo, MoveReason, NewTask, Project, RepoInfo, Target,
-    TaskPatch, UsageWindow,
+    CloseReason, Envelope, GitAuthor, Harness, HostInfo, MoveReason, NewTask, Project, RepoInfo,
+    Target, TaskPatch, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -176,6 +176,12 @@ pub struct RegisterSession {
     pub channel: Option<ChannelName>,
     /// True if another live session on the host uses the same directory.
     pub shared_dir: bool,
+    /// The role that the session reports, for example from `BORANT_ROLE`.
+    #[serde(default)]
+    pub role: Option<RoleName>,
+    /// The collection that the session reports.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +294,9 @@ pub enum ToolCall {
         name: Option<AgentId>,
         #[serde(default)]
         model: Option<String>,
+        /// The role from `hub.toml`, for its harness, model, and placement.
+        #[serde(default)]
+        role: Option<RoleName>,
     },
     SessionHistory {
         #[serde(default)]
@@ -458,6 +467,13 @@ pub struct LaunchOrder {
     /// The member of each bundle with several members, picked by the hub.
     #[serde(default)]
     pub members: BTreeMap<BundleName, MemberName>,
+    /// The bundles of the collection and the role, in that order. The host
+    /// resolves them after the harness defaults, so a later bundle wins.
+    #[serde(default)]
+    pub bundles: Vec<BundleName>,
+    /// The author and committer of this agent's commits, from its collection.
+    #[serde(default)]
+    pub git_author: Option<GitAuthor>,
 }
 
 // ---- Local API of the host daemon ----
@@ -474,6 +490,12 @@ pub struct LocalRegister {
     pub agent: Option<AgentId>,
     #[serde(default)]
     pub channel: Option<ChannelName>,
+    /// The role that a person started this session with.
+    #[serde(default)]
+    pub role: Option<RoleName>,
+    /// The collection that a person started this session in.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
