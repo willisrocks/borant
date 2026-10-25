@@ -8,7 +8,7 @@ use anyhow::Context;
 use borant_core::model::Harness;
 use borant_core::ports::{LaunchSpec, Notifier, PortError, PortResult};
 use borant_core::proto::{CtlRequest, HostCommand, LaunchOrder};
-use borant_core::{AgentId, SessionId, subjects};
+use borant_core::{AgentId, BundleName, SessionId, subjects};
 use borant_launch::harness;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -159,6 +159,24 @@ impl Host {
         ];
         if let Some(c) = o.channels.first() {
             env.push(("BORANT_CHANNEL".to_owned(), c.to_string()));
+        }
+        if let Some(author) = &o.git_author {
+            env.push(("GIT_AUTHOR_NAME".to_owned(), author.name.clone()));
+            env.push(("GIT_AUTHOR_EMAIL".to_owned(), author.email.clone()));
+            env.push(("GIT_COMMITTER_NAME".to_owned(), author.name.clone()));
+            env.push(("GIT_COMMITTER_EMAIL".to_owned(), author.email.clone()));
+        }
+        // The names only, never a value: the defaults of the harness, then the
+        // bundles of the collection and the role.
+        if let Some(secrets) = &cfg.secrets {
+            let names = |list: &[BundleName]| -> Vec<String> {
+                list.iter().map(|b| b.to_string()).collect()
+            };
+            let defaults = secrets.bundles_for(o.harness);
+            let bundles = secrets.launch_bundles(o.harness, &o.bundles);
+            if !bundles.is_empty() {
+                tracing::debug!(agent = %o.agent, harness = %o.harness, defaults = ?names(&defaults), bundles = ?names(&bundles), "the bundles of the launch");
+            }
         }
         if o.harness == Harness::Fake {
             env.push(("BORANT_PROMPT".to_owned(), o.prompt.clone()));

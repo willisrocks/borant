@@ -23,7 +23,8 @@ use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionSt
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
-    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, Timestamp, subjects,
+    AgentId, ChannelName, Clock, CollectionName, HostName, MessageId, PoolName, RoleName, SessionId,
+    Tag, Timestamp, subjects,
 };
 use borant_launch::harness::HarnessCommands;
 use borant_secrets::{StoreConfig, open_store};
@@ -201,6 +202,21 @@ impl HostSecrets {
         out
     }
 
+    /// The bundles of one launch, in order: the harness defaults, then the
+    /// bundles of the order, so a later bundle wins on the same variable. A
+    /// bundle that `host.toml` does not define is left out.
+    pub fn launch_bundles(&self, harness: Harness, bundles: &[BundleName]) -> Vec<BundleName> {
+        let mut out = self.bundles_for(harness);
+        for bundle in bundles {
+            if !self.bundles.contains_key(bundle) {
+                continue;
+            }
+            out.retain(|b| b != bundle);
+            out.push(bundle.clone());
+        }
+        out
+    }
+
     /// The bundles with two or more members, and the harnesses that get them:
     /// what the hub needs to pick a member at each launch.
     pub fn members(&self, harnesses: &[Harness]) -> BTreeMap<BundleName, MemberBundle> {
@@ -244,6 +260,10 @@ pub(crate) struct LocalSess {
     pub cwd: PathBuf,
     pub agent_hint: Option<AgentId>,
     pub channel_hint: Option<ChannelName>,
+    /// The role that a person started the session with, from `BORANT_ROLE`.
+    pub role_hint: Option<RoleName>,
+    /// The collection of the session, from `BORANT_COLLECTION`.
+    pub collection_hint: Option<CollectionName>,
     pub repo: Option<RepoFacts>,
     pub shared_dir: bool,
     pub reg: Option<Registered>,

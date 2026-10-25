@@ -35,3 +35,4 @@ tracing.workspace = true
 borant-core = { workspace = true, features = ["testing"] }
 borant-hub.workspace = true
 borant-memory.workspace = true
+tracing-subscriber.workspace = true
