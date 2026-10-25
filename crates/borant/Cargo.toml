@@ -18,6 +18,7 @@ borant-hub.workspace = true
 borant-launch.workspace = true
 borant-secrets.workspace = true
 borant-nats.workspace = true
+chrono.workspace = true
 clap.workspace = true
 dirs.workspace = true
 futures.workspace = true

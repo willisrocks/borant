@@ -306,6 +306,7 @@ dependencies = [
  "borant-launch",
  "borant-nats",
  "borant-secrets",
+ "chrono",
  "clap",
  "dirs",
  "futures",
