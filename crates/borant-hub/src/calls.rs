@@ -26,9 +26,14 @@ impl Hub {
             CtlRequest::HostHeartbeat {
                 host,
                 sessions,
-                // The stats task reads them.
-                stats: _,
-            } => to_value(&self.heartbeat(mem, &host, &sessions).await?),
+                stats,
+            } => {
+                // The live view reads the latest stats of each host.
+                if let Some(stats) = stats {
+                    mem.host_stats.insert(host.clone(), stats);
+                }
+                to_value(&self.heartbeat(mem, &host, &sessions).await?)
+            }
             CtlRequest::RegisterSession(r) => to_value(&self.register_session(mem, r).await?),
             CtlRequest::EndSession {
                 session,
@@ -297,8 +302,11 @@ impl Hub {
                 windows,
             } => self.usage_report(mem, bundle, member, windows).await,
             ToolCall::ListMembers => self.list_members(mem).await,
-            // The live view task builds it.
-            ToolCall::View => Err(ApiError::invalid("not built yet")),
+            // `Hub::handle` routes a view before it takes the request mutex,
+            // because the view reads every key and inbox.
+            ToolCall::View => Err(ApiError::internal(
+                "a view must not run behind the hub request mutex",
+            )),
         }
     }
 

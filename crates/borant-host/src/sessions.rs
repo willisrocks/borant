@@ -84,6 +84,7 @@ impl Host {
                     turn: 0,
                     busy: false,
                     idle_since: None,
+                    last_event_at: None,
                     fenced: None,
                     paused: false,
                     wake_pending: false,
@@ -268,7 +269,7 @@ impl Host {
                     agent: r.agent.clone(),
                     token: r.token,
                     idle_since: s.idle_since,
-                    last_event_at: None,
+                    last_event_at: s.last_event_at,
                 })
             })
             .collect()

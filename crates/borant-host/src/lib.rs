@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use borant_core::model::{Envelope, Harness, HostInfo, MemberBundle};
+use borant_core::model::{Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats};
 use borant_core::ports::secrets::{Bundle, BundleName, SecretStore};
 use borant_core::ports::{EventLog, LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
@@ -274,6 +274,8 @@ pub(crate) struct LocalSess {
     /// The end of the last turn, or `None` while the session is in one. The
     /// hub parks sessions that stay idle past the pool timeout.
     pub idle_since: Option<Timestamp>,
+    /// When this session wrote its last event, for the stall alert.
+    pub last_event_at: Option<Timestamp>,
     /// Set when the session lost its lease. Tools stay blocked.
     pub fenced: Option<String>,
     /// Set while the hub is unreachable for longer than a lease.
@@ -331,6 +333,10 @@ pub(crate) struct Inner {
     pub outbox: Outbox,
     pub state: Mutex<State>,
     pub last_ok: Mutex<Instant>,
+    /// When the daemon started, for `HostStats`.
+    pub started: Timestamp,
+    /// The round trip of the previous heartbeat, in milliseconds.
+    pub last_rtt: Mutex<Option<u64>>,
     /// True while heartbeats fail, so a run of failures logs one `warn`.
     pub heartbeat_failing: AtomicBool,
     /// True while outbox flushes fail, so a run of failures logs one `warn`.
@@ -365,6 +371,7 @@ impl Host {
         outbox: Outbox,
     ) -> Self {
         let wakes = cfg.wakes_per_hour;
+        let started = clock.now();
         Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -390,6 +397,8 @@ impl Host {
                     event_limited: HashMap::new(),
                 }),
                 last_ok: Mutex::new(Instant::now()),
+                started,
+                last_rtt: Mutex::new(None),
                 heartbeat_failing: AtomicBool::new(false),
                 outbox_failing: AtomicBool::new(false),
             }),
@@ -447,6 +456,73 @@ impl Host {
         }
     }
 
+    /// The load and counters of this host, for the heartbeat and the live
+    /// view.
+    fn stats(&self) -> HostStats {
+        let load = sysinfo::System::load_average();
+        let mut system = sysinfo::System::new();
+        system.refresh_memory();
+        let total = system.total_memory();
+        let mem_used_pct = if total == 0 {
+            0.0
+        } else {
+            (system.used_memory() as f64 / total as f64) * 100.0
+        };
+        let cpus = std::thread::available_parallelism()
+            .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+            .unwrap_or(0);
+        let outbox_depth = self
+            .inner
+            .outbox
+            .len()
+            .map(|n| u64::try_from(n).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let last_heartbeat_rtt_ms = *self
+            .inner
+            .last_rtt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let sessions = {
+            let st = self.state();
+            st.sessions
+                .values()
+                .filter_map(|s| {
+                    let reg = s.reg.as_ref()?;
+                    // The counters of a session arrive with their own task;
+                    // there is no source for them yet.
+                    Some(SessionStats {
+                        agent: reg.agent.clone(),
+                        busy: s.busy,
+                        paused: s.paused,
+                        turn: s.turn,
+                        last_event_at: s.last_event_at,
+                        wakes: 0,
+                        wake_limited: 0,
+                        ack_failed: 0,
+                        append_failed: 0,
+                        redelivered: 0,
+                        bad_envelope: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0,
+                    })
+                })
+                .collect()
+        };
+        HostStats {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            started: Some(self.inner.started),
+            load1: load.one,
+            cpus,
+            mem_used_pct,
+            outbox_depth,
+            last_heartbeat_rtt_ms,
+            // The bus port has no reconnect counter yet.
+            nats_reconnects: 0,
+            sessions,
+        }
+    }
+
     /// One heartbeat. Public for tests.
     pub async fn heartbeat_once(&self) {
         if !self.state().host_registered {
@@ -462,10 +538,19 @@ impl Host {
         let req = CtlRequest::HostHeartbeat {
             host: self.inner.cfg.name.clone(),
             sessions: refs,
-            // The stats task fills them.
-            stats: None,
+            stats: Some(self.stats()),
         };
-        match self.hub(&req).await {
+        let sent = Instant::now();
+        let reply = self.hub(&req).await;
+        if reply.is_ok() {
+            let rtt = u64::try_from(sent.elapsed().as_millis()).unwrap_or(u64::MAX);
+            *self
+                .inner
+                .last_rtt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(rtt);
+        }
+        match reply {
             Ok(v) => {
                 *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
                 let stable = self.mark_hub_up();

@@ -129,6 +129,7 @@ impl Host {
                     // The last turn of a restored session is unknown, so the
                     // host reports no idle signal until a turn ends.
                     idle_since: None,
+                    last_event_at: None,
                     fenced: s.fenced,
                     paused: false,
                     wake_pending: false,

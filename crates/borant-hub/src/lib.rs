@@ -15,13 +15,14 @@ mod park;
 mod prune;
 mod store;
 mod tasks;
+mod view;
 
 pub use elastic::ElasticConfig;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use borant_core::model::{HubLease, Lease, MoveReason};
+use borant_core::model::{HostStats, HubLease, Lease, MoveReason};
 use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
@@ -104,6 +105,8 @@ pub(crate) struct Memory {
     pub reports: HashMap<(BundleName, MemberName), Report>,
     /// Bundles whose limited members were already logged once.
     pub limit_warned: HashSet<BundleName>,
+    /// The latest stats of each host, from its last heartbeat.
+    pub host_stats: HashMap<HostName, HostStats>,
     /// When the elastic rules last ran.
     pub last_elastic: Option<Timestamp>,
     /// When a failed create lets the pool create again.
@@ -188,6 +191,27 @@ impl Hub {
                         }
                         _ => tracing::debug!("request failed: {e}"),
                     }
+                }
+                return result.into();
+            }
+            // The live view reads every key and each inbox, so it must not
+            // run behind the request mutex. `view` copies the seen times and
+            // the stats from memory itself, briefly.
+            CtlRequest::Call {
+                actor,
+                call: ToolCall::View,
+            } => {
+                drop(mem);
+                let result = async {
+                    if let Some(a) = &actor {
+                        self.verify_actor(a).await?;
+                    }
+                    serde_json::to_value(self.view().await?)
+                        .map_err(|e| ApiError::internal(e.to_string()))
+                }
+                .await;
+                if let Err(e) = &result {
+                    tracing::debug!("request failed: {e}");
                 }
                 return result.into();
             }
