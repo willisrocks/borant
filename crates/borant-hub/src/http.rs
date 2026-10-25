@@ -75,14 +75,15 @@ impl From<ApiError> for Fail {
 
 impl IntoResponse for Fail {
     fn into_response(self) -> Response {
-        let status = match self.0.code {
+        let status = match &self.0.code {
             ApiErrorCode::Invalid => StatusCode::BAD_REQUEST,
             ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
             ApiErrorCode::Denied => StatusCode::FORBIDDEN,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            ApiErrorCode::Conflict | ApiErrorCode::StaleToken | ApiErrorCode::Internal => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            ApiErrorCode::Conflict
+            | ApiErrorCode::StaleToken
+            | ApiErrorCode::Internal
+            | ApiErrorCode::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = serde_json::json!({ "error": self.0.message });
         (status, Json(body)).into_response()

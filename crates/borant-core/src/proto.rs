@@ -19,8 +19,12 @@ use crate::model::{
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// The kind of a failed call.
+///
+/// A client keeps a kind that it does not know as `Other`: during a rolling
+/// deploy a newer daemon may send a kind that this build predates, and the
+/// message of the refusal must still reach the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiErrorCode {
     Invalid,
     NotFound,
@@ -30,10 +34,56 @@ pub enum ApiErrorCode {
     Internal,
     /// The role of the caller does not allow the request.
     Denied,
+    /// A kind that this build does not know, as it arrived on the wire.
+    Other(String),
+}
+
+impl ApiErrorCode {
+    /// The name of the kind on the wire.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::StaleToken => "stale_token",
+            Self::Unavailable => "unavailable",
+            Self::Internal => "internal",
+            Self::Denied => "denied",
+            Self::Other(name) => name,
+        }
+    }
+}
+
+impl std::fmt::Display for ApiErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ApiErrorCode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ApiErrorCode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(match name.as_str() {
+            "invalid" => Self::Invalid,
+            "not_found" => Self::NotFound,
+            "conflict" => Self::Conflict,
+            "stale_token" => Self::StaleToken,
+            "unavailable" => Self::Unavailable,
+            "internal" => Self::Internal,
+            "denied" => Self::Denied,
+            _ => Self::Other(name),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[error("{code:?}: {message}")]
+#[error("{code}: {message}")]
 pub struct ApiError {
     pub code: ApiErrorCode,
     pub message: String,
@@ -808,6 +858,51 @@ mod tests {
         assert_eq!(
             err,
             serde_json::json!({"error": {"code": "invalid", "message": "no"}})
+        );
+    }
+
+    #[test]
+    fn every_known_error_kind_parses_and_round_trips() {
+        let cases = [
+            ("invalid", ApiErrorCode::Invalid),
+            ("not_found", ApiErrorCode::NotFound),
+            ("conflict", ApiErrorCode::Conflict),
+            ("stale_token", ApiErrorCode::StaleToken),
+            ("unavailable", ApiErrorCode::Unavailable),
+            ("internal", ApiErrorCode::Internal),
+            ("denied", ApiErrorCode::Denied),
+        ];
+        for (name, code) in cases {
+            let wire = serde_json::json!({"code": name, "message": "no"});
+            let err: ApiError = serde_json::from_value(wire.clone()).expect(name);
+            assert_eq!(err.code, code, "{name}");
+            assert_eq!(err.to_string(), format!("{name}: no"));
+            let back = serde_json::to_value(&err).expect(name);
+            assert_eq!(
+                back,
+                serde_json::json!({"code": name, "message": "no"}),
+                "{name}"
+            );
+        }
+    }
+
+    /// A newer daemon sends a kind that this build predates, and the refusal
+    /// still reaches the caller with the kind and the message.
+    #[test]
+    fn an_unknown_error_kind_keeps_its_name_and_message() {
+        let reply: Reply = serde_json::from_str(
+            r#"{"error":{"code":"rate_limited","message":"slow down, agent"}}"#,
+        )
+        .expect("a reply with a kind this build does not know");
+        let Reply::Error(err) = reply else {
+            panic!("an error reply: {reply:?}");
+        };
+        assert_eq!(err.code, ApiErrorCode::Other("rate_limited".into()));
+        assert_eq!(err.message, "slow down, agent");
+        assert_eq!(err.to_string(), "rate_limited: slow down, agent");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            serde_json::json!({"code": "rate_limited", "message": "slow down, agent"})
         );
     }
 

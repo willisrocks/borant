@@ -318,7 +318,9 @@ impl BorantMcp {
                 {
                     *self.session.lock().await = None;
                 }
-                Outcome::Reply(Err(e)) => return Err(e.message),
+                // The kind of the refusal, then its message: a person who
+                // reads a tool error knows whether a retry can work.
+                Outcome::Reply(Err(e)) => return Err(e.to_string()),
                 Outcome::Down(e) => {
                     return Err(format!("The Borant host daemon is not reachable: {e}"));
                 }
