@@ -300,6 +300,14 @@ scenario_hub_restart() {
 # inside 30 s after that. A new direct message then wakes the second session
 # inside 30 s.
 #
+# A run that fails names what happened: the reply of every send, nr-a in the
+# view of its host, the inbox counts of nr-a, and its pause events. A host
+# pauses its sessions while the hub is unreachable, and a message that a pull
+# takes from a paused session is not acked, so the inbox delivers it again only
+# after its ack wait (60 s in crates/borant-nats/src/bus.rs). The scenario
+# follows a missing message for 90 s more, which tells a late one from a lost
+# one.
+#
 # The broker stops first, and `docker compose restart nats` brings it back. A
 # restart of a running broker returns in well under a second, so the three
 # sends would publish at once, the outbox would hold nothing, and the
@@ -319,15 +327,17 @@ scenario_nats_restart() {
   fi
 
   # The outage: no host reaches the broker, so the three messages wait in the
-  # outbox of the host that sends them.
+  # outbox of the host that sends them. Every reply is in the run log, because
+  # a run that fails here has to name what the sender was told.
   dc stop nats >/dev/null || return 1
-  local i out
+  local i out t0
   for i in 1 2 3; do
     if ! out=$(borant_on host-a send nr-a "nats-outage-$i" 2>&1); then
       echo "  sending nats-outage-$i failed: $out" >&2
       dc logs --no-color nats hub host-a 2>/dev/null | tail -20 >&2
       return 1
     fi
+    echo "  nats-outage-$i: $(printf '%s' "$out" | tr -s '[:space:]' ' ')"
     if ! printf '%s\n' "$out" | grep -q '"queued": true'; then
       echo "  nats-outage-$i did not wait in the outbox: $out" >&2
       return 1
@@ -344,6 +354,8 @@ scenario_nats_restart() {
     return 1
   fi
 
+  t0=$(date +%s)
+
   # Every message of the outage arrives once, inside 30 s, and no copy comes
   # back after the broker had the time to deliver one again.
   if ! WAIT=30 wait_for "the three messages of the outage, once each" nr_backlog_once; then
@@ -351,6 +363,16 @@ scenario_nats_restart() {
     log_of host-b nr-a | tail -20 >&2
     echo "  the outbox of host-a:" >&2
     dc logs --no-color host-a 2>/dev/null | grep -i outbox | tail -5 >&2
+    echo "  nr-a in the view of its host:" >&2
+    borant_on host-b status --json 2>/dev/null |
+      jq -c '.agents[] | select(.agent == "nr-a") | {agent, busy, lease: .lease.state}' >&2
+    echo "  the inbox counts of nr-a (pending/ack_pending/redelivered):" >&2
+    borant_on host-b status --json 2>/dev/null |
+      jq -c '.inboxes[] | select(.agent == "nr-a") | .stats' >&2
+    echo "  the pause and resume events of nr-a:" >&2
+    borant_on host-b events --json 2>/dev/null |
+      grep -E 'agent\.(paused|resumed)' | tail -5 >&2
+    nr_late "$t0"
     return 1
   fi
   sleep 5
@@ -412,6 +434,30 @@ nr_outage_counts() {
   for i in 1 2 3; do
     echo "  nats-outage-$i: $(printf '%s\n' "$log" | grep -c -F -- "nats-outage-$i")"
   done
+}
+
+# Every message of the outage is in the log at least once.
+nr_backlog_seen() {
+  local log i
+  log=$(log_of host-b nr-a)
+  for i in 1 2 3; do
+    printf '%s\n' "$log" | grep -q -F -- "nats-outage-$i" || return 1
+  done
+}
+
+# The messages that missed the 30 s window: waits for them up to 90 s more, then
+# prints how often each one is in the log, against the seconds since the
+# restart. A message that a paused session pulled is not acked, and NATS
+# delivers it again only after the ack wait of the inbox, so this tells a late
+# message from a lost one.
+nr_late() {
+  local start=$1 n=0
+  while [ "$n" -lt 90 ] && ! nr_backlog_seen; do
+    sleep 1
+    n=$((n + 1))
+  done
+  echo "  $(( $(date +%s) - start ))s after the restart:" >&2
+  nr_outage_counts >&2
 }
 
 # The broker and the hub answer a control request again.
