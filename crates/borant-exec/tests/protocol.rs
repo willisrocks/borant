@@ -24,6 +24,7 @@ fn cfg(name: &str) -> ExecConfig {
         env: BTreeMap::new(),
         credential: None,
         timeout: Duration::from_secs(10),
+        log_stderr: false,
     }
 }
 
@@ -199,6 +200,7 @@ async fn a_missing_program_is_invalid() {
         env: BTreeMap::new(),
         credential: None,
         timeout: Duration::from_secs(5),
+        log_stderr: false,
     };
     let err = call(&cfg, "describe", Value::Null).await.unwrap_err();
     assert_eq!(err.kind, PortErrorKind::Invalid, "{err}");
@@ -254,8 +256,21 @@ where
 }
 
 #[tokio::test]
-async fn the_stderr_of_the_program_goes_to_debug() {
+async fn the_stderr_of_the_program_is_a_size_by_default() {
+    // A plugin that prints a secret value must not put it in the log.
     let cfg = cfg("stderr.sh");
+    let lines = log_lines(tracing::Level::DEBUG, async {
+        call(&cfg, "describe", Value::Null).await.unwrap();
+    })
+    .await;
+    assert!(lines.contains("bytes to stderr"), "{lines}");
+    assert!(!lines.contains("note for the log"), "{lines}");
+}
+
+#[tokio::test]
+async fn the_stderr_of_the_program_goes_to_debug_when_enabled() {
+    let mut cfg = cfg("stderr.sh");
+    cfg.log_stderr = true;
     let lines = log_lines(tracing::Level::DEBUG, async {
         call(&cfg, "describe", Value::Null).await.unwrap();
     })

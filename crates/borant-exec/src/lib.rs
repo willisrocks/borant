@@ -34,6 +34,10 @@ pub struct ExecConfig {
     pub credential: Option<(PathBuf, String)>,
     /// The limit for one operation, including the start of the program.
     pub timeout: Duration,
+    /// Whether the runner logs the text of the stderr of the program. False
+    /// for a plugin that can print a secret value: the runner cannot redact
+    /// what it does not know, so it logs only the size and the status then.
+    pub log_stderr: bool,
 }
 
 /// Runs one operation of the plugin and returns the `ok` value of its reply.
@@ -91,7 +95,9 @@ fn request(op: &str, args: Value) -> PortResult<Value> {
 }
 
 /// Starts the program with its environment and its request, and returns its
-/// stdout. Its stderr goes to `debug`: the program uses it for logs only.
+/// stdout. Its stderr goes to `debug` as text when `cfg.log_stderr`, else as a
+/// size and the status: a plugin that prints a secret value keeps it out of
+/// the log.
 async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Vec<u8>> {
     let mut cmd = Command::new(program);
     cmd.args(&cfg.command[1..]);
@@ -143,10 +149,15 @@ async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Vec<
     read_out.map_err(|e| PortError::other(format!("cannot read the stdout of {program}: {e}")))?;
     read_err.map_err(|e| PortError::other(format!("cannot read the stderr of {program}: {e}")))?;
     let status = status.map_err(|e| PortError::other(format!("cannot wait for {program}: {e}")))?;
+    let byte_count = stderr.len();
     let stderr = String::from_utf8_lossy(&stderr);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        tracing::debug!(%status, "{program} stderr: {stderr}");
+    let note = stderr.trim();
+    if !note.is_empty() {
+        if cfg.log_stderr {
+            tracing::debug!(%status, "{program} stderr: {note}");
+        } else {
+            tracing::debug!(%status, bytes = byte_count, "{program} wrote {byte_count} bytes to stderr");
+        }
     }
     if !status.success() && stdout.is_empty() {
         return Err(PortError::other(format!(
