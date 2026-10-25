@@ -16,6 +16,7 @@ use crate::time::Timestamp;
 pub const NEEDS_HUMAN: &str = "needs_human";
 pub const AGENT_STALLED: &str = "agent_stalled";
 pub const HOST_OFFLINE: &str = "host_offline";
+pub const HOST_DISK: &str = "host_disk";
 pub const MEMBERS_LIMITED: &str = "members_limited";
 pub const BUDGET_STOP: &str = "budget_stop";
 pub const PROVISIONER_REFUSED: &str = "provisioner_refused";
@@ -188,6 +189,25 @@ pub fn active_alerts(
             );
         }
     }
+    // A full disk stops the whole host, NATS included, so it is a warn at a
+    // lower point than the placement refusal.
+    for host in &view.swarm.hosts {
+        let Some(used) = host.stats.as_ref().and_then(|s| s.disk_used_pct) else {
+            continue;
+        };
+        if used < f64::from(cfg.disk_warn_pct) {
+            continue;
+        }
+        active.insert(
+            key(HOST_DISK, host.info.name.as_str()),
+            Notice::new(
+                "A host is low on disk",
+                format!("{} is {used:.0}% full", host.info.name),
+            )
+            .with_priority(Priority::High)
+            .with_tags([HOST_DISK.to_owned()]),
+        );
+    }
     for bundle in &view.limited_bundles {
         active.insert(
             key(MEMBERS_LIMITED, bundle.as_str()),
@@ -300,6 +320,17 @@ mod tests {
                 ..Default::default()
             }),
         }
+    }
+
+    /// A host that is reachable now, with a disk at `used_pct`.
+    fn host_disk_status(name: &str, used_pct: Option<f64>) -> HostStatus {
+        let mut status = host_status(name, true, None, Some(minutes(1)), Vec::new());
+        status.stats = Some(HostStats {
+            version: "test".into(),
+            disk_used_pct: used_pct,
+            ..HostStats::default()
+        });
+        status
     }
 
     fn view_with(hosts: Vec<HostStatus>) -> AlertView {
@@ -507,6 +538,45 @@ mod tests {
         )]);
         view.restart_grace = true;
         assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
+    }
+
+    /// Rule: `host_disk` fires at the warn point, once for each host, and
+    /// resolves when the disk drops below it.
+    #[test]
+    fn host_disk_fires_and_resolves() {
+        let cfg = cfg();
+        let open = BTreeSet::new();
+        let at = view_with(vec![host_disk_status("vps-1", Some(85.0))]);
+        assert_eq!(
+            fired(&evaluate(&at, &open, &cfg, NOW)),
+            vec!["host_disk:vps-1"],
+            "85% is the default warn point"
+        );
+        // One notice while the host stays full.
+        let already: BTreeSet<String> = ["host_disk:vps-1".to_owned()].into();
+        assert!(evaluate(&at, &already, &cfg, NOW).is_empty());
+
+        // Below the point it resolves, once.
+        let below = view_with(vec![host_disk_status("vps-1", Some(70.0))]);
+        assert_eq!(
+            evaluate(&below, &already, &cfg, NOW),
+            vec![AlertAction::Resolve {
+                key: "host_disk:vps-1".to_owned()
+            }]
+        );
+
+        // A host with no stats says nothing, and the file sets the point.
+        let unknown = view_with(vec![host_disk_status("vps-1", None)]);
+        assert!(evaluate(&unknown, &open, &cfg, NOW).is_empty());
+        let strict = AlertsConfig {
+            disk_warn_pct: 60,
+            ..cfg
+        };
+        let above = view_with(vec![host_disk_status("vps-1", Some(61.0))]);
+        assert_eq!(
+            fired(&evaluate(&above, &open, &strict, NOW)),
+            vec!["host_disk:vps-1"]
+        );
     }
 
     #[test]
