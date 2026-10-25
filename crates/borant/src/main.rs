@@ -40,8 +40,8 @@ fn main() -> std::process::ExitCode {
         match cli.command {
             Command::Hub { cmd: None } => roles::run_hub().await.map(|_| 0),
             Command::Hub {
-                cmd: Some(HubCmd::Export { out }),
-            } => roles::export(&out).await.map(|_| 0),
+                cmd: Some(HubCmd::Export { out, snapshot }),
+            } => roles::export(&out, snapshot).await.map(|_| 0),
             Command::Hub {
                 cmd: Some(HubCmd::Import { file }),
             } => roles::import(&file).await.map(|_| 0),

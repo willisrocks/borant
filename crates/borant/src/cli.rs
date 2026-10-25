@@ -147,10 +147,14 @@ pub enum ProjectCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum HubCmd {
-    /// Write all hub data to a file and put the running hub in maintenance mode.
+    /// Write all hub data to a file. With `--snapshot` the running hub writes
+    /// it without maintenance mode; otherwise the hub enters maintenance mode.
     Export {
         #[arg(long)]
         out: PathBuf,
+        /// Ask the running hub for a snapshot, without maintenance mode.
+        #[arg(long)]
+        snapshot: bool,
     },
     /// Load an export into an empty broker.
     Import { file: PathBuf },
@@ -462,6 +466,7 @@ mod tests {
         for line in [
             "borant hub",
             "borant hub export --out /tmp/x",
+            "borant hub export --snapshot --out /tmp/x",
             "borant hub import /tmp/x",
             "borant hub move vps-1",
             "borant host",

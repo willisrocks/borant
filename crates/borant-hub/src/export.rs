@@ -1,9 +1,12 @@
-//! Export and import of all hub data for a cold hub move (spec section 16).
+//! Export and import of all hub data for a cold hub move (spec section 16),
+//! and the snapshot of a running hub.
 //! The export goes through the ports, so it works for any adapter.
 
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use borant_core::model::{Agent, Envelope, SessionEvent, Target};
+use borant_core::model::{Agent, Envelope, SessionEvent};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::{AgentId, keys, subjects};
 use serde::{Deserialize, Serialize};
@@ -32,6 +35,114 @@ pub struct ImportReport {
     pub state: usize,
     pub sessions: usize,
     pub pending: usize,
+}
+
+/// What a snapshot wrote, and how long the hub held its request mutex.
+#[derive(Debug, Serialize)]
+pub struct SnapshotReport {
+    pub path: PathBuf,
+    pub state: usize,
+    pub sessions: usize,
+    pub pending: usize,
+    pub lock_ms: u64,
+}
+
+/// Writes a snapshot of the running hub to `out` without maintenance mode.
+///
+/// The read order is the one of the spec: the agent list, the inboxes, the KV
+/// state under the request mutex, then the session logs. A message that was in
+/// an inbox at the snapshot point is then in the inbox copy, the session-log
+/// copy, or both, and import drops duplicates by ID.
+pub async fn snapshot(hub: &Hub, out: &Path) -> anyhow::Result<SnapshotReport> {
+    let tmp = tmp_path(out);
+    match write_snapshot(hub, out, &tmp).await {
+        Ok(report) => Ok(report),
+        Err(e) => {
+            // A half file on the hub box looks like a good backup.
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+fn tmp_path(out: &Path) -> PathBuf {
+    let mut tmp = out.as_os_str().to_owned();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
+async fn write_snapshot(hub: &Hub, out: &Path, tmp: &Path) -> anyhow::Result<SnapshotReport> {
+    let file = std::fs::File::create(tmp)?;
+    let mut w = std::io::BufWriter::new(file);
+    let mut report = SnapshotReport {
+        path: out.to_path_buf(),
+        state: 0,
+        sessions: 0,
+        pending: 0,
+        lock_ms: 0,
+    };
+
+    // 1. The agents, without the request mutex.
+    let agents = hub.store.list::<Agent>(keys::AGENT_PREFIX).await?;
+
+    // 2. The inboxes, before the session logs.
+    for a in &agents {
+        for envelope in hub.bus.unacked(&a.value.id).await? {
+            write(
+                &mut w,
+                &Record::Pending {
+                    agent: a.value.id.clone(),
+                    envelope,
+                },
+            )?;
+            report.pending += 1;
+        }
+    }
+
+    // 3. All keys while the hub holds its request mutex. Release it after
+    // this step, before the session logs and before the file I/O.
+    let (entries, lock_ms) = {
+        let _mem = hub.mem.lock().await;
+        let started = Instant::now();
+        let entries = hub.store.0.list("").await?;
+        (entries, started.elapsed())
+    };
+    report.lock_ms = u64::try_from(lock_ms.as_millis()).unwrap_or(u64::MAX);
+    let hub_lease = keys::lease_hub();
+    let mut kv_agents = Vec::new();
+    for e in entries {
+        if e.key == hub_lease {
+            continue;
+        }
+        if e.key.starts_with(keys::AGENT_PREFIX)
+            && let Ok(a) = serde_json::from_slice::<Agent>(&e.value)
+        {
+            kv_agents.push(a.id);
+        }
+        let value: serde_json::Value = serde_json::from_slice(&e.value)?;
+        write(&mut w, &Record::State { key: e.key, value })?;
+        report.state += 1;
+    }
+
+    // 4. The session logs of the agents in the KV state.
+    for agent in kv_agents {
+        for (_, event) in hub.sessions.read(&agent).await? {
+            write(
+                &mut w,
+                &Record::Session {
+                    agent: agent.clone(),
+                    event,
+                },
+            )?;
+            report.sessions += 1;
+        }
+    }
+
+    w.flush()?;
+    w.get_ref().sync_all()?;
+    drop(w);
+    std::fs::rename(tmp, out)?;
+    Ok(report)
 }
 
 /// Writes every state key, every session log, and the unacked messages of
@@ -109,20 +220,17 @@ pub async fn import(
                 sessions.append(&agent, &event).await?;
                 report.sessions += 1;
             }
-            Record::Pending { envelope, .. } => pending.push(envelope),
+            Record::Pending { agent, envelope } => pending.push((agent, envelope)),
         }
     }
     for a in &agents {
         bus.ensure_inbox(&a.id, &subjects::inbox(&a.id, &a.channels))
             .await?;
     }
-    for env in pending {
-        let subject = match (&env.to, env.event.is_some()) {
-            (Target::Agent(a), _) => subjects::agent(a),
-            (Target::Channel(c), true) => subjects::tasks(c),
-            (Target::Channel(c), false) => subjects::broadcast(c),
-        };
-        bus.publish(&subject, &env).await?;
+    // A pending record goes back to the agent that it was pending for. A
+    // broadcast would reach every restored member of the channel again.
+    for (agent, env) in pending {
+        bus.publish(&subjects::agent(&agent), &env).await?;
         report.pending += 1;
     }
     Ok(report)

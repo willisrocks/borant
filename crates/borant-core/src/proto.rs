@@ -361,6 +361,11 @@ pub enum CtlRequest {
     Maintenance {
         on: bool,
     },
+    /// Writes a snapshot of the hub state to `out` on the hub box, without
+    /// maintenance mode.
+    Snapshot {
+        out: std::path::PathBuf,
+    },
 }
 
 /// Commands from the hub to one host on `subjects::host_cmd`.

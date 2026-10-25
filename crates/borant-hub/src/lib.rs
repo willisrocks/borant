@@ -130,6 +130,26 @@ impl Hub {
                 }
                 return result.into();
             }
+            // A snapshot reads every key, inbox, and session log.
+            // `export::snapshot` takes `mem` itself, for the KV read only.
+            CtlRequest::Snapshot { out } => {
+                drop(mem);
+                let result = match export::snapshot(self, &out).await {
+                    Ok(report) => {
+                        serde_json::to_value(report).map_err(|e| ApiError::internal(e.to_string()))
+                    }
+                    Err(e) => Err(ApiError::internal(format!("snapshot: {e:#}"))),
+                };
+                if let Err(e) = &result {
+                    match e.code {
+                        ApiErrorCode::Internal | ApiErrorCode::Unavailable => {
+                            tracing::warn!("request failed: {e}");
+                        }
+                        _ => tracing::debug!("request failed: {e}"),
+                    }
+                }
+                return result.into();
+            }
             other => other,
         };
         let result = self.dispatch(&mut mem, req).await;
