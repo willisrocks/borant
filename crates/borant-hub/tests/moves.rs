@@ -25,6 +25,8 @@ async fn setup(
         ToolCall::ChannelCreate {
             name: api(),
             schema: None,
+            project: None,
+            branch: None,
         },
     )
     .await
@@ -207,6 +209,8 @@ async fn claims_return_to_open_after_claim_timeout() {
         ToolCall::ChannelCreate {
             name: api(),
             schema: None,
+            project: None,
+            branch: None,
         },
     )
     .await
@@ -348,6 +352,7 @@ async fn spawn_places_new_agent_with_prompt() {
                 harness: None,
                 host: Some(name("h2")),
                 name: Some("helper".parse().unwrap()),
+                model: None,
             },
         )
         .await
@@ -418,6 +423,7 @@ async fn failed_spawn_is_placed_again_with_its_prompt() {
             harness: None,
             host: Some(name("h2")),
             name: Some("helper".parse().unwrap()),
+            model: None,
         },
     )
     .await
@@ -457,6 +463,8 @@ async fn claims_of_an_unmovable_agent_time_out() {
         ToolCall::ChannelCreate {
             name: api(),
             schema: None,
+            project: None,
+            branch: None,
         },
     )
     .await

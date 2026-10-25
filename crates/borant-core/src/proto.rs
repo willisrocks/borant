@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::CoreError;
-use crate::ids::{AgentId, ChannelName, FencingToken, HostName, SessionId, TaskId};
+use crate::ids::{AgentId, ChannelName, FencingToken, HostName, ProjectName, SessionId, TaskId};
 use crate::model::{
-    CloseReason, Envelope, Harness, HostInfo, MoveReason, NewTask, RepoInfo, Target, TaskPatch,
+    CloseReason, Envelope, Harness, HostInfo, MoveReason, NewTask, Project, RepoInfo, Target,
+    TaskPatch,
 };
 use crate::ports::{PortError, PortErrorKind};
 
@@ -196,6 +197,12 @@ pub enum ToolCall {
         name: ChannelName,
         #[serde(default)]
         schema: Option<Value>,
+        /// A spawn in the channel clones this project.
+        #[serde(default)]
+        project: Option<ProjectName>,
+        /// The base branch. Defaults to the default branch of the project.
+        #[serde(default)]
+        branch: Option<String>,
     },
     ChannelJoin {
         name: ChannelName,
@@ -261,6 +268,8 @@ pub enum ToolCall {
         host: Option<HostName>,
         #[serde(default)]
         name: Option<AgentId>,
+        #[serde(default)]
+        model: Option<String>,
     },
     SessionHistory {
         #[serde(default)]
@@ -278,6 +287,14 @@ pub enum ToolCall {
     },
     ListAgents,
     ListHosts,
+    /// Creates or replaces a project.
+    ProjectAdd {
+        project: Project,
+    },
+    ProjectGet {
+        name: ProjectName,
+    },
+    ProjectList,
 }
 
 fn default_page_size() -> usize {
@@ -339,6 +356,8 @@ pub enum CtlRequest {
 /// Commands from the hub to one host on `subjects::host_cmd`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
+// A launch is rare and short-lived, so its size does not matter.
+#[allow(clippy::large_enum_variant)]
 pub enum HostCommand {
     Launch(LaunchOrder),
     PrepareMove { agent: AgentId, session: SessionId },
@@ -358,6 +377,15 @@ pub struct LaunchOrder {
     pub reason: MoveReason,
     pub from_harness: Option<Harness>,
     pub from_host: Option<HostName>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The project of the agent, for its setup command and checkpoint remote.
+    #[serde(default)]
+    pub project: Option<Project>,
+    /// How long the hub waits for the session to register before it
+    /// launches the agent again. The host fits the setup inside it.
+    #[serde(default)]
+    pub reserve_secs: Option<u64>,
 }
 
 // ---- Local API of the host daemon ----

@@ -47,6 +47,25 @@ async fn git(dir: &Path, args: &[&str], index: Option<&Path>) -> anyhow::Result<
 pub struct RepoFacts {
     pub root: PathBuf,
     pub info: RepoInfo,
+    /// The checkpoint remote of the project, from `set_checkpoint_remote`.
+    pub checkpoint_remote: Option<String>,
+}
+
+/// The git config key that holds the checkpoint remote of a project clone.
+const CHECKPOINT_REMOTE_KEY: &str = "borant.checkpointRemote";
+
+/// The absolute git directory of the repository of `dir`.
+pub async fn git_dir(dir: &Path) -> anyhow::Result<PathBuf> {
+    Ok(PathBuf::from(
+        git(dir, &["rev-parse", "--absolute-git-dir"], None).await?,
+    ))
+}
+
+/// Stores the checkpoint remote of a project in the clone, so `detect`
+/// finds it again for each session, also after a daemon restart.
+pub async fn set_checkpoint_remote(dir: &Path, remote: &str) -> anyhow::Result<()> {
+    git(dir, &["config", CHECKPOINT_REMOTE_KEY, remote], None).await?;
+    Ok(())
 }
 
 /// Finds the repository of `cwd`. The remote URL is the `origin` remote, or
@@ -71,6 +90,10 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
         .strip_prefix(&canon_root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let checkpoint_remote = git(cwd, &["config", "--get", CHECKPOINT_REMOTE_KEY], None)
+        .await
+        .ok()
+        .filter(|r| !r.is_empty());
     Some(RepoFacts {
         root,
         info: RepoInfo {
@@ -78,6 +101,7 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
             branch,
             subdir,
         },
+        checkpoint_remote,
     })
 }
 
@@ -164,13 +188,16 @@ fn repo_dir_name(url: &str) -> String {
 /// Prepares the working directory of an agent on this host: clones or
 /// fetches the repository under `{work_root}/{agent}/{repo}`, checks out the
 /// branch at the parent of the WIP commit, and restores the files of the WIP
-/// commit without a new commit. Returns the working directory.
+/// commit without a new commit. Without a WIP commit, a branch that is not
+/// on the remote and not local starts from `origin/{base}`, if `base` is set.
+/// Returns the working directory.
 pub async fn restore(
     work_root: &Path,
     repo: &RepoInfo,
     agent: &AgentId,
     remote: &str,
     wip: Option<&str>,
+    base: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let dir = work_root
         .join(agent.as_str())
@@ -235,6 +262,22 @@ pub async fn restore(
                     None,
                 )
                 .await?;
+            } else if let Some(base) = base {
+                let local = format!("refs/heads/{branch}");
+                if git(&dir, &["rev-parse", "--verify", "-q", &local], None)
+                    .await
+                    .is_ok()
+                {
+                    git(&dir, &["checkout", "--quiet", branch], None).await?;
+                } else {
+                    let from = format!("origin/{base}");
+                    git(
+                        &dir,
+                        &["checkout", "--quiet", "-f", "-B", branch, &from],
+                        None,
+                    )
+                    .await?;
+                }
             }
         }
     }

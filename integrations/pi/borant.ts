@@ -397,6 +397,8 @@ export default function borant(pi: ExtensionAPI) {
       Type.Object({
         name,
         schema: Type.Optional(JsonObject("JSON Schema for task properties. Default schema if omitted.")),
+        project: Type.Optional(Type.String({ description: "Project name. A spawn in the channel clones it" })),
+        branch: Type.Optional(Type.String({ description: "Base branch for spawns. Default: the project's default branch" })),
       }),
     );
     tool("channel_join", "Join a channel.", Type.Object({ name }));
@@ -481,8 +483,11 @@ export default function borant(pi: ExtensionAPI) {
         harness: Type.Optional(HarnessName),
         host: Type.Optional(Type.String({ description: "Host to run on" })),
         name: Type.Optional(Type.String({ description: "Agent ID for the new agent" })),
+        model: Type.Optional(Type.String({ description: "Model for the harness, for example opus" })),
       }),
     );
+    tool("project_list", "List projects: git repositories that spawns clone.", none);
+    tool("project_get", "Get one project.", Type.Object({ name: Type.String({ description: "Project name" }) }));
     tool(
       "session_history",
       "Read the event history of your session, newest page first.",

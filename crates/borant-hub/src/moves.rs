@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use borant_core::model::{
-    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, SessionEvent, SessionEventBody,
+    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, SessionEvent,
+    SessionEventBody,
 };
 use borant_core::proto::{ApiError, HostCommand, LaunchOrder, MoveSelector, MoveTarget};
 use borant_core::rules::lease;
@@ -124,6 +125,23 @@ impl Hub {
             (_, Some(p)) => p,
             (_, None) => continue_prompt(&agent.id, &host, from_harness, harness),
         };
+        let project = match &agent.project {
+            Some(p) => self
+                .store
+                .get::<Project>(&keys::project(p))
+                .await?
+                .map(|d| d.value),
+            None => None,
+        };
+        // A model name belongs to one harness. Another harness gets none.
+        let model = match (&agent.model, agent.model_harness) {
+            (Some(m), Some(h)) if h == harness => Some(m.clone()),
+            (Some(m), _) => {
+                tracing::warn!(agent = %agent.id, model = %m, %harness, "the model is for another harness; launching without it");
+                None
+            }
+            (None, _) => None,
+        };
         let order = LaunchOrder {
             agent: agent.id.clone(),
             harness,
@@ -134,6 +152,9 @@ impl Hub {
             reason,
             from_harness,
             from_host: agent.host.clone(),
+            model,
+            project,
+            reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
         };
         let move_event = SessionEvent {
             id: EventId::new(),
@@ -294,9 +315,23 @@ impl Hub {
         harness: Option<Harness>,
         host: Option<HostName>,
         name: Option<AgentId>,
+        model: Option<String>,
     ) -> Result<Value, ApiError> {
-        self.channel(channel).await?;
+        let ch = self.channel(channel).await?.value;
         let parent = self.agent(by).await?.value;
+        // A channel with a project gives the repository. Without one, the
+        // new agent works in the repository of its parent.
+        let repo = match &ch.project {
+            Some(p) => {
+                let project = self.project(p).await?;
+                Some(RepoInfo {
+                    branch: ch.branch.clone().unwrap_or(project.default_branch),
+                    remote_url: project.remote_url,
+                    subdir: String::new(),
+                })
+            }
+            None => parent.repo.clone(),
+        };
         let harness = harness.unwrap_or(parent.preferred_harness);
         let id = match name {
             Some(n) => n,
@@ -305,13 +340,16 @@ impl Hub {
         let agent = Agent {
             id: id.clone(),
             preferred_harness: harness,
-            movable: parent.repo.is_some(),
-            repo: parent.repo.clone(),
+            movable: repo.is_some(),
+            repo,
             channels: Vec::new(),
             session: None,
             host: None,
             harness_session_id: None,
             created: self.now(),
+            model_harness: model.as_ref().map(|_| harness),
+            model,
+            project: ch.project,
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

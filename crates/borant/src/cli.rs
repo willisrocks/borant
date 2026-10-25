@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::model::{Harness, Target};
+use borant_core::model::{Harness, Project, Target};
 use borant_core::proto::{MoveSelector, MoveTarget, ToolCall};
-use borant_core::{AgentId, ChannelName, HostName};
+use borant_core::{AgentId, ChannelName, HostName, ProjectName};
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
 use clap::{Parser, Subcommand};
@@ -88,12 +88,45 @@ pub enum Command {
     },
     /// Move every agent away from a host and stop placing agents there.
     Drain { host: HostName },
+    /// Add or list projects: git repositories that spawns clone.
+    Project {
+        #[command(subcommand)]
+        cmd: ProjectCmd,
+    },
     /// Attach this terminal to the session of an agent.
     Attach { agent: AgentId },
     /// Serve the Borant MCP tools on stdio (Claude Code starts this).
     Mcp,
     /// Handle one Claude Code hook event (Claude Code runs this).
     Hook { event: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCmd {
+    /// Add a project, or replace the project with the same name.
+    Add {
+        name: ProjectName,
+        /// The git remote URL.
+        #[arg(required_unless_present = "from_cwd", conflicts_with = "from_cwd")]
+        remote_url: Option<String>,
+        /// Use the `origin` remote and the current branch of this directory.
+        #[arg(long)]
+        from_cwd: bool,
+        /// The default branch. Defaults to `main`, or the current branch with --from-cwd.
+        #[arg(long)]
+        branch: Option<String>,
+        /// A shell command that runs once in each new clone.
+        #[arg(long)]
+        setup: Option<String>,
+        /// The focused test command of the project.
+        #[arg(long)]
+        test: Option<String>,
+        /// Where checkpoints go, if not the remote URL.
+        #[arg(long)]
+        checkpoint_remote: Option<String>,
+    },
+    /// List all projects.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -232,6 +265,43 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
             );
         }
         Command::Drain { host } => pretty(&call(&c, ToolCall::Drain { host }).await?),
+        Command::Project {
+            cmd:
+                ProjectCmd::Add {
+                    name,
+                    remote_url,
+                    from_cwd,
+                    branch,
+                    setup,
+                    test,
+                    checkpoint_remote,
+                },
+        } => {
+            let (remote_url, default_branch) = if from_cwd {
+                let cwd = std::env::current_dir()?;
+                let facts = borant_host::checkpoint::detect(&cwd, None)
+                    .await
+                    .context("this directory is not in a git repository with an origin remote")?;
+                (facts.info.remote_url, branch.unwrap_or(facts.info.branch))
+            } else {
+                (
+                    remote_url.context("give a remote URL or --from-cwd")?,
+                    branch.unwrap_or_else(|| "main".to_owned()),
+                )
+            };
+            let project = Project {
+                name,
+                remote_url,
+                default_branch,
+                checkpoint_remote,
+                setup,
+                test,
+            };
+            pretty(&call(&c, ToolCall::ProjectAdd { project }).await?);
+        }
+        Command::Project {
+            cmd: ProjectCmd::List,
+        } => pretty(&call(&c, ToolCall::ProjectList).await?),
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
@@ -325,6 +395,9 @@ mod tests {
             "borant move --channel api --here",
             "borant drain vps-2",
             "borant attach w1",
+            "borant project add api git@github.com:me/api.git --branch dev --setup just",
+            "borant project add api --from-cwd",
+            "borant project list",
             "borant mcp",
             "borant hook stop-wait",
         ] {
@@ -333,6 +406,10 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["borant", "move", "w1", "--from", "h"]).is_err());
         assert!(Cli::try_parse_from(["borant", "tasks", "Bad.Name"]).is_err());
+        assert!(Cli::try_parse_from(["borant", "project", "add", "api"]).is_err());
+        assert!(
+            Cli::try_parse_from(["borant", "project", "add", "api", "u", "--from-cwd"]).is_err()
+        );
     }
 
     #[test]

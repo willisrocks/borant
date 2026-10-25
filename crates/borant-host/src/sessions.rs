@@ -459,7 +459,7 @@ impl Host {
         };
         let (agent, repo, pid, launch) = info;
         if let (Some(agent), Some(repo)) = (&agent, &repo) {
-            let remote = self.remote_for(&repo.info.remote_url);
+            let remote = self.remote_for(repo);
             match checkpoint::save_stale(&repo.root, &remote, agent, self.inner.clock.now()).await {
                 Ok(sha) => tracing::info!(%agent, sha, "saved the lost turn to a stale ref"),
                 Err(e) => tracing::warn!(%agent, "could not save stale work: {e:#}"),
@@ -493,12 +493,13 @@ impl Host {
         }
     }
 
-    pub(crate) fn remote_for(&self, origin: &str) -> String {
-        self.inner
-            .cfg
-            .checkpoint_remote
+    /// The checkpoint remote of a repository: the one of its project, else
+    /// the one of the host, else its origin.
+    pub(crate) fn remote_for(&self, repo: &checkpoint::RepoFacts) -> String {
+        repo.checkpoint_remote
             .clone()
-            .unwrap_or_else(|| origin.to_owned())
+            .or_else(|| self.inner.cfg.checkpoint_remote.clone())
+            .unwrap_or_else(|| repo.info.remote_url.clone())
     }
 
     /// Starts a checkpoint in the background, or marks the tree dirty if one
@@ -549,7 +550,7 @@ impl Host {
             };
             (r.agent.clone(), repo.clone(), s.last_tree.clone())
         };
-        let remote = self.remote_for(&repo.info.remote_url);
+        let remote = self.remote_for(&repo);
         match checkpoint::create(&repo.root, &remote, &agent, last.as_deref()).await {
             Ok(Some((tree, sha))) => {
                 if let Some(s) = self.state().sessions.get_mut(&id) {

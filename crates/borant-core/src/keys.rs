@@ -1,7 +1,7 @@
 //! The state-store key layout (spec section 6) and the bus subjects (spec
 //! section 10).
 
-use crate::ids::{AgentId, ChannelName, HostName, SessionId, TaskId};
+use crate::ids::{AgentId, ChannelName, HostName, ProjectName, SessionId, TaskId};
 
 pub fn agent(id: &AgentId) -> String {
     format!("agent.{id}")
@@ -34,6 +34,12 @@ pub fn channel(name: &ChannelName) -> String {
 }
 
 pub const CHANNEL_PREFIX: &str = "chan.";
+
+pub fn project(name: &ProjectName) -> String {
+    format!("project.{name}")
+}
+
+pub const PROJECT_PREFIX: &str = "project.";
 
 pub fn member(channel: &ChannelName, agent: &AgentId) -> String {
     format!("chan.{channel}.member.{agent}")

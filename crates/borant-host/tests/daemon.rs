@@ -99,6 +99,8 @@ async fn broadcast_is_delivered_on_next_event_not_wake() {
             ToolCall::ChannelCreate {
                 name: api.clone(),
                 schema: None,
+                project: None,
+                branch: None,
             },
         )
         .await
@@ -477,6 +479,8 @@ async fn turn_end_events_do_not_take_messages() {
             ToolCall::ChannelCreate {
                 name: api.clone(),
                 schema: None,
+                project: None,
+                branch: None,
             },
         )
         .await

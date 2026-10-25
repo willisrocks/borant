@@ -141,6 +141,8 @@ pub(crate) struct State {
     pub limiter: WakeLimiter,
     pub limit_noticed: HashSet<AgentId>,
     pub pending_launch: HashMap<AgentId, LaunchHandle>,
+    /// Agents whose launch runs now.
+    pub launching: HashSet<AgentId>,
     pub seen: HashMap<AgentId, HashSet<MessageId>>,
     pub turns_since_trim: HashMap<AgentId, usize>,
     pub host_registered: bool,
@@ -200,6 +202,7 @@ impl Host {
                     limiter: WakeLimiter::new(wakes),
                     limit_noticed: HashSet::new(),
                     pending_launch: HashMap::new(),
+                    launching: HashSet::new(),
                     seen: HashMap::new(),
                     turns_since_trim: HashMap::new(),
                     host_registered: false,
