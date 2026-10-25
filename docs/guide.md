@@ -226,6 +226,7 @@ to agents.
 | Command | Purpose |
 |---|---|
 | `borant status` | The local host, all hosts, and all agents |
+| `borant doctor [--json]` | The readiness of this host, read-only: the daemon socket, NATS, each harness command, the launcher, the disk of `BORANT_HOME`, the sandbox, and the exec plugins of `host.toml`. Each check is one `ok`, `warn`, or `fail` line, and the exit code is 1 when one fails |
 | `borant events [--follow] [--since 1h] [--kind lease.*] [--agent A] [--channel C] [--host H] [--severity warn] [--json]` | The swarm event stream, one line per event or JSON |
 | `borant send <agent\|#channel> <text> [--urgent]` | Send a message as a human |
 | `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--priority N] [--name N] [--key K] [--bundle B] [--json]` | Start an agent in a channel |

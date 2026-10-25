@@ -45,6 +45,14 @@ pub enum Command {
     },
     /// Run the host daemon.
     Host,
+    /// Check the readiness of this host: the daemon, NATS, the harnesses, the
+    /// launcher, the disk, and the exec plugins. Read-only. Exits 1 when a
+    /// check fails.
+    Doctor {
+        /// Print the checks as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the local daemon, the hosts, and the agents. With `--json`, the
     /// live view of the swarm as JSON.
     Status {
@@ -1326,7 +1334,11 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
         }
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Top => crate::top::run().await?,
-        Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
+        Command::Hub { .. }
+        | Command::Host
+        | Command::Doctor { .. }
+        | Command::Mcp
+        | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
         }
         Command::Wait { .. } => unreachable!("a wait returns from the arm above"),
