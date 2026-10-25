@@ -1,12 +1,14 @@
-//! Task limits, part one: the close rule and the claim guard (phase 6 spec,
-//! "Close rule" and "Tasks").
+//! Task limits: the close rule, the claim guard, attempts, and deadlines
+//! (phase 6 spec, "Close rule" and "Tasks").
+
+use std::time::Duration;
 
 mod common;
 
 use borant_core::model::{CloseReason, Harness, NewTask, Task, TaskPatch, TaskStatus};
-use borant_core::ports::StateStore;
+use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, Registered, ToolCall};
-use borant_core::{ChannelName, TaskId, keys};
+use borant_core::{ChannelName, Clock, TaskId, keys};
 use common::Fx;
 
 fn api() -> ChannelName {
@@ -196,4 +198,205 @@ async fn claim_guard_a_stuck_task_belongs_to_its_claimer() {
         .await
         .expect("the claimer takes its own task again");
     assert_eq!(again.status, TaskStatus::InProgress);
+}
+
+async fn task_of(fx: &Fx, id: TaskId) -> Task {
+    let doc = fx
+        .state
+        .get(&keys::task(&api(), &id))
+        .await
+        .unwrap()
+        .unwrap();
+    serde_json::from_slice(&doc.value).unwrap()
+}
+
+async fn create_with(fx: &Fx, who: &Registered, new: NewTask) -> Task {
+    serde_json::from_value(
+        fx.call(
+            Some(who),
+            ToolCall::TaskCreate {
+                channel: api(),
+                task: new,
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// A claim that times out counts one attempt, once.
+#[tokio::test]
+async fn attempts_a_claim_timeout_counts_one() {
+    let r = rig().await;
+    let task = create(&r.fx, &r.boss, "long job").await;
+    claim(&r.fx, &r.w1, task.id).await.unwrap();
+    // The host goes silent: the lease expires and the claim timeout returns
+    // the claim.
+    for _ in 0..190 {
+        r.fx.advance(10);
+        r.fx.hub.tick().await.unwrap();
+    }
+    let task = task_of(&r.fx, task.id).await;
+    assert_eq!(task.status, TaskStatus::Open);
+    assert_eq!(task.claimed_by, None);
+    assert_eq!(task.attempts, 1, "the timeout is one attempt");
+
+    // The reopen that follows the timeout is the same claim. The owner's old
+    // session went stale with the clock, so it registers again.
+    let boss = r.fx.register("h1", Some("boss"), None).await;
+    update(
+        &r.fx,
+        &boss,
+        task.id,
+        TaskPatch {
+            status: Some(TaskStatus::Open),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(task_of(&r.fx, task.id).await.attempts, 1);
+}
+
+/// At the retry limit the task waits for its owner: no claim until the owner
+/// reopens it, and that reopen starts the count again.
+#[tokio::test]
+async fn attempts_the_retry_limit_holds_until_the_owner_reopens() {
+    let r = rig().await;
+    let task = create_with(
+        &r.fx,
+        &r.boss,
+        NewTask {
+            title: "tries".into(),
+            max_attempts: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    claim(&r.fx, &r.w1, task.id).await.unwrap();
+    // The worker gives the task back: the claim ends without a done close.
+    let limited = update(
+        &r.fx,
+        &r.w1,
+        task.id,
+        TaskPatch {
+            status: Some(TaskStatus::Open),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the worker reopens its task");
+    assert_eq!(limited.attempts, 1);
+    assert_eq!(limited.status, TaskStatus::NeedsHuman);
+    assert_eq!(
+        limited.attention_msg.as_deref(),
+        Some("retry limit reached (1 tries)")
+    );
+
+    let err = claim(&r.fx, &r.w2, task.id)
+        .await
+        .expect_err("a task at its limit is not claimable");
+    assert_eq!(err.code, ApiErrorCode::Conflict);
+    assert!(err.message.contains("retry limit"), "{}", err.message);
+
+    // Only the owner lifts the limit.
+    let err = update(
+        &r.fx,
+        &r.w2,
+        task.id,
+        TaskPatch {
+            status: Some(TaskStatus::Open),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("a member cannot lift the retry limit");
+    assert_eq!(err.code, ApiErrorCode::Conflict);
+
+    let reopened = update(
+        &r.fx,
+        &r.boss,
+        task.id,
+        TaskPatch {
+            status: Some(TaskStatus::Open),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the owner reopens the task");
+    assert_eq!(reopened.attempts, 0, "the owner's reopen resets the count");
+    assert_eq!(reopened.status, TaskStatus::Open);
+
+    let again = claim(&r.fx, &r.w2, task.id).await.expect("claimable again");
+    assert_eq!(again.status, TaskStatus::InProgress);
+}
+
+/// A passed deadline puts the task in front of its owner once, and reassigns
+/// nothing.
+#[tokio::test]
+async fn deadline_a_passed_deadline_sticks_once() {
+    let r = rig().await;
+    let deadline = r.fx.clock.now().plus(std::time::Duration::from_secs(60));
+    let task = create_with(
+        &r.fx,
+        &r.boss,
+        NewTask {
+            title: "due".into(),
+            deadline: Some(deadline),
+            ..Default::default()
+        },
+    )
+    .await;
+    let inbox = borant_core::subjects::agent(&r.boss.agent);
+    r.fx.bus
+        .ensure_inbox(&r.boss.agent, &[inbox])
+        .await
+        .unwrap();
+
+    r.fx.advance(30);
+    r.fx.hub.tick().await.unwrap();
+    assert_eq!(
+        task_of(&r.fx, task.id).await.status,
+        TaskStatus::Open,
+        "before the deadline nothing happens"
+    );
+    assert_eq!(
+        r.fx.bus.inbox_pending(&r.boss.agent).await.unwrap(),
+        0,
+        "no message yet"
+    );
+
+    r.fx.advance(60);
+    r.fx.hub.tick().await.unwrap();
+    let stuck = task_of(&r.fx, task.id).await;
+    assert_eq!(stuck.status, TaskStatus::Stuck);
+    assert_eq!(stuck.attention_msg.as_deref(), Some("deadline passed"));
+    assert_eq!(stuck.claimed_by, None, "it reassigns nothing");
+    assert_eq!(
+        r.fx.bus.inbox_pending(&r.boss.agent).await.unwrap(),
+        1,
+        "the owner hears once"
+    );
+    let heard =
+        r.fx.bus
+            .pull(&r.boss.agent, 10, Duration::ZERO)
+            .await
+            .unwrap();
+    let msg = &heard[0].envelope;
+    assert_eq!(
+        msg.to,
+        borant_core::model::Target::Agent(r.boss.agent.clone())
+    );
+    assert!(msg.text.contains("passed its deadline"), "{}", msg.text);
+    for d in heard {
+        d.acker.ack().await.unwrap();
+    }
+
+    r.fx.hub.tick().await.unwrap();
+    assert_eq!(
+        r.fx.bus.inbox_pending(&r.boss.agent).await.unwrap(),
+        0,
+        "the miss is reported once"
+    );
 }

@@ -558,6 +558,12 @@ pub struct NewTask {
     pub parent: Option<TaskId>,
     #[serde(default)]
     pub properties: Map<String, Value>,
+    /// When the task is due.
+    #[serde(default)]
+    pub deadline: Option<Timestamp>,
+    /// How many claims that end without a `done` close the task allows.
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
 }
 
 /// The input of `task_update`. Each present field replaces the old value.
@@ -578,6 +584,10 @@ pub struct TaskPatch {
     pub parent: Option<TaskId>,
     #[serde(default)]
     pub properties: Option<Map<String, Value>>,
+    #[serde(default)]
+    pub deadline: Option<Timestamp>,
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]

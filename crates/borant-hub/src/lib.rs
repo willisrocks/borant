@@ -295,6 +295,9 @@ impl Hub {
                 .map(|_| ()),
         };
         parked?;
+        // A passed deadline puts the task in front of its owner before the
+        // waits and the alerts see it.
+        self.tick_deadlines().await?;
         // The waits of the agents, then the alerts that see what the tick
         // changed.
         self.tick_waits().await?;
