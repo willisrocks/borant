@@ -232,6 +232,16 @@ fn detail(event: &SwarmEvent) -> String {
         B::SessionPaused { why } | B::SessionFenced { why } => why.clone(),
         B::SessionResumed {} => String::new(),
         B::AgentSpawned { by, harness } => format!("by {by} {}", word(harness)),
+        B::SpawnQueued { key, priority } => match key {
+            Some(key) => format!("key {key}, priority {priority}"),
+            None => format!("priority {priority}"),
+        },
+        B::SpawnCancelled => String::new(),
+        B::AgentRetired => String::new(),
+        B::LaunchStuck { attempts, screen } => {
+            let last = screen.lines().last().unwrap_or_default();
+            format!("try {attempts}: {last}")
+        }
         B::AgentPruned { by, idle_days } => match by {
             Some(by) => format!("idle {idle_days}d by {by}"),
             None => format!("idle {idle_days}d"),

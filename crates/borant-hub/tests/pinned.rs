@@ -180,6 +180,10 @@ async fn pinned_pending_move_is_not_placed() {
     fx.call(
         Some(&parent),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "go".into(),
             harness: Some(Harness::ClaudeCode),

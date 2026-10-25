@@ -12,6 +12,7 @@ use crate::ids::{
     AgentId, BundleName, ChannelName, CollectionName, EventId, FencingToken, HostName, MemberName,
     MessageId, PoolName, ProjectName, RoleName, SessionId, Tag, TaskId,
 };
+use crate::rules::roles::Resolved;
 use crate::time::Timestamp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -112,6 +113,19 @@ pub struct Agent {
     /// The agent that spawned this one. A helper runs on its parent's host.
     #[serde(default)]
     pub parent: Option<AgentId>,
+    /// The idempotency key of the spawn that made this agent.
+    #[serde(default)]
+    pub spawn_key: Option<String>,
+    /// The task that this worker is bound to.
+    #[serde(default)]
+    pub task: Option<TaskRef>,
+    /// Stop the session when the bound task closes.
+    #[serde(default)]
+    pub stop_on_close: bool,
+    /// A retired agent is never placed again; its session stops at the next
+    /// turn end.
+    #[serde(default)]
+    pub retired: bool,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -137,6 +151,10 @@ impl Default for Agent {
             role: None,
             collection: None,
             parent: None,
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
         }
     }
 }
@@ -376,6 +394,81 @@ pub struct Task {
     pub properties: Map<String, Value>,
     pub created: Timestamp,
     pub updated: Timestamp,
+    /// The idempotency key of the create that made this task.
+    #[serde(default)]
+    pub create_key: Option<String>,
+}
+
+/// The task that a worker is bound to, at `Agent.task`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRef {
+    pub channel: ChannelName,
+    pub id: TaskId,
+}
+
+/// The task that a spawn binds to: an existing one by id, or a new one that
+/// the hub creates with `title`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskBinding {
+    Existing { channel: ChannelName, id: TaskId },
+    New { channel: ChannelName, title: String },
+}
+
+/// The arguments of one spawn, as the queue stores them. Two spawns with one
+/// key match when their specs are equal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnSpec {
+    pub channel: ChannelName,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub harness: Option<Harness>,
+    #[serde(default)]
+    pub host: Option<HostName>,
+    #[serde(default)]
+    pub name: Option<AgentId>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub role: Option<RoleName>,
+    /// The bound task, by its id once the hub has made or found it.
+    #[serde(default)]
+    pub task: Option<TaskRef>,
+    #[serde(default)]
+    pub stop_on_close: Option<bool>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+}
+
+/// One queued spawn, at the key `spawn.<agent>`. Written only by the hub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpawnRecord {
+    pub agent: AgentId,
+    pub spec: SpawnSpec,
+    /// The roles of the spawn at enqueue time, so a queue that outlives its
+    /// parent still places the agent the same way.
+    pub resolved: Resolved,
+    pub by: Sender,
+    pub queued_at: Timestamp,
+    pub priority: i32,
+    pub state: SpawnState,
+    #[serde(default)]
+    pub attempts: u32,
+    /// The error of the last rejected placement, for `spawn_queue`.
+    #[serde(default)]
+    pub last_reject: Option<String>,
+}
+
+/// Where a queued spawn is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnState {
+    Queued,
+    Launching,
+    Running,
+    Failed,
+    Cancelled,
 }
 
 /// The input of `task_create`.
@@ -412,11 +505,41 @@ pub struct TaskPatch {
     pub properties: Option<Map<String, Value>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "type", content = "id", rename_all = "snake_case")]
 pub enum Sender {
     Agent(AgentId),
     Human,
+}
+
+/// Events written before phase 3 name the sender as a bare agent id, so both
+/// `{"type":"agent","id":"w1"}` and `"w1"` parse.
+impl<'de> Deserialize<'de> for Sender {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "type", content = "id", rename_all = "snake_case")]
+        enum Tagged {
+            Agent(AgentId),
+            Human,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Tagged(Tagged),
+            Name(String),
+        }
+
+        match Repr::deserialize(d)? {
+            Repr::Tagged(Tagged::Agent(id)) => Ok(Self::Agent(id)),
+            Repr::Tagged(Tagged::Human) => Ok(Self::Human),
+            Repr::Name(name) if name == "human" => Ok(Self::Human),
+            Repr::Name(name) => name
+                .parse::<AgentId>()
+                .map(Self::Agent)
+                .map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 impl fmt::Display for Sender {

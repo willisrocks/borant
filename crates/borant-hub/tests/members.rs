@@ -70,6 +70,10 @@ async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str, harne
     fx.call(
         Some(owner),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "fix the build".into(),
             harness: Some(harness),

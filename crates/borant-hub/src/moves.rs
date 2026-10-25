@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, SessionEvent,
-    SessionEventBody,
+    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, Sender,
+    SessionEvent, SessionEventBody,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
@@ -620,6 +620,10 @@ impl Hub {
         };
         let agent = Agent {
             id: id.clone(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
             preferred_harness: harness,
             movable: repo.is_some(),
             repo,
@@ -647,7 +651,7 @@ impl Hub {
                 self.now(),
                 Severity::Info,
                 SwarmEventBody::AgentSpawned {
-                    by: by.clone(),
+                    by: Sender::Agent(by.clone()),
                     harness,
                 },
             )

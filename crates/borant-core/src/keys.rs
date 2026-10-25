@@ -28,7 +28,14 @@ pub fn elastic(host: &HostName) -> String {
     format!("elastic.{host}")
 }
 
+/// The queued spawn of one agent.
+pub fn spawn(agent: &AgentId) -> String {
+    format!("spawn.{agent}")
+}
+
 pub const ELASTIC_PREFIX: &str = "elastic.";
+
+pub const SPAWN_PREFIX: &str = "spawn.";
 
 /// What the month `<yyyy-mm>` has cost, all pools together.
 pub fn spend(month: &str) -> String {

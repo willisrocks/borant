@@ -72,7 +72,7 @@ impl Hub {
                     .await?;
                 Ok(Value::Null)
             }
-            CtlRequest::Call { actor, call } => self.call(mem, actor, call).await,
+            CtlRequest::Call { actor, key, call } => self.call(mem, actor, key, call).await,
             CtlRequest::MoveReady {
                 agent,
                 session,
@@ -125,6 +125,7 @@ impl Hub {
         &self,
         mem: &mut Memory,
         actor: Option<Actor>,
+        _key: Option<String>,
         call: ToolCall,
     ) -> Result<Value, ApiError> {
         if actor.is_none() && !call.allowed_for_human() {
@@ -306,12 +307,20 @@ impl Hub {
                 name,
                 model,
                 role,
+                // The key, the task binding, and the priority wait on the
+                // spawn queue.
+                ..
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 let id = self
                     .spawn(mem, &me, &channel, prompt, harness, host, name, model, role)
                     .await?;
                 Ok(json!({ "agent": id }))
+            }
+            ToolCall::Cancel { .. } => Err(ApiError::invalid("cancel is not built yet")),
+            ToolCall::SpawnQueue => Err(ApiError::invalid("spawn_queue is not built yet")),
+            ToolCall::AgentHistory { .. } => {
+                Err(ApiError::invalid("agent_history is not built yet"))
             }
             ToolCall::Move { selector, to } => {
                 let moved = self.move_agents(mem, &selector, to).await?;

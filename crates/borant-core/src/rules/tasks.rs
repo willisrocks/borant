@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::CoreError;
 use crate::ids::TaskId;
-use crate::model::{Task, TaskStatus};
+use crate::model::{CloseReason, Task, TaskStatus};
 
 /// Open tasks whose prerequisites are all closed. An unknown prerequisite
 /// counts as not closed.
@@ -85,6 +85,73 @@ pub fn check_close(tasks: &[Task], task: &Task) -> Result<(), CoreError> {
     }
 }
 
+/// What a close of a task should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    /// The task is open: close it.
+    Close,
+    /// It is already closed with this reason: return it as it is.
+    Repeat,
+    /// It is closed with another reason.
+    Conflict(CloseReason),
+}
+
+/// A retried close is idempotent: the same reason returns the task, and
+/// another reason is a conflict. A closed task without a reason counts as the
+/// same close, because a retry must not fail.
+pub fn close_repeat(task: &Task, reason: CloseReason) -> CloseOutcome {
+    if task.status != TaskStatus::Closed {
+        return CloseOutcome::Close;
+    }
+    match task.close_reason {
+        Some(had) if had != reason => CloseOutcome::Conflict(had),
+        _ => CloseOutcome::Repeat,
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+    use crate::model::CloseReason;
+    use crate::time::Timestamp;
+
+    fn task(status: TaskStatus, reason: Option<CloseReason>) -> Task {
+        Task {
+            id: TaskId::new(),
+            title: "t".into(),
+            body: String::new(),
+            status,
+            close_reason: reason,
+            close_message: None,
+            attention_msg: None,
+            claimed_by: None,
+            blocked_by: Vec::new(),
+            parent: None,
+            properties: Default::default(),
+            created: Timestamp(0),
+            updated: Timestamp(0),
+            create_key: None,
+        }
+    }
+
+    #[test]
+    fn close_repeat_is_idempotent_for_the_same_reason() {
+        let open = task(TaskStatus::InProgress, None);
+        assert_eq!(close_repeat(&open, CloseReason::Done), CloseOutcome::Close);
+
+        let done = task(TaskStatus::Closed, Some(CloseReason::Done));
+        assert_eq!(close_repeat(&done, CloseReason::Done), CloseOutcome::Repeat);
+        assert_eq!(
+            close_repeat(&done, CloseReason::Wontfix),
+            CloseOutcome::Conflict(CloseReason::Done)
+        );
+
+        // A close from a version without a reason still repeats.
+        let bare = task(TaskStatus::Closed, None);
+        assert_eq!(close_repeat(&bare, CloseReason::Done), CloseOutcome::Repeat);
+    }
+}
+
 /// Any change is allowed, except a change of a closed task. A close goes
 /// through `task_close`, not through a status change.
 pub fn check_status_change(from: TaskStatus, to: TaskStatus) -> Result<(), CoreError> {
@@ -114,6 +181,7 @@ mod tests {
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),
+            create_key: None,
         }
     }
 

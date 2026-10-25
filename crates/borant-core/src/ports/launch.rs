@@ -31,4 +31,9 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
     async fn is_running(&self, handle: &LaunchHandle) -> PortResult<bool>;
     /// The command that attaches a terminal to the session, if any.
     fn attach_command(&self, handle: &LaunchHandle) -> Option<Vec<String>>;
+    /// The last `lines` lines of the session screen, for a launch that did not
+    /// register. A launcher without a screen returns `None`.
+    fn capture(&self, _handle: &LaunchHandle, _lines: usize) -> Option<String> {
+        None
+    }
 }

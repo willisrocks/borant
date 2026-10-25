@@ -218,6 +218,7 @@ mod tests {
                     session: who.session,
                     token: who.token,
                 }),
+                key: None,
                 call,
             })
             .await
@@ -424,6 +425,7 @@ mod tests {
         assert_eq!(fx.kinds().await, vec!["host.registered"]);
         fx.req(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::Drain { host: name("a") },
         })
         .await
@@ -452,6 +454,10 @@ mod tests {
         fx.call(
             &owner,
             ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                priority: None,
                 channel,
                 prompt: "work".into(),
                 harness: None,
@@ -476,7 +482,7 @@ mod tests {
         );
         assert_eq!(spawned[0].agent, Some("helper".parse().unwrap()));
         assert!(
-            matches!(&spawned[0].body, SwarmEventBody::AgentSpawned { by, .. } if *by == owner.agent)
+            matches!(&spawned[0].body, SwarmEventBody::AgentSpawned { by, .. } if *by == borant_core::model::Sender::Agent(owner.agent.clone()))
         );
     }
 
@@ -491,6 +497,10 @@ mod tests {
         fx.call(
             &owner,
             ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                priority: None,
                 channel,
                 prompt: "work".into(),
                 harness: Some(Harness::ClaudeCode),
@@ -599,6 +609,10 @@ mod tests {
                 &borant_core::keys::agent(&id),
                 &Agent {
                     id: id.clone(),
+                    spawn_key: None,
+                    task: None,
+                    stop_on_close: false,
+                    retired: false,
                     preferred_harness: Harness::ClaudeCode,
                     repo: Some(repo()),
                     movable: true,
@@ -749,6 +763,10 @@ mod tests {
         fx.call(
             &owner,
             ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                priority: None,
                 channel,
                 prompt: "work".into(),
                 harness: Some(Harness::ClaudeCode),

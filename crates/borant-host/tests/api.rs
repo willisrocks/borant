@@ -205,6 +205,7 @@ async fn prepare_move_on_idle_session_sends_move_ready() {
         .hub
         .handle(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::ListAgents,
         })
         .await

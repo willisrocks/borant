@@ -369,7 +369,14 @@ impl Host {
                     actor.ok_or_else(|| ApiError::invalid("session_history needs a session"))?;
                 self.history(&a.agent, page, page_size).await
             }
-            call => self.hub(&CtlRequest::Call { actor, call }).await,
+            call => {
+                self.hub(&CtlRequest::Call {
+                    actor,
+                    key: None,
+                    call,
+                })
+                .await
+            }
         }
     }
 

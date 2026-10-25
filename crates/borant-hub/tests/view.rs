@@ -62,6 +62,7 @@ async fn view_after_two_heartbeats_has_both_hosts_and_the_inbox_stats() {
     let v = fx
         .req(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::View,
         })
         .await
@@ -125,6 +126,7 @@ async fn view_shows_a_host_without_stats() {
     let v = fx
         .req(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::View,
         })
         .await

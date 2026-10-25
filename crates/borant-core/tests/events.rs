@@ -98,7 +98,7 @@ fn every_kind() -> Vec<SwarmEventBody> {
             why: "moved".into(),
         },
         SwarmEventBody::AgentSpawned {
-            by: agent.clone(),
+            by: borant_core::model::Sender::Agent(agent.clone()),
             harness: Harness::Omp,
         },
         SwarmEventBody::AgentPruned {

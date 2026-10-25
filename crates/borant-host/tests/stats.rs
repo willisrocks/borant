@@ -21,6 +21,7 @@ async fn stats_heartbeat_carries_the_host_and_its_sessions() {
         .hub
         .handle(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::View,
         })
         .await

@@ -163,7 +163,12 @@ impl Fx {
             session: r.session,
             token: r.token,
         });
-        self.req(CtlRequest::Call { actor, call }).await
+        self.req(CtlRequest::Call {
+            actor,
+            key: None,
+            call,
+        })
+        .await
     }
 
     pub async fn heartbeat(&self, host: &str, regs: &[&Registered]) -> HeartbeatReply {

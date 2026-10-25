@@ -169,7 +169,9 @@ impl Hub {
             // `mem` itself, briefly, so the request does not hold it.
             CtlRequest::Call {
                 actor,
+                key: None,
                 call: ToolCall::PruneAgents { older_than_secs },
+                ..
             } => {
                 drop(mem);
                 let result = async {
@@ -208,7 +210,9 @@ impl Hub {
             // the stats from memory itself, briefly.
             CtlRequest::Call {
                 actor,
+                key: None,
                 call: ToolCall::View,
+                ..
             } => {
                 drop(mem);
                 let result = async {

@@ -21,6 +21,10 @@ fn without(value: &impl serde::Serialize, field: &str) -> serde_json::Value {
 fn agent() -> Agent {
     Agent {
         id: "worker-1".parse().unwrap(),
+        spawn_key: None,
+        task: None,
+        stop_on_close: false,
+        retired: false,
         preferred_harness: Harness::Fake,
         channels: vec!["work-api".parse::<ChannelName>().unwrap()],
         created: Timestamp(1_000),

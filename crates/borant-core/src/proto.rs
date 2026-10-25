@@ -13,7 +13,7 @@ use crate::ids::{
 };
 use crate::model::{
     CloseReason, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason, NewTask, Project,
-    RepoInfo, Target, TaskPatch, UsageWindow,
+    RepoInfo, Target, TaskBinding, TaskPatch, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -340,6 +340,37 @@ pub enum ToolCall {
         /// The role from `hub.toml`, for its harness, model, and placement.
         #[serde(default)]
         role: Option<RoleName>,
+        /// An idempotency key: a second spawn with the same key and the same
+        /// arguments returns the first agent.
+        #[serde(default)]
+        key: Option<String>,
+        /// The task that the worker is bound to.
+        #[serde(default)]
+        task: Option<TaskBinding>,
+        /// Stop the session when the bound task closes. True by default for a
+        /// bound worker.
+        #[serde(default)]
+        stop_on_close: Option<bool>,
+        /// Higher goes first in the spawn queue.
+        #[serde(default)]
+        priority: Option<i32>,
+    },
+    /// Stops an agent and cancels its queued spawn. A repeat succeeds.
+    Cancel {
+        agent: AgentId,
+        /// Close the bound task with this reason, when it is open.
+        #[serde(default)]
+        close_task: Option<CloseReason>,
+    },
+    /// The queued spawns, in the order that they will be placed.
+    SpawnQueue,
+    /// The session log of any agent, for `borant logs`.
+    AgentHistory {
+        agent: AgentId,
+        #[serde(default)]
+        page: usize,
+        #[serde(default = "default_page_size")]
+        page_size: usize,
     },
     SessionHistory {
         #[serde(default)]
@@ -405,7 +436,6 @@ impl ToolCall {
                 | Self::ChannelJoin { .. }
                 | Self::ChannelLeave { .. }
                 | Self::TaskClaim { .. }
-                | Self::Spawn { .. }
                 | Self::SessionHistory { .. }
         )
     }
@@ -434,6 +464,10 @@ pub enum CtlRequest {
     },
     Call {
         actor: Option<Actor>,
+        /// The idempotency key of a spawn or a task create. A retry with the
+        /// same key and the same arguments returns the first result.
+        #[serde(default)]
+        key: Option<String>,
         call: ToolCall,
     },
     MoveReady {
