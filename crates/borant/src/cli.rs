@@ -45,8 +45,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: Option<HubCmd>,
     },
-    /// Run the host daemon.
-    Host,
+    /// Run the host daemon, or delete the record of an offline host.
+    Host {
+        #[command(subcommand)]
+        cmd: Option<HostCmd>,
+    },
     /// Check the readiness of this host: the daemon, NATS, the harnesses, the
     /// launcher, the disk, and the exec plugins. Read-only. Exits 1 when a
     /// check fails.
@@ -408,6 +411,17 @@ pub enum HubCmd {
     Import { file: PathBuf },
     /// Export, copy to an SSH host, and import there.
     Move { ssh_host: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HostCmd {
+    /// Delete the record of an offline host that runs no agent, so `borant
+    /// hosts` stops naming a box that is gone. Only a person may run it: move
+    /// the agents away and stop its daemon first.
+    Remove {
+        /// The host, for example borant-3.
+        host: HostName,
+    },
 }
 
 pub(crate) fn client() -> LocalClient {
@@ -1192,6 +1206,12 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             print_prune(&v);
         }
         Command::Hosts => pretty(&call(&c, ToolCall::ListHosts).await?),
+        Command::Host {
+            cmd: Some(HostCmd::Remove { host }),
+        } => {
+            call(&c, ToolCall::RemoveHost { host: host.clone() }).await?;
+            println!("removed {host}");
+        }
         Command::Pin { agent, off } => pretty(&call(&c, ToolCall::Pin { agent, on: !off }).await?),
         Command::Tasks { channel, ready } => pretty(
             &call(
@@ -1470,7 +1490,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. }
-        | Command::Host
+        | Command::Host { cmd: None }
         | Command::Doctor { .. }
         | Command::Mcp
         | Command::Hook { .. } => {
@@ -1619,6 +1639,7 @@ mod tests {
             "borant agents prune --dry-run",
             "borant agents prune --dry-run --older-than-hours 48",
             "borant hosts",
+            "borant host remove borant-3",
             "borant pin w1",
             "borant pin w1 --off",
             "borant tasks api --ready",

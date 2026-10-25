@@ -2,7 +2,9 @@ mod common;
 
 use borant_core::model::{Harness, MoveReason, NewTask, Target, Task, TaskStatus};
 use borant_core::ports::MessageBus;
-use borant_core::proto::{CtlRequest, HostCommand, MoveSelector, MoveTarget, ToolCall};
+use borant_core::proto::{
+    ApiErrorCode, CtlRequest, HostCommand, MoveSelector, MoveTarget, ToolCall,
+};
 use borant_core::{ChannelName, subjects, testing};
 use common::{Fx, name, next_cmd};
 
@@ -408,6 +410,103 @@ async fn undrain_of_a_live_host_is_a_no_op() {
         .await
         .expect_err("no such host");
     assert!(err.to_string().contains("no host h9"), "{err}");
+}
+
+/// The record that a deleted box left behind goes away, so `borant hosts` and
+/// the live view stop naming it.
+#[tokio::test]
+async fn remove_offline_host_deletes_its_record() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.host("h2", &[Harness::Fake]).await;
+    // Both hosts go silent, past the lease, so neither is online.
+    fx.advance(60);
+    let v = fx
+        .call(None, ToolCall::RemoveHost { host: name("h2") })
+        .await
+        .unwrap();
+    assert_eq!(v["host"], "h2");
+    let hosts = fx.call(None, ToolCall::ListHosts).await.unwrap();
+    let names: Vec<&str> = hosts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["host"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["h1"]);
+    let view = fx.call(None, ToolCall::View).await.unwrap();
+    let names: Vec<&str> = view["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["info"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["h1"]);
+}
+
+#[tokio::test]
+async fn remove_online_host_is_refused() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let err = fx
+        .call(None, ToolCall::RemoveHost { host: name("h1") })
+        .await
+        .expect_err("a live host keeps its record");
+    assert_eq!(err.code, ApiErrorCode::Invalid, "{err:?}");
+    assert!(
+        err.to_string()
+            .contains("host h1 is online; drain it and stop its daemon first"),
+        "{err}"
+    );
+    let hosts = fx.call(None, ToolCall::ListHosts).await.unwrap();
+    assert_eq!(hosts.as_array().unwrap().len(), 1, "the record stays");
+}
+
+#[tokio::test]
+async fn remove_host_with_live_lease_is_refused() {
+    let fx = Fx::new();
+    fx.host("h2", &[Harness::Fake]).await;
+    let _w = fx.register("h2", Some("w"), None).await;
+    // The host is past its lease, but its agent still holds the lease.
+    fx.advance(60);
+    let err = fx
+        .call(None, ToolCall::RemoveHost { host: name("h2") })
+        .await
+        .expect_err("a host with an agent keeps its record");
+    assert_eq!(err.code, ApiErrorCode::Invalid, "{err:?}");
+    assert!(
+        err.to_string().contains("host h2 still holds agents w"),
+        "{err}"
+    );
+    let hosts = fx.call(None, ToolCall::ListHosts).await.unwrap();
+    assert_eq!(hosts.as_array().unwrap().len(), 1, "the record stays");
+}
+
+#[tokio::test]
+async fn remove_unknown_host_is_not_found() {
+    let fx = Fx::new();
+    let err = fx
+        .call(None, ToolCall::RemoveHost { host: name("h9") })
+        .await
+        .expect_err("no such host");
+    assert_eq!(err.code, ApiErrorCode::NotFound, "{err:?}");
+    assert!(err.to_string().contains("no host h9"), "{err}");
+}
+
+#[tokio::test]
+async fn agent_may_not_remove_a_host() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.host("h2", &[Harness::Fake]).await;
+    let owner = fx.register("h1", Some("boss"), None).await;
+    fx.advance(60);
+    let err = fx
+        .call(Some(&owner), ToolCall::RemoveHost { host: name("h2") })
+        .await
+        .expect_err("only a person removes a host");
+    assert!(err.to_string().contains("only a human"), "{err}");
+    let hosts = fx.call(None, ToolCall::ListHosts).await.unwrap();
+    assert_eq!(hosts.as_array().unwrap().len(), 2, "the record stays");
 }
 
 #[tokio::test]
