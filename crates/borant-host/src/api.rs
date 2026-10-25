@@ -24,13 +24,13 @@ struct ApiFail(ApiError);
 
 impl IntoResponse for ApiFail {
     fn into_response(self) -> Response {
-        let status = match self.0.code {
+        let status = match &self.0.code {
             ApiErrorCode::Invalid => StatusCode::BAD_REQUEST,
             ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
             ApiErrorCode::Conflict | ApiErrorCode::StaleToken => StatusCode::CONFLICT,
             ApiErrorCode::Denied => StatusCode::FORBIDDEN,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiErrorCode::Internal | ApiErrorCode::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(Reply::Error(self.0))).into_response()
     }
