@@ -10,7 +10,7 @@ use borant_core::{AgentId, FencingToken, HostName, SessionId, keys};
 use serde_json::{Value, json};
 
 use crate::store::Doc;
-use crate::{Hub, Memory};
+use crate::{Hub, IdleReport, Memory};
 
 /// How often the hub reads the pending messages of an idle expired agent.
 const WAKE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -56,6 +56,17 @@ impl Hub {
     ) -> Result<HeartbeatReply, ApiError> {
         let now = self.now();
         mem.hosts_seen.insert(host.clone(), now);
+        for s in sessions {
+            mem.idle.insert(
+                s.agent.clone(),
+                IdleReport {
+                    session: s.session,
+                    host: host.clone(),
+                    since: s.idle_since,
+                    at: now,
+                },
+            );
+        }
         let mut lost = Vec::new();
         let mut renewed = Vec::new();
         for s in sessions {
@@ -231,6 +242,8 @@ impl Hub {
         mem.idle_checked.remove(&agent_id);
         mem.wake_checked.remove(&agent_id);
         mem.pending_moves.remove(&agent_id);
+        mem.park_sent.remove(&agent_id);
+        mem.idle.remove(&agent_id);
         tracing::info!(agent = %agent_id, session = %r.session, token = new_lease.token.0, "session registered");
         Ok(Registered {
             agent: agent_id,
@@ -258,9 +271,15 @@ impl Hub {
             && doc.value.token == token
         {
             released = true;
-            self.store
-                .put(&key, &lease::release(&doc.value, now), Some(doc.revision))
-                .await?;
+            // A park marks the release in the same write, so a message that
+            // waits in the inbox wakes the agent again.
+            let next = if reason == "park" {
+                lease::park(&doc.value, now)
+            } else {
+                lease::release(&doc.value, now)
+            };
+            self.store.put(&key, &next, Some(doc.revision)).await?;
+            mem.idle.remove(agent);
             let mut a = self.agent(agent).await?;
             a.value.session = None;
             self.store.put(&a.key, &a.value, Some(a.revision)).await?;
@@ -360,7 +379,7 @@ impl Hub {
             return Ok(());
         };
         let since = match doc.value.state {
-            LeaseState::Expired { since, .. } | LeaseState::Released { since } => since,
+            LeaseState::Expired { since, .. } | LeaseState::Released { since, .. } => since,
             _ => return Ok(()),
         };
         let Ok(agent) = self.agent(&agent_id).await else {
@@ -387,6 +406,9 @@ impl Hub {
         }
 
         let expired = matches!(doc.value.state, LeaseState::Expired { .. });
+        // A parked agent is asleep, not gone: a wake message or a claim wakes
+        // it. A plain release (an ordinary session end) stays asleep.
+        let parked = matches!(doc.value.state, LeaseState::Released { parked: true, .. });
         let pending = mem.pending_moves.get(&agent_id).cloned();
         if quiet || now.since(since) < cfg.grace {
             return Ok(());
@@ -397,7 +419,7 @@ impl Hub {
                 .await?;
             return Ok(());
         }
-        if !expired || !agent.movable || agent.channels.is_empty() {
+        if !(expired || parked) || !agent.movable || agent.channels.is_empty() {
             return Ok(());
         }
         let mut needs = !mem.claims_released.contains(&agent_id)
@@ -418,7 +440,10 @@ impl Hub {
                     .any(|e| wake::should_wake(e, &agent_id));
             }
         }
-        if !needs && mem.idle_checked.insert(agent_id.clone()) {
+        // The log check recovers a lost session's undelivered replies. A
+        // parked session ended cleanly, so only a claim or a wake message
+        // wakes it.
+        if !needs && expired && mem.idle_checked.insert(agent_id.clone()) {
             let events: Vec<_> = self
                 .sessions
                 .read(&agent_id)

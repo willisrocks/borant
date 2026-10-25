@@ -130,7 +130,7 @@ async fn kept_reason(
 
 fn lease_since(l: &Lease) -> Option<&Timestamp> {
     match &l.state {
-        LeaseState::Expired { since, .. } | LeaseState::Released { since } => Some(since),
+        LeaseState::Expired { since, .. } | LeaseState::Released { since, .. } => Some(since),
         LeaseState::Held { .. } | LeaseState::Reserved { .. } => None,
     }
 }

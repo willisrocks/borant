@@ -63,6 +63,11 @@ impl Fx {
     }
 
     pub async fn host(&self, n: &str, harnesses: &[Harness]) {
+        self.pool_host(n, harnesses, None).await;
+    }
+
+    /// Registers a host that belongs to `pool`, when it is one.
+    pub async fn pool_host(&self, n: &str, harnesses: &[Harness], pool: Option<&str>) {
         self.req(CtlRequest::RegisterHost {
             info: HostInfo {
                 name: name(n),
@@ -73,7 +78,7 @@ impl Fx {
                 draining: false,
                 ssh: None,
                 members: Default::default(),
-                pool: None,
+                pool: pool.map(|p| p.parse().unwrap()),
                 tags: Vec::new(),
             },
         })
@@ -124,12 +129,24 @@ impl Fx {
     }
 
     pub async fn heartbeat(&self, host: &str, regs: &[&Registered]) -> HeartbeatReply {
+        let idle: Vec<_> = regs.iter().map(|r| (*r, None)).collect();
+        self.heartbeat_idle(host, &idle).await
+    }
+
+    /// A heartbeat that also reports the idle signal of each session: the end
+    /// of its last turn, or `None` while it is in a turn.
+    pub async fn heartbeat_idle(
+        &self,
+        host: &str,
+        regs: &[(&Registered, Option<Timestamp>)],
+    ) -> HeartbeatReply {
         let sessions = regs
             .iter()
-            .map(|r| SessionLeaseRef {
+            .map(|(r, idle_since)| SessionLeaseRef {
                 session: r.session,
                 agent: r.agent.clone(),
                 token: r.token,
+                idle_since: *idle_since,
             })
             .collect();
         let v = self

@@ -80,6 +80,7 @@ impl Host {
                 }
                 self.end_session(session, "stopped by the hub").await;
             }
+            HostCommand::Park { session } => self.park(session).await,
         }
     }
 
