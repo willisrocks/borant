@@ -320,6 +320,7 @@ async fn parent_cycle_is_rejected() {
 
 /// The phase 6 calls exist so that the CLI and the MCP server can name them;
 /// the hub answers each `Invalid "not built yet"` until its task lands.
+/// `wait` is built (crates/borant-hub/tests/waits.rs).
 #[tokio::test]
 async fn the_durable_calls_are_not_built_yet() {
     use borant_core::proto::PauseSelector;
@@ -327,12 +328,6 @@ async fn the_durable_calls_are_not_built_yet() {
     let fx = Fx::new();
     let owner = with_channel(&fx).await;
     for call in [
-        ToolCall::Wait {
-            channel: api(),
-            task: TaskId::new(),
-            until: vec![TaskStatus::Closed],
-            timeout_secs: 60,
-        },
         ToolCall::Inbox,
         ToolCall::Answer {
             channel: api(),

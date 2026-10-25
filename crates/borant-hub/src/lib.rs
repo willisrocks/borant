@@ -19,6 +19,7 @@ mod retire;
 mod store;
 mod tasks;
 mod view;
+mod waits;
 
 pub use elastic::ElasticConfig;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -290,7 +291,9 @@ impl Hub {
                 .map(|_| ()),
         };
         parked?;
-        // The alerts see what this tick changed, so they run last.
+        // The waits of the agents, then the alerts that see what the tick
+        // changed.
+        self.tick_waits().await?;
         self.tick_alerts().await
     }
 

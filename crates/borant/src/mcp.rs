@@ -190,6 +190,17 @@ pub struct History {
     pub page_size: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Wait {
+    pub channel: String,
+    pub task: String,
+    /// Wait until the task reaches one of these states: open, in_progress,
+    /// needs_human, stuck, closed.
+    pub until: Vec<String>,
+    /// The limit of the wait in seconds, at most 86400 (one day).
+    pub timeout_secs: u64,
+}
+
 fn target(to: &str) -> Value {
     match to.strip_prefix('#') {
         Some(c) => json!({"type": "channel", "id": c}),
@@ -409,6 +420,14 @@ impl BorantMcp {
             .await
     }
 
+    #[tool(
+        description = "Wait until a task reaches one of the states you name. The hub wakes you with a direct message when it does, or when the wait times out, also after a hub restart."
+    )]
+    async fn wait(&self, Parameters(a): Parameters<Wait>) -> Result<String, String> {
+        self.forward(json!({"tool": "wait", "channel": a.channel, "task": a.task, "until": a.until, "timeout_secs": a.timeout_secs}))
+            .await
+    }
+
     #[tool(description = "Show the task schema of a channel.")]
     async fn schema_get(&self, Parameters(a): Parameters<ChannelRef>) -> Result<String, String> {
         self.forward(json!({"tool": "schema_get", "channel": a.channel}))
@@ -501,6 +520,7 @@ mod tests {
                 "task_get",
                 "task_list",
                 "task_update",
+                "wait",
                 "whoami",
             ]
         );
@@ -510,6 +530,32 @@ mod tests {
     fn targets_parse() {
         assert_eq!(target("#api"), json!({"type": "channel", "id": "api"}));
         assert_eq!(target("w1"), json!({"type": "agent", "id": "w1"}));
+    }
+
+    #[test]
+    fn wait_passes_the_states_and_the_timeout() {
+        let call: ToolCall = serde_json::from_value(json!({
+            "tool": "wait", "channel": "api", "task": "01JABCDEFGHJKMNPQRSTVWXYZ0",
+            "until": ["closed", "stuck"], "timeout_secs": 600,
+        }))
+        .unwrap();
+        match call {
+            ToolCall::Wait {
+                until,
+                timeout_secs,
+                ..
+            } => {
+                assert_eq!(
+                    until,
+                    vec![
+                        borant_core::model::TaskStatus::Closed,
+                        borant_core::model::TaskStatus::Stuck
+                    ]
+                );
+                assert_eq!(timeout_secs, 600);
+            }
+            other => panic!("not a wait: {other:?}"),
+        }
     }
 
     #[test]
