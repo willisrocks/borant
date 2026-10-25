@@ -149,7 +149,7 @@ impl Hub {
 
     /// One direct message from a person to an agent. The agent's delivery
     /// wakes it if it is idle, as `borant send` does.
-    async fn tell(&self, to: &AgentId, text: &str) -> Result<(), ApiError> {
+    pub(crate) async fn tell(&self, to: &AgentId, text: &str) -> Result<(), ApiError> {
         let envelope = Envelope {
             id: MessageId::new(),
             from: Sender::Human,

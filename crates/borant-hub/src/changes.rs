@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::{Channel, Envelope, EnvelopeKind, Sender, Target, Task, TaskStatus};
+use borant_core::model::{Channel, Task, TaskStatus};
 use borant_core::ports::ChangeRequests;
 use borant_core::ports::PortErrorKind;
 use borant_core::ports::changes::{ChangeState, ChangeStatus, CheckState, ReviewState};
 use borant_core::proto::ApiError;
-use borant_core::{AgentId, TaskId, keys, subjects};
+use borant_core::{AgentId, TaskId, keys};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -159,7 +159,7 @@ impl Hub {
                     (Some(f), false) => format!("checks failed ({})", f.join(", ")),
                     (None, _) => "changes were requested".to_owned(),
                 };
-                self.tell(
+                self.say(
                     worker,
                     &format!("PR {url} at {}: {what}. Fix it, then push.", short(head)),
                 )
@@ -170,7 +170,7 @@ impl Hub {
         // The owner hears that the checks pass, once per head.
         let pass = matches!(status.checks, CheckState::Pass { .. });
         if !watched.told_green && pass && status.state == ChangeState::Open {
-            self.tell(
+            self.say(
                 &channel.owner,
                 &format!("PR {url} green at {}", short(head)),
             )
@@ -183,7 +183,7 @@ impl Hub {
                 ChangeState::Merged => "merged",
                 _ => "closed without a merge",
             };
-            self.tell(
+            self.say(
                 &channel.owner,
                 &format!("PR {url} {what} at {}", short(head)),
             )
@@ -211,20 +211,11 @@ impl Hub {
         Ok(())
     }
 
-    /// One direct message from the hub to an agent.
-    async fn tell(&self, agent: &AgentId, text: &str) {
-        let env = Envelope {
-            id: borant_core::MessageId::new(),
-            from: Sender::Human,
-            to: Target::Agent(agent.clone()),
-            kind: EnvelopeKind::Direct,
-            text: text.to_owned(),
-            urgent: false,
-            event: None,
-            sent: self.now(),
-        };
-        if let Err(e) = self.bus.publish(&subjects::agent(agent), &env).await {
-            tracing::warn!(%agent, "cannot deliver a PR watch message: {e}");
+    /// One direct message from the hub; a failed one is a warn, not a failed
+    /// pass.
+    async fn say(&self, agent: &AgentId, text: &str) {
+        if let Err(e) = self.tell(agent, text).await {
+            tracing::warn!(%agent, "cannot deliver a PR watch message: {}", e.message);
         }
     }
 
