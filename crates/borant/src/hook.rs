@@ -49,6 +49,19 @@ pub fn deny_output(reason: &str) -> Value {
     })
 }
 
+/// The deny reply for a paused session, or `None` when every tool may run.
+///
+/// A pinned agent keeps every tool during a pause: the hub never starts a
+/// second session of a pinned agent, so fencing does not need to stop it. A
+/// movable session keeps the full block, because a takeover may start it
+/// elsewhere.
+pub fn pause_denial(s: &LocalSession) -> Option<Value> {
+    match &s.fenced {
+        Some(reason) if !s.pinned => Some(deny_output(reason)),
+        _ => None,
+    }
+}
+
 /// The `ToolCall` and `ToolResult` events of a `PostToolUse` input.
 pub fn tool_events(input: &Value) -> (LocalEvent, LocalEvent) {
     let name = input["tool_name"].as_str().unwrap_or("unknown").to_owned();
@@ -173,9 +186,9 @@ pub async fn run(event: &str) -> i32 {
                 .client
                 .get::<LocalSession>(&format!("/v1/sessions/{id}"), CALL)
                 .await
-                && let Some(reason) = s.fenced
+                && let Some(deny) = pause_denial(&s)
             {
-                print(&deny_output(&reason));
+                print(&deny);
             }
             0
         }
@@ -403,6 +416,39 @@ mod tests {
         assert_eq!(
             deny_output("moved"),
             json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "moved"}})
+        );
+    }
+
+    fn paused(pinned: bool) -> LocalSession {
+        LocalSession {
+            session: borant_core::SessionId::new(),
+            agent: Some("w1".parse().unwrap()),
+            host: "h1".parse().unwrap(),
+            state: borant_core::proto::LocalState::Attached,
+            movable: true,
+            channels: Vec::new(),
+            fenced: Some(
+                "The Borant hub is unreachable, so tools are paused until it returns.".into(),
+            ),
+            pinned,
+        }
+    }
+
+    #[test]
+    fn hook_allows_a_paused_pinned_session() {
+        assert_eq!(pause_denial(&paused(true)), None);
+        // A pinned session that is not fenced gets nothing either.
+        let mut s = paused(true);
+        s.fenced = None;
+        assert_eq!(pause_denial(&s), None);
+    }
+
+    #[test]
+    fn hook_blocks_a_paused_movable_session() {
+        let s = paused(false);
+        assert_eq!(
+            pause_denial(&s),
+            Some(deny_output(s.fenced.as_deref().unwrap()))
         );
     }
 
