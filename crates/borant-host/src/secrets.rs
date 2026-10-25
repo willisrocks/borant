@@ -13,7 +13,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use borant_core::AgentId;
-use borant_core::model::Harness;
 use borant_core::ports::PortError;
 use borant_core::ports::secrets::{Bundle, BundleName, MemberName, Secret, SecretRef};
 use borant_core::proto::LaunchOrder;
@@ -92,13 +91,25 @@ impl Host {
         let Some(secrets) = &self.inner.cfg.secrets else {
             return Ok(None);
         };
-        // The harness defaults first, then the bundles of the collection and
-        // the role, so a later bundle wins over an earlier one.
-        let bundles = launch_bundles(secrets, o.harness, &o.bundles);
+        // The harness defaults, then the bundles of the collection and the
+        // role, so a later bundle wins over an earlier one.
+        let defaults = secrets.bundles_for(o.harness);
+        let bundles = secrets.launch_bundles(o.harness, &o.bundles);
+        // The names only: values never reach a log.
+        tracing::debug!(
+            agent = %o.agent,
+            defaults = ?defaults,
+            bundles = ?bundles,
+            "the bundles of the launch"
+        );
         if bundles.is_empty() {
             return Ok(None);
         }
         let planned = plan(secrets, &bundles, &o.members)?;
+        if planned.vars.is_empty() && planned.files.is_empty() && planned.pre.is_empty() {
+            // Nothing to resolve and nothing to run: the launch runs as today.
+            return Ok(None);
+        }
         let values = resolve(secrets, &planned.by_store).await?;
         let dir = self.secret_dir(&o.agent);
         // A failure after the `env` file is written must not leave values on
@@ -326,25 +337,6 @@ fn default_secrets_root() -> PathBuf {
     }
 }
 
-/// The bundles of a launch: the harness defaults first, then the bundles of
-/// the collection and the role, so a later bundle wins on the same variable.
-/// A bundle that `host.toml` does not define is left out.
-fn launch_bundles(
-    secrets: &HostSecrets,
-    harness: Harness,
-    extra: &[BundleName],
-) -> Vec<BundleName> {
-    let mut out = secrets.bundles_for(harness);
-    for bundle in extra {
-        if !secrets.bundles.contains_key(bundle) {
-            continue;
-        }
-        out.retain(|b| b != bundle);
-        out.push(bundle.clone());
-    }
-    out
-}
-
 /// The values, files, and pre commands of one launch, before any store runs.
 #[derive(Debug, Default)]
 struct Planned {
@@ -376,10 +368,14 @@ fn plan(
         }
         let mut refs: Vec<SecretRef> = vars.values().cloned().collect();
         refs.extend(bundle.files.values().cloned());
-        let asked = planned.by_store.entry(bundle.store.clone()).or_default();
-        for r in refs {
-            if !asked.contains(&r) {
-                asked.push(r);
+        // A bundle with nothing to resolve needs no store: a collection that
+        // names an empty bundle still launches.
+        if !refs.is_empty() {
+            let asked = planned.by_store.entry(bundle.store.clone()).or_default();
+            for r in refs {
+                if !asked.contains(&r) {
+                    asked.push(r);
+                }
             }
         }
         planned.vars.extend(vars);
