@@ -55,13 +55,41 @@ pub struct Nats {
 /// Connects in the background. The call returns at once, and port calls
 /// fail with `Unavailable` until the connection is up.
 pub async fn connect(cfg: &NatsConfig) -> Result<Nats, PortError> {
+    let opts = options(cfg).await?.retry_on_initial_connect();
+    let client = opts
+        .connect(urls(cfg))
+        .await
+        .map_err(|e| PortError::unavailable(format!("connect to NATS: {e}")))?;
+    Ok(nats(client, cfg))
+}
+
+/// Connects once, and returns the error of the first attempt. `connect`
+/// retries in the background, so a refused login there only shows as a
+/// request that times out; a caller that must tell a server which refuses
+/// the credentials from one which does not answer, such as `borant doctor`,
+/// calls this instead.
+pub async fn connect_once(cfg: &NatsConfig) -> Result<Nats, PortError> {
+    let opts = options(cfg).await?;
+    let client = opts.connect(urls(cfg)).await.map_err(|e| {
+        let message = format!("connect to NATS: {e}");
+        if e.kind() == async_nats::ConnectErrorKind::AuthorizationViolation {
+            PortError::new(PortErrorKind::Denied, message)
+        } else {
+            PortError::unavailable(message)
+        }
+    })?;
+    Ok(nats(client, cfg))
+}
+
+/// The options of a connection: the name, the ping interval, the request
+/// timeout, TLS, and the credentials of `cfg`.
+async fn options(cfg: &NatsConfig) -> Result<async_nats::ConnectOptions, PortError> {
     let mut opts = async_nats::ConnectOptions::new()
         .name(if cfg.name.is_empty() {
             "borant"
         } else {
             &cfg.name
         })
-        .retry_on_initial_connect()
         // The client drops a connection after two missed pings. With the
         // default of 60 s, a host that was cut off for a minute or two keeps
         // its dead TCP connection, and TCP retransmit backoff then delays
@@ -79,21 +107,26 @@ pub async fn connect(cfg: &NatsConfig) -> Result<Nats, PortError> {
     if let (Some(u), Some(p)) = (&cfg.user, &cfg.password) {
         opts = opts.user_and_password(u.clone(), p.clone());
     }
-    let urls = if cfg.urls.is_empty() {
+    Ok(opts)
+}
+
+/// The servers of `cfg`, or the local one when it names none.
+fn urls(cfg: &NatsConfig) -> Vec<String> {
+    if cfg.urls.is_empty() {
         vec!["nats://127.0.0.1:4222".to_owned()]
     } else {
         cfg.urls.clone()
-    };
-    let client = opts
-        .connect(urls)
-        .await
-        .map_err(|e| PortError::unavailable(format!("connect to NATS: {e}")))?;
+    }
+}
+
+/// The adapters of a connected client.
+fn nats(client: async_nats::Client, cfg: &NatsConfig) -> Nats {
     let js = jetstream::new(client.clone());
-    Ok(Nats {
+    Nats {
         client,
         js,
         max_age: cfg.max_age.unwrap_or(Duration::from_secs(30 * 24 * 3600)),
-    })
+    }
 }
 
 impl Nats {
