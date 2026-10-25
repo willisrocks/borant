@@ -10,11 +10,22 @@ use borant_core::ports::LaunchHandle;
 use borant_core::ports::secrets::{BundleName, MemberName};
 use borant_core::proto::{ApiError, Registered};
 use borant_core::{AgentId, ChannelName, CollectionName, RoleName, SessionId};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{Host, LocalSess, checkpoint, pid_alive};
+
+/// The limit of one step of the restore. A session log over a slow link, or a
+/// secret store that does not answer, must not hold the host offline: past
+/// this, the session goes on without the step and a warn names it.
+const RESTORE_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A restore step that takes longer than this logs at info, so a slow restart
+/// names its slow step.
+const RESTORE_SLOW_STEP: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Saved {
@@ -100,7 +111,39 @@ impl Host {
         self.state().restored
     }
 
+    /// Runs one step of the restore under `RESTORE_STEP_TIMEOUT` and logs how
+    /// long it took: at info past `RESTORE_SLOW_STEP`, else at debug. A step
+    /// that does not answer is dropped with a warn that names it, so a slow
+    /// session log or secret store cannot hold the host offline.
+    async fn step<F, T>(&self, name: &'static str, agent: Option<AgentId>, f: F) -> Option<T>
+    where
+        F: Future<Output = T>,
+    {
+        let started = std::time::Instant::now();
+        match tokio::time::timeout(RESTORE_STEP_TIMEOUT, f).await {
+            Ok(value) => {
+                let took = started.elapsed();
+                if took >= RESTORE_SLOW_STEP {
+                    tracing::info!(step = name, agent = ?agent, ms = took.as_millis(), "slow restore step");
+                } else {
+                    tracing::debug!(step = name, agent = ?agent, ms = took.as_millis(), "restore step");
+                }
+                Some(value)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    step = name,
+                    agent = ?agent,
+                    timeout = ?RESTORE_STEP_TIMEOUT,
+                    "restore step did not finish, the session goes on without it"
+                );
+                None
+            }
+        }
+    }
+
     async fn restore_table(&self) {
+        let started = std::time::Instant::now();
         let Ok(bytes) = std::fs::read(self.table_path()) else {
             return;
         };
@@ -111,15 +154,21 @@ impl Host {
                 return;
             }
         };
-        let mut restored = 0;
+        let mut jobs = Vec::new();
         for s in saved {
             if !s.pid.is_some_and(pid_alive) {
                 continue;
             }
-            let repo =
-                checkpoint::detect(&s.cwd, self.inner.cfg.checkpoint_remote.as_deref()).await;
-            let cancel = CancellationToken::new();
             let agent = s.reg.as_ref().map(|r| r.agent.clone());
+            let repo = self
+                .step(
+                    "detect",
+                    agent.clone(),
+                    checkpoint::detect(&s.cwd, self.inner.cfg.checkpoint_remote.as_deref()),
+                )
+                .await
+                .flatten();
+            let cancel = CancellationToken::new();
             let bundles = s.bundles.clone();
             let members = s.members.clone();
             self.state().sessions.insert(
@@ -159,34 +208,51 @@ impl Host {
                     secrets_dir: s.secrets_dir,
                 },
             );
-            // The values of a live session are still in its directory, so a
-            // restart resolves them again: the session log must keep redacting
-            // them, not only the patterns.
-            if let Some(agent) = &agent
-                && !bundles.is_empty()
-            {
-                self.restore_redactor(agent, &bundles, &members).await;
-            }
-            match agent {
-                Some(agent) => {
-                    self.load_log(&agent, s.id).await;
-                    tokio::spawn(self.clone().inbox_loop(agent, s.id, cancel));
-                }
-                None => {
-                    let host = self.clone();
-                    let id = s.id;
-                    tokio::spawn(async move {
-                        while host.state().sessions.contains_key(&id) && !host.try_attach(id).await
-                        {
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        }
-                    });
-                }
-            }
-            restored += 1;
+            jobs.push((s.id, agent, bundles, members, cancel));
         }
+        let restored = jobs.len();
+        // The steps that use the network run together: two sessions on one
+        // host must not add their waits.
+        let mut waits = FuturesUnordered::new();
+        for (id, agent, bundles, members, cancel) in jobs {
+            let Some(agent) = agent else {
+                let host = self.clone();
+                tokio::spawn(async move {
+                    while host.state().sessions.contains_key(&id) && !host.try_attach(id).await {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                });
+                continue;
+            };
+            let host = self.clone();
+            waits.push(async move {
+                // The values of a live session are still in its directory, so
+                // a restart resolves them again: the session log must keep
+                // redacting them, not only the patterns.
+                if !bundles.is_empty() {
+                    host.step(
+                        "redactor",
+                        Some(agent.clone()),
+                        host.restore_redactor(&agent, &bundles, &members),
+                    )
+                    .await;
+                }
+                host.step(
+                    "session log",
+                    Some(agent.clone()),
+                    host.load_log(&agent, id),
+                )
+                .await;
+                tokio::spawn(host.inbox_loop(agent, id, cancel));
+            });
+        }
+        while waits.next().await.is_some() {}
         if restored > 0 {
-            tracing::info!(restored, "restored local sessions");
+            tracing::info!(
+                restored,
+                ms = started.elapsed().as_millis(),
+                "restored local sessions"
+            );
         }
         self.save();
     }
@@ -200,5 +266,158 @@ pub(crate) fn no_session(restored: bool, what: String) -> ApiError {
         ApiError::not_found(what)
     } else {
         ApiError::unavailable(format!("{what}: the host daemon is restoring its sessions"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use async_trait::async_trait;
+    use borant_core::model::{Harness, SessionEvent, SessionEventBody};
+    use borant_core::ports::{PortResult, SessionStore};
+    use borant_core::{EventId, FencingToken, SessionId, SystemClock, Timestamp};
+    use borant_launch::ProcessLauncher;
+    use borant_memory::{MemoryBus, MemorySession};
+
+    use super::*;
+    use crate::outbox::Outbox;
+
+    /// A session log whose read does not answer before the step timeout, as a
+    /// long log over a slow link does not.
+    #[derive(Debug)]
+    struct SlowLog(MemorySession);
+
+    #[async_trait]
+    impl SessionStore for SlowLog {
+        async fn append(&self, agent: &AgentId, ev: &SessionEvent) -> PortResult<u64> {
+            self.0.append(agent, ev).await
+        }
+
+        async fn read(&self, _agent: &AgentId) -> PortResult<Vec<(u64, SessionEvent)>> {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            Ok(Vec::new())
+        }
+
+        async fn trim_before(&self, agent: &AgentId, seq: u64) -> PortResult<()> {
+            self.0.trim_before(agent, seq).await
+        }
+
+        async fn delete(&self, agent: &AgentId) -> PortResult<()> {
+            self.0.delete(agent).await
+        }
+
+        async fn agents(&self) -> PortResult<Vec<AgentId>> {
+            self.0.agents().await
+        }
+    }
+
+    fn host_at(home: &Path, store: Arc<dyn SessionStore>) -> Host {
+        let mut cfg = crate::HostConfig::new("h1".parse().unwrap(), home.to_path_buf());
+        cfg.harnesses = vec![Harness::Fake];
+        Host::new(
+            cfg,
+            Arc::new(MemoryBus::new()),
+            store,
+            Arc::new(SystemClock),
+            Box::new(ProcessLauncher::new(home.join("logs"))),
+            None,
+            None,
+            Outbox::in_memory().unwrap(),
+        )
+    }
+
+    /// The session table of one live session of this process, of `turn`, in
+    /// `home`.
+    fn save_one(home: &Path, agent: &AgentId, turn: u64) {
+        let id = SessionId::new();
+        let saved = vec![Saved {
+            id,
+            harness: Harness::Fake,
+            harness_session_id: None,
+            pid: Some(std::process::id()),
+            cwd: home.to_path_buf(),
+            agent_hint: None,
+            channel_hint: None,
+            role_hint: None,
+            collection_hint: None,
+            shared_dir: false,
+            reg: Some(Registered {
+                agent: agent.clone(),
+                session: id,
+                token: FencingToken(0),
+                movable: true,
+                channels: Vec::new(),
+                pinned: true,
+            }),
+            fenced: None,
+            turn,
+            launch: None,
+            bundles: Vec::new(),
+            members: BTreeMap::new(),
+            secrets_dir: None,
+        }];
+        std::fs::write(
+            home.join("sessions.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// A session log over a slow link must not hold the restore: the step is
+    /// bounded, the session comes back, and the host is online.
+    #[tokio::test]
+    async fn restore_bounds_a_session_log_that_does_not_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent: AgentId = "w1".parse().unwrap();
+        save_one(dir.path(), &agent, 0);
+        let host = host_at(dir.path(), Arc::new(SlowLog(MemorySession::new())));
+        let started = Instant::now();
+        host.restore().await;
+        let took = started.elapsed();
+        assert!(host.restored());
+        assert!(
+            took < RESTORE_STEP_TIMEOUT * 2,
+            "the restore waited {took:?} for a log that does not answer"
+        );
+        assert!(
+            host.state()
+                .sessions
+                .values()
+                .any(|s| s.reg.as_ref().is_some_and(|r| r.agent == agent)),
+            "the session came back"
+        );
+    }
+
+    /// The restore still reads the log of a live session: the turn of the
+    /// session comes from it, and the messages that no session got are
+    /// queued.
+    #[tokio::test]
+    async fn restore_reads_the_log_of_a_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent: AgentId = "w1".parse().unwrap();
+        let store = Arc::new(MemorySession::new());
+        store
+            .append(
+                &agent,
+                &SessionEvent {
+                    id: EventId::new(),
+                    agent: agent.clone(),
+                    session: None,
+                    harness: Harness::Fake,
+                    host: "h1".parse().unwrap(),
+                    turn: 7,
+                    at: Timestamp(1),
+                    body: SessionEventBody::TurnStart,
+                },
+            )
+            .await
+            .unwrap();
+        save_one(dir.path(), &agent, 0);
+        let host = host_at(dir.path(), store);
+        host.restore().await;
+        let turn = host.state().sessions.values().map(|s| s.turn).max();
+        assert_eq!(turn, Some(7), "the restore read the session log");
     }
 }
