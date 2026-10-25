@@ -12,8 +12,8 @@ use crate::ids::{
     ProjectName, RoleName, SessionId, TaskId,
 };
 use crate::model::{
-    CloseReason, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason, NewTask, Project,
-    RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus, UsageWindow,
+    CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason,
+    NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -386,6 +386,10 @@ pub enum ToolCall {
         /// bound worker.
         #[serde(default)]
         stop_on_close: Option<bool>,
+        /// The continues of a bound worker (phase 11 spec). The hub refuses a
+        /// spawn that asks for them without a bound task.
+        #[serde(default)]
+        continues: Option<ContinuePolicy>,
         /// Higher goes first in the spawn queue.
         #[serde(default)]
         priority: Option<i32>,

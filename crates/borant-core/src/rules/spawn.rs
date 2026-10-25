@@ -60,6 +60,7 @@ mod tests {
             role: None,
             task: None,
             stop_on_close: None,
+            continues: None,
             priority: None,
             bundles: Vec::new(),
         }
@@ -76,6 +77,17 @@ mod tests {
         let mut model = spec("do");
         model.model = Some("m".to_owned());
         assert_eq!(spawn_key_matches(&spec("do"), &model), Err(Conflict));
+
+        // Another continue policy is another spawn.
+        let mut continues = spec("do");
+        continues.continues = Some(crate::model::ContinuePolicy {
+            max: 2,
+            max_hours: None,
+        });
+        assert_eq!(
+            spawn_key_matches(&spec("do"), &continues),
+            Err(Conflict)
+        );
         assert_eq!(
             spawn_key_matches(&spec("do"), &spec("another")),
             Err(Conflict)
