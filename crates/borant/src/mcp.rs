@@ -169,6 +169,16 @@ pub struct Spawn {
     pub name: Option<String>,
     /// The model for the harness, for example 'opus'. Defaults to the harness default.
     pub model: Option<String>,
+    /// An idempotency key: a retry with the same key and arguments returns the first agent.
+    pub key: Option<String>,
+    /// Bind the worker to an existing task, as CHANNEL/ID.
+    pub task: Option<String>,
+    /// Bind the worker to a new task with this title, in the channel.
+    pub task_title: Option<String>,
+    /// Stop the session when the bound task closes. True by default for a bound worker.
+    pub stop_on_close: Option<bool>,
+    /// Higher goes first in the spawn queue.
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -387,8 +397,30 @@ impl BorantMcp {
 
     #[tool(description = "Start a new worker agent in a channel on a host that Borant picks.")]
     async fn spawn(&self, Parameters(a): Parameters<Spawn>) -> Result<String, String> {
-        self.forward(json!({"tool": "spawn", "channel": a.channel, "prompt": a.prompt, "harness": a.harness, "host": a.host, "name": a.name, "model": a.model}))
-            .await
+        let task = match (a.task.as_deref(), a.task_title.as_deref()) {
+            (Some(text), _) => {
+                let (channel, id) = text
+                    .split_once('/')
+                    .ok_or_else(|| format!("{text} is not CHANNEL/ID"))?;
+                Some(json!({ "channel": channel, "id": id }))
+            }
+            (None, Some(title)) => Some(json!({ "channel": a.channel, "title": title })),
+            (None, None) => None,
+        };
+        self.forward(json!({
+            "tool": "spawn",
+            "channel": a.channel,
+            "prompt": a.prompt,
+            "harness": a.harness,
+            "host": a.host,
+            "name": a.name,
+            "model": a.model,
+            "key": a.key,
+            "task": task,
+            "stop_on_close": a.stop_on_close,
+            "priority": a.priority,
+        }))
+        .await
     }
 
     #[tool(description = "List all projects: git repositories that spawns clone.")]

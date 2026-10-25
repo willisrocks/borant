@@ -120,7 +120,7 @@ pub fn parse_since(text: &str, now: Timestamp) -> anyhow::Result<Timestamp> {
 }
 
 /// A whole count of seconds, minutes, hours, days, or weeks.
-fn parse_duration(text: &str) -> Option<Duration> {
+pub(crate) fn parse_duration(text: &str) -> Option<Duration> {
     let (count, unit) = text.split_at(text.len().checked_sub(1)?);
     let count: u64 = count.parse().ok()?;
     let secs = match unit {
@@ -346,7 +346,7 @@ fn from(host: &Option<HostName>) -> String {
 }
 
 /// The `HH:MM:SS` of a Unix time, in UTC.
-fn utc_time(at: Timestamp) -> String {
+pub(crate) fn utc_time(at: Timestamp) -> String {
     let second_of_day = at.0.div_euclid(1000).rem_euclid(24 * 60 * 60);
     format!(
         "{:02}:{:02}:{:02}",
