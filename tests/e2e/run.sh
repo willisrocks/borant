@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart sandbox pause"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart cancel sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -39,6 +39,10 @@ PAUSE_PATHS='^tests/e2e/pause/'
 #   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
 #   the sandbox and its scenario -> sandbox, or all when other paths changed
 #   the pause scenario and its swarm -> pause, or all when other paths changed
+#   the cancel path (crates/borant-hub/src/retire.rs, the cancel call in
+#   crates/borant-hub/src/spawns.rs, the delete-work order in
+#   crates/borant-host/src/commands.rs) -> all: the queue scenario cancels too,
+#   so a change there may not run the cancel scenario alone
 affected() {
   local base=$1 files
   files=$(git diff --name-only "$base"...HEAD) || return 1
@@ -1108,6 +1112,123 @@ pause_capped_claim() {
 pause_helper_stopped() {
   borant_on host-pause inbox --json 2>/dev/null |
     jq -e 'any(.agents[]; .agent == "helper" and .why == "stopped by human")' >/dev/null
+}
+
+# The cancel scenario of phase 10: `borant cancel` of an idle worker ends its
+# session within one heartbeat, and the host then frees its clone; a worker in
+# a turn is not stopped until the turn ends. The swarm's heartbeat is 2 s
+# (`BORANT_HEARTBEAT_SECS`), so one heartbeat plus 10 s is 12 s here.
+
+# The agent holds a lease, so the hub placed it.
+cancel_held() { [ -n "$(where "$1")" ]; }
+
+# The host ended the session of the retired agent and freed its work dir: the
+# lease is released, the dir is gone, and the host log names the delete. The
+# host writes its fields with ANSI, so `agent=idle1` is only contiguous after
+# the escapes go: tracing styles the name, the `=`, and the value apart.
+cancel_retired() {
+  local host=$1 agent=$2
+  [ -z "$(where "$agent")" ] || return 1
+  if on "$host" test -e "/root/.borant/work/$agent"; then
+    return 1
+  fi
+  dc logs --no-color "$host" 2>/dev/null |
+    sed -e 's/\x1b\[[0-9;]*m//g' |
+    grep "deleted the work dir of a retired agent" |
+    grep -Eq "agent=$agent([^[:alnum:]_.-]|$)"
+}
+
+scenario_cancel() {
+  local out host start
+
+  # A channel with a project, so that a launch restores the demo repo into the
+  # work dir of its agent: that clone is what the host must free.
+  borant_on host-a project add canceltest git://git/demo.git --branch main >/dev/null || return 1
+  start_agent host-a cboss
+  wait_for "cboss registered" is_at cboss host-a || return 1
+  borant_on host-a send cboss "CHANNEL canceltest canceltest" >/dev/null
+  wait_for "the channel with its project" log_has host-a cboss "CHANNEL canceltest ok" || return 1
+  # The channel stays; the session of cboss only held a slot of host-a.
+  borant_on host-a cancel cboss >/dev/null 2>&1
+
+  # A line that the fake harness logs, so that the scenario knows the launch
+  # went through.
+  on host-a sh -c 'printf "%s\n" cancel-idle-ok > /tmp/cancel-idle.md' || return 1
+  on host-a sh -c 'printf "%s\n" cancel-busy-ok > /tmp/cancel-busy.md' || return 1
+
+  # An idle worker with a clone.
+  out=$(borant_on host-a spawn --channel canceltest --prompt-file /tmp/cancel-idle.md \
+    --harness fake --name idle1 --key cancel-idle) || return 1
+  case "$out" in
+    "agent idle1 placed"*) ;;
+    *)
+      echo "  idle1: $out" >&2
+      borant_on host-a ps --queued --json >&2 2>/dev/null
+      return 1
+      ;;
+  esac
+  wait_for "idle1 holds a lease" cancel_held idle1 || return 1
+  host=$(where idle1)
+  wait_for "idle1 read its prompt" log_has "$host" idle1 "PROMPT cancel-idle-ok" || return 1
+  on "$host" test -d /root/.borant/work/idle1/demo/.git \
+    || { echo "  idle1 has no clone on $host" >&2; return 1; }
+  # Two heartbeats carry the end of the first turn to the hub, so it knows
+  # that the session is idle and stops it at once.
+  sleep 4
+
+  start=$SECONDS
+  out=$(borant_on host-a cancel idle1) || return 1
+  printf '%s' "$out" | jq -e '.stopped == true' >/dev/null \
+    || { echo "  an idle worker was not stopped at once: $out" >&2; return 1; }
+  WAIT=12 wait_for "idle1 ends within one heartbeat and 10 s" cancel_retired "$host" idle1 || return 1
+  echo "  idle1 stopped and lost its clone in $((SECONDS - start)) s"
+
+  # The worker in a turn: a FIFO outside its clone keeps the write of its turn
+  # waiting, so the turn runs for as long as the scenario needs.
+  out=$(borant_on host-a spawn --channel canceltest --prompt-file /tmp/cancel-busy.md \
+    --harness fake --name busy1 --key cancel-busy) || return 1
+  case "$out" in
+    "agent busy1 placed"*) ;;
+    *)
+      echo "  busy1: $out" >&2
+      borant_on host-a ps --queued --json >&2 2>/dev/null
+      return 1
+      ;;
+  esac
+  wait_for "busy1 holds a lease" cancel_held busy1 || return 1
+  host=$(where busy1)
+  wait_for "busy1 read its prompt" log_has "$host" busy1 "PROMPT cancel-busy-ok" || return 1
+  on "$host" sh -c 'rm -f /tmp/cancel-busy.fifo && mkfifo /tmp/cancel-busy.fifo' || return 1
+  borant_on host-a send busy1 "WRITE /tmp/cancel-busy.fifo in-a-long-turn" >/dev/null
+  wait_for "busy1 started the write" log_has "$host" busy1 "WRITE /tmp/cancel-busy.fifo" || return 1
+  if log_of "$host" busy1 | grep -q "WROTE /tmp/cancel-busy.fifo"; then
+    echo "  busy1 did not wait in its turn" >&2
+    return 1
+  fi
+  # Three heartbeats carry the turn to the hub, so that the cancel sees one.
+  sleep 6
+
+  out=$(borant_on host-a cancel busy1) || return 1
+  printf '%s' "$out" | jq -e '.stopped == false and .stopping == "at the turn end"' >/dev/null \
+    || { echo "  a busy worker was not kept for its turn end: $out" >&2; return 1; }
+
+  # The session, its lease, and its clone stay while the turn runs.
+  sleep 6
+  [ "$(where busy1)" = "$host" ] \
+    || { echo "  busy1 lost its lease in its turn" >&2; return 1; }
+  on "$host" test -d /root/.borant/work/busy1 \
+    || { echo "  busy1 lost its clone in its turn" >&2; return 1; }
+  if log_of "$host" busy1 | grep -q SIGTERM; then
+    echo "  busy1 was stopped in its turn" >&2
+    return 1
+  fi
+
+  # The turn ends: the write returns, and the session stops at the next
+  # heartbeat, which frees the clone.
+  on "$host" sh -c 'timeout 10 cat /tmp/cancel-busy.fifo >/dev/null' || return 1
+  wait_for "busy1 finished the write" log_has "$host" busy1 "WROTE /tmp/cancel-busy.fifo" || return 1
+  WAIT=20 wait_for "busy1 ends after its turn" cancel_retired "$host" busy1 || return 1
+  wait_for "busy1 stopped" log_has "$host" busy1 SIGTERM || return 1
 }
 
 for s in $SCENARIOS; do
