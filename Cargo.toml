@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 borant-core = { path = "crates/borant-core" }
+borant-exec = { path = "crates/borant-exec" }
 borant-memory = { path = "crates/borant-memory" }
 borant-nats = { path = "crates/borant-nats" }
 borant-hub = { path = "crates/borant-hub" }
