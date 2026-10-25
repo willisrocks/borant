@@ -14,7 +14,7 @@ use borant_core::model::{
     Agent, Channel, Harness, Lease, LeaseState, Member, RepoInfo, Session, Task, TaskStatus,
 };
 use borant_core::ports::{Change, Entry, PortResult, StateStore};
-use borant_core::proto::{CtlRequest, ToolCall};
+use borant_core::proto::{CtlRequest, RegisterSession, ToolCall};
 use borant_core::{
     AgentId, ChannelName, Clock, FencingToken, ManualClock, SessionId, TaskId, Timestamp, keys,
 };
@@ -299,6 +299,81 @@ async fn answers_a_request_while_the_first_tick_catches_up() {
         {
             let t: Task = serde_json::from_slice(&e.value).unwrap();
             assert_eq!(t.claimed_by, None, "task {} is still claimed", t.id);
+        }
+    }
+}
+
+/// A session that registers while the tick runs keeps its claims. The tick acts
+/// on a lease only while the lease is still the one it listed.
+#[tokio::test]
+async fn a_session_that_registers_during_the_tick_keeps_its_claims() {
+    let fx = Fx::new();
+    fx.seed().await;
+    let step = fx.slow.watch_step();
+    let tick = {
+        let hub = fx.hub.clone();
+        tokio::spawn(async move { hub.tick().await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), step)
+        .await
+        .expect("the tick never reached a step")
+        .expect("the tick dropped the bell");
+
+    // Every agent but the first registers a session while the tick is inside
+    // its first step, so its lease changes before the tick reaches it.
+    let mut regs = Vec::new();
+    for i in 1..AGENTS {
+        let hub = fx.hub.clone();
+        regs.push(tokio::spawn(async move {
+            hub.handle(CtlRequest::RegisterSession(RegisterSession {
+                session: SessionId::new(),
+                host: "h1".parse().unwrap(),
+                harness: Harness::Fake,
+                harness_session_id: None,
+                pid: Some(1),
+                cwd: "/work".into(),
+                repo: Some(RepoInfo {
+                    remote_url: "git://git/demo.git".into(),
+                    branch: "main".into(),
+                    subdir: String::new(),
+                }),
+                agent: Some(agent(i)),
+                channel: None,
+                shared_dir: false,
+            }))
+            .await
+        }));
+    }
+    for r in regs {
+        let reply = r.await.unwrap();
+        assert!(reply.into_result().is_ok(), "the registration failed");
+    }
+    tick.await.unwrap().expect("the tick failed");
+
+    // The first agent registered nothing, so its claim went back to the open.
+    // The agents that came back keep theirs.
+    for c in 0..CHANNELS {
+        let tasks: Vec<Task> = fx
+            .state
+            .list(&keys::tasks_prefix(&channel(c)))
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| serde_json::from_slice(&e.value).unwrap())
+            .collect();
+        let claimed = tasks
+            .iter()
+            .find(|t| t.claimed_by.is_some())
+            .or_else(|| tasks.iter().find(|t| t.title == "task 0"));
+        let claimed = claimed.unwrap();
+        if c == 0 {
+            assert_eq!(claimed.claimed_by, None, "agent 0 never came back");
+        } else {
+            assert_eq!(
+                claimed.claimed_by,
+                Some(agent(c)),
+                "channel {c} lost the claim of the agent that came back"
+            );
         }
     }
 }

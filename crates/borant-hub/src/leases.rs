@@ -300,6 +300,15 @@ impl Hub {
         Ok(())
     }
 
+    /// The listed lease, if no request changed it since the list.
+    async fn unchanged_lease(&self, doc: &Doc<Lease>) -> Result<Option<Doc<Lease>>, ApiError> {
+        Ok(self
+            .store
+            .get::<Lease>(&doc.key)
+            .await?
+            .filter(|fresh| fresh.revision == doc.revision))
+    }
+
     async fn tick_one(&self, mem: &mut Memory, doc: Doc<Lease>) -> Result<(), ApiError> {
         let now = self.now();
         let cfg = self.cfg.lease;
@@ -326,6 +335,13 @@ impl Hub {
             }
             return Ok(());
         }
+        // The lease was listed before this step took the mutex. A session
+        // that registered in between holds the lease now and must keep its
+        // claims, so act only on a listing that is still current. The
+        // writes above are safe already: their compare-and-set fails.
+        let Some(doc) = self.unchanged_lease(&doc).await? else {
+            return Ok(());
+        };
         let since = match doc.value.state {
             LeaseState::Expired { since, .. } | LeaseState::Released { since } => since,
             _ => return Ok(()),
