@@ -230,6 +230,10 @@ scenario_elastic() {
   done
   wait_for "three spawns" three_spawns || return 1
   echo "  spawned: $(spawned_agents | tr '\n' ' ')"
+  if spawned_agents | grep -qx '?'; then
+    echo "  the boss got no agent id from a spawn" >&2
+    return 1
+  fi
   # The spawns must not fit on the control host, or the pool is never asked.
   if [ "$(on_control)" -gt 1 ]; then
     echo "  the control host took the spawns: its max_agents is not 1" >&2
@@ -246,10 +250,13 @@ scenario_elastic() {
   # A killed container is lost: the hub deletes it and starts another host for
   # the agent that it held.
   borant_on host-control send boss "SPAWN e2e killed-during-a-turn" >/dev/null
+  wait_for "the fourth spawn" four_spawns || return 1
   wait_for "a pool host for the new agent" one_pool_host || return 1
   local agent host id
   agent=$(spawned_agents | tail -1)
+  wait_for "the new agent on a pool host" agent_placed "$agent" || return 1
   host=$(where_on host-control "$agent")
+  [ -n "$host" ] || { echo "  $agent holds no lease on a host" >&2; return 1; }
   id=$(docker ps --quiet --filter "name=^${host}$")
   [ -n "$id" ] || { echo "  no container is named $host" >&2; return 1; }
   borant_on host-control send "$agent" "WRITE killed.txt during-a-turn" >/dev/null
@@ -274,6 +281,11 @@ on_control() {
 spawned_agents() { log_of host-control boss | awk '$1=="SPAWNED" {print $2}'; }
 
 three_spawns() { [ "$(spawned_agents | wc -l)" -ge 3 ]; }
+
+four_spawns() { [ "$(spawned_agents | wc -l)" -ge 4 ]; }
+
+# The agent holds a lease on a host that the hub gave it.
+agent_placed() { [ -n "$(where_on host-control "$1")" ]; }
 
 two_pool_hosts() { [ "$(e2e_containers_count)" = "2" ]; }
 

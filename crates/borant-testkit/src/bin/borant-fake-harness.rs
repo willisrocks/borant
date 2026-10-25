@@ -160,7 +160,12 @@ impl Fake {
                 let v = self
                     .call(json!({"tool": "spawn", "channel": a, "prompt": b}))
                     .await?;
-                self.line(&format!("SPAWNED {}", v["agent"].as_str().unwrap_or("?")));
+                // The hub replies {"agent": {"agent": <id>, "placed": <bool>}}.
+                let agent = v["agent"]["agent"]
+                    .as_str()
+                    .or_else(|| v["agent"].as_str())
+                    .with_context(|| format!("the spawn reply holds no agent id: {v}"))?;
+                self.line(&format!("SPAWNED {agent}"));
             }
             "HISTORY" => self.history().await?,
             "EXIT" => {
