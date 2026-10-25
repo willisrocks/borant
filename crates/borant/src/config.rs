@@ -21,10 +21,11 @@ use borant_core::{
     BundleName, ChannelName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag,
 };
 use borant_exec::ExecConfig;
+use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
-use borant_hub::ElasticConfig;
+use borant_hub::{ChangeWatch, ElasticConfig};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -513,6 +514,57 @@ impl HubFile {
     /// The notifier of `[alerts]`, if this file names one.
     pub fn notifier(&self) -> anyhow::Result<Option<Box<dyn Notifier>>> {
         open_notifier(&self.notifiers, self.alerts.notifier.as_deref())
+    }
+
+    /// The PR watch of `[changes]`: the adapter that reads one change request
+    /// and how often the hub polls. `None` when the file names no adapter, and
+    /// also when the program is not a change-request plugin: the hub then
+    /// serves as before, with a warn, instead of failing to start.
+    pub async fn changes_watch(&self) -> anyhow::Result<Option<ChangeWatch>> {
+        let Some(adapter) = self.changes.adapter.as_deref() else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            adapter == "exec",
+            "changes: unknown adapter {adapter:?}, only \"exec\" exists"
+        );
+        let program = self
+            .changes
+            .program
+            .clone()
+            .context("changes: an exec adapter needs a program")?;
+        // The plugin reads its token from a file of the hub unit's credentials
+        // directory, as the provisioner plugins do.
+        let credential = match &self.changes.credential {
+            None => None,
+            Some(c) => Some((
+                env("CREDENTIALS_DIRECTORY")
+                    .map(PathBuf::from)
+                    .context("changes names a credential")?,
+                c.clone(),
+            )),
+        };
+        let exec = ExecConfig {
+            command: vec![program],
+            env: BTreeMap::new(),
+            credential,
+            timeout: STATUS_TIMEOUT,
+            // The status of a change request is not a secret, but the runner
+            // does not know what the plugin prints, so its stderr stays out of
+            // the log.
+            log_stderr: false,
+        };
+        let changes = match ExecChangeRequests::open(exec, BTreeMap::new()).await {
+            Ok(changes) => changes,
+            Err(e) => {
+                tracing::warn!("the PR watch is off, the plugin did not answer: {e}");
+                return Ok(None);
+            }
+        };
+        Ok(Some(ChangeWatch {
+            changes: Arc::new(changes),
+            every: Duration::from_secs(self.changes.every_secs.max(1)),
+        }))
     }
 }
 
@@ -1565,5 +1617,86 @@ max_hosts = 1
         assert!(parse_span("").is_err());
         assert!(parse_span("10x").is_err());
         assert!(parse_span("m").is_err());
+    }
+}
+
+#[cfg(test)]
+mod changes_tests {
+    use super::*;
+
+    /// The file plugin of the repository root: change statuses in one file.
+    fn plugin() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/plugins/changes-file.sh")
+            .canonicalize()
+            .expect("the file plugin")
+    }
+
+    fn file(toml: &str) -> HubFile {
+        toml::from_str(toml).expect("a hub file")
+    }
+
+    /// `[changes]` with an exec adapter builds the watch of the hub.
+    #[tokio::test]
+    async fn changes_the_exec_adapter_builds_the_watch() {
+        let f = file(&format!(
+            "[changes]\nadapter = \"exec\"\nprogram = \"{}\"\nevery_secs = 30\n",
+            plugin().display()
+        ));
+        let watch = f.changes_watch().await.unwrap().expect("the watch");
+        assert_eq!(watch.every, Duration::from_secs(30));
+    }
+
+    /// A hub that names no adapter watches nothing, as before.
+    #[tokio::test]
+    async fn changes_without_an_adapter_watch_nothing() {
+        assert!(file("").changes_watch().await.unwrap().is_none());
+        assert!(
+            file("[changes]\nevery_secs = 5\n")
+                .changes_watch()
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A credential names a file in the directory that systemd provides, as
+    /// the provisioner and the notifier plugins read theirs: without the
+    /// directory the watch fails the start, not the first poll.
+    #[tokio::test]
+    async fn changes_a_credential_needs_the_directory_of_the_unit() {
+        let f = file(&format!(
+            "[changes]\nadapter = \"exec\"\nprogram = \"{}\"\ncredential = \"changes-token\"\n",
+            plugin().display()
+        ));
+        assert_eq!(f.changes.credential.as_deref(), Some("changes-token"));
+        if env("CREDENTIALS_DIRECTORY").is_none() {
+            assert!(
+                f.changes_watch().await.is_err(),
+                "a credential without its directory is a configuration error"
+            );
+        }
+    }
+
+    /// A program of another kind, or none at all, leaves the watch off (a
+    /// program of another kind is a warn) or fails the start (no program).
+    #[tokio::test]
+    async fn changes_a_program_of_another_kind_leaves_the_watch_off() {
+        let notifier = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/borant-exec/tests/fixtures/describe_notifier.sh")
+            .canonicalize()
+            .expect("the notifier fixture");
+        let f = file(&format!(
+            "[changes]\nadapter = \"exec\"\nprogram = \"{}\"\n",
+            notifier.display()
+        ));
+        assert!(f.changes_watch().await.unwrap().is_none());
+        let f = file("[changes]\nadapter = \"exec\"\n");
+        assert!(
+            f.changes_watch().await.is_err(),
+            "an exec adapter needs a program"
+        );
+        let f = file("[changes]\nadapter = \"github\"\nprogram = \"x\"\n");
+        assert!(f.changes_watch().await.is_err(), "only exec exists");
     }
 }

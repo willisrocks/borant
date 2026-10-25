@@ -104,6 +104,10 @@ pub struct ChangesConfig {
     /// The program of an exec adapter.
     #[serde(default)]
     pub program: Option<String>,
+    /// The name of the credential that the program reads, a file in the
+    /// credentials directory of the hub unit.
+    #[serde(default)]
+    pub credential: Option<String>,
     /// How often the hub polls, `60` seconds by default.
     #[serde(default = "sixty_secs")]
     pub every_secs: u64,
@@ -118,6 +122,7 @@ impl Default for ChangesConfig {
         Self {
             adapter: None,
             program: None,
+            credential: None,
             every_secs: sixty_secs(),
         }
     }

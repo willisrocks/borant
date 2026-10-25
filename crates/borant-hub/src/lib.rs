@@ -7,6 +7,7 @@
 
 mod alerts;
 mod calls;
+pub mod changes;
 pub mod elastic;
 mod events;
 pub mod export;
@@ -23,6 +24,7 @@ mod tasks;
 mod view;
 mod waits;
 
+pub use changes::ChangeWatch;
 pub use elastic::ElasticConfig;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -61,6 +63,8 @@ pub struct HubConfig {
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
     /// `[alerts]` of `hub.toml`: which rules run and their timeouts.
     pub alerts: AlertsConfig,
+    /// `[changes]` of `hub.toml`: the PR watch. `None` watches nothing.
+    pub changes: Option<ChangeWatch>,
     /// `[secrets.members]`: the reset time to assume and the restart limit.
     pub member_rules: MemberRules,
 }
@@ -74,6 +78,7 @@ impl Default for HubConfig {
             roles: BTreeMap::new(),
             collections: BTreeMap::new(),
             alerts: AlertsConfig::default(),
+            changes: None,
             member_rules: MemberRules::default(),
         }
     }
@@ -357,11 +362,20 @@ impl Hub {
             })
         };
 
+        // The PR watch polls the forge on its own task, so a slow poll never
+        // delays a lease renewal (spec "PR watch").
+        let watcher = {
+            let hub = self.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { hub.change_loop(shutdown).await })
+        };
+
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 _ = lost.cancelled() => {
                     ticker.abort();
+                    watcher.abort();
                     anyhow::bail!("another hub took the hub lease");
                 }
                 next = requests.next() => {
@@ -381,6 +395,7 @@ impl Hub {
             }
         }
         ticker.abort();
+        watcher.abort();
         Ok(())
     }
 
