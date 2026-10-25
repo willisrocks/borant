@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ids::{
-    AgentId, ChannelName, EventId, FencingToken, HostName, MessageId, SessionId, TaskId,
+    AgentId, ChannelName, EventId, FencingToken, HostName, MessageId, ProjectName, SessionId,
+    TaskId,
 };
 use crate::time::Timestamp;
 
@@ -82,6 +83,12 @@ pub struct Agent {
     /// The native session ID of the last session, for a resume on the same host.
     pub harness_session_id: Option<String>,
     pub created: Timestamp,
+    /// The model that `spawn` asked for. Moves and takeovers keep it.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The project of the channel that the agent was spawned in.
+    #[serde(default)]
+    pub project: Option<ProjectName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,6 +174,29 @@ pub struct Channel {
     pub schema: Value,
     pub created: Timestamp,
     pub closed: Option<Timestamp>,
+    /// A spawn in this channel clones this project.
+    #[serde(default)]
+    pub project: Option<ProjectName>,
+    /// The base branch for spawns. Set when `project` is set.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// A named git repository that spawns clone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub name: ProjectName,
+    pub remote_url: String,
+    pub default_branch: String,
+    /// Where checkpoints go, if not the remote of the repository.
+    #[serde(default)]
+    pub checkpoint_remote: Option<String>,
+    /// A shell command that runs once in a new clone, before the harness.
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// The focused test command of the project.
+    #[serde(default)]
+    pub test: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +449,16 @@ mod tests {
             Target::Agent("worker-1".parse().unwrap())
         );
         assert!("#Bad".parse::<Target>().is_err());
+    }
+
+    #[test]
+    fn old_channel_json_loads() {
+        let ch: Channel = serde_json::from_value(serde_json::json!({
+            "name": "api", "owner": "boss", "schema": {}, "created": 1, "closed": null,
+        }))
+        .unwrap();
+        assert_eq!(ch.project, None);
+        assert_eq!(ch.branch, None);
     }
 
     #[test]

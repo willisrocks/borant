@@ -13,7 +13,8 @@ pub mod time;
 
 pub use error::CoreError;
 pub use ids::{
-    AgentId, ChannelName, EventId, FencingToken, HostName, MessageId, SessionId, TaskId,
+    AgentId, ChannelName, EventId, FencingToken, HostName, MessageId, ProjectName, SessionId,
+    TaskId,
 };
 pub use keys::subjects;
 pub use time::{Clock, ManualClock, SystemClock, Timestamp};

@@ -64,6 +64,8 @@ async fn with_channel(fx: &Fx) -> borant_core::proto::Registered {
         ToolCall::ChannelCreate {
             name: api(),
             schema: None,
+            project: None,
+            branch: None,
         },
     )
     .await
@@ -128,6 +130,8 @@ async fn channel_create_sets_owner_and_default_schema() {
             ToolCall::ChannelCreate {
                 name: api(),
                 schema: None,
+                project: None,
+                branch: None,
             },
         )
         .await

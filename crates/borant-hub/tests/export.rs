@@ -17,6 +17,8 @@ async fn export_import_round_trip() {
         ToolCall::ChannelCreate {
             name: "api".parse().unwrap(),
             schema: None,
+            project: None,
+            branch: None,
         },
     )
     .await

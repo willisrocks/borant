@@ -1,9 +1,9 @@
 //! Request dispatch and the channel and agent calls.
 
-use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Sender};
+use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::schema;
-use borant_core::{AgentId, ChannelName, keys, subjects};
+use borant_core::{AgentId, ChannelName, ProjectName, keys, subjects};
 use serde_json::{Value, json};
 
 use crate::store::Doc;
@@ -94,9 +94,14 @@ impl Hub {
                     "movable": agent.value.movable,
                 }))
             }
-            ToolCall::ChannelCreate { name, schema: s } => {
+            ToolCall::ChannelCreate {
+                name,
+                schema: s,
+                project,
+                branch,
+            } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
-                to_value(&self.channel_create(&me, &name, s).await?)
+                to_value(&self.channel_create(&me, &name, s, project, branch).await?)
             }
             ToolCall::ChannelJoin { name } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
@@ -214,10 +219,11 @@ impl Hub {
                 harness,
                 host,
                 name,
+                model,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 let id = self
-                    .spawn(mem, &me, &channel, prompt, harness, host, name)
+                    .spawn(mem, &me, &channel, prompt, harness, host, name, model)
                     .await?;
                 Ok(json!({ "agent": id }))
             }
@@ -231,6 +237,29 @@ impl Hub {
             }
             ToolCall::ListAgents => self.list_agents().await,
             ToolCall::ListHosts => self.list_hosts(mem).await,
+            ToolCall::ProjectAdd { project } => {
+                if project.remote_url.trim().is_empty() || project.default_branch.trim().is_empty()
+                {
+                    return Err(ApiError::invalid(
+                        "a project needs a remote URL and a default branch",
+                    ));
+                }
+                self.store
+                    .upsert(&keys::project(&project.name), &project)
+                    .await?;
+                to_value(&project)
+            }
+            ToolCall::ProjectGet { name } => to_value(&self.project(&name).await?),
+            ToolCall::ProjectList => {
+                let projects: Vec<Project> = self
+                    .store
+                    .list::<Project>(keys::PROJECT_PREFIX)
+                    .await?
+                    .into_iter()
+                    .map(|d| d.value)
+                    .collect();
+                to_value(&projects)
+            }
         }
     }
 
@@ -266,12 +295,29 @@ impl Hub {
             .ok_or_else(|| ApiError::not_found(format!("no channel #{name}")))
     }
 
+    pub(crate) async fn project(&self, name: &ProjectName) -> Result<Project, ApiError> {
+        self.store
+            .get::<Project>(&keys::project(name))
+            .await?
+            .map(|d| d.value)
+            .ok_or_else(|| ApiError::not_found(format!("no project {name}")))
+    }
+
     async fn channel_create(
         &self,
         owner: &AgentId,
         name: &ChannelName,
         s: Option<Value>,
+        project: Option<ProjectName>,
+        branch: Option<String>,
     ) -> Result<Channel, ApiError> {
+        let branch = match &project {
+            Some(p) => Some(branch.unwrap_or(self.project(p).await?.default_branch)),
+            None if branch.is_some() => {
+                return Err(ApiError::invalid("a branch needs a project"));
+            }
+            None => None,
+        };
         let schema = match s {
             Some(s) => {
                 schema::check_schema(&s)?;
@@ -285,6 +331,8 @@ impl Hub {
             schema,
             created: self.now(),
             closed: None,
+            project,
+            branch,
         };
         self.store
             .put(&keys::channel(name), &ch, None)

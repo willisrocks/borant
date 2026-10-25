@@ -75,6 +75,11 @@ name_type!(
     "channel name"
 );
 name_type!(
+    /// A project name, unique in the swarm.
+    ProjectName,
+    "project name"
+);
+name_type!(
     /// A host name, unique in the swarm.
     HostName,
     "host name"
