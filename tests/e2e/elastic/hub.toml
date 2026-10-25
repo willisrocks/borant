@@ -1,0 +1,49 @@
+# The hub of the elastic e2e scenario. It has no worker hosts: the boss runs
+# on the static host-control, which is full with one agent, so the three
+# spawns of the boss go to the one pool. The pool starts its hosts with the
+# Docker provisioner of tests/e2e/plugins.
+#
+# The env of the swarm sets the NATS url and the lease timings
+# (docker/compose.yaml, x-timing). This file adds the sections of phase 4.
+# The `config` table of a provisioner is a flat map of strings, and every
+# request of the plugin carries it.
+
+[elastic]
+# A short tick, so the scenario sees each step of a pool host in seconds.
+tick = "2s"
+# A container that is killed is lost after this, then deleted.
+lost_timeout = "8s"
+create_backoff = "5s"
+
+[provisioners.docker]
+adapter = "exec"
+command = ["/plugins/provision-docker.sh"]
+
+[provisioners.docker.config]
+image = "borant:e2e"
+network = "borant-e2e_default"
+command = "borant host"
+"env.BORANT_NATS_URL" = "nats://natshub:4222"
+"env.BORANT_LAUNCHER" = "process"
+"env.BORANT_HARNESSES" = "fake"
+"env.BORANT_MAX_AGENTS" = "2"
+"env.BORANT_LEASE_SECS" = "6"
+"env.BORANT_GRACE_SECS" = "6"
+"env.BORANT_HEARTBEAT_SECS" = "2"
+"env.BORANT_RESERVE_SECS" = "30"
+"env.BORANT_LOG" = "info,async_nats=warn"
+
+[[pools]]
+name = "e2e"
+provisioner = "docker"
+size = "small"
+region = "local"
+image = "borant:e2e"
+name_prefix = "e2e"
+tags = ["e2e"]
+harnesses = ["fake"]
+agents_per_host = 2
+max_hosts = 2
+# The agents are idle at once, so the hosts go away quickly.
+idle_timeout = "10s"
+boot_timeout = "60s"
