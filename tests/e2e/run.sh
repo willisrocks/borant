@@ -70,20 +70,39 @@ fi
 if [ "$SCENARIOS" = "elastic" ]; then
   echo "Starting the elastic swarm..."
   dc --profile elastic up -d nats git hub-elastic host-control >/dev/null \
-    || { echo "FAIL start"; dc logs --no-color 2>/dev/null | tail -80; exit 1; }
+    || { echo "FAIL start"; dc --profile elastic logs --no-color 2>/dev/null | tail -200; exit 1; }
   # The `borant` CLI talks to a host daemon, so every query goes through the
   # control host, never through the hub container.
   hub_answers() { borant_on host-control hosts >/dev/null 2>&1; }
   if ! wait_for "the hub" hub_answers; then
     echo "  the control host does not reach the hub:"
     borant_on host-control hosts 2>&1 | tail -5
-    dc logs --no-color 2>/dev/null | tail -80
+    dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
+    exit 1
+  fi
+  # The provisioner must run in the hub container with docker, jq, and the
+  # socket, and answer the two ops of the scenario.
+  provisioner_ok() {
+    on hub-elastic sh -c '
+      command -v docker >/dev/null && command -v jq >/dev/null || exit 1
+      docker ps -q >/dev/null || exit 1
+      echo "{\"v\":1,\"op\":\"describe\",\"config\":{}}" |
+        /plugins/provision-docker.sh | jq -e ".ok.kind == \"provisioner\"" >/dev/null || exit 1
+      echo "{\"v\":1,\"op\":\"list\",\"config\":{},\"pool\":\"e2e\"}" |
+        /plugins/provision-docker.sh | jq -e ".ok | type == \"array\"" >/dev/null
+    ' >/dev/null 2>&1
+  }
+  if ! wait_for "the provisioner" provisioner_ok; then
+    echo "  the provisioner of the hub does not answer:"
+    on hub-elastic sh -c 'command -v docker; command -v jq; docker ps -q >/dev/null && echo socket ok'
+    on hub-elastic sh -c 'echo "{\"v\":1,\"op\":\"describe\",\"config\":{}}" | /plugins/provision-docker.sh'
+    dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
     exit 1
   fi
 else
   echo "Starting the swarm..."
   dc up -d nats git hub host-a host-b host-c >/dev/null \
-    || { echo "FAIL start"; dc logs --no-color 2>/dev/null | tail -80; exit 1; }
+    || { echo "FAIL start"; dc --profile elastic logs --no-color 2>/dev/null | tail -200; exit 1; }
   hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
   wait_for "host daemons" hosts_online || exit 1
 fi
@@ -210,6 +229,12 @@ scenario_elastic() {
     borant_on host-control send boss "SPAWN e2e wait-for-work" >/dev/null
   done
   wait_for "three spawns" three_spawns || return 1
+  echo "  spawned: $(spawned_agents | tr '\n' ' ')"
+  # The spawns must not fit on the control host, or the pool is never asked.
+  if [ "$(on_control)" -gt 1 ]; then
+    echo "  the control host took the spawns: its max_agents is not 1" >&2
+    return 1
+  fi
   wait_for "two pool hosts" two_pool_hosts || return 1
   wait_for "three agents in the pool" three_in_pool || return 1
   echo "  two containers hold three agents"
@@ -239,6 +264,12 @@ scenario_elastic() {
 }
 
 boss_on_control() { [ "$(where_on host-control boss)" = "host-control" ]; }
+
+# The agents that hold a lease on the control host, the boss included.
+on_control() {
+  borant_on host-control agents 2>/dev/null |
+    jq '[.[] | select(.lease.host == "host-control")] | length'
+}
 
 spawned_agents() { log_of host-control boss | awk '$1=="SPAWNED" {print $2}'; }
 
@@ -273,7 +304,20 @@ done
 if [ "$FAILED" != "0" ]; then
   echo "Some scenarios failed. Logs: E2E_ROOT=$ROOT docker compose -f $COMPOSE logs"
   if [ "${KEEP:-0}" != "1" ]; then
-    dc logs --no-color 2>/dev/null | tail -150
+    if [ "$SCENARIOS" = "elastic" ]; then
+      echo "  agents:"
+      borant_on host-control agents 2>/dev/null |
+        jq -c '.[] | {agent, harness, host, lease: .lease.state}' | head -20
+      echo "  hosts:"
+      borant_on host-control hosts 2>/dev/null |
+        jq -c '.[] | {name: .host.name, pool: .host.pool, max_agents: .host.max_agents,
+                      harnesses: .host.harnesses, online}' | head -10
+      echo "  the boss log:"
+      log_of host-control boss 2>/dev/null | tail -20
+      echo "  hub-elastic and host-control:"
+      dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
+    fi
+    dc --profile elastic logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
 fi

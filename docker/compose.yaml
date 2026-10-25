@@ -70,6 +70,9 @@ services:
     profiles: [elastic]
     environment:
       <<: *timing
+      # The elastic pass and the stderr of the provisioner plugin are debug
+      # lines: the scenario prints them when it fails.
+      BORANT_LOG: "debug,async_nats=warn"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/plugins:/plugins:ro
