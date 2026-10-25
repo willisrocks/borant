@@ -15,8 +15,10 @@ general plan gets wrong.
 | Fact | So |
 |---|---|
 | A spawn in a channel with a project starts in its own clone of the project, on the channel branch. A missing channel branch starts from the project's default branch. A channel without a project copies your repo, on your branch if it exists on `origin`, else the default branch. | Use a project channel. Without one, push your branch before you spawn. Never tell a worker to clone. Work outside its clone is not checkpointed and is lost when the worker moves. |
-| `spawn` returning `placed: false` means queued. The hub starts the worker when a host slot opens. | Do nothing. Never spawn again for the same task: that makes a second worker. |
-| Each host runs a fixed number of agents, and an idle worker keeps its slot. No tool stops a worker yet. | Give the next ready task to an idle worker before you spawn a new one. Spawn only for work that runs in parallel. |
+| `spawn` returning `placed: false` means queued. The record survives a hub restart, and the hub places it on the next free slot. | Do nothing. Never spawn again for the same task: that makes a second worker. |
+| `spawn` takes `key`, an idempotency key. A retry with the same key and arguments returns the same agent. | A lost reply is safe to retry with its key. Never spawn again for the same task without the key. |
+| Each host runs a fixed number of agents, and an idle worker keeps its slot. A slot comes back two ways: a task-bound worker with `stop_on_close` (the default) stops when its task closes, and `borant cancel <agent>` stops an unbound worker or cancels a queued spawn. | Give the next ready task to an idle worker before you spawn a new one, and bind every worker to its task so its slot comes back. Spawn only for work that runs in parallel; use cancel only for a worker that has no task. |
+| A launch that does not register fails after `launch_timeout_secs` (default 90), and the hub tries at most 3 launches. Then the spawn is Failed. | Pick a different host or harness, or `borant cancel <agent>`. A Failed spawn does not retry: it waits for a person. |
 | A direct `send` wakes an idle agent. A broadcast to `#channel` reaches members at their next turn, unless `urgent: true`. | Direct messages for orders. Broadcasts only for news that can wait, or with `urgent`. |
 | You wake when a task in your channel closes, gets stuck, or needs a human, and when anyone sends you a message. | End your turn while you wait. Do not poll `task_list` in a loop. |
 | A worker can move to another host when its host sleeps or fails. It reads `session_history` and continues. At most one turn is lost. | A quiet worker is not a failure. Check `members` for `online` before you act on silence. |
@@ -110,7 +112,11 @@ the rest:
   brief again. After two failed tries, tell the user and suggest a stronger harness.
 - **A task needs a human:** put the question to the user in this session, with the
   background and your suggested default. Do not guess product decisions.
-- **`placed: false`:** nothing. The spawn is queued.
+- **Long wait instead of polling:** `wait(channel, task, until, timeout_secs)` (MCP) or
+  `borant wait --task CHANNEL/ID` returns when the task reaches a named state, woken by
+  a direct message, also across a hub restart. For a task that needs a person:
+  `borant inbox`, then `borant answer CHANNEL/ID <text>` — CLI calls, not MCP tools.
+- **`placed: false`:** nothing. The spawn is queued, and the record survives a hub restart.
 - **All tasks closed:** check that every PR is merged. Send each worker "project done"
   as a direct message. Report to the user: task, PR, state.
 
@@ -118,6 +124,8 @@ the rest:
 
 - Only the owner merges. Releases, deploys, and person-only steps (secrets, approvals,
   labels) run only when the user asked or a standing permission covers them.
+- Only the channel owner (or a person) closes a task as `done`; a worker's done-close is
+  refused, so the owner closes after the merge.
 - When the user puts the project in auto-pilot, do every merge and step the tasks
   need, then report. Stop only for a permission the harness denied, or a judgment that
   must be a person's.
@@ -130,7 +138,7 @@ the rest:
 |---|---|
 | "The worker should clone the repo first" | It is already in its clone. Use a project channel, or push your branch before the spawn. |
 | "Spawn returned placed: false, retry" | It is queued. Wait. |
-| "Tell the worker to stop when it is done" | No tool stops it. Give it the next task. |
+| "Tell the worker to stop when it is done" | Bind it to its task with `stop_on_close`, so the slot frees on close; otherwise `borant cancel <agent>`. |
 | "Broadcast 'all done' to the channel" | Idle workers do not see it. Send directly. |
 | "Close the task when the PR opens" | Close it after the merge. The next tasks depend on it. |
 | "Wait for that PR to merge, to avoid a conflict" | Run both. Rebase the later one yourself. |

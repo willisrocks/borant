@@ -12,11 +12,13 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move sandbox"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue sandbox"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
-# image that carries bubblewrap.
-SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|docker/compose\.yaml$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
+# image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
+# scenario's one-slot host lives in that file too, so a change to it runs
+# every scenario.
+SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
 
 # The scenarios that a diff touches. Every scenario drives the same swarm, so
 # a change to one crate can break all of them: only the paths that no
@@ -361,6 +363,79 @@ sandbox_reads() {
   printf '%s\n' "$logged" | grep -q '^READ own.txt ok' &&
     printf '%s\n' "$logged" | grep -q '^READ /root/.ssh/marker failed' &&
     printf '%s\n' "$logged" | grep -q '^READ /work/sib/notes.txt failed'
+}
+
+# The spawn queue: a host with one slot fills, the next spawn waits in the
+# state store of the hub across a hub restart, and the freed slot starts it
+# with its prompt. The scenario starts host-q on demand, because no host of
+# the swarm has one slot, and it makes its own channel so that it also runs
+# alone.
+scenario_queue() {
+  dc up -d host-q >/dev/null || return 1
+  host_online() {
+    borant_on host-a hosts | jq -e --arg h "$1" 'any(.[]; .host.name == $h and .online)'
+  }
+  wait_for "host-q online" host_online host-q || return 1
+
+  start_agent host-a qboss
+  wait_for "qboss registered" is_at qboss host-a || return 1
+  borant_on host-c send qboss "CHANNEL queue" >/dev/null
+  wait_for "channel queue" log_has host-a qboss "CHANNEL queue ok" || return 1
+
+  # The prompt is the text of the file, and the fake harness logs it.
+  on host-a sh -c 'printf "%s\n" queue-fill-prompt-ok > /tmp/q-fill.md' || return 1
+  on host-a sh -c 'printf "%s\n" queue-wait-prompt-ok > /tmp/q-wait.md' || return 1
+
+  # The first spawn fills the one slot of host-q.
+  local out
+  out=$(borant_on host-a spawn --channel queue --prompt-file /tmp/q-fill.md \
+    --harness fake --host host-q --name qfill --key q-fill) || return 1
+  case "$out" in
+    "agent qfill placed"*) ;;
+    *) echo "  qfill: $out" >&2; return 1 ;;
+  esac
+  wait_for "qfill on host-q" is_at qfill host-q || return 1
+
+  # The second spawn finds host-q full, so the hub queues it.
+  out=$(borant_on host-a spawn --channel queue --prompt-file /tmp/q-wait.md \
+    --harness fake --host host-q --name qwait --key q-wait) || return 1
+  [ "$out" = "agent qwait queued" ] \
+    || { echo "  qwait: $out (host-q's max_agents is not 1)" >&2; return 1; }
+  queue_holds() {
+    borant_on host-a ps --queued --json |
+      jq -e 'any(.[]; .agent == "qwait" and .state == "queued")'
+  }
+  wait_for "qwait in the queue" queue_holds || return 1
+
+  # The queue is a record of the state store, so a restarted hub holds it.
+  # The move scenario leaves the swarm on hub2, whose hub process runs inside
+  # a `sleep infinity` container, so that is the hub to restart; a run of this
+  # scenario alone still serves from hub.
+  if [ "$(docker inspect --format '{{.State.Running}}' "$(container hub2)" 2>/dev/null)" = "true" ]; then
+    dc --profile move restart hub2 >/dev/null
+    dc --profile move exec -d -T hub2 borant hub
+  else
+    dc restart hub >/dev/null
+  fi
+  WAIT=90 wait_for "the queue survived the hub restart" queue_holds || return 1
+
+  # The freed slot starts the queued agent with its prompt.
+  borant_on host-a cancel qfill >/dev/null || return 1
+  wait_for "qwait starts" log_has host-q qwait "PROMPT queue-wait-prompt-ok" || return 1
+  wait_for "qwait holds host-q" is_at qwait host-q || return 1
+
+  # The same key returns the agent of the first spawn, not a second one.
+  out=$(borant_on host-a spawn --channel queue --prompt-file /tmp/q-wait.md \
+    --harness fake --host host-q --name qwait --key q-wait) || return 1
+  case "$out" in
+    "agent qwait placed"*|"agent qwait queued") ;;
+    *) echo "  the retry of q-wait answered: $out" >&2; return 1 ;;
+  esac
+
+  # Leave no agent of this scenario for a later one.
+  borant_on host-a cancel qwait >/dev/null 2>&1
+  dc stop host-q >/dev/null 2>&1
+  return 0
 }
 
 # The elastic scenario of the elastic compute design ("Tests"): a hub with no
