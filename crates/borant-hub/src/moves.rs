@@ -14,6 +14,7 @@ use borant_core::{
 };
 use serde_json::{Value, json};
 
+use crate::members::Assign;
 use crate::{Hub, Memory, PendingMove};
 
 /// The first prompt of a session after a takeover or a planned move.
@@ -100,6 +101,25 @@ impl Hub {
             tracing::warn!(agent = %agent.id, "placement skipped: a live session holds the lease");
             return Ok(false);
         }
+        let Some(info) = views
+            .iter()
+            .find(|v| v.info.name == host)
+            .map(|v| v.info.clone())
+        else {
+            return Ok(false);
+        };
+        // The member of each bundle with several members, for this host and
+        // harness. A bundle whose members are all limited keeps the agent
+        // pending: the tick places it again until a member resets.
+        let members = match self.assign_members(mem, agent, &info, harness).await? {
+            Assign::Members(members) => members,
+            Assign::Wait => return Ok(false),
+        };
+        if agent.members != members {
+            let mut updated = agent.clone();
+            updated.members = members.clone();
+            self.store.upsert(&keys::agent(&agent.id), &updated).await?;
+        }
         let base = doc.as_ref().map(|d| d.value.clone()).unwrap_or(Lease {
             agent: agent.id.clone(),
             token: FencingToken(0),
@@ -155,7 +175,7 @@ impl Hub {
             model,
             project,
             reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
-            members: agent.members.clone(),
+            members,
         };
         let move_event = SessionEvent {
             id: EventId::new(),

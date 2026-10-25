@@ -8,6 +8,7 @@
 mod calls;
 pub mod export;
 mod leases;
+mod members;
 mod moves;
 mod prune;
 mod store;
@@ -21,11 +22,14 @@ use borant_core::model::{HubLease, Lease, MoveReason};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
-use borant_core::{AgentId, Clock, FencingToken, HostName, Timestamp, keys, subjects};
+use borant_core::{
+    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, Timestamp, keys, subjects,
+};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::members::Report;
 use crate::store::Store;
 
 #[derive(Debug, Clone)]
@@ -69,6 +73,10 @@ pub(crate) struct Memory {
     pub claims_released: HashSet<AgentId>,
     /// When this hub started serving, for the quiet period after a restart.
     pub started: Option<Timestamp>,
+    /// The latest usage report of each bundle member, in memory only.
+    pub reports: HashMap<(BundleName, MemberName), Report>,
+    /// Bundles whose limited members were already logged once.
+    pub limit_warned: HashSet<BundleName>,
     pub maintenance: bool,
 }
 

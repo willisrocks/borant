@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::model::{Harness, Project, Target};
+use borant_core::model::{Harness, Project, Target, UsageWindow};
 use borant_core::proto::{MoveSelector, MoveTarget, ToolCall};
-use borant_core::{AgentId, ChannelName, HostName, ProjectName};
+use borant_core::{AgentId, BundleName, ChannelName, HostName, MemberName, ProjectName, Timestamp};
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
 use clap::{Parser, Subcommand};
@@ -96,6 +96,13 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ProjectCmd,
     },
+    /// Report the usage of a bundle member.
+    Usage {
+        #[command(subcommand)]
+        cmd: UsageCmd,
+    },
+    /// List the bundle members, their state, and their latest usage report.
+    Members,
     /// Attach this terminal to the session of an agent.
     Attach { agent: AgentId },
     /// Serve the Borant MCP tools on stdio (Claude Code starts this).
@@ -151,6 +158,23 @@ pub enum ProjectCmd {
     },
     /// List all projects.
     List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UsageCmd {
+    /// Send the usage windows of one member, from a harness or by hand.
+    Report {
+        /// The bundle, for example claude_auth.
+        #[arg(long)]
+        bundle: BundleName,
+        /// The member of the bundle, for example a.
+        #[arg(long)]
+        member: MemberName,
+        /// NAME:USED:RESETS_AT, repeatable. USED is a share from 0 to 1 and
+        /// RESETS_AT is RFC 3339, for example 5h:0.72:2026-10-25T12:00:00Z.
+        #[arg(long = "window", required = true)]
+        window: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -251,6 +275,67 @@ fn render_prune(v: &Value) -> String {
     );
     out.push_str("Dry run: nothing was deleted.\n");
     out
+}
+
+/// Parses `NAME:USED:RESETS_AT`: USED is a share from 0 to 1, and RESETS_AT is
+/// an RFC 3339 time. The reset time holds colons, so USED ends at the first
+/// colon after the name.
+fn parse_window(text: &str) -> anyhow::Result<UsageWindow> {
+    let shape = || anyhow!("{text} is not NAME:USED:RESETS_AT");
+    let (name, rest) = text.split_once(':').ok_or_else(shape)?;
+    let (used, resets_at) = rest.split_once(':').ok_or_else(shape)?;
+    if name.is_empty() {
+        bail!("{text} has no window name");
+    }
+    let used: f64 = used
+        .parse()
+        .with_context(|| format!("{text}: {used} is not a number"))?;
+    if !(0.0..=1.0).contains(&used) {
+        bail!("{text}: {used} is not a share from 0 to 1");
+    }
+    Ok(UsageWindow {
+        name: name.to_owned(),
+        used,
+        resets_at: rfc3339(resets_at)?,
+    })
+}
+
+/// Parses an RFC 3339 date-time into Unix milliseconds.
+fn rfc3339(text: &str) -> anyhow::Result<Timestamp> {
+    use toml::value::{Datetime, Offset};
+    let at: Datetime = text
+        .parse()
+        .with_context(|| format!("{text} is not an RFC 3339 time"))?;
+    let date = at.date.context("the time has no date")?;
+    let time = at.time.context("the time has no time of day")?;
+    let offset_mins = match at.offset {
+        Some(Offset::Z) => 0,
+        Some(Offset::Custom { minutes }) => minutes,
+        None => bail!("{text} has no UTC offset, for example Z"),
+    };
+    let second = i64::from(time.second.context("the time has no seconds")?);
+    let millis = i64::from(time.nanosecond.unwrap_or(0) / 1_000_000);
+    let secs = days_from_civil(
+        i64::from(date.year),
+        u32::from(date.month),
+        u32::from(date.day),
+    ) * 86_400
+        + i64::from(time.hour) * 3_600
+        + i64::from(time.minute) * 60
+        + second
+        - i64::from(offset_mins) * 60;
+    Ok(Timestamp(secs * 1_000 + millis))
+}
+
+/// The days from 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = i64::from((month + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
@@ -397,6 +482,31 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
         Command::Project {
             cmd: ProjectCmd::List,
         } => pretty(&call(&c, ToolCall::ProjectList).await?),
+        Command::Usage {
+            cmd:
+                UsageCmd::Report {
+                    bundle,
+                    member,
+                    window,
+                },
+        } => {
+            let windows = window
+                .iter()
+                .map(|w| parse_window(w))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            pretty(
+                &call(
+                    &c,
+                    ToolCall::UsageReport {
+                        bundle,
+                        member,
+                        windows,
+                    },
+                )
+                .await?,
+            );
+        }
+        Command::Members => pretty(&call(&c, ToolCall::ListMembers).await?),
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
@@ -553,5 +663,32 @@ mod tests {
             out,
             "Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\nKept (1):\n  busy                     session\nTotals: candidates=1 keys=2 bytes=42\nDry run: nothing was deleted.\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn usage_window_parses_a_name_a_share_and_a_reset() {
+        let w = parse_window("5h:0.72:2026-10-25T12:00:00Z").unwrap();
+        assert_eq!(w.name, "5h");
+        assert_eq!(w.used, 0.72);
+        // 2026-10-25T12:00:00Z in milliseconds.
+        assert_eq!(w.resets_at, Timestamp(1_792_929_600_000));
+        // The reset time holds colons; the share ends at the first one.
+        let w = parse_window("weekly:1:2026-10-25T12:00:00.250+02:00").unwrap();
+        assert_eq!(w.used, 1.0);
+        assert_eq!(w.resets_at, Timestamp(1_792_922_400_250));
+    }
+
+    #[test]
+    fn usage_window_rejects_a_bad_share_or_time() {
+        assert!(parse_window("5h:1.5:2026-10-25T12:00:00Z").is_err());
+        assert!(parse_window("5h:many:2026-10-25T12:00:00Z").is_err());
+        assert!(parse_window("5h:0.5:yesterday").is_err());
+        assert!(parse_window("5h:0.5:2026-10-25T12:00:00").is_err());
+        assert!(parse_window("0.5").is_err());
     }
 }
