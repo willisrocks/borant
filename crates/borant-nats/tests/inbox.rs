@@ -85,3 +85,51 @@ async fn a_recovered_inbox_keeps_the_backlog_once() {
         "the waiting messages come back once each"
     );
 }
+
+#[tokio::test]
+async fn inbox_nak_hands_the_message_back_at_once() {
+    let Some((n, _url)) = nats().await else {
+        return;
+    };
+    let bus = n.bus();
+    let agent: AgentId = testing::unique("a").parse().expect("an agent id");
+    let inbox = subjects::inbox(&agent, &[]);
+    bus.ensure_inbox(&agent, &inbox)
+        .await
+        .expect("ensure the inbox");
+    let env = testing::envelope(Target::Agent(agent.clone()), "nak me");
+    bus.publish(&inbox[0], &env).await.expect("publish");
+
+    let mut got = bus
+        .pull(&agent, 16, Duration::from_secs(2))
+        .await
+        .expect("pull");
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        bus.inbox_stats(&agent).await.expect("stats").ack_pending,
+        1,
+        "a delivery waits for its ack"
+    );
+    got.pop().unwrap().acker.nak().await.expect("nak");
+
+    // A nak hands the message back at once. Without it the inbox would wait
+    // for the ack wait of 60 s.
+    let start = std::time::Instant::now();
+    let mut again = bus
+        .pull(&agent, 16, Duration::from_secs(2))
+        .await
+        .expect("pull");
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_eq!(again[0].envelope.id, env.id);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "the message did not come back at once: {:?}",
+        start.elapsed()
+    );
+    again.pop().unwrap().acker.ack().await.expect("ack");
+    assert_eq!(
+        bus.inbox_stats(&agent).await.expect("stats").pending,
+        0,
+        "the ack settles the message"
+    );
+}

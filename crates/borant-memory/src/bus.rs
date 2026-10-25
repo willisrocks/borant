@@ -49,6 +49,8 @@ struct Inbox {
     /// The inbox gets only messages after this sequence number.
     start: u64,
     inflight: BTreeMap<u64, Instant>,
+    /// Messages that their host handed back: due on the next pull.
+    due: BTreeSet<u64>,
     acked: BTreeSet<u64>,
 }
 
@@ -94,8 +96,23 @@ impl MemoryBus {
         let now = Instant::now();
         let mut out = Vec::new();
         let mut seqs = Vec::new();
+        // A message that a host handed back with a nak is due at once, not
+        // after the redeliver time of an unacked one.
+        while seqs.len() < max {
+            let Some(seq) = inbox.due.first().copied() else {
+                break;
+            };
+            inbox.due.remove(&seq);
+            if msgs
+                .iter()
+                .any(|(s, subject, _)| *s == seq && inbox.wants(subject))
+            {
+                inbox.inflight.insert(seq, now);
+                seqs.push(seq);
+            }
+        }
         for (seq, at) in inbox.inflight.iter_mut() {
-            if out.len() >= max {
+            if seqs.len() >= max {
                 break;
             }
             if now.duration_since(*at) >= REDELIVER_AFTER {
@@ -143,6 +160,16 @@ impl Acker for MemoryAck {
         if let Some(inbox) = log.inboxes.get_mut(&self.agent) {
             inbox.inflight.remove(&self.seq);
             inbox.acked.insert(self.seq);
+        }
+        Ok(())
+    }
+
+    async fn nak(self: Box<Self>) -> PortResult<()> {
+        self.bus.inner.available.check()?;
+        let mut log = self.bus.log();
+        if let Some(inbox) = log.inboxes.get_mut(&self.agent) {
+            inbox.inflight.remove(&self.seq);
+            inbox.due.insert(self.seq);
         }
         Ok(())
     }
@@ -198,6 +225,7 @@ impl MessageBus for MemoryBus {
                 cursor: seq,
                 start: seq,
                 inflight: BTreeMap::new(),
+                due: BTreeSet::new(),
                 acked: BTreeSet::new(),
             });
         Ok(())

@@ -23,6 +23,10 @@ pub struct InboxStats {
 #[async_trait::async_trait]
 pub trait Acker: Send + Sync {
     async fn ack(self: Box<Self>) -> PortResult<()>;
+    /// Hands the message back to the inbox, so it is delivered again at once
+    /// instead of after the ack wait. A host that cannot process a delivery,
+    /// because its session is paused or fenced, naks it.
+    async fn nak(self: Box<Self>) -> PortResult<()>;
 }
 
 pub struct Delivery {

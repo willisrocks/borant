@@ -88,13 +88,20 @@ impl Host {
     /// Logs a received message, acks it, and queues it for the session.
     async fn receive(&self, agent: &AgentId, id: SessionId, d: Delivery) {
         // A pull that started before a pause or a fence must not take the
-        // message. Without an ack, the bus delivers it again later.
+        // message. A nak hands it back at once, so the inbox delivers it again
+        // within seconds instead of after its ack wait.
         let blocked = self
             .state()
             .sessions
             .get(&id)
             .is_none_or(|s| s.paused || s.fenced.is_some());
         if blocked {
+            let message = d.envelope.id;
+            if let Err(e) = d.acker.nak().await {
+                tracing::warn!(%agent, %message, "nak failed, the message waits for its ack wait: {e}");
+            } else {
+                tracing::debug!(%agent, %message, "handed the message back: the session is paused or fenced");
+            }
             return;
         }
         let env = d.envelope;
