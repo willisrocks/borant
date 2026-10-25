@@ -14,21 +14,24 @@ general plan gets wrong.
 
 | Fact | So |
 |---|---|
-| A spawned worker starts in its own clone of your repo, in `~/.borant/work/<agent>/<repo>`, on your current branch if that branch exists on `origin`. Otherwise it gets the default branch. | Push your branch before you spawn. Never tell a worker to clone. Work outside its clone is not checkpointed and is lost when the worker moves. |
+| A spawn in a channel with a project starts in its own clone of the project, on the channel branch. A missing channel branch starts from the project's default branch. A channel without a project copies your repo, on your branch if it exists on `origin`, else the default branch. | Use a project channel. Without one, push your branch before you spawn. Never tell a worker to clone. Work outside its clone is not checkpointed and is lost when the worker moves. |
 | `spawn` returning `placed: false` means queued. The hub starts the worker when a host slot opens. | Do nothing. Never spawn again for the same task: that makes a second worker. |
 | Each host runs a fixed number of agents, and an idle worker keeps its slot. No tool stops a worker yet. | Give the next ready task to an idle worker before you spawn a new one. Spawn only for work that runs in parallel. |
 | A direct `send` wakes an idle agent. A broadcast to `#channel` reaches members at their next turn, unless `urgent: true`. | Direct messages for orders. Broadcasts only for news that can wait, or with `urgent`. |
 | You wake when a task in your channel closes, gets stuck, or needs a human, and when anyone sends you a message. | End your turn while you wait. Do not poll `task_list` in a loop. |
 | A worker can move to another host when its host sleeps or fails. It reads `session_history` and continues. At most one turn is lost. | A quiet worker is not a failure. Check `members` for `online` before you act on silence. |
-| `spawn` has no model argument yet. The worker uses its harness default. | Pick the harness: `omp` (or `pi`) for cheap workers, `claude-code` for hard work. Ask the user before you move work to a more expensive harness. |
+| `spawn` takes `harness` and `model`. The model reaches the harness as `--model`. If placement must use another harness, the hub drops the model. | Always set both, as a pair the user approved: for example cheap workers on `omp` with a cheap model, hard work on `claude-code`. Ask the user before you move work to a more expensive pair, unless they gave standing permission. |
+| `spawn` takes `host`. | A helper for your own steps (rebases, release notes, releases) runs as `claude-code` on your own host. Brief it like a worker, plus the permissions the user granted for those steps. |
 | `task_list(ready_only: true)` returns open tasks whose `blocked_by` tasks are all closed. | Close a task only when its work is on the base branch, so the tasks after it see real code. |
 | The user is not an agent. `send` cannot reach them. | A question for the user: `task_update(status: "needs_human", attention_msg: ...)`, and say it in this session. |
 
 ## Set up
 
 1. `whoami`. Note your agent ID: workers send to it.
-2. Push your branch. Note the base branch and the focused test command of the repo.
-3. `channel_create` one channel for the project or epic.
+2. Note the base branch and the focused test command of the repo. If the repo is not
+   a Borant project yet, run `borant project add <name> --from-cwd` (`project_list`
+   shows the projects).
+3. `channel_create` one channel for the epic, with `project` and the base `branch`.
 4. Create every task before the first spawn. The body is the worker's brief: the
    acceptance criteria, the files in scope, and the test that proves it. Set
    `blocked_by` for order.
@@ -83,7 +86,7 @@ After the owner says "merged", wait for your next task. Do not start other work.
 
 | Thought | Do instead |
 |---|---|
-| "The worker should clone the repo first" | It is already in its clone. Push your branch before the spawn. |
+| "The worker should clone the repo first" | It is already in its clone. Use a project channel, or push your branch before the spawn. |
 | "Spawn returned placed: false, retry" | It is queued. Wait. |
 | "Tell the worker to stop when it is done" | No tool stops it. Give it the next task. |
 | "Broadcast 'all done' to the channel" | Idle workers do not see it. Send directly. |
