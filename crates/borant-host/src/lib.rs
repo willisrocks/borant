@@ -164,6 +164,8 @@ pub(crate) struct Inner {
     pub last_ok: Mutex<Instant>,
     /// True while heartbeats fail, so a run of failures logs one `warn`.
     pub heartbeat_failing: AtomicBool,
+    /// True while outbox flushes fail, so a run of failures logs one `warn`.
+    pub outbox_failing: AtomicBool,
 }
 
 impl std::fmt::Debug for Inner {
@@ -213,6 +215,7 @@ impl Host {
                 }),
                 last_ok: Mutex::new(Instant::now()),
                 heartbeat_failing: AtomicBool::new(false),
+                outbox_failing: AtomicBool::new(false),
             }),
         }
     }

@@ -1,6 +1,7 @@
 //! The inbox of each local agent, delivery into sessions, local calls, the
 //! session log, and the outbox.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use borant_core::model::{
@@ -456,10 +457,17 @@ impl Host {
                     Ok(env) => match self.inner.bus.publish(&item.target, &env).await {
                         Ok(()) => true,
                         Err(e) => {
-                            tracing::warn!(
-                                subject = %item.target,
-                                "outbox publish failed, will retry: {e}"
-                            );
+                            if self.outbox_failing_now() {
+                                tracing::warn!(
+                                    subject = %item.target,
+                                    "outbox publish failed, will retry: {e}"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    subject = %item.target,
+                                    "outbox publish failed, will retry: {e}"
+                                );
+                            }
                             false
                         }
                     },
@@ -478,10 +486,17 @@ impl Host {
                         (Ok(agent), Ok(ev)) => match self.inner.store.append(&agent, &ev).await {
                             Ok(_) => true,
                             Err(e) => {
-                                tracing::warn!(
-                                    %agent,
-                                    "outbox append failed, will retry: {e}"
-                                );
+                                if self.outbox_failing_now() {
+                                    tracing::warn!(
+                                        %agent,
+                                        "outbox append failed, will retry: {e}"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        %agent,
+                                        "outbox append failed, will retry: {e}"
+                                    );
+                                }
                                 false
                             }
                         },
@@ -510,6 +525,14 @@ impl Host {
                 return;
             }
         }
+        if self.inner.outbox_failing.swap(false, Ordering::Relaxed) {
+            tracing::info!("outbox flush recovered");
+        }
+    }
+
+    /// True on the first failure of a run, and marks the run as failing.
+    fn outbox_failing_now(&self) -> bool {
+        !self.inner.outbox_failing.swap(true, Ordering::Relaxed)
     }
 
     pub(crate) async fn notify_loop(self, shutdown: CancellationToken) {
