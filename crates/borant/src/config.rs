@@ -478,6 +478,36 @@ fn open_provisioners(
     Ok(out)
 }
 
+/// The runner config of one `[notifiers.<name>]` entry, after the checks that
+/// a daemon start makes. `borant doctor` runs the `describe` handshake with
+/// it, without opening a notifier.
+pub fn notifier_exec(file: &NotifierFile) -> anyhow::Result<ExecConfig> {
+    anyhow::ensure!(
+        file.adapter == "exec",
+        "unknown adapter {:?}, only \"exec\" exists",
+        file.adapter
+    );
+    anyhow::ensure!(!file.command.is_empty(), "the notifier has no command");
+    let credential = match &file.credential {
+        None => None,
+        Some(c) => Some((
+            env("CREDENTIALS_DIRECTORY")
+                .map(PathBuf::from)
+                .context("the notifier names a credential")?,
+            c.clone(),
+        )),
+    };
+    Ok(ExecConfig {
+        command: file.command.clone(),
+        env: BTreeMap::new(),
+        credential,
+        timeout: Duration::from_secs(file.timeout_secs.unwrap_or(30)),
+        // A notice is not a secret, but the runner does not know what the
+        // plugin prints, so its stderr stays out of the log.
+        log_stderr: false,
+    })
+}
+
 /// Opens the notifier of `[alerts].notifier`, if it names one. The desktop
 /// notifier is the default of a host, so `None` leaves that choice to the
 /// caller.
@@ -491,30 +521,7 @@ pub fn open_notifier(
     let file = files.get(name).with_context(|| {
         format!("[alerts] names the notifier {name:?}, which [notifiers] does not define")
     })?;
-    anyhow::ensure!(
-        file.adapter == "exec",
-        "notifier {name}: unknown adapter {:?}, only \"exec\" exists",
-        file.adapter
-    );
-    anyhow::ensure!(!file.command.is_empty(), "notifier {name} has no command");
-    let credential = match &file.credential {
-        None => None,
-        Some(c) => Some((
-            env("CREDENTIALS_DIRECTORY")
-                .map(PathBuf::from)
-                .context("the notifier names a credential")?,
-            c.clone(),
-        )),
-    };
-    let exec = ExecConfig {
-        command: file.command.clone(),
-        env: BTreeMap::new(),
-        credential,
-        timeout: Duration::from_secs(file.timeout_secs.unwrap_or(30)),
-        // A notice is not a secret, but the runner does not know what the
-        // plugin prints, so its stderr stays out of the log.
-        log_stderr: false,
-    };
+    let exec = notifier_exec(file).with_context(|| format!("notifier {name}"))?;
     Ok(Some(Box::new(ExecNotifier::new(exec))))
 }
 

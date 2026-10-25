@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod doctor;
 mod events;
 mod hook;
 mod mcp;
@@ -37,8 +38,11 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
-    // Hooks and the MCP server must stay silent unless asked.
-    let quiet = matches!(cli.command, Command::Hook { .. } | Command::Mcp);
+    // Hooks, the MCP server, and doctor must stay silent unless asked.
+    let quiet = matches!(
+        cli.command,
+        Command::Hook { .. } | Command::Mcp | Command::Doctor { .. }
+    );
     init_tracing(!quiet || std::env::var_os("BORANT_LOG").is_some());
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -63,6 +67,7 @@ fn main() -> std::process::ExitCode {
                 cmd: Some(HubCmd::Move { ssh_host }),
             } => roles::hub_move(&ssh_host).await.map(|_| 0),
             Command::Host => roles::run_host().await.map(|_| 0),
+            Command::Doctor { json } => doctor::run(json).await,
             Command::Mcp => mcp::run().await.map(|_| 0),
             Command::Hook { event } => Ok(hook::run(&event).await),
             other => cli::run_user_command(other).await,
