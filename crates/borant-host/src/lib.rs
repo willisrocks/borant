@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use borant_core::model::{Envelope, Harness, HostInfo, MemberBundle};
 use borant_core::ports::secrets::{Bundle, BundleName, SecretStore};
-use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
+use borant_core::ports::{EventLog, LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
@@ -313,6 +313,9 @@ pub(crate) struct State {
     /// False until the saved sessions are loaded. Until then, an unknown
     /// session can still be one that the restore brings back.
     pub restored: bool,
+    /// The start of the minute and its count for each rate-limited event of
+    /// an agent and kind, for the `delivery.*` events.
+    pub event_limited: HashMap<(AgentId, &'static str), (Timestamp, u64)>,
 }
 
 pub(crate) struct Inner {
@@ -322,6 +325,9 @@ pub(crate) struct Inner {
     pub clock: Arc<dyn Clock>,
     pub launcher: Box<dyn Launcher>,
     pub notifier: Option<Box<dyn Notifier>>,
+    /// The swarm event stream, when the daemon has one. Without it the host
+    /// emits no events and `/v1/events` answers `unavailable`.
+    pub events: Option<Arc<dyn EventLog>>,
     pub outbox: Outbox,
     pub state: Mutex<State>,
     pub last_ok: Mutex<Instant>,
@@ -346,6 +352,8 @@ pub struct Host {
 }
 
 impl Host {
+    /// Builds a host from the ports of its daemon.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cfg: HostConfig,
         bus: Arc<dyn MessageBus>,
@@ -353,6 +361,7 @@ impl Host {
         clock: Arc<dyn Clock>,
         launcher: Box<dyn Launcher>,
         notifier: Option<Box<dyn Notifier>>,
+        events: Option<Arc<dyn EventLog>>,
         outbox: Outbox,
     ) -> Self {
         let wakes = cfg.wakes_per_hour;
@@ -364,6 +373,7 @@ impl Host {
                 clock,
                 launcher,
                 notifier,
+                events,
                 outbox,
                 state: Mutex::new(State {
                     sessions: HashMap::new(),
@@ -377,6 +387,7 @@ impl Host {
                     up_since: None,
                     outage_over: true,
                     restored: false,
+                    event_limited: HashMap::new(),
                 }),
                 last_ok: Mutex::new(Instant::now()),
                 heartbeat_failing: AtomicBool::new(false),

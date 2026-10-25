@@ -74,6 +74,7 @@ impl Fx {
             Arc::new(SystemClock),
             Box::new(ProcessLauncher::new(dir.path().join("logs"))),
             None,
+            None,
             Outbox::in_memory().unwrap(),
         );
         let hub_stop = if with_hub {

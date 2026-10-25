@@ -4,6 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use borant_core::events::{SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskStatus,
 };
@@ -92,6 +93,14 @@ impl Host {
         if seen || own_broadcast {
             if let Err(e) = d.acker.ack().await {
                 tracing::warn!(%agent, "ack failed, the message can arrive again: {e}");
+                self.delivery_event(agent, "delivery.ack_failed", |count| {
+                    SwarmEventBody::DeliveryAckFailed {
+                        message: env.id,
+                        error: e.to_string(),
+                        count,
+                    }
+                })
+                .await;
             }
             return;
         }
@@ -105,10 +114,26 @@ impl Host {
         if let Err(e) = self.inner.store.append(agent, &ev).await {
             // Without the log entry, the message must stay in the inbox.
             tracing::warn!(%agent, "cannot log message yet: {e}");
+            self.delivery_event(agent, "delivery.append_failed", |count| {
+                SwarmEventBody::DeliveryAppendFailed {
+                    message: env.id,
+                    error: e.to_string(),
+                    count,
+                }
+            })
+            .await;
             return;
         }
         if let Err(e) = d.acker.ack().await {
             tracing::warn!(%agent, "ack failed, the message can arrive again: {e}");
+            self.delivery_event(agent, "delivery.ack_failed", |count| {
+                SwarmEventBody::DeliveryAckFailed {
+                    message: env.id,
+                    error: e.to_string(),
+                    count,
+                }
+            })
+            .await;
         }
         let now = self.inner.clock.now();
         let (wake, over_limit) = {
@@ -130,6 +155,13 @@ impl Host {
                 Sender::Agent(a) => Some(a.clone()),
                 Sender::Human => None,
             };
+            self.delivery_event(agent, "delivery.wake_limited", |count| {
+                SwarmEventBody::DeliveryWakeLimited {
+                    message: env.id,
+                    count,
+                }
+            })
+            .await;
             self.wake_limit_notice(agent, sender.as_ref()).await;
         }
         tracing::debug!(%agent, id = %env.id, wake, "message queued");
@@ -524,6 +556,38 @@ impl Host {
                             subject = %item.target,
                             "drop undecodable outbox envelope: {e}"
                         );
+                        true
+                    }
+                },
+                OutboxKind::Event => match serde_json::from_slice::<SwarmEvent>(&item.payload) {
+                    Ok(event) => match &self.inner.events {
+                        Some(log) => match log.publish(&event).await {
+                            Ok(()) => true,
+                            Err(e) => {
+                                if self.outbox_failing_now() {
+                                    tracing::warn!(
+                                        kind = %item.target,
+                                        "outbox event failed, will retry: {e}"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        kind = %item.target,
+                                        "outbox event failed, will retry: {e}"
+                                    );
+                                }
+                                false
+                            }
+                        },
+                        None => {
+                            tracing::debug!(
+                                kind = %item.target,
+                                "drop an outbox event: the daemon has no event log"
+                            );
+                            true
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(kind = %item.target, "drop undecodable outbox event: {e}");
                         true
                     }
                 },

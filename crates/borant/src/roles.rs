@@ -38,6 +38,7 @@ async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)>
     let mut cfg = HubConfig {
         lease: file.timing.lease_config()?,
         elastic: file.elastic_config()?,
+        roles: file.roles,
         ..HubConfig::default()
     };
     if let Some(i) = file.instance {
@@ -105,6 +106,9 @@ pub async fn run_host() -> anyhow::Result<()> {
         Arc::new(SystemClock),
         launcher,
         Some(Box::new(DesktopNotifier)),
+        // The host writes swarm events once `borant-nats` has the event log
+        // adapter; until then it emits none and `/v1/events` says so.
+        None,
         outbox,
     );
     if socket.as_os_str().len() > 100 {
