@@ -11,7 +11,7 @@ use borant_core::proto::{
 };
 use borant_core::{HostName, ManualClock, SessionId, Timestamp, subjects};
 use borant_hub::{Hub, HubConfig};
-use borant_memory::{MemoryBus, MemorySession, MemoryState};
+use borant_memory::{MemoryBus, MemoryEventLog, MemorySession, MemoryState};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -21,6 +21,7 @@ pub struct Fx {
     pub state: MemoryState,
     pub bus: MemoryBus,
     pub sessions: MemorySession,
+    pub events: MemoryEventLog,
     pub clock: Arc<ManualClock>,
 }
 
@@ -46,19 +47,24 @@ impl Fx {
         let state = MemoryState::new();
         let bus = MemoryBus::new();
         let sessions = MemorySession::new();
+        let events = MemoryEventLog::new();
         let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
-        let hub = Arc::new(Hub::new(
-            Arc::new(state.clone()),
-            Arc::new(bus.clone()),
-            Arc::new(sessions.clone()),
-            clock.clone(),
-            cfg,
-        ));
+        let hub = Arc::new(
+            Hub::new(
+                Arc::new(state.clone()),
+                Arc::new(bus.clone()),
+                Arc::new(sessions.clone()),
+                clock.clone(),
+                cfg,
+            )
+            .with_events(Arc::new(events.clone())),
+        );
         Self {
             hub,
             state,
             bus,
             sessions,
+            events,
             clock,
         }
     }

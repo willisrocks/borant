@@ -16,6 +16,11 @@ use std::path::{Path, PathBuf};
 pub struct SandboxPlan {
     /// The sandbox program, for example `bwrap` or a pinned path.
     pub program: String,
+    /// The system paths that exist on this host and that a harness needs: the
+    /// store and the nix-ld interpreter on NixOS, `/lib64` for a generic ELF,
+    /// the resolver, and TLS. A bind of a missing source fails the whole
+    /// launch, so the host passes only the ones that exist.
+    pub system: Vec<PathBuf>,
     /// The home directory of the host user. It starts empty inside.
     pub home: PathBuf,
     /// The clone of the agent: the only work directory it sees.
@@ -40,35 +45,11 @@ pub struct SandboxPlan {
 /// The program to launch: the sandbox program, its binds, then `program`.
 pub fn wrap(plan: &SandboxPlan, program: Vec<String>) -> Vec<String> {
     let mut argv = vec![plan.program.clone()];
-    argv.extend(
-        [
-            "--die-with-parent",
-            "--unshare-ipc",
-            "--new-session",
-            "--ro-bind",
-            "/nix/store",
-            "/nix/store",
-            // The nix-ld interpreter of the harness binaries: both are generic
-            // Linux executables, and without it the exec fails.
-            "--ro-bind",
-            "/run/current-system",
-            "/run/current-system",
-            "--ro-bind",
-            "/lib64",
-            "/lib64",
-            "--ro-bind",
-            "/etc/resolv.conf",
-            "/etc/resolv.conf",
-            "--ro-bind",
-            "/etc/ssl",
-            "/etc/ssl",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-        ]
-        .map(str::to_owned),
-    );
+    argv.extend(["--die-with-parent", "--unshare-ipc", "--new-session"].map(str::to_owned));
+    for path in &plan.system {
+        same(&mut argv, "--ro-bind", path);
+    }
+    argv.extend(["--proc", "/proc", "--dev", "/dev"].map(str::to_owned));
     // An empty /tmp takes the multiplexer socket with it.
     argv.extend(["--tmpfs", "/tmp"].map(str::to_owned));
     // An empty home: every harness path below is a bind of its own.
@@ -115,6 +96,15 @@ mod tests {
         let home = PathBuf::from("/home/chris");
         SandboxPlan {
             program: "bwrap".to_owned(),
+            system: [
+                "/nix/store",
+                "/run/current-system",
+                "/lib64",
+                "/etc/resolv.conf",
+                "/etc/ssl",
+            ]
+            .map(PathBuf::from)
+            .to_vec(),
             home: home.clone(),
             work_dir: home.join(".borant/work/w-1"),
             harness_dirs: vec![home.join(".claude"), home.join(".claude.json")],
@@ -133,6 +123,25 @@ mod tests {
                 .map(str::to_owned)
                 .to_vec(),
         )
+    }
+
+    /// A host without a Nix store binds none of it: a bind of a missing
+    /// source fails the whole launch.
+    #[test]
+    fn a_plan_binds_only_the_system_paths_it_carries() {
+        let mut p = plan();
+        p.system = vec![PathBuf::from("/lib64")];
+        let argv = wrap(&p, vec!["true".to_owned()]);
+        assert!(
+            !argv.iter().any(|a| a == "/nix/store"),
+            "no store in {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "/run/current-system"),
+            "no system in {argv:?}"
+        );
+        let lib = argv.iter().position(|a| a == "/lib64").expect("the lib");
+        assert_eq!(argv[lib - 1], "--ro-bind");
     }
 
     /// The exact argv of a Claude Code launch: every bind, in order, and the

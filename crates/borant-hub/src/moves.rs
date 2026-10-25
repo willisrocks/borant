@@ -102,6 +102,9 @@ impl Hub {
         req.require = role.require.clone();
         req.prefer = role.prefer.clone();
         req.avoid = role.avoid.clone();
+        // A role that asks for a sandbox is placed only on a host that offers
+        // that kind.
+        req.sandbox = role.sandbox;
         if role.on_parent_host
             && let Some(parent) = &agent.parent
             && let Ok(p) = self.agent(parent).await
@@ -380,8 +383,9 @@ impl Hub {
             members,
             bundles: roles::launch_bundles(collection, role),
             git_author: roles::git_author(collection),
-            // A role asks for a sandbox once the host can build one.
-            sandbox: None,
+            // The role says whether the host wraps this launch in the
+            // namespace sandbox.
+            sandbox: role.and_then(|r| r.sandbox),
         };
         let move_event = SessionEvent {
             id: EventId::new(),

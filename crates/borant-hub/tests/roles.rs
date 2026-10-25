@@ -5,7 +5,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use borant_core::model::{Agent, Harness};
+use borant_core::model::{Agent, Harness, HostInfo, SandboxKind};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{
     ApiError, ApiErrorCode, CtlRequest, HostCommand, RegisterSession, Registered, ToolCall,
@@ -33,7 +33,12 @@ fn roles() -> BTreeMap<RoleName, RoleConfig> {
             harness: Some(Harness::ClaudeCode),
             pinned: true,
             one_per: Some(OnePerRule::Collection),
-            spawns: vec![rname("worker"), rname("anchor"), rname("orchestrator")],
+            spawns: vec![
+                rname("worker"),
+                rname("anchor"),
+                rname("orchestrator"),
+                rname("sandboxed"),
+            ],
             skill: Some("borant:chief-of-staff".into()),
             ..Default::default()
         },
@@ -56,6 +61,14 @@ fn roles() -> BTreeMap<RoleName, RoleConfig> {
         },
     );
     roles.insert(rname("outsider"), RoleConfig::default());
+    roles.insert(
+        rname("sandboxed"),
+        RoleConfig {
+            harness: Some(Harness::Fake),
+            sandbox: Some(SandboxKind::Namespace),
+            ..Default::default()
+        },
+    );
     roles.insert(
         rname("auditor"),
         RoleConfig {
@@ -111,7 +124,8 @@ async fn register(
 
 /// Registers the chief `boss` and creates `#api`.
 async fn chief(fx: &Fx) -> Registered {
-    fx.host("h1", &[Harness::ClaudeCode, Harness::Omp]).await;
+    fx.host("h1", &[Harness::ClaudeCode, Harness::Omp, Harness::Fake])
+        .await;
     let boss = register(
         fx,
         SessionId::new(),
@@ -203,6 +217,73 @@ async fn roles_spawn_applies_the_role() {
     assert_eq!(kid.preferred_harness, Harness::Omp);
     assert_eq!(kid.model.as_deref(), Some("lunaroute/deepseek:auto"));
     assert!(!kid.pinned);
+}
+
+#[tokio::test]
+async fn roles_a_sandboxed_spawn_goes_to_a_host_with_the_sandbox() {
+    let fx = fx();
+    let boss = chief(&fx).await;
+    // A second host that offers the namespace sandbox. h1 does not, so the
+    // spawn must skip it.
+    fx.req(CtlRequest::RegisterHost {
+        info: HostInfo {
+            name: name("h2"),
+            harnesses: vec![Harness::Fake],
+            launcher: "process".into(),
+            max_agents: 4,
+            sandboxes: vec![SandboxKind::Namespace],
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let mut cmds = fx
+        .bus
+        .serve(&subjects::host_cmd(&name("h2")))
+        .await
+        .unwrap();
+
+    let v = spawn(&fx, &boss, Some("sandboxed"), "boxed").await.unwrap();
+    assert_eq!(v["agent"]["placed"], json!(true), "{v}");
+    let inc = cmds.next().await.expect("a launch on h2");
+    let HostCommand::Launch(order) = serde_json::from_slice(&inc.payload).unwrap() else {
+        panic!("not a launch");
+    };
+    assert_eq!(order.harness, Harness::Fake);
+    assert_eq!(order.sandbox, Some(SandboxKind::Namespace));
+}
+
+#[tokio::test]
+async fn roles_a_sandboxed_spawn_is_refused_without_the_sandbox() {
+    use borant_core::events::{EventFilter, RejectedHost, SwarmEventBody};
+    use borant_core::ports::EventLog;
+
+    let fx = fx();
+    let boss = chief(&fx).await;
+    let v = spawn(&fx, &boss, Some("sandboxed"), "boxed2")
+        .await
+        .unwrap();
+    assert_eq!(v["agent"]["placed"], json!(false), "{v}");
+
+    // The refusal names the reason, so a person can see why the spawn waits.
+    let filter = EventFilter {
+        kinds: vec!["placement.refused".into()],
+        ..EventFilter::default()
+    };
+    let mut stream = fx.events.read(&filter, false).await.unwrap();
+    let event = stream.next().await.expect("a placement refusal");
+    assert_eq!(event.agent, Some("boxed2".parse().unwrap()));
+    let SwarmEventBody::PlacementRefused { rejected, .. } = event.body else {
+        panic!("not a placement refusal");
+    };
+    assert_eq!(
+        rejected,
+        vec![RejectedHost {
+            host: name("h1"),
+            why: "no sandbox".to_owned(),
+        }],
+        "the only host offers no sandbox"
+    );
 }
 
 #[tokio::test]

@@ -101,6 +101,43 @@ services:
       BORANT_LAUNCHER: process
       BORANT_HARNESSES: fake
 
+  # The sandbox scenario of phase 5 runs alone, like elastic: its hub carries a
+  # role that asks for a namespace sandbox, and only host-sandbox offers one.
+  # host-a is a host without [sandbox], so a sandboxed spawn is refused there.
+  hub-sandbox:
+    <<: *image
+    command: ["borant", "hub"]
+    profiles: [sandbox]
+    environment:
+      <<: *timing
+    volumes:
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/sandbox/hub.toml:/root/.borant/hub.toml:ro
+    depends_on: [nats, git]
+
+  host-sandbox:
+    <<: *host
+    hostname: host-sandbox
+    profiles: [sandbox]
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-sandbox
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "2"
+    volumes:
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/sandbox/host.toml:/root/.borant/host.toml:ro
+    # bubblewrap makes a user namespace. Docker's default seccomp profile
+    # refuses the clone, and an Ubuntu 24.04 host refuses an unprivileged user
+    # namespace to a process confined by AppArmor; the kernel's
+    # apparmor_restrict_unprivileged_userns lifts that only for a process with
+    # CAP_SYS_ADMIN. This one test container gets both options and the
+    # capability; nothing else in the swarm does.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    cap_add:
+      - SYS_ADMIN
+
   host-b:
     <<: *host
     hostname: host-b

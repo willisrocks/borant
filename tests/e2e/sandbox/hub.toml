@@ -1,0 +1,8 @@
+# The hub of the sandbox e2e scenario. It sets one role that asks for a
+# namespace sandbox, so a spawn with that role goes only to a host that
+# offers one. The env of the swarm sets the NATS url and the timings
+# (docker/compose.yaml, x-timing).
+
+[roles.sandboxed]
+harness = "fake"
+sandbox = "namespace"

@@ -105,6 +105,7 @@ impl HostConfig {
         };
         Some(SandboxPlan {
             program: sandbox.program.clone(),
+            system: system_paths(),
             home: home.clone(),
             work_dir: self.home.join("work").join(order.agent.as_str()),
             harness_dirs: existing(under_home(rw)),
@@ -146,6 +147,22 @@ fn harness_dirs(harness: Harness) -> (Vec<PathBuf>, Vec<PathBuf>) {
     )
 }
 
+/// The system paths that a harness needs inside the sandbox. A bind of a
+/// missing source fails the whole launch, so only the ones that exist on this
+/// host are passed: a NixOS host has the store and the nix-ld interpreter, a
+/// Debian host has `/lib64` and its libraries from `[sandbox] ro`.
+const SYSTEM_PATHS: [&str; 5] = [
+    "/nix/store",
+    "/run/current-system",
+    "/lib64",
+    "/etc/resolv.conf",
+    "/etc/ssl",
+];
+
+fn system_paths() -> Vec<PathBuf> {
+    existing(SYSTEM_PATHS.iter().map(PathBuf::from).collect())
+}
+
 /// The paths that exist. A bind of a missing path fails the whole launch, and
 /// a harness directory is optional (`~/.claude.json` appears on first use).
 fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -185,6 +202,18 @@ mod tests {
 
         let (rw, ro) = harness_dirs(Harness::Fake);
         assert!(rw.is_empty() && ro.is_empty());
+    }
+
+    #[test]
+    fn the_system_binds_are_the_paths_that_exist() {
+        let paths = system_paths();
+        assert!(
+            paths.len() <= SYSTEM_PATHS.len(),
+            "only the listed paths can be bound"
+        );
+        for path in paths {
+            assert!(path.exists(), "{} does not exist here", path.display());
+        }
     }
 
     #[test]
