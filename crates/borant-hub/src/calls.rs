@@ -192,11 +192,11 @@ impl Hub {
                 ready_only,
             } => to_value(&self.task_list(&channel, ready_only).await?),
             ToolCall::TaskUpdate { channel, id, patch } => {
-                to_value(&self.task_update(&sender, &channel, &id, patch).await?)
+                to_value(&self.task_update(mem, &sender, &channel, &id, patch).await?)
             }
             ToolCall::TaskClaim { channel, id } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
-                to_value(&self.task_claim(&me, &channel, &id).await?)
+                to_value(&self.task_claim(mem, &me, &channel, &id).await?)
             }
             ToolCall::TaskClose {
                 channel,
@@ -205,7 +205,7 @@ impl Hub {
                 message,
             } => to_value(
                 &self
-                    .task_close(&sender, &channel, &id, reason, message)
+                    .task_close(mem, &sender, &channel, &id, reason, message)
                     .await?,
             ),
             ToolCall::SchemaGet { channel } => Ok(self.channel(&channel).await?.value.schema),

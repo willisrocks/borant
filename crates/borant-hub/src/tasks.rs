@@ -1,5 +1,6 @@
 //! Task calls (spec section 9).
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
     TaskPatch, TaskStatus,
@@ -9,8 +10,8 @@ use borant_core::rules::{schema, tasks as rules};
 use borant_core::{AgentId, ChannelName, CoreError, MessageId, TaskId, keys, subjects};
 use serde_json::{Map, Value};
 
-use crate::Hub;
 use crate::store::Doc;
+use crate::{Hub, Memory};
 
 impl Hub {
     pub(crate) async fn tasks(&self, channel: &ChannelName) -> Result<Vec<Task>, ApiError> {
@@ -99,6 +100,7 @@ impl Hub {
 
     pub(crate) async fn task_update(
         &self,
+        mem: &mut Memory,
         _by: &Sender,
         channel: &ChannelName,
         id: &TaskId,
@@ -106,6 +108,7 @@ impl Hub {
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         let mut doc = self.task(channel, id).await?;
+        let before = doc.value.clone();
         let t = &mut doc.value;
         if t.status == TaskStatus::Closed {
             return Err(CoreError::TaskClosed.into());
@@ -182,17 +185,55 @@ impl Hub {
             "updated",
         )
         .await?;
+        self.task_status_event(mem, channel, &before, &doc.value);
         Ok(doc.value)
+    }
+
+    /// Queues `task.status` when the status or the claim changed. A title, a
+    /// body, or a property update publishes nothing.
+    fn task_status_event(
+        &self,
+        mem: &mut Memory,
+        channel: &ChannelName,
+        before: &Task,
+        after: &Task,
+    ) {
+        if before.status == after.status && before.claimed_by == after.claimed_by {
+            return;
+        }
+        let severity = match after.status {
+            TaskStatus::Stuck | TaskStatus::NeedsHuman => Severity::Warn,
+            _ => Severity::Info,
+        };
+        let mut event = self
+            .event(
+                self.now(),
+                severity,
+                SwarmEventBody::TaskStatus {
+                    from: before.status,
+                    to: after.status,
+                    claimed_by: after.claimed_by.clone(),
+                    attention_msg: after.attention_msg.clone(),
+                },
+            )
+            .about_channel(channel.clone())
+            .about_task(after.id);
+        if let Some(by) = &after.claimed_by {
+            event = event.about_agent(by.clone());
+        }
+        Self::queue(mem, event);
     }
 
     pub(crate) async fn task_claim(
         &self,
+        mem: &mut Memory,
         agent: &AgentId,
         channel: &ChannelName,
         id: &TaskId,
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         let mut doc = self.task(channel, id).await?;
+        let before = doc.value.clone();
         match &doc.value.claimed_by {
             Some(other) if other != agent => return Err(CoreError::Claimed(other.clone()).into()),
             _ => {}
@@ -214,11 +255,13 @@ impl Hub {
             &format!("claimed by {agent}"),
         )
         .await?;
+        self.task_status_event(mem, channel, &before, &doc.value);
         Ok(doc.value)
     }
 
     pub(crate) async fn task_close(
         &self,
+        mem: &mut Memory,
         _by: &Sender,
         channel: &ChannelName,
         id: &TaskId,
@@ -228,6 +271,7 @@ impl Hub {
         let ch = self.channel(channel).await?;
         let all = self.tasks(channel).await?;
         let mut doc = self.task(channel, id).await?;
+        let before = doc.value.clone();
         rules::check_close(&all, &doc.value)?;
         doc.value.status = TaskStatus::Closed;
         doc.value.close_reason = Some(reason);
@@ -245,12 +289,14 @@ impl Hub {
             "closed",
         )
         .await?;
+        self.task_status_event(mem, channel, &before, &doc.value);
         Ok(doc.value)
     }
 
     /// Clears every claim of an agent and sets the tasks to `open`.
     pub(crate) async fn unclaim_all(
         &self,
+        mem: &mut Memory,
         agent: &AgentId,
         channels: &[ChannelName],
     ) -> Result<usize, ApiError> {
@@ -265,6 +311,7 @@ impl Hub {
                 {
                     continue;
                 }
+                let before = doc.value.clone();
                 doc.value.claimed_by = None;
                 doc.value.status = TaskStatus::Open;
                 doc.value.updated = self.now();
@@ -279,6 +326,7 @@ impl Hub {
                     &format!("released: {agent} did not return"),
                 )
                 .await?;
+                self.task_status_event(mem, c, &before, &doc.value);
                 n += 1;
             }
         }
@@ -286,7 +334,11 @@ impl Hub {
     }
 
     /// Clears every claim of an agent in every channel.
-    pub(crate) async fn unclaim_everywhere(&self, agent: &AgentId) -> Result<usize, ApiError> {
+    pub(crate) async fn unclaim_everywhere(
+        &self,
+        mem: &mut Memory,
+        agent: &AgentId,
+    ) -> Result<usize, ApiError> {
         let channels: Vec<ChannelName> = self
             .store
             .list::<serde_json::Value>(keys::CHANNEL_PREFIX)
@@ -299,7 +351,7 @@ impl Hub {
                     .and_then(|c| c.parse().ok())
             })
             .collect();
-        self.unclaim_all(agent, &channels).await
+        self.unclaim_all(mem, agent, &channels).await
     }
 
     /// True if the agent has a claim on an open task in one of its channels.

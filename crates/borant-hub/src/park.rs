@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{Agent, HostInfo, Lease, LeaseState};
 use borant_core::proto::{ApiError, HostCommand};
 use borant_core::{AgentId, HostName, PoolName, SessionId, Timestamp, keys, subjects};
@@ -86,6 +87,20 @@ impl Hub {
                 .park_sent
                 .insert(agent.id.clone(), now);
             tracing::info!(agent = %agent.id, %host, %session, "park order sent");
+            // The hub ordered the park; the checkpoint ref is the host's
+            // report.
+            let event = self
+                .event(
+                    now,
+                    Severity::Info,
+                    SwarmEventBody::AgentParked {
+                        session,
+                        git_ref: None,
+                    },
+                )
+                .about_agent(agent.id.clone())
+                .about_host(host.clone());
+            self.publish(event).await;
             parked.push(agent.id);
         }
         Ok(parked)

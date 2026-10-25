@@ -1,5 +1,6 @@
 //! Hosts, sessions, leases, and takeovers (spec sections 7, 11, 13).
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session};
 use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, RegisterSession, Registered, RenewedLease,
@@ -44,8 +45,33 @@ impl Hub {
             info.draining = old.value.draining;
         }
         self.store.upsert(&key, &info).await?;
-        mem.hosts_seen.insert(info.name.clone(), self.now());
+        let now = self.now();
+        mem.hosts_seen.insert(info.name.clone(), now);
+        let agents = self.host_agents(&info.name).await?;
+        let event = self
+            .event(
+                now,
+                Severity::Info,
+                SwarmEventBody::HostRegistered {
+                    last_seen: now,
+                    always_on: info.always_on,
+                    agents,
+                },
+            )
+            .about_host(info.name.clone());
+        Self::queue(mem, event);
         Ok(json!({ "host": info.name }))
+    }
+
+    /// How many agents hold a lease on `host`.
+    async fn host_agents(&self, host: &HostName) -> Result<u64, ApiError> {
+        Ok(self
+            .store
+            .list::<Lease>(keys::LEASE_AGENT_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|d| matches!(&d.value.state, LeaseState::Held { host: h, .. } if h == host))
+            .count() as u64)
     }
 
     pub(crate) async fn heartbeat(
@@ -99,6 +125,17 @@ impl Hub {
             mem.idle_checked.remove(&s.agent);
             mem.wake_checked.remove(&s.agent);
             tracing::info!(agent = %s.agent, session = %s.session, token = l.token.0, "lease reclaimed after expiry");
+            let event = self.lease_event(
+                now,
+                Severity::Info,
+                &s.agent,
+                Some(host),
+                SwarmEventBody::LeaseReclaimed {
+                    session: s.session,
+                    token: l.token,
+                },
+            );
+            Self::queue(mem, event);
             renewed.push(RenewedLease {
                 session: s.session,
                 token: l.token,
@@ -248,6 +285,18 @@ impl Hub {
         mem.park_sent.remove(&agent_id);
         mem.idle.remove(&agent_id);
         tracing::info!(agent = %agent_id, session = %r.session, token = new_lease.token.0, "session registered");
+        let host = session.host.clone();
+        let event = self.lease_event(
+            now,
+            Severity::Info,
+            &agent_id,
+            Some(&host),
+            SwarmEventBody::LeaseAcquired {
+                session: r.session,
+                token: new_lease.token,
+            },
+        );
+        Self::queue(mem, event);
         Ok(Registered {
             agent: agent_id,
             session: r.session,
@@ -284,8 +333,21 @@ impl Hub {
             self.store.put(&key, &next, Some(doc.revision)).await?;
             mem.idle.remove(agent);
             let mut a = self.agent(agent).await?;
+            let host = a.value.host.clone();
             a.value.session = None;
             self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+            // A park is its own kind: the lease release that a message may
+            // wake. The checkpoint ref stays the host's report.
+            let body = if reason == "park" {
+                SwarmEventBody::AgentParked {
+                    session,
+                    git_ref: None,
+                }
+            } else {
+                SwarmEventBody::LeaseReleased { session, token }
+            };
+            let event = self.lease_event(now, Severity::Info, agent, host.as_ref(), body);
+            Self::queue(mem, event);
         }
         if let Some(mut s) = self.store.get::<Session>(&keys::session(&session)).await? {
             s.value.ended = Some(now);
@@ -327,7 +389,11 @@ impl Hub {
             if mem.maintenance {
                 return Ok(());
             }
-            match self.tick_one(&mut mem, doc).await {
+            let step = self.tick_one(&mut mem, doc).await;
+            // The events of this step wait here, so no publish holds the lock.
+            drop(mem);
+            self.flush().await;
+            match step {
                 // A request changed this lease between the list and the step,
                 // so the compare-and-set write failed. The next tick retries.
                 Err(e) if e.code == ApiErrorCode::Conflict => {
@@ -355,6 +421,31 @@ impl Hub {
         let agent_id = doc.value.agent.clone();
         if let Some(mut next) = lease::tick(&doc.value, now, &cfg) {
             let was_held = matches!(doc.value.state, LeaseState::Held { .. });
+            // The event of the lease that just ended, before any placement
+            // that a later tick makes.
+            let ended = match &doc.value.state {
+                LeaseState::Held { session, host, .. } => Some((
+                    Severity::Warn,
+                    Some(host.clone()),
+                    SwarmEventBody::LeaseExpired {
+                        session: *session,
+                        token: doc.value.token,
+                    },
+                )),
+                LeaseState::Reserved {
+                    host,
+                    reason,
+                    until,
+                } => Some((
+                    Severity::Warn,
+                    Some(host.clone()),
+                    SwarmEventBody::LeaseReservationEnded {
+                        reason: *reason,
+                        until: *until,
+                    },
+                )),
+                _ => None,
+            };
             if matches!(doc.value.state, LeaseState::Reserved { .. }) {
                 // A launch did not register in time. Place again at once.
                 next.state = LeaseState::Expired {
@@ -371,6 +462,10 @@ impl Hub {
                     self.store.put(&a.key, &a.value, Some(a.revision)).await?;
                     tracing::info!(agent = %a.value.id, "lease expired");
                 }
+            }
+            if let Some((severity, host, body)) = ended {
+                let event = self.lease_event(now, severity, &agent_id, host.as_ref(), body);
+                Self::queue(mem, event);
             }
             return Ok(());
         }
@@ -398,9 +493,20 @@ impl Hub {
             && now.since(base) >= cfg.claim_timeout
             && mem.claims_released.insert(agent_id.clone())
         {
-            let n = self.unclaim_everywhere(&agent_id).await?;
+            let n = self.unclaim_everywhere(mem, &agent_id).await?;
             if n > 0 {
                 tracing::warn!(agent = %agent_id, n, "claims returned to open after the claim timeout");
+                let event = self
+                    .event(
+                        now,
+                        Severity::Warn,
+                        SwarmEventBody::ClaimsReleased {
+                            tasks: n as u64,
+                            after_secs: now.since(base).as_secs(),
+                        },
+                    )
+                    .about_agent(agent_id.clone());
+                Self::queue(mem, event);
             }
         }
         // The hub never replaces a pinned agent whose session may still run.

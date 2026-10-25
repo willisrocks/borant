@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, SessionEvent,
     SessionEventBody,
@@ -35,6 +36,34 @@ pub fn continue_prompt(
         ));
     }
     p
+}
+
+/// The hosts that a placement passed over, with the first plain check that
+/// failed. The rules of roles and avoid belong to `schedule::place`; this list
+/// names what a reader can act on.
+fn refused_hosts(views: &[HostView], wanted: Harness) -> Vec<RejectedHost> {
+    views
+        .iter()
+        .filter_map(|v| {
+            let why = if !v.online {
+                "offline"
+            } else if v.info.draining {
+                "draining"
+            } else if v.active_agents >= v.info.max_agents {
+                "full"
+            } else if !v.info.harnesses.contains(&wanted) {
+                "no harness"
+            } else if !v.has_repo_access {
+                "no repository access"
+            } else {
+                return None;
+            };
+            Some(RejectedHost {
+                host: v.info.name.clone(),
+                why: why.to_owned(),
+            })
+        })
+        .collect()
 }
 
 impl Hub {
@@ -120,6 +149,18 @@ impl Hub {
             .collect())
     }
 
+    /// The host of the reservation of an agent, after a placement.
+    async fn reserved_host(&self, agent: &AgentId) -> Result<Option<HostName>, ApiError> {
+        Ok(self
+            .store
+            .get::<Lease>(&keys::lease_agent(agent))
+            .await?
+            .and_then(|d| match d.value.state {
+                LeaseState::Reserved { host, .. } => Some(host),
+                _ => None,
+            }))
+    }
+
     /// Picks a host, reserves the lease for it, and sends a launch order.
     /// Returns false if no host qualifies now.
     pub(crate) async fn place_agent(
@@ -154,6 +195,20 @@ impl Hub {
             &views,
         ) else {
             tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
+            let event = self
+                .event(
+                    now,
+                    Severity::Warn,
+                    SwarmEventBody::PlacementRefused {
+                        reason,
+                        rejected: refused_hosts(
+                            &views,
+                            target.harness.unwrap_or(agent.preferred_harness),
+                        ),
+                    },
+                )
+                .about_agent(agent.id.clone());
+            Self::queue(mem, event);
             return Ok(false);
         };
 
@@ -194,9 +249,31 @@ impl Hub {
             },
         });
         let reserved = lease::reserve(&base, &host, reason, now, &self.cfg.lease);
+        // The decision, then the reservation, then the order.
+        let chosen = self
+            .event(
+                now,
+                Severity::Info,
+                SwarmEventBody::PlacementChosen { harness, reason },
+            )
+            .about_agent(agent.id.clone())
+            .about_host(host.clone());
+        Self::queue(mem, chosen);
         self.store
             .put(&key, &reserved, doc.as_ref().map(|d| d.revision))
             .await?;
+        let until = match reserved.state {
+            LeaseState::Reserved { until, .. } => until,
+            _ => now.plus(self.cfg.lease.reserve),
+        };
+        let reservation = self.lease_event(
+            now,
+            Severity::Info,
+            &agent.id,
+            Some(&host),
+            SwarmEventBody::LeaseReserved { reason, until },
+        );
+        Self::queue(mem, reservation);
 
         let events = self.sessions.read(&agent.id).await.unwrap_or_default();
         let wip = events.iter().rev().find_map(|(_, e)| match &e.body {
@@ -270,6 +347,18 @@ impl Hub {
         self.bus
             .send(&subjects::host_cmd(&host), payload.into())
             .await?;
+        let launched = self
+            .event(
+                now,
+                Severity::Info,
+                SwarmEventBody::MoveLaunched {
+                    from_host: agent.host.clone(),
+                    to_host: host.clone(),
+                    reason,
+                },
+            )
+            .about_agent(agent.id.clone());
+        Self::queue(mem, launched);
         // A pending move or spawn stays until the agent registers, so a failed
         // launch is placed again with the same target and prompt.
         tracing::info!(agent = %agent.id, %host, %harness, ?reason, "launch order sent");
@@ -351,7 +440,7 @@ impl Hub {
                             "no host can take agent {id} now"
                         )));
                     };
-                    *planned.entry(to).or_default() += 1;
+                    *planned.entry(to.clone()).or_default() += 1;
                     let cmd = HostCommand::PrepareMove {
                         agent: id.clone(),
                         session,
@@ -369,6 +458,19 @@ impl Hub {
                             prompt: None,
                         },
                     );
+                    let now = self.now();
+                    let requested = self
+                        .event(
+                            now,
+                            Severity::Info,
+                            SwarmEventBody::MoveRequested {
+                                from_host: Some(host.clone()),
+                                to_host: to,
+                                reason: MoveReason::Planned,
+                            },
+                        )
+                        .about_agent(id.clone());
+                    Self::queue(mem, requested);
                 }
                 Some(LeaseState::Reserved { .. }) => continue,
                 _ => {
@@ -401,12 +503,24 @@ impl Hub {
             .ok_or_else(|| ApiError::not_found(format!("no host {host}")))?;
         doc.value.draining = true;
         self.store.put(&key, &doc.value, Some(doc.revision)).await?;
-        self.move_agents(
-            mem,
-            &MoveSelector::FromHost(host.clone()),
-            MoveTarget::default(),
-        )
-        .await
+        let moved = self
+            .move_agents(
+                mem,
+                &MoveSelector::FromHost(host.clone()),
+                MoveTarget::default(),
+            )
+            .await?;
+        let event = self
+            .event(
+                self.now(),
+                Severity::Warn,
+                SwarmEventBody::HostDraining {
+                    agents: moved.len() as u64,
+                },
+            )
+            .about_host(host.clone());
+        Self::queue(mem, event);
+        Ok(moved)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -465,6 +579,18 @@ impl Hub {
             .await
             .map_err(|e| ApiError::new(e.code, format!("agent {id}: {}", e.message)))?;
         self.join(&id, channel).await?;
+        let spawned = self
+            .event(
+                self.now(),
+                Severity::Info,
+                SwarmEventBody::AgentSpawned {
+                    by: by.clone(),
+                    harness,
+                },
+            )
+            .about_agent(id.clone())
+            .about_channel(channel.clone());
+        Self::queue(mem, spawned);
         let agent = self.agent(&id).await?.value;
         let target = MoveTarget {
             host,
@@ -513,6 +639,10 @@ impl Hub {
         if !held || doc.value.token != token {
             return Err(borant_core::CoreError::StaleToken.into());
         }
+        let from_host = match &doc.value.state {
+            LeaseState::Held { host, .. } => Some(host.clone()),
+            _ => None,
+        };
         self.store
             .put(
                 &key,
@@ -532,7 +662,7 @@ impl Hub {
                 reason: MoveReason::Planned,
                 prompt: None,
             });
-        if !self
+        let placed = self
             .place_agent(
                 mem,
                 &a.value,
@@ -540,8 +670,25 @@ impl Hub {
                 pending.target.clone(),
                 pending.prompt.clone(),
             )
-            .await?
-        {
+            .await?;
+        if placed {
+            // The old session ended and the move may run; the destination is
+            // the host that the placement just reserved.
+            if let Some(to) = self.reserved_host(agent).await? {
+                let event = self
+                    .event(
+                        self.now(),
+                        Severity::Info,
+                        SwarmEventBody::MoveReady {
+                            from_host,
+                            to_host: to,
+                            reason: pending.reason,
+                        },
+                    )
+                    .about_agent(agent.clone());
+                Self::queue(mem, event);
+            }
+        } else {
             // Keep the target. The tick retries after the grace period.
             mem.pending_moves.insert(agent.clone(), pending);
             let doc = self.store.get::<Lease>(&key).await?;

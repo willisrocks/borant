@@ -7,6 +7,7 @@
 
 mod calls;
 pub mod elastic;
+mod events;
 pub mod export;
 mod leases;
 mod members;
@@ -23,7 +24,7 @@ use std::time::Duration;
 
 use borant_core::model::{HubLease, Lease, MoveReason};
 use borant_core::ports::provision::ProvisionerCapabilities;
-use borant_core::ports::{MessageBus, SessionStore, StateStore};
+use borant_core::ports::{EventLog, MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::roles::RoleConfig;
@@ -110,6 +111,9 @@ pub(crate) struct Memory {
     pub elastic_backoff: BTreeMap<PoolName, Timestamp>,
     /// The capabilities of each provisioner, read once at the first pass.
     pub elastic_caps: BTreeMap<String, ProvisionerCapabilities>,
+    /// The swarm events of the writes in this request or tick step, which are
+    /// published after the `mem` guard drops.
+    pub outbox: Vec<borant_core::events::SwarmEvent>,
     pub maintenance: bool,
 }
 
@@ -120,6 +124,8 @@ pub struct Hub {
     pub(crate) sessions: Arc<dyn SessionStore>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) cfg: HubConfig,
+    /// The swarm event stream. `None` writes no events, as before phase 2.
+    pub(crate) events: Option<Arc<dyn EventLog>>,
     pub(crate) mem: Mutex<Memory>,
 }
 
@@ -137,6 +143,7 @@ impl Hub {
             sessions,
             clock,
             cfg,
+            events: None,
             mem: Mutex::new(Memory::default()),
         }
     }
@@ -194,6 +201,9 @@ impl Hub {
             other => other,
         };
         let result = self.dispatch(&mut mem, req).await;
+        // The events of this request wait here, so no publish holds the lock.
+        drop(mem);
+        self.flush().await;
         if let Err(e) = &result {
             match e.code {
                 ApiErrorCode::Internal | ApiErrorCode::Unavailable => {

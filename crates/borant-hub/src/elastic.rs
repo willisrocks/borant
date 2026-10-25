@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{Agent, HostInfo, Lease, LeaseState};
 use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
@@ -98,6 +99,9 @@ impl Hub {
             self.execute(elastic, &mut pass, &caps, action, now).await?;
         }
         self.write_spend(&pass.spend, now).await?;
+        // The drain and the park of a pool host queue events while they take
+        // `mem`; publish them now that no lock is held.
+        self.flush().await;
         // Free the pool hosts first: an idle host goes only with no agent.
         for pool in &pass.pools {
             if let Err(e) = self.park_idle(Some(&pool.name), pool.idle_timeout).await {
@@ -390,7 +394,18 @@ impl Hub {
                         .unwrap_or_default();
                     pass.spend.usd += billed(config, caps, life);
                 }
+                let pool = pass
+                    .hosts
+                    .iter()
+                    .find(|h| h.name == host)
+                    .map(|h| h.pool.clone());
                 self.store.delete(&keys::elastic(&host)).await?;
+                if let Some(pool) = pool {
+                    let event = self
+                        .event(now, Severity::Info, SwarmEventBody::ElasticDeleted { pool })
+                        .about_host(host.clone());
+                    self.publish(event).await;
+                }
             }
             Action::Create { pool, name } => {
                 self.create(elastic, pass, caps, &pool, &name, now).await?;
@@ -450,6 +465,14 @@ impl Hub {
                 };
                 self.store.upsert(&key, &booting).await?;
                 tracing::info!(pool = %pool, %name, "pool host ordered");
+                let event = self
+                    .event(
+                        now,
+                        Severity::Info,
+                        SwarmEventBody::ElasticCreated { pool: pool.clone() },
+                    )
+                    .about_host(name.clone());
+                self.publish(event).await;
             }
             Err(e) => {
                 // No host, no key: the name is free for the next try, and the
