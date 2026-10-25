@@ -12,7 +12,7 @@ use borant_core::model::{
     Sender, Target, UsageWindow,
 };
 use borant_core::proto::{ApiError, HostCommand, MoveTarget};
-use borant_core::rules::members::{Pick, REPORT_FRESH_FOR, pick};
+use borant_core::rules::members::{Pick, REPORT_FRESH_FOR, note_restart, pick};
 use borant_core::{
     AgentId, BundleName, FencingToken, HostName, MemberName, MessageId, SessionId, Timestamp, keys,
     subjects,
@@ -139,9 +139,10 @@ impl Hub {
             .map(|d| d.value.clone())
             .unwrap_or(MemberState {
                 bundle: bundle.clone(),
-                member,
+                member: member.clone(),
                 limited_until: Some(until),
                 waiting: Vec::new(),
+                restarts: Vec::new(),
             });
         state.limited_until = Some(until);
         if !state.waiting.contains(&agent.id) {
@@ -162,6 +163,33 @@ impl Hub {
             )
             .about_agent(agent.id.clone());
         Self::queue(mem, event);
+        Ok(())
+    }
+
+    /// Counts one limit restart, or one wait, of a member for the last seven
+    /// days of `borant members`.
+    async fn add_restart(
+        &self,
+        bundle: &BundleName,
+        member: &MemberName,
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        let key = key(bundle, member);
+        let doc = self.store.get::<MemberState>(&key).await?;
+        let mut state = doc
+            .as_ref()
+            .map(|d| d.value.clone())
+            .unwrap_or(MemberState {
+                bundle: bundle.clone(),
+                member: member.clone(),
+                limited_until: None,
+                waiting: Vec::new(),
+                restarts: Vec::new(),
+            });
+        note_restart(&mut state, now);
+        self.store
+            .put(&key, &state, doc.as_ref().map(|d| d.revision))
+            .await?;
         Ok(())
     }
 
@@ -205,6 +233,9 @@ impl Hub {
                         "member": member,
                         "limited_until": state.and_then(|s| s.limited_until),
                         "waiting": state.map(|s| s.waiting.clone()).unwrap_or_default(),
+                        // One time for each limit restart or wait in the last
+                        // seven days.
+                        "restarts": state.map(|s| s.restarts.clone()).unwrap_or_default(),
                         "report": report,
                     })
                 })
@@ -394,6 +425,9 @@ impl Hub {
                 )
                 .about_agent(agent.clone());
             Self::queue(mem, requested);
+            // The member that ran out is the one that is counted, once for
+            // this limit restart.
+            self.add_restart(&bundle, &member, now).await?;
             tracing::info!(%agent, %bundle, %member, %next, "limit restart on the same host");
             return Ok(json!({ "restart": true, "member": next }));
         }
@@ -407,6 +441,9 @@ impl Hub {
         let current = self.agent(&agent).await?;
         self.wait_for_member(mem, &current.value, &bundle, &states, earliest)
             .await?;
+        // The member that ran out is counted once, whether its limit
+        // restarted the agent or made it wait for the reset.
+        self.add_restart(&bundle, &member, now).await?;
         if next.is_some() {
             tracing::warn!(
                 %agent,
@@ -463,6 +500,7 @@ impl Hub {
                 member: member.clone(),
                 limited_until: None,
                 waiting: Vec::new(),
+                restarts: Vec::new(),
             });
         state.limited_until = Some(until);
         if let Some(waiting) = waiting {
@@ -514,6 +552,8 @@ impl Hub {
                 member: state.member.clone(),
                 limited_until: None,
                 waiting: Vec::new(),
+                // The count of the last seven days outlives one reset.
+                restarts: state.restarts.clone(),
             };
             self.store
                 .put(

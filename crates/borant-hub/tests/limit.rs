@@ -184,6 +184,7 @@ async fn limit_restart_with_every_member_limited_waits_then_wakes() {
         member: member("b"),
         limited_until: Some(now.plus(Duration::from_secs(7_200))),
         waiting: Vec::new(),
+        restarts: Vec::new(),
     };
     fx.state
         .create(

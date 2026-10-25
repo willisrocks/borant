@@ -208,6 +208,7 @@ async fn members_every_member_limited_keeps_the_spawn_pending() {
             member: member(who),
             limited_until: Some(now.plus(Duration::from_secs(hours * 3_600))),
             waiting: vec![],
+            restarts: vec![],
         };
         fx.state
             .create(
@@ -376,6 +377,7 @@ async fn members_switch_to_a_limited_member_is_a_conflict() {
         member: member("b"),
         limited_until: Some(until),
         waiting: vec![],
+        restarts: Vec::new(),
     };
     fx.state
         .create(
@@ -403,4 +405,84 @@ async fn members_switch_to_a_limited_member_is_a_conflict() {
     );
     assert_eq!(err.message, format!("member b is limited until {until}"));
     assert!(next_cmd(&mut cmds).await.is_none());
+}
+
+/// The state of one member of `claude_auth`.
+async fn state_of(fx: &Fx, who: &str) -> Option<MemberState> {
+    let doc = fx
+        .state
+        .get(&format!("member.claude_auth.{who}"))
+        .await
+        .unwrap()?;
+    Some(serde_json::from_slice(&doc.value).unwrap())
+}
+
+#[tokio::test]
+async fn members_a_limit_adds_a_restart_time_and_drops_an_old_one() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    let now = fx.clock.now();
+    // A restart from before the week drops at the next write.
+    let old = MemberState {
+        bundle: bundle(),
+        member: member("a"),
+        limited_until: None,
+        waiting: vec![],
+        restarts: vec![now.minus(Duration::from_secs(8 * 24 * 3_600))],
+    };
+    fx.state
+        .create(
+            "member.claude_auth.a",
+            serde_json::to_vec(&old).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    let w = fx.register("h1", Some("w"), Some("api")).await;
+    let until = now.plus(Duration::from_secs(3_600));
+    let reply = fx
+        .req(CtlRequest::MemberLimited {
+            agent: w.agent.clone(),
+            session: w.session,
+            token: w.token,
+            bundle: bundle(),
+            member: member("a"),
+            resets_at: Some(until),
+        })
+        .await
+        .expect("the hub takes the limit");
+    assert_eq!(reply["restart"], true, "{reply}");
+
+    // One time for this limit, and the one of eight days ago is gone.
+    let state = state_of(&fx, "a").await.expect("the state of member a");
+    assert_eq!(state.restarts, vec![now]);
+
+    // `borant members` reads the list back.
+    let listed = fx
+        .call(Some(&owner), ToolCall::ListMembers)
+        .await
+        .expect("members");
+    let a = listed["claude_auth"]
+        .as_array()
+        .expect("the members of the bundle")
+        .iter()
+        .find(|m| m["member"] == "a")
+        .cloned()
+        .expect("member a");
+    assert_eq!(a["restarts"].as_array().map(Vec::len), Some(1), "{a}");
+
+    // A second limit adds a second time.
+    fx.advance(60);
+    let w2 = fx.register("h1", Some("w2"), Some("api")).await;
+    fx.req(CtlRequest::MemberLimited {
+        agent: w2.agent.clone(),
+        session: w2.session,
+        token: w2.token,
+        bundle: bundle(),
+        member: member("b"),
+        resets_at: Some(until),
+    })
+    .await
+    .expect("the hub takes the second limit");
+    let b = state_of(&fx, "b").await.expect("the state of member b");
+    assert_eq!(b.restarts.len(), 1);
 }

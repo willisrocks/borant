@@ -336,6 +336,10 @@ pub struct MemberState {
     /// wakes them.
     #[serde(default)]
     pub waiting: Vec<AgentId>,
+    /// When this member ran out of tokens and an agent restarted onto another
+    /// member or waited for it, within the last seven days.
+    #[serde(default)]
+    pub restarts: Vec<Timestamp>,
 }
 
 /// One usage window of a member's latest report. `used` is a share from 0 to 1.
