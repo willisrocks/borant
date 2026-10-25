@@ -23,6 +23,20 @@ pub fn lease_hub() -> String {
     "lease.hub".to_owned()
 }
 
+/// The hub's view of one pool host: pool, provider id, phase, and times.
+pub fn elastic(host: &HostName) -> String {
+    format!("elastic.{host}")
+}
+
+pub const ELASTIC_PREFIX: &str = "elastic.";
+
+/// What the month `<yyyy-mm>` has cost, all pools together.
+pub fn spend(month: &str) -> String {
+    format!("spend.{month}")
+}
+
+pub const SPEND_PREFIX: &str = "spend.";
+
 pub fn host(name: &HostName) -> String {
     format!("host.{name}")
 }

@@ -39,6 +39,17 @@ pub fn continue_prompt(
 
 impl Hub {
     async fn host_views(&self, mem: &Memory, agent: &AgentId) -> Result<Vec<HostView>, ApiError> {
+        self.views(mem, Some(agent)).await
+    }
+
+    /// The view of every registered host, with the agents on each. `agent`
+    /// leaves out the hosts where a launch of that agent already failed; the
+    /// elastic rules pass `None`.
+    pub(crate) async fn views(
+        &self,
+        mem: &Memory,
+        agent: Option<&AgentId>,
+    ) -> Result<Vec<HostView>, ApiError> {
         let now = self.now();
         let mut active: HashMap<HostName, u32> = HashMap::new();
         for l in self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await? {
@@ -49,7 +60,7 @@ impl Hub {
                 _ => {}
             }
         }
-        let failed = mem.failed_hosts.get(agent);
+        let failed = agent.and_then(|a| mem.failed_hosts.get(a));
         Ok(self
             .store
             .list::<HostInfo>(keys::HOST_PREFIX)
