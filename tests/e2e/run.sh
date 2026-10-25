@@ -10,13 +10,13 @@ FAILED=0
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
-    dc --profile move down -v --remove-orphans >/dev/null 2>&1
+    down >/dev/null 2>&1
   fi
 }
 trap cleanup EXIT
 
 echo "Building and starting the swarm..."
-dc --profile move down -v --remove-orphans >/dev/null 2>&1
+down >/dev/null 2>&1
 dc build hub >/dev/null || { echo "FAIL build"; exit 1; }
 dc up -d nats git hub host-a host-b host-c >/dev/null || { echo "FAIL start"; exit 1; }
 hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
