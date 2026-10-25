@@ -44,6 +44,16 @@ impl Fx {
 
     /// A hub with `cfg`, so a test can name roles or pools.
     pub fn with(cfg: HubConfig) -> Self {
+        Self::with_bus(cfg, |bus, _state| Arc::new(bus))
+    }
+
+    /// A hub behind the bus that `make` builds from the memory bus and the
+    /// state store, for a test that watches a publish itself. `Fx::bus` stays
+    /// the memory bus, so an agent subject reads the same messages.
+    pub fn with_bus(
+        cfg: HubConfig,
+        make: impl FnOnce(MemoryBus, MemoryState) -> Arc<dyn MessageBus>,
+    ) -> Self {
         let state = MemoryState::new();
         let bus = MemoryBus::new();
         let sessions = MemorySession::new();
@@ -52,7 +62,7 @@ impl Fx {
         let hub = Arc::new(
             Hub::new(
                 Arc::new(state.clone()),
-                Arc::new(bus.clone()),
+                make(bus.clone(), state.clone()),
                 Arc::new(sessions.clone()),
                 clock.clone(),
                 cfg,
