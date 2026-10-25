@@ -27,6 +27,7 @@ mod waits;
 pub use changes::ChangeWatch;
 pub use elastic::ElasticConfig;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,11 +44,22 @@ use borant_core::{
     RoleName, SessionId, Timestamp, keys, subjects,
 };
 use futures::StreamExt;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::members::Report;
 use crate::store::Store;
+
+/// `[http]` of `hub.toml`: the read-only listener of the web view.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpConfig {
+    /// The socket address to serve on, any address. Unset keeps the
+    /// listener off.
+    #[serde(default)]
+    pub listen: Option<SocketAddr>,
+}
 
 #[derive(Debug, Clone)]
 pub struct HubConfig {
@@ -67,6 +79,9 @@ pub struct HubConfig {
     pub changes: Option<ChangeWatch>,
     /// `[secrets.members]`: the reset time to assume and the restart limit.
     pub member_rules: MemberRules,
+    /// `[http]` of `hub.toml`: the read-only listener of the web view, off
+    /// unless `listen` is set.
+    pub http: HttpConfig,
 }
 
 impl Default for HubConfig {
@@ -80,6 +95,7 @@ impl Default for HubConfig {
             alerts: AlertsConfig::default(),
             changes: None,
             member_rules: MemberRules::default(),
+            http: HttpConfig::default(),
         }
     }
 }
