@@ -1,553 +1,629 @@
 # Secrets and host bootstrap design
 
-Date: 2026-10-24. Status: draft for review. This is track 1 of five parallel
-design docs. The others, in this folder:
+Date: 2026-10-24. Status: draft for review, revision 2. This is track 1 of
+five parallel design docs in this folder. The others are the elastic-compute
+doc (`2026-10-24-elastic-compute-design.md`), the orchestration doc
+(`2026-10-24-orchestration-api-and-sandboxes-design.md`), the observability
+doc, and the durable orchestration vision.
 
-- `2026-10-24-elastic-compute-design.md` (the elastic-compute doc)
-- `2026-10-24-orchestration-api-and-sandboxes-design.md`
-- `2026-10-24-observability-design.md`
-- `2026-10-24-durable-orchestration-vision-design.md`
+Revision 2 follows Chris's direction: Borant wraps the agent with its secrets,
+so the running agent does not handle them, and the store is a port with
+adapters. Revision 1 made a boot-time `op inject` of all host secrets the main
+path. That path is now one way to fill the `file` adapter (section 5.1).
 
 ## Summary
 
-A new Borant host must start work with no browser login and no first-run
-screen. 1Password stays the store of record. A new `Borant` vault holds only
-the secrets that hosts need, and a new read-only service account
-(`borant-hosts`) can read only that vault. Its token is the one secret that a
-host gets at creation ("secret zero"). At boot, a systemd unit runs `op
-inject` and writes a tmpfs env file. The host daemon and each harness session
-read that file through a small wrapper. The harnesses use long-lived tokens:
-`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, the LunaRoute `lr_` key
-through `omp auth import`, and a fine-grained GitHub token in `GH_TOKEN`. A
-seed unit writes the first-run flags of Claude Code and omp. Nix pins both
-harness binaries. A Hetzner snapshot cuts the create time later, but
-zero-touch does not depend on it. `borant doctor` tests each host, and the
-host daemon advertises only the harnesses that pass, so the scheduler skips
-hosts that are not ready. Phase 1 changes only `borant-infra`.
+Borant gets a `SecretStore` port in `borant-core`: a trait that the core owns
+and that adapters implement. The user-facing concept is a bundle, a named set
+of env vars and files whose values come from one store. Bundles are defined in
+`host.toml`. Harness defaults, profiles, channels, and spawns attach bundles by
+name. The hub stores and sends only names, so values never travel through
+NATS.
+
+The host daemon is the only caller. In resolver mode, it reads the values and
+gives them to the harness as env vars and as files on a per-agent tmpfs. In
+wrapper mode, it puts a provider CLI such as `doppler run --` in front of the
+harness and never holds the values. The `env` and `file` adapters are compiled
+in, and the `exec` adapter runs a plugin that speaks the exec plugin protocol
+of the elastic-compute doc. `borant-infra` ships a 1Password plugin as the
+default. Harness logins become ordinary bundles, so the seed unit handles only
+first-run screens. The host still needs one store credential ("secret zero"),
+delivered with systemd `LoadCredential`.
 
 ## 1. Goals and non-goals
 
 Goals:
 
 1. A new VPS host runs Claude Code and omp agents with zero interactive steps.
-2. Each secret has one source, one rotation step, and a known blast radius.
-3. An agent can get a per-task secret, such as a database password, without
-   the value in a prompt, a message, or the session log.
-4. The scheduler skips a host that is not ready.
-5. Harness versions are pinned in the flake, the same on every host.
+2. A running agent never fetches a secret. Borant gives it what it needs.
+3. 1Password is the default store. Doppler, secretspec, Infisical, or a plain
+   file work with no change to the core.
+4. Values never reach prompts, the session log, NATS, tmux arguments, or
+   crash dumps.
+5. The scheduler skips a host that is not ready.
 
-Non-goals:
+Non-goals: a secret service on the hub (a hub outage must not stop a launch),
+creation of hosts by the hub (elastic-compute doc), sandbox internals
+(orchestration doc), and laptop setup (laptops keep their interactive logins).
 
-- A highly available hub. This design keeps the hub out of the secret path,
-  so a hub outage does not stop a host from booting.
-- Creation of hosts by the hub. The elastic-compute doc owns it. This doc
-  gives it the create steps and the secret path.
-- Sandboxes and per-agent isolation (orchestration-api-and-sandboxes doc).
-- Laptop setup. Laptops keep their interactive logins.
+## 2. The `SecretStore` port
 
-## 2. Headless auth for each tool
+### 2.1 Types and trait
 
-### 2.1 Claude Code
+A new file, `crates/borant-core/src/ports/secrets.rs`. The types name no
+backend. A `SecretRef` is an opaque string that one backend understands, for
+example `op://Borant/github/token`, a Doppler key, or a file name.
 
-Recommendation: run `claude setup-token` once on the laptop, store the output
-in `op://Borant/claude-code/oauth-token`, and deliver it as
-`CLAUDE_CODE_OAUTH_TOKEN`. `ANTHROPIC_API_KEY` is the switch for API billing
-(open question 1).
+```rust
+// Both: Debug, Clone, Eq, Ord, Hash, Serialize, Deserialize, #[serde(transparent)]
+pub struct SecretRef(pub String);   // a ref that one backend understands; never parsed
+pub struct BundleName(pub String);  // for example `github`; safe to log and send to the hub
 
-- `setup-token` runs the browser flow once and prints an OAuth token that
-  lasts one year. It needs a Pro, Max, Team, or Enterprise plan, and it can
-  only make model requests [S1].
-- Precedence: cloud provider flags, `ANTHROPIC_AUTH_TOKEN`,
-  `ANTHROPIC_API_KEY`, `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN`, then the
-  `/login` credentials [S1]. An API key on a host thus wins over the token.
-- The legal page says that subscription OAuth is for "ordinary use of Claude
-  Code", and that Pro and Max limits "assume ordinary, individual usage".
-  Products built on Claude must use an API key [S3], [S41]. Borant runs real
-  Claude Code for one person, but many unattended sessions on many hosts is a
-  gray area. No source rules on it.
-- One token on many hosts at once: no source forbids it or allows it
-  (unverified). Rate limits are per account, so all hosts share one budget
-  (unverified, expected).
-- On 2.1.100, a token-only session still showed the login screen until
-  `hasCompletedOnboarding` was true [S8]. Section 3 seeds that key.
+/// No Display, Serialize, or Clone. A hand-written Debug prints `Secret(..)`.
+/// Zeroed on drop. `expose(&self) -> &str` is the only reader; grep for it in review.
+pub struct Secret(zeroize::Zeroizing<String>);
 
-### 2.2 LunaRoute and omp
+/// Env vars and files from one store. Defined in host.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Bundle {
+    pub name: BundleName,
+    pub store: String,                                      // a store in host.toml
+    #[serde(default)] pub vars: BTreeMap<String, SecretRef>,  // ENV_NAME -> ref
+    #[serde(default)] pub files: BTreeMap<String, SecretRef>, // file name -> ref
+    #[serde(default)] pub params: BTreeMap<String, String>,   // not secret, wrapper mode
+    #[serde(default)] pub pre: Vec<String>,                   // runs before the harness
+}
 
-Recommendation: store one `lr_` key in `op://Borant/lunaroute/api-key` and
-import it with `omp auth import` at boot. If the extension is Chris's own
-code, add `LUNAROUTE_API_KEY` support and a catalog fetch on omp, and delete
-the import step (open question 4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capabilities { pub resolve: bool, pub wrap: bool, pub refresh: bool }
 
-- The extension stores the key as an OAuth-shaped record: `access` is the
-  `lr_` key, `refresh` is empty, `expires` is far in the future, and
-  `refreshToken` returns the record unchanged. Each browser login mints a new
-  key, labeled with the host name (local source, 0.14.1, `src/login.ts`). The
-  key is thus a static API key. One shared key works. One key per host needs
-  one browser login per key.
-- On omp, login offers only the browser flow, and an omp-only host has an
-  empty model list, because omp does not refresh the catalog [S11].
-- 0.14.1 reads no `LUNAROUTE_API_KEY` variable (local grep). 0.15.0 was not
-  inspected (unverified).
-- omp 18.12.6 has `omp auth export` and `omp auth import <file|->` (local
-  help). The export shape is `{version, credentials: [{provider, credential:
-  {type, access, refresh, expires}}]}`. Only key names were read, not values.
-- omp keeps credentials in `auth_credentials` in `~/.omp/agent/agent.db`, and
-  it has `omp config set <key> <value>` (local schema and help).
+pub struct Resolved { pub values: BTreeMap<SecretRef, Secret>, pub ttl: Option<Duration> }
 
-### 2.3 GitHub
+/// Wrapper mode: the argv before the harness program, never with a value in it.
+pub struct Wrap { pub prefix: Vec<String>, pub env: Vec<(String, Secret)>, pub redact: Vec<Secret> }
 
-Recommendation: one fine-grained personal access token (PAT), limited to the
-repositories that agents work in, with an expiry of 366 days, stored in
-`op://Borant/github/token` and delivered as `GH_TOKEN`. Make `gh` the git
-credential helper and rewrite SSH GitHub URLs to HTTPS in the system
-gitconfig. Then pushes, `gh pr create`, and checkpoint pushes use one token,
-and no box needs a GitHub SSH key.
-
-| Option | Lifetime | Scope | Rate limit | Upkeep |
-|---|---|---|---|---|
-| Fine-grained PAT (chosen) | 1 to 366 days, or none if the org allows it [S13] | Named repositories of one owner | 5,000 per hour, shared with Chris [S16] | One renewal a year |
-| Classic PAT | Any | Every repository Chris can reach [S13] | Same | Large blast radius |
-| GitHub App installation token | 1 hour [S14] | Up to 500 repositories per token [S14] | 5,000 to 12,500 per hour, its own budget [S16] | A timer that mints a token each hour |
-
-- Permissions: Contents, Pull requests, and Workflows, all write. A push that
-  changes `.github/workflows/` fails without Workflows (user report, names
-  unverified).
-- `gh` recommends `GH_TOKEN` for fine-grained tokens and headless use [S15].
-- No GitHub doc limits a push to `refs/borant/*` (unverified). The Actions
-  `push` event covers branches and tags only [S17], so WIP refs most likely
-  start no workflow. Phase 0 tests the push.
-- From 2026-04-27, App tokens can use a longer format [S14]. The redaction
-  pattern `gh[pousr]_[A-Za-z0-9]{20,}` can leave its tail. Section 5 adds
-  exact-value redaction.
-
-### 2.4 Tailscale
-
-Recommendation: replace the reusable auth key with a Tailscale OAuth client
-(scope `auth_keys`, tag `tag:borant`) in the laptop-only `Agents` vault. `just
-create` mints one single-use, pre-authorized, tagged key with a one-hour
-expiry for each new box. Turn on Tailscale SSH with an ACL rule from
-`tag:borant` and Chris's devices to `tag:borant` as `chris`, and delete
-`keys/borant-1.pub` and `keys/borant-2.pub`.
-
-- Auth keys last 1 to 90 days and can be single-use, ephemeral,
-  pre-authorized, and tagged. Node key expiry is off for tagged nodes, so a
-  box stays joined after its key ends [S18].
-- The OAuth client secret has no stated expiry. Its access tokens last one
-  hour. The secret also works directly as an auth key [S19], but a box needs
-  only a one-off key, so the secret stays on the laptop.
-- The NixOS module runs `tailscale up` only when the node is logged out, and
-  has `authKeyParameters` for `ephemeral` and `preauthorized` [S21].
-- Tailscale SSH takes access from ACL `ssh` rules. A rule from a tagged source
-  must use `accept` [S20]. NixOS support is not documented (unverified), but
-  `--ssh` is a normal `extraUpFlags` value.
-- Workload identity federation needs a public OIDC issuer [S40]. Hetzner gives
-  servers none, so this doc cuts it.
-
-### 2.5 Hetzner
-
-Recommendation: keep the Hetzner token on the laptop in `Agents`, and put the
-Borant boxes in their own Hetzner project. If the hub creates hosts later, it
-gets its own token in that project. Tokens are Read or Read and Write and show
-once [S22]. Project scope and expiry are not stated (unverified).
-
-## 3. First-run screens
-
-Recommendation: a oneshot unit `borant-harness-seed` runs as `chris` before
-`borant host` at each boot. It merges keys into files that the harnesses own,
-and never replaces a whole file, because the harnesses write to these files.
-Settings that Nix can own go into `/etc/claude-code/managed-settings.json`.
-
-### 3.1 Claude Code
-
-| Screen | Key | File |
-|---|---|---|
-| Onboarding and theme | `hasCompletedOnboarding: true`, `lastOnboardingVersion` | `~/.claude.json` [S8] |
-| Bypass warning | `skipDangerousModePermissionPrompt: true` | Managed settings [S4] |
-| Folder trust | `projects."<cwd>".hasTrustDialogAccepted: true` | `~/.claude.json` [S5] |
-| Auto-update | `env.DISABLE_AUTOUPDATER: "1"` | Managed settings [S2] |
-
-- The first interactive bypass session shows a warning. Background sessions
-  honor the key only in user or managed settings [S4]. Bypass mode refuses
-  root [S4], and Borant runs sessions as `chris`.
-- Trust is saved per directory, and never for the home directory [S5]. Trust
-  of a parent folder is not documented (unverified).
-- The key names come from `~/.claude.json` and `~/.claude/settings.json` on
-  2.1.310 on the laptop. Older names such as `bypassPermissionsModeAccepted`
-  are absent there.
-
-Borant makes a new worktree under `~/.borant/work/{agent_id}/{repo}` for each
-spawn and move. The launch wrapper (section 4.3) thus adds the trust key for
-`$PWD` just before it starts Claude Code. It takes a `flock`, writes with
-`jq` to a temporary file, and renames it. If phase 0 shows that trust of
-`~/.borant/work` covers its children, the seed unit writes one key and the
-wrapper step goes away.
-
-### 3.2 omp and LunaRoute
-
-The seed unit runs:
-
-```sh
-omp config set setupVersion 2
-omp config set modelRoles.default lunaroute/deepseek-4.1-flash:auto
-omp auth import /run/borant/omp-auth.json && rm /run/borant/omp-auth.json
-jq -s '.[0] * .[1]' ~/.pi/agent/models-store.json /etc/borant/lunaroute-catalog.json \
-  > "$tmp" && mv "$tmp" ~/.pi/agent/models-store.json
-```
-
-- `setupVersion: 2` skips the wizard on omp 18.12.6. A nested key in `omp
-  config set` is unverified, and a `yq` merge into `config.yml` is the
-  fallback.
-- `lunaroute-catalog.json` is the `lunaroute` entry of the laptop
-  `models-store.json`. It holds no secret, so it lives in `borant-infra`, and
-  `just catalog` refreshes it. The extension reads this file (local source,
-  `src/lunaroute.ts`). A stale catalog only hides new models.
-- `omp install @lunaroute/pi-extension@0.15.0` runs only if the extension is
-  missing.
-
-## 4. Secret delivery to hosts
-
-### 4.1 Options
-
-| Option | Rotation | Blast radius of one host | Secret zero | Complexity |
-|---|---|---|---|---|
-| 1Password service account, `op inject` at boot (chosen) | Edit the item. Hosts take it at the next refresh. | Every item in `Borant` | The service account token | Low: one unit and one CLI |
-| sops-nix with host age keys [S28] | Edit, commit, deploy to every host | Only that host's secrets | The host SSH key, known before the first deploy | Medium: `.sops.yaml` grows, and `sops updatekeys` for each new host [S29] |
-| agenix or agenix-rekey [S30] | Same as sops-nix | Same | Same | Medium |
-| Laptop push over the tailnet | `just push-secrets` to all hosts | Only what was pushed | None | Low, but no laptop means no new host |
-| Hetzner user-data | A new server | All | The Hetzner API | Low, but any local process reads it (section 6.2) |
-| Secrets broker on the hub | Edit on the hub | Per-host policy | Tailscale node identity | High, and the hub is a single point of failure |
-| OpenBao, Vault, or Infisical | Strong | Per-host policy | An AppRole or machine identity | High. Infisical rotation needs a paid plan [S38]. |
-
-systemd credentials [S34] are not in the table, because they protect data on
-disk and do not deliver it. The design uses them inside the host.
-
-### 4.2 Why the service account wins
-
-- Chris keeps every secret in 1Password, and the laptop already uses a
-  read-only service account. This adds one vault and one account.
-- A host from a snapshot, made by the laptop or the hub, needs two small
-  values: a one-off Tailscale key and the service account token. sops-nix
-  needs a rekey and a commit for each new host.
-- Agent secret refs (section 5) need `op` access on the host at run time.
-  sops-nix cannot resolve a reference that an agent asks for.
-- Rotation is one edit in 1Password, with no deploy.
-
-Costs and limits:
-
-- Reads per token per hour: 10,000 on Business, 1,000 on Teams, Families, and
-  Individual. Reads per account per day: 50,000 on Business, 5,000 on Teams,
-  1,000 on Families or Individual [S31]. Ten hosts with three secrets and two
-  refreshes a day use about 60 reads a day.
-- A service account cannot change its vault access after creation. Its
-  expiry is set at creation with `--expires-in` [S32]. Whether "never" is
-  allowed is unverified.
-- 1Password Environments give service accounts read access in a beta [S33].
-  This doc cuts them until they leave beta.
-
-The trade-off: root or `chris` on any host can read every item in `Borant`,
-and one shared token means a revoke stops all hosts. Per-host service
-accounts fix both, but each needs a human to create it (open question 3).
-
-### 4.3 Concrete design
-
-| Vault | Item and field | Reader | Use |
-|---|---|---|---|
-| `Borant` (new) | `claude-code/oauth-token` | `borant-hosts` | `CLAUDE_CODE_OAUTH_TOKEN` |
-| `Borant` | `lunaroute/api-key` | `borant-hosts` | omp import |
-| `Borant` | `github/token` | `borant-hosts` | `GH_TOKEN` |
-| `Borant` | Task items, for example `staging-db/url` | `borant-hosts` | Agent secret refs |
-| `Agents` | Hetzner token, Tailscale OAuth client, `borant-hosts` token | Laptop only | `just create` |
-
-A new `modules/secrets.nix` in `borant-infra` (a sketch):
-
-```nix
-let
-  envTpl = pkgs.writeText "secrets.env.tpl" ''
-    CLAUDE_CODE_OAUTH_TOKEN={{ op://Borant/claude-code/oauth-token }}
-    GH_TOKEN={{ op://Borant/github/token }}
-  '';
-  ompTpl = pkgs.writeText "omp-auth.json.tpl" ''
-    {"version": 1, "credentials": [{"provider": "lunaroute", "credential": {"type": "oauth",
-      "access": "{{ op://Borant/lunaroute/api-key }}", "refresh": "", "expires": 4102444800000}}]}
-  '';
-in {
-  systemd.services.borant-secrets = {
-    wantedBy = [ "multi-user.target" ];
-    before = [ "borant-harness-seed.service" "borant-host.service" ];
-    wants = [ "network-online.target" ];
-    after = [ "network-online.target" ];
-    path = [ pkgs._1password-cli ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      LoadCredential = "op-token:/var/lib/borant-secrets/op-token";
-      RuntimeDirectory = "borant";
-      RuntimeDirectoryPreserve = "yes";
-    };
-    script = ''
-      umask 077
-      export OP_SERVICE_ACCOUNT_TOKEN="$(< "$CREDENTIALS_DIRECTORY/op-token")"
-      op inject -f -i ${envTpl} -o /run/borant/secrets.env
-      op inject -f -i ${ompTpl} -o /run/borant/omp-auth.json
-      chown ${user} /run/borant/secrets.env /run/borant/omp-auth.json
-    '';
-  };
-  systemd.timers.borant-secrets.timerConfig.OnCalendar = "*-*-* 04,16:00:00";
-  systemd.services.borant-host.serviceConfig.EnvironmentFile = "/run/borant/secrets.env";
+#[async_trait::async_trait]
+pub trait SecretStore: Send + Sync + fmt::Debug {
+    fn kind(&self) -> &'static str;
+    fn capabilities(&self) -> Capabilities;
+    /// All refs or an error. One missing ref fails the whole call.
+    async fn resolve(&self, refs: &[SecretRef]) -> PortResult<Resolved>;
+    async fn wrap(&self, bundle: &Bundle) -> PortResult<Wrap> {
+        Err(PortError::new(PortErrorKind::Invalid, "no wrapper mode"))
+    }
 }
 ```
 
-- `LoadCredential` gives the root-only token file to this unit only. The
-  token never enters the env of `borant host` or of agents.
-- The `version` in the omp template must match `omp auth export` (unverified).
-- After a timed refresh, the unit restarts `borant-host`. The restart is safe,
-  because tmux sessions survive it (`KillMode = "process"`).
+`PortErrorKind` gets `Invalid` and `Denied`, so that the plugin error codes
+map one to one (section 5.2). If the elastic-compute revision adds them first,
+this doc uses those. `zeroize` does no I/O [S58], so the no-I/O rule of
+`borant-core` holds. `Secret` has no `Serialize`, so the compiler stops a
+value in any NATS type.
 
-The tmux server keeps the env from its own start. A session must thus read
-the env file when it starts. The wrapper also keeps values out of `tmux
-new-session -e` arguments, which show in `ps`. In `modules/borant.nix`:
+### 2.2 Who calls it
 
-```nix
-withSecrets = pkgs.writeShellScript "borant-with-secrets" ''
-  set -a; . /run/borant/secrets.env; set +a
-  if [ "$1" = claude ]; then ${trustCwd}; fi   # section 3.1
-  exec "$@"
-'';
-commands = {
-  claude = [ "${withSecrets}" "claude" "--dangerously-skip-permissions" "--plugin-dir" "${share}/claude-code" ];
-  omp = [ "${withSecrets}" "omp" ];
-};
-programs.git.config = {
-  user = { name = "<open question 5>"; email = "<open question 5>"; };
-  credential."https://github.com".helper = "!${pkgs.gh}/bin/gh auth git-credential";
-  url."https://github.com/".insteadOf = [ "git@github.com:" "ssh://git@github.com/" ];
-};
+Only the host daemon calls the port. It calls `resolve` or `wrap` in the
+launch path in `crates/borant-host/src/commands.rs`, just before it builds the
+`LaunchSpec`, and again when a file must refresh (section 8.3). The hub never
+calls it. A move carries bundle names, and the new host resolves them with its
+own store. The daemon caches values per store for `cache_secs` (default 600),
+so a wake or a quick relaunch does not read the backend again.
+
+### 2.3 Contract suite
+
+`borant-core::testing` gets one suite. Each adapter crate runs it.
+
+```rust
+pub async fn secret_store_contract(store: &dyn SecretStore, known: &[(SecretRef, &str)], missing: SecretRef)
 ```
 
-Borant appends `-- <prompt>` to these commands
-(`crates/borant-launch/src/harness.rs`), and the wrapper passes it on through
-`"$@"`. Phase 1 needs no change to Borant code.
+It asserts these rules:
 
-On the laptop, `just create <name>` becomes:
+1. `resolve` of all known refs returns each exact value, twice in a row.
+2. An empty list gives an empty map, and a duplicate ref gives one entry.
+3. A call with one missing ref fails with `NotFound` and returns no values.
+4. The Debug output of the result contains no known value.
+5. If `capabilities().wrap` is true, `wrap` returns a non-empty `prefix` with
+   no known value and no value from its own `env`.
 
-1. Mint a one-off key with the Tailscale OAuth client: `POST
-   /api/v2/tailnet/-/keys` with `reusable: false`, `preauthorized: true`,
-   `tags: ["tag:borant"]`, and `expirySeconds: 3600` [S19].
-2. Create the server. Today, `nixos-anywhere --extra-files` copies the
-   Tailscale key and the service account token. With a snapshot, see
-   section 6.
-3. Wait until `tailscale ping <name>` answers.
-4. Run `ssh chris@<name> borant doctor`, which prints any failed checks.
+## 3. Bundles
 
-## 5. Secrets for agents
+### 3.1 Configuration
 
-Recommendation: a Borant feature, "secret refs". A `spawn` call names env vars
-and 1Password references, never values. The host daemon resolves them at
-launch, only for that agent, and redacts each value from that agent's log.
-
-```json
-{"tool": "spawn", "harness": "omp", "prompt": "Run the migration test",
- "secrets": {"DATABASE_URL": "op://Borant/staging-db/url"}}
-```
+Stores and bundle definitions live in `host.toml`, because a ref is only
+useful to the store on that host. `hub.toml` names bundles but never defines
+them.
 
 ```toml
 # host.toml
-[secrets]
-op = "/run/current-system/sw/bin/op"   # on a laptop: the op-agents wrapper
-token_file = "/var/lib/borant-secrets/op-token"
+[secrets.stores.op]
+kind = "exec"
+command = ["borant-secrets-1password"]   # from borant-infra
+credential = "store-token"              # a file in $CREDENTIALS_DIRECTORY (section 7)
+timeout_secs = 10
+
+[secrets.bundles.github]
+store = "op"
+vars = { GH_TOKEN = "op://Borant/github/token" }
+
+[secrets.bundles.claude-auth]
+store = "op"
+vars = { CLAUDE_CODE_OAUTH_TOKEN = "op://Borant/claude-code/oauth-token" }
+
+[secrets.bundles.lunaroute]
+store = "op"
+files = { "omp-auth.json" = "op://Borant/lunaroute/omp-auth-record" }
+pre = ["omp", "auth", "import", "{dir}/omp-auth.json"]
+
+[secrets.bundles.staging-db]
+store = "op"
+vars = { DATABASE_URL = "op://Borant/staging-db/url" }
+
+[secrets.bundles.app-stg]                # wrapper mode, through a Doppler plugin
+store = "doppler"
+params = { project = "app", config = "stg" }
+
+[secrets.harness]                        # harness defaults, "*" is every harness
+"*" = ["github"]
+claude-code = ["claude-auth"]
+omp = ["lunaroute"]
+
+# hub.toml: names only. Profiles are from the orchestration doc, section 4.
+[profiles.worker]
+bundles = ["staging-db"]
+[channels.payments]
+bundles = ["app-stg"]
 ```
 
-Rules (calls for the builder):
+A spawn names bundles too: `{"tool": "spawn", "profile": "worker", "bundles":
+["staging-db"], ...}`. `{dir}` is the agent secret directory (section 4.1). A
+bundle with `vars` or `files` runs in resolver mode. A bundle with only
+`params` on a store that has `wrap` runs in wrapper mode.
 
-1. The agent record stores the refs. A move carries them, and the new host
-   resolves them again.
-2. Refs must start with `op://Borant/`. The service account scope is the real
-   limit, and the prefix is a second fence.
-3. The daemon writes the values to a mode 0600 file,
-   `/run/borant/agents/<agent>.env`. The wrapper reads it and deletes it
-   before `exec`. Values never go into tmux arguments or the control plane.
-4. `redact()` in `crates/borant-core/src/rules/redact.rs` is pattern-only. The
-   session log and messages pass through it (`delivery.rs` and `sessions.rs`
-   in `borant-host`). Add a per-agent set of exact values, plus the values of
-   `secrets.env`, and remove them before the patterns run.
-5. Add patterns for `lr_`, `tskey-`, and `ops_` keys and the longer GitHub App
-   token format. The `ops_` prefix for 1Password service account tokens is
-   unverified.
-6. The prompt names the variable, never the value: "The database URL is in
-   `$DATABASE_URL`."
-7. If a ref fails to resolve, the launch fails and the hub tries another
-   host. A host with no `[secrets]` section does not get agents with refs.
+### 3.2 Four levels and the merge
 
-Limits: an agent can print a value in a form that the exact match misses, for
-example base64. Every agent runs as `chris`, so it can read the env of other
-agent processes. Per-agent isolation belongs to the
-orchestration-api-and-sandboxes doc.
+The host daemon merges four levels in this order. A later level wins.
 
-## 6. Golden image
+| Order | Level | Defined in | Example |
+|---|---|---|---|
+| 1 | Harness default | `host.toml` `[secrets.harness]` | `claude-code` gets `claude-auth`, all get `github` |
+| 2 | Profile | `hub.toml` `[profiles.<name>]` | `worker` gets `staging-db` |
+| 3 | Channel | `hub.toml` `[channels.<name>]` | Agents in `payments` get `app-stg` |
+| 4 | Spawn | `bundles` on `spawn` | One agent gets `prod-readonly` |
 
-Recommendation: do zero-touch secrets first, on the current `nixos-anywhere`
-path. Then add a Hetzner snapshot of a generic `borant-host` configuration to
-cut create time from about ten minutes to one or two. The snapshot is a speed
-step, not a requirement.
+Rules:
 
-### 6.1 Build and contents
+1. The list is the union of the levels in order, without duplicates. If two
+   bundles set the same var or file, the later one wins, and the daemon logs
+   both bundle names.
+2. A launch has at most one wrapper-mode bundle, because stacked wrappers are
+   hard to debug. A second one fails the launch with `invalid`.
+3. Level 1 comes from the host that runs the launch. A move from omp to
+   Claude Code thus drops `lunaroute` and adds `claude-auth`.
+4. An agent that spawns an agent can name only bundles that it holds. A human
+   can name any bundle. Thus a child never gets more access than its parent.
 
-| Option | How | Trade-off |
-|---|---|---|
-| `nixos-anywhere` on a throwaway box, then snapshot (chosen) | Install the generic configuration with no secrets, delete the SSH host keys and `/etc/machine-id`, shut down, `hcloud server create-image --type snapshot` | Uses the path that works today, on x86-64 Linux. One clean-up step. |
-| disko image and upload | `system.build.diskoImagesScript` [S36], then `hcloud-upload-image --location hil` [S27] | Clean and reproducible, but needs an x86-64 Linux builder with a VM. A 4 GB upload takes 8 to 12 minutes [S37]. |
-| nixpkgs `raw-efi` variant | `nixos-rebuild build-image --image-variant raw-efi`. nixos-generators is archived [S35]. | No Hetzner variant [S39]. Same builder need. |
+### 3.3 What the hub stores
 
-- Snapshots from Ashburn, Hillsboro, and Singapore stay in that location
-  [S23], so make the images in `hil`. Snapshots survive the deletion of the
-  source server [S23].
-- The snapshot price after the 2026 price changes [S25] was not found
-  (unverified). The elastic-compute doc owns prices.
+The hub stores names, never values or refs. All new fields use
+`#[serde(default)]`, so old records still parse.
 
-| In the image | At first boot |
+- `Agent.bundles`: the spawn level only. Profile and channel levels come from
+  `hub.toml` at each launch, so a change there applies at the next launch.
+- `LaunchOrder.bundles`: levels 2 to 4, merged. The host adds level 1.
+- `HostInfo.bundles`: the bundles that the host defines. The scheduler
+  (`crates/borant-core/src/rules/schedule.rs`) skips a host that does not
+  define every bundle of the launch.
+
+## 4. Injection modes
+
+### 4.1 Resolver mode
+
+The host daemon reads the values through the store and starts the harness
+with them. This is the default.
+
+1. The daemon calls `resolve` once for each store, with all its refs.
+2. It creates `/run/borant/agents/<agent>/` (0700) on the `/run` tmpfs. On
+   macOS the directory is under `$TMPDIR`, which is not a tmpfs.
+3. It writes each `files` entry, and the env vars to an `env` file, all 0600.
+4. It sets only `BORANT_SECRETS_DIR` in `LaunchSpec.env`, and puts a shim in
+   front of the program: `borant secret-exec <dir> -- claude ...`.
+5. The shim, a new subcommand of the `borant` binary, reads `env`, deletes
+   it, sets the vars, runs each `pre` command, and calls `exec` on the
+   harness.
+6. When the session ends, the daemon deletes the directory. At start, it
+   deletes each directory with no live session.
+
+The shim is needed because the tmux launcher puts each `LaunchSpec.env` pair
+in a `-e KEY=VALUE` argument (`new_session_args` in
+`crates/borant-launch/src/tmux.rs`), and `ps` shows it. Every agent runs as
+`chris`, so an unsandboxed agent can still read the env of another agent
+through `/proc/<pid>/environ`. Only a sandbox closes this (section 8.4).
+
+### 4.2 Wrapper mode
+
+The host daemon puts a provider CLI in front of the harness. The CLI fetches
+the values and calls `exec`. Borant never holds them.
+
+| Provider | Prefix |
 |---|---|
-| NixOS with the flake system of `borant-host` | Host name, from Hetzner metadata |
-| borant, Claude Code, omp, gh, tmux, git, op, and the tools of `hosts/common.nix` | One-off Tailscale key, from user-data |
-| The seed units, the wrapper, managed settings, the catalog, the gitconfig | The `borant-hosts` token, pushed over the tailnet |
+| Doppler | `doppler run --project P --config C --` [S46] |
+| secretspec | `secretspec run --profile P --` [S44] |
+| 1Password | `op run --no-masking --env-file F --` [S50] |
+| Infisical | `infisical run --projectId ID --` [S54] |
 
-The generic configuration sets `networking.hostName = ""`. A oneshot
-`borant-firstboot` reads `http://169.254.169.254/hetzner/v1/metadata/hostname`
-and `.../userdata`, sets the host name, and writes the Tailscale key file. The
-path comes from the cloud-init Hetzner datasource [S26]. No official Hetzner
-page for it was found (unverified). This doc cuts `services.cloud-init` for a
-ten-line unit.
+The store returns the prefix from `wrap`, with `params` filled in. The argv
+is `borant secret-exec <dir> -- <prefix> <harness program>`. The shim still
+runs, because the provider token and any resolver bundles go through `env`.
 
-### 6.2 Why the token is not in user-data
+Wrapper mode has three costs:
 
-User-data cannot change after creation, and every local process can read the
-metadata service (unverified for Hetzner, true on most clouds). Agents run as
-`chris`. Thus user-data carries only the single-use Tailscale key, which is
-worthless after the join. The laptop, or the hub for elastic hosts, pushes the
-service account token over Tailscale SSH after the join. An nftables rule also
-drops metadata traffic from every UID except root, and phase 2 tests it:
+- Redaction. Borant cannot remove a value that it never saw. A plugin can
+  return the values in `Wrap.redact`, for example from `doppler secrets
+  download --no-file --format json` [S47], and Borant keeps them in memory
+  for redaction only. Without them, only the patterns of section 8.2 apply,
+  and a value with no known shape reaches the session log if an agent prints
+  it.
+- The provider token. The CLI needs its token in its env, for example
+  `DOPPLER_TOKEN` [S46], and the harness most likely inherits it (unverified).
+  The agent can then read every secret that the token reaches, so a wrapper
+  token must be scoped to one config or one project.
+- The mask of `op run` [S50]. Borant takes the session log from hooks and
+  transcripts, not from the terminal, so the mask does not protect the log,
+  and it can take the terminal away from a TUI harness (unverified). The
+  preset passes `--no-masking`.
+
+secretspec asks for a `--reason` when it detects an AI agent [S42]. If that
+fires for a launch, the preset adds `--reason "borant launch <agent>"`.
+
+### 4.3 When to use each mode
+
+| Use | Mode | Why |
+|---|---|---|
+| Harness logins, GitHub, task secrets on Chris's hosts | Resolver | Exact-value redaction, files on tmpfs |
+| A team that keeps app secrets in Doppler, secretspec, or Infisical and wants its own tool to fetch them | Wrapper | Borant holds no values |
+| A secret with a short TTL in a long session | Resolver, `files` | Only a file can change under a running process |
+| A laptop | Resolver, `env` adapter | No backend and no network |
+
+## 5. Adapters
+
+### 5.1 Compiled-in adapters
+
+A new crate, `borant-secrets`, holds two adapters with no network:
+
+- `env`: a ref is the name of a variable in the env of the host daemon. For
+  laptops and tests.
+- `file`: a ref is a file name in a directory, for example
+  `/run/borant/secrets/`. It refuses a file that other users can read. The
+  `op inject` unit of revision 1 [S51], sops-nix [S28], or agenix [S30] can
+  fill it, for a host that must boot with no access to the store.
+
+Both run the contract suite. Neither has `wrap` or `refresh`.
+
+### 5.2 The `exec` adapter and the plugin protocol
+
+The `exec` adapter runs a plugin program for each operation. It speaks the
+exec plugin protocol of the elastic-compute doc (section "Exec plugin
+protocol"). That doc owns the protocol. The convention, restated exactly:
+
+1. Request: one JSON object on stdin, `{"v": 1, "op": "<name>", ...args}`.
+2. Response: one JSON object on stdout, either `{"ok": <value>}` or
+   `{"error": {"code": "<code>", "message": "<text>"}}`.
+3. Error codes include `unavailable`, `not_found`, `invalid`, `denied`, and
+   `internal`. They map to `PortErrorKind` `Unavailable`, `NotFound`,
+   `Invalid`, `Denied`, and `Other`.
+4. A non-zero exit with no JSON counts as `internal`.
+5. stderr is for logs only. The adapter redacts it, passes it to `tracing`,
+   and never parses it.
+6. Each op has a timeout (`timeout_secs`, default 10). The adapter then kills
+   the plugin and returns `Timeout`.
+7. No secret goes in an argument.
+
+| Op | Args | `ok` value | Required |
+|---|---|---|---|
+| `describe` | none | `{"v": 1, "kind": "secrets", "backend": name, "capabilities": ["resolve", "wrap", "refresh"]}`, the same handshake shape as the provisioner `describe` in the elastic compute doc | Yes |
+| `resolve` | `"refs": [string]` | `{"values": {ref: value}, "ttl_secs": number or null}` | With `resolve` |
+| `wrap` | `"bundle": name, "params": {k: v}` | `{"prefix": [string], "env": {k: value}, "redact": [value]}` | With `wrap` |
+
+```json
+{"v": 1, "op": "resolve", "refs": ["op://Borant/github/token"]}
+{"ok": {"values": {"op://Borant/github/token": "github_pat_..."}, "ttl_secs": null}}
+```
+
+The adapter calls `describe` at daemon start, and a failure is a host problem
+(section 10). It reads the stdout of `resolve` and `wrap` straight into
+`Secret` values and never logs it. If the store names a `credential`, it sets
+`BORANT_CREDENTIALS_DIRECTORY` in the plugin env (section 7). Its tests run
+the contract suite against a shell plugin fixture, plus bad JSON, a non-zero
+exit, a timeout, and each error code.
+
+### 5.3 The 1Password plugin in `borant-infra`
+
+`borant-secrets-1password` is a short script that Nix packages with
+`pkgs._1password-cli` and `jq`.
+
+- `describe` returns `{"v": 1, "kind": "secrets", "backend": "1password", "capabilities": ["resolve", "wrap"]}`.
+- `resolve` reads the token file into `OP_SERVICE_ACCOUNT_TOKEN` and runs `op
+  read <ref>` for each ref [S52]. One read per ref keeps the JSON safe for
+  values with quotes. Refs must start with `op://Borant/`. The service account
+  scope is the real limit, and the prefix is a second fence.
+- `wrap` writes an env file of refs to the agent directory and returns `op run
+  --no-masking --env-file <file> --` [S50]. It exists to prove the protocol.
+
+| Vault | Item and field | Reader | Bundle |
+|---|---|---|---|
+| `Borant` (new) | `claude-code/oauth-token` | `borant-hosts` | `claude-auth` |
+| `Borant` | `lunaroute/omp-auth-record` | `borant-hosts` | `lunaroute` |
+| `Borant` | `github/token` | `borant-hosts` | `github` |
+| `Borant` | Task items, for example `staging-db/url` | `borant-hosts` | Task bundles |
+| `Agents` | Hetzner token, Tailscale OAuth client, `borant-hosts` token | Laptop only | None |
+
+Service account reads per account per day: 1,000 on Individual and Families,
+5,000 on Teams, and 50,000 on Business [S31]. With the cache, 50 launches a
+day with 3 refs each use at most 150 reads. Vault access is fixed at creation
+[S32].
+
+### 5.4 Other providers
+
+Doppler, secretspec, and Infisical ship as examples in `docs/secrets/`: a
+short plugin or a wrapper preset, not code in Borant.
+
+| Tool | Resolver mode | Wrapper mode | Machine credential | Masks child output | Offline | Cost for one person | Rust library |
+|---|---|---|---|---|---|---|---|
+| 1Password (default) | `op read` per ref [S52] | `op run --env-file F --` [S50] | Service account, vault scope fixed at creation [S32] | Yes, by default [S50] | No | Chris's plan, rate limits [S31] | No official SDK [S53] |
+| Doppler | `doppler secrets download --no-file --format json` [S47] | `doppler run -p P -c C --` [S46] | Service token for one config, `DOPPLER_TOKEN` [S46] | None found | Encrypted fallback file, on by default [S48] | Free for up to 3 users [S49] | None found |
+| secretspec | `secretspec get KEY` [S44] | `secretspec run --profile P --` [S44] | Its provider's, for example `OP_SERVICE_ACCOUNT_TOKEN` [S43] | None found | With keyring, dotenv, or age providers [S42] | Free, Apache-2.0 [S44] | `secretspec` 0.21.1 [S45] |
+| Infisical | Rust SDK [S56] | `infisical run --projectId ID --` [S54] | Machine identity, `INFISICAL_TOKEN` [S55] | None found | Not researched | Free for 5 identities [S38], MIT core [S57] | `infisical`, early stage [S56] |
+
+secretspec fronts about 35 providers, 1Password and Doppler among them, with
+secrets declared per profile in `secretspec.toml` [S42]. One secretspec plugin
+thus reaches many stores. Its crate is before 1.0 [S45], so this doc uses its
+CLI.
+
+## 6. Harness auth as bundles
+
+### 6.1 Claude Code: `claude-auth`
+
+Chris runs `claude setup-token` once and stores the output in 1Password. The
+bundle sets `CLAUDE_CODE_OAUTH_TOKEN`.
+
+- The token lasts one year, needs a Pro, Max, Team, or Enterprise plan, and
+  can only make model requests [S1]. `ANTHROPIC_API_KEY` wins over it [S1],
+  so a move to API billing is one bundle edit (open question 1).
+- Subscription OAuth is for "ordinary use of Claude Code", and products built
+  on Claude must use an API key [S3], [S41]. Many unattended sessions for one
+  person is a gray area, and no source rules on one token on many hosts.
+- A token-only session showed the login screen until
+  `hasCompletedOnboarding` was true [S8]. The seed unit sets it.
+
+### 6.2 LunaRoute and omp: `lunaroute`
+
+omp does not read the LunaRoute key from the env. The extension (0.14.1,
+local source `src/login.ts`) keeps it in omp's credential store as an
+OAuth-shaped record: `access` is the `lr_` key, `refresh` is empty, and
+`expires` is far in the future. It is thus a static key, and one shared key
+works. omp 18.12.6 has `omp auth import <file|->` and keeps credentials in
+`~/.omp/agent/agent.db` (local help). 0.14.1 reads no `LUNAROUTE_API_KEY`
+(local grep), and 0.15.0 was not inspected.
+
+The bundle covers this with a `files` entry and a `pre` step. The 1Password
+item holds the whole import record as one value, so Borant needs no
+templates. The shim runs `omp auth import {dir}/omp-auth.json` before `exec`.
+The cost: the import copies the key into `agent.db` on disk, as on the laptop
+today. If the extension can read an env var (open question 4), the bundle
+becomes one `vars` line and the key stays off the disk.
+
+### 6.3 GitHub: `github`
+
+One fine-grained personal access token (PAT), limited to the repositories
+that agents work in, with a 366-day expiry. The bundle sets `GH_TOKEN`, which
+`gh` recommends for headless use [S15]. The system gitconfig makes `gh` the
+git credential helper and rewrites SSH GitHub URLs to HTTPS.
+
+Permissions: Contents, Pull requests, and Workflows, all write [S13]. The
+token shares the 5,000 requests per hour of Chris [S16]. A classic PAT reaches
+every repository, so this doc cuts it. A GitHub App token lasts one hour
+[S14], and becomes possible later through `refresh`: the plugin returns
+`ttl_secs = 3600`, and the daemon rewrites a token file before it ends. The
+Actions `push` event covers branches and tags only [S17], so a push to
+`refs/borant/*` most likely starts no workflow.
+
+Tailscale and Hetzner credentials stay on the laptop. `just create` mints a
+single-use, tagged Tailscale key with a one-hour expiry [S18], [S19], and
+Tailscale SSH replaces the per-box SSH keys [S20], [S21], [S22].
+
+## 7. Secret zero
+
+The host needs one credential for its store: a 1Password service account
+token, a Doppler service token, or an Infisical machine identity. The delivery
+does not depend on the backend, because it is one file.
+
+1. `just create`, or the hub for elastic hosts, pushes the file over Tailscale
+   SSH to `/var/lib/borant/credentials/store-token`, mode 0400, owner root.
+   User-data never carries it (section 11).
+2. The `borant-host` unit loads it with `LoadCredential` [S34]:
 
 ```nix
-networking.nftables.tables.metadata = {
-  family = "inet";
-  content = ''
-    chain output {
-      type filter hook output priority 0;
-      ip daddr 169.254.169.254 meta skuid != 0 drop
-    }
-  '';
+systemd.services.borant-host.serviceConfig = {
+  LoadCredential = [ "store-token:/var/lib/borant/credentials/store-token" ];
+  LimitCORE = 0;
+  RuntimeDirectory = "borant/agents";
+  RuntimeDirectoryMode = "0700";
 };
 ```
 
-### 6.3 Pinned harnesses and freshness
+3. The daemon never reads the file. It passes `$CREDENTIALS_DIRECTORY` to the
+   plugin as `BORANT_CREDENTIALS_DIRECTORY`. The token never enters
+   `LaunchSpec.env` or an agent directory.
 
-Recommendation: add `pkgs/claude-code.nix` and `pkgs/omp.nix` in the style of
-`pkgs/borant.nix`: a release binary with a fixed hash and
-`autoPatchelfHook`. Keep `programs.nix-ld` for other binaries.
+The gap: systemd lets the user of the unit read the credential, and
+`borant-host` runs as `chris`, like every agent. An unsandboxed agent can thus
+most likely read the store token (unverified). A sandboxed agent cannot,
+because bubblewrap binds only the paths that Borant names (open question 3).
+To rotate secret zero, push a new file and restart `borant-host`. tmux
+sessions survive the restart (`KillMode = "process"`).
 
-- Claude Code publishes a `manifest.json` for each version at
-  `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`,
-  with a SHA-256 for each platform, and a GPG signature from 2.1.89 [S6],
-  [S7]. The binary is at `.../<version>/linux-x64/claude`. At research time,
-  `stable` was 2.1.308 and `latest` was 2.1.310.
-- nixpkgs `claude-code` fetches the same binary and lagged about one version
-  [S9]. `sadjow/claude-code-nix` updates every hour [S10]. A 20-line local
-  file avoids a third-party flake input, and nixpkgs is the fallback.
-- The omp release asset URL is unverified [S12].
-- `just bump-claude <version>` and `just bump-omp <version>` write the new
-  hashes.
+## 8. Security rules
 
-Rebuild the snapshot when `flake.lock` or a pin changes, and keep the two
-newest. A host from an older snapshot still works, because `just deploy`
-brings it to the current flake. `borant doctor` reports the flake revision of
-the host. This doc cuts `system.autoUpgrade`, because deploys are push-based.
+### 8.1 Where values never go
 
-## 7. `borant doctor` and host readiness
+| Place | Rule |
+|---|---|
+| Prompts | The prompt names the variable, never the value: "The database URL is in `$DATABASE_URL`." |
+| The session log | Exact-value redaction, then patterns (section 8.2) |
+| NATS | Only bundle names cross. `Secret` has no `Serialize`. |
+| tmux arguments and `ps` | Only `BORANT_SECRETS_DIR` and the shim argv. A wrapper prefix holds params only. |
+| Crash dumps | `LimitCORE = 0`, and `prctl(PR_SET_DUMPABLE, 0)` at daemon start [S59]. The second also stops agents of the same user from reading daemon memory through `ptrace`. |
+| Daemon logs | `Secret` prints `Secret(..)`. Plugin stderr is redacted. |
 
-Recommendation: a `borant doctor [--json] [--fix] [--strict]` command, and the
-same checks inside `borant host`, at start and every ten minutes. The daemon
-advertises in `host.{host}` only the harnesses that pass, plus a list of host
-problems. The scheduler already filters by harness
-(`crates/borant-core/src/rules/schedule.rs`). It needs one new filter: a host
-with a problem does not qualify.
+### 8.2 Redaction
 
-| Check | Scope | How | `--fix` |
+`redact()` in `crates/borant-core/src/rules/redact.rs` is pattern-only today.
+The session log and messages pass through it (`delivery.rs` and `sessions.rs`
+in `borant-host`). The change:
+
+1. A per-agent `Redactor` holds the exact values of that agent: all resolved
+   values, plus `Wrap.redact` in wrapper mode. It removes them first, longest
+   first, and then runs the patterns.
+2. Values shorter than 8 characters are not matched, because they match too
+   much text.
+3. New patterns: `lr_`, `tskey-`, `ops_` (1Password service accounts,
+   unverified), `dp.st.` (Doppler, unverified), and the longer GitHub App
+   token format [S14].
+
+A value printed as base64 still escapes. Encryption at rest and short
+retention limit that.
+
+### 8.3 Refresh and rotation
+
+- Each launch resolves again, after the cache. A rotation thus reaches each
+  new session within `cache_secs`.
+- A running session keeps its env. A rotating secret for a long session goes
+  in `files`. The daemon rewrites file entries every `refresh_secs` (default
+  12 hours), or before `ttl_secs` ends.
+- A failed refresh keeps the old file and adds a host problem.
+
+### 8.4 Sandboxes and the audit log
+
+The bubblewrap plan of the orchestration doc (section 6) binds
+`/run/borant/agents/<agent>` read-only through `SandboxPlan.ro`, and nothing
+else under `/run/borant` or `/run/credentials`. A sandboxed agent thus sees
+only its own files.
+
+Audit: at each launch, the daemon records a `secrets_issued` session event
+with the agent, host, store names, bundle names, and mode, but no values and
+no refs.
+
+## 9. First-run screens
+
+The seed unit no longer touches secrets. `borant-harness-seed` is a oneshot
+that runs as `chris` before `borant host` at each boot. It merges keys into
+files that the harnesses own, and never replaces a whole file.
+
+| Harness | Screen | Key or step | File |
+|---|---|---|---|
+| Claude Code | Onboarding | `hasCompletedOnboarding: true`, `lastOnboardingVersion` | `~/.claude.json` [S8] |
+| Claude Code | Bypass warning | `skipDangerousModePermissionPrompt: true` | Managed settings [S4] |
+| Claude Code | Auto-update | `env.DISABLE_AUTOUPDATER: "1"` | Managed settings [S2] |
+| Claude Code | Folder trust | `projects."<cwd>".hasTrustDialogAccepted: true` | `~/.claude.json` [S5] |
+| omp | Setup wizard | `omp config set setupVersion 2` | `~/.omp/agent/config.yml` |
+| omp | Default model | `omp config set modelRoles.default lunaroute/deepseek-4.1-flash:auto` | Same |
+| omp | Model catalog | Merge `/etc/borant/lunaroute-catalog.json` | `~/.pi/agent/models-store.json` |
+
+Each spawn gets a new worktree, and trust is saved per directory [S5]. The
+pre-launch hook of the orchestration doc (section 7) thus writes the trust key
+for the cwd, with a `flock` and an atomic rename, unless phase 0 shows that
+parent trust works. omp does not refresh the LunaRoute catalog [S11], so the
+catalog lives in `borant-infra`.
+
+## 10. `borant doctor` and host readiness
+
+`borant doctor [--json] [--fix] [--strict]` runs the same tests as `borant
+host`, at start and every ten minutes. The daemon advertises only the
+harnesses that pass, and `HostInfo` gets `problems: Vec<String>`. The
+scheduler skips a host with a problem. A host that loses Claude auth stays in
+service for omp work.
+
+| Test | Scope | How | `--fix` |
 |---|---|---|---|
 | Binary and version | Harness | `claude --version`, `omp --version` against the pin | No |
-| Claude auth | Claude Code | A token or key in the env, then `claude auth status` (behavior with an env token unverified). `--strict`: one `claude -p` turn. | No |
-| Claude first-run state | Claude Code | `hasCompletedOnboarding`, `skipDangerousModePermissionPrompt` | Yes |
-| Claude trust | Claude Code | Trust key for `~/.borant/work`, or the wrapper step is on | Yes |
-| omp setup | omp | `omp config get setupVersion` is at least the expected value | Yes |
-| LunaRoute | omp | A `lunaroute` credential exists, and the catalog has the default model. `--strict`: one `omp -p` turn. | Catalog only |
-| GitHub | Host | `gh auth status`, then `gh api repos/<o>/<r> --jq .permissions.push` | No |
-| Git identity | Host | `user.name` and `user.email` are set | No |
-| Checkpoint remote | Host | `git ls-remote` of the remote | No |
-| NATS | Host | Connected, round trip under one second | No |
-| Clock | Host | `timedatectl` reports NTP sync, and skew to the hub reply time is under two seconds | No |
-| Disk | Host | More than 5 GB free in `BORANT_HOME` and `/nix/store` | No |
-| Launcher | Host | Start and stop a test tmux session | No |
-| Secrets | Host | `/run/borant/secrets.env` exists and is younger than 24 hours | No |
+| Store | Host | `describe` on each store | No |
+| Bundles | Harness | `resolve` of each harness default bundle, values dropped, at most once an hour | No |
+| Claude and omp state | Harness | The seed keys, a `lunaroute` credential, the default model in the catalog. `--strict`: one `-p` turn. | Yes, except auth |
+| GitHub | Host | `gh api repos/<o>/<r> --jq .permissions.push` with the `github` bundle | No |
+| Git, NATS, clock, disk, launcher | Host | Identity set, `git ls-remote`, NATS connected, NTP sync, 5 GB free, a test tmux session | No |
 
-`HostInfo` gets a new field, `problems: Vec<String>`, with `#[serde(default)]`.
-Its `harnesses` field becomes computed. The `harnesses` list in `host.toml`
-becomes the candidates, and `doctor`
-removes the ones that fail. A host that loses Claude auth thus stays in
-service for omp work. The notifier tells Chris when a host gets a problem.
-The display of readiness belongs to the observability doc. `--strict` costs a
-small amount of model quota, so the daemon runs it at most once an hour.
+## 11. Golden image
 
-## 8. Phased plan
+A Hetzner snapshot cuts the create time from about ten minutes to one or two.
+It is a speed step after zero-touch, not a requirement. The build runs `nixos-anywhere` on a throwaway box with no secrets, deletes
+the SSH host keys and `/etc/machine-id`, and makes a snapshot in `hil` [S23].
+At first boot, `borant-firstboot` reads the host name and the single-use
+Tailscale key from the metadata service [S26] (unverified). The store token
+comes over the tailnet (section 7), because every local process can most
+likely read user-data, and an nftables rule drops metadata traffic from every
+UID except root. `pkgs/claude-code.nix` and `pkgs/omp.nix` pin the harnesses
+with the SHA-256 of each release [S6], [S7], [S12].
+
+## 12. Phased plan
 
 | Phase | Work | Repo | Done when |
 |---|---|---|---|
-| 0. Facts | On `borant-2`, test: parent-folder trust, `omp auth import` of a LunaRoute record, nested `omp config set`, a token-only Claude Code session on 2.1.310, and a push of `refs/borant/test/wip` with the PAT | None | Each unverified item in sections 2 and 3 has a result |
-| 1. Zero-touch secrets | `Borant` vault and service account, `modules/secrets.nix`, the wrapper, the seed unit, managed settings, the gitconfig, Tailscale key minting and Tailscale SSH | `borant-infra` | `just create borant-3` gives a working host with no login |
-| 2. Pins and snapshot | `pkgs/claude-code.nix`, `pkgs/omp.nix`, the generic `borant-host`, `borant-firstboot`, the metadata rule, `just image` | `borant-infra` | A host from the snapshot passes `borant doctor` in three minutes |
-| 3. Doctor and readiness | `borant doctor`, computed `harnesses`, `problems`, the scheduler filter | `borant` | The scheduler skips a host that fails a check |
-| 4. Agent secret refs | `secrets` on `spawn`, launch resolution, exact-value redaction, new patterns | `borant` | A spawned agent uses a password that never shows in its session log |
+| 0. Facts | On `borant-2`, test parent-folder trust, `omp auth import` of a LunaRoute record, a token-only Claude Code session, a push of `refs/borant/test/wip`, `op run --no-masking` around a TUI, and whether `doppler run` passes `DOPPLER_TOKEN` to the child | None | Each unverified item has a result |
+| 1. Port and resolver mode | `SecretStore`, `Secret`, `Bundle`, the contract suite, the `env`, `file`, and `exec` adapters, bundles in `host.toml` and `hub.toml`, the merge, `bundles` on `Agent`, `LaunchOrder`, `HostInfo`, and `spawn`, the scheduler filter, `borant secret-exec`, exact-value redaction, `secrets_issued` | `borant` | An agent uses `DATABASE_URL` from a `file` bundle, and the value never shows in its session log, `ps`, or NATS |
+| 2. Wrapper mode | `wrap` in the port and protocol, the one-wrapper rule, `Wrap.redact`, presets and a Doppler example in `docs/secrets/` | `borant` | An agent starts under `doppler run` with a test config |
+| 3. Hosts on the store | The `Borant` vault and `borant-hosts` account, `borant-secrets-1password`, stores and bundles in `modules/borant.nix`, `LoadCredential`, the seed unit, managed settings, the gitconfig, Tailscale minting and SSH | `borant-infra` | `just create borant-3` gives a working host with no login |
+| 4. Doctor | `borant doctor`, computed `harnesses`, `problems`, the store and bundle tests | `borant` | The scheduler skips a host whose store fails |
+| 5. Golden image | Pins, the generic `borant-host`, `borant-firstboot`, the metadata rule, `just image` | `borant-infra` | A host from the snapshot passes `borant doctor` in three minutes |
 
-## 9. What this doc cut
+Phase 3 can start before phase 2. The roadmap names `modules/secrets.nix`
+with `op inject` at boot for its phase 1, "zero-touch hosts". It needs one
+edit: phase 1 of this doc comes first, and the plugin replaces the boot unit.
 
-- Per-host service accounts, because each needs a human to create it.
-- sops-nix and agenix as the main path. sops-nix is the fallback if Chris
-  wants no internet dependency at boot.
-- OpenBao, Vault, Infisical, a broker on the hub, and 1Password Environments.
-- GitHub App tokens, until the shared PAT rate limit hurts.
-- Tailscale workload identity federation.
-- The disko and `raw-efi` image builds, until the snapshot path is too slow.
-- `system.autoUpgrade`, cloud-init, and Packer.
-- NATS credentials per host. NATS on `borant-1` has no auth today, and the
-  tailnet is the only fence. The small fix is a tailnet ACL that opens port
-  4222 only to `tag:borant` and Chris's devices. NATS user credentials can
-  later come through the same `op inject` path.
+## 13. What this doc cut
 
-## 10. Risks
+- Compiled-in 1Password, Doppler, Infisical, or secretspec adapters. `exec`
+  covers them, and no Rust library for them is both official and past 1.0
+  [S45], [S53], [S56].
+- Raw refs on `spawn`. Revision 1 let a spawn name `op://` refs. A spawn now
+  names bundles, so refs never cross NATS. A new secret needs one `host.toml`
+  edit.
+- Bundle definitions in `hub.toml`, templates in file entries, stacked
+  wrappers, and a separate user for the store plugin.
+- Per-host service accounts (each needs a human), and sops-nix or agenix as
+  the main path (they can fill the `file` adapter).
+- OpenBao, Vault, a broker on the hub, 1Password Environments (beta) [S33],
+  GitHub App tokens, Tailscale workload identity federation [S40], disko and
+  `raw-efi` images [S36], cloud-init, `system.autoUpgrade`, Packer, and NATS
+  credentials per host (a tailnet ACL on port 4222 is the small fix).
+
+## 14. Risks
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| Anthropic treats a subscription token on many unattended hosts as outside "ordinary, individual usage" | The account is limited or blocked | Open question 1. The switch to `ANTHROPIC_API_KEY` is one template line. |
-| A compromised host | Every item in `Borant` leaks | Laptop-only secrets stay in `Agents`. Rotate the token and the three harness secrets. |
-| The wrapper and a live Claude session write `~/.claude.json` at the same time | A lost trust key, and a blocked session | `flock` and an atomic rename. Parent trust, if phase 0 shows it works, removes the write. |
+| Anthropic treats a subscription token on many unattended hosts as outside "ordinary, individual usage" | The account is limited or blocked | Open question 1. API billing is one bundle edit. |
+| An unsandboxed agent reads the store token or the env of another agent | Every item that the token reaches leaks | A scoped vault, sandboxes for untrusted work, a plugin user later |
+| Wrapper mode with no `redact` values | A printed value reaches the session log | Resolver mode for secrets that agents print, and patterns as a floor |
+| The store is down at launch | The launch fails | The cache, then `unavailable`, and the hub tries another host. The `file` adapter for offline boots. |
 | An omp upgrade changes `setupVersion` or the credential format | omp sessions block or have no model | Pinned omp, and `borant doctor` tests both |
-| 1Password is down at boot | A new host has no secrets | The unit retries. Running hosts keep the old env file. |
-| A secret printed in a form that redaction misses | The value reaches the hub session log | JetStream encryption at rest, exact-value redaction, short retention |
 
-## 11. Open questions for Chris
+## 15. Open questions for Chris
 
 1. Claude billing: keep the Max subscription token on all hosts, or move
-   unattended hosts to an `ANTHROPIC_API_KEY`? The terms favor an API key for
-   heavy automated use.
-2. Which 1Password plan do you have? Teams caps the whole account at 5,000
-   service account reads a day.
-3. Is one shared `borant-hosts` token acceptable, given that a revoke stops
-   every host at once?
+   unattended hosts to an `ANTHROPIC_API_KEY` bundle?
+2. Which 1Password plan do you have? Individual and Families cap the account
+   at 1,000 service account reads a day, and Teams at 5,000.
+3. Is it acceptable that an unsandboxed agent can most likely read the store
+   token, and that one shared `borant-hosts` token means a revoke stops every
+   host? If not, phase 3 adds a plugin user or per-host accounts.
 4. Is the LunaRoute extension your code? If yes, `LUNAROUTE_API_KEY` support
-   and a catalog fetch on omp remove the import and the catalog file.
-5. Which git identity do agents commit as: you with your GitHub noreply
-   address, or a bot identity?
-6. May phase 0 create a scratch GitHub repository to test the push of
-   `refs/borant/*`? The main design also waits on this test.
-7. May `just create` switch to Tailscale SSH with a new ACL rule, so the
-   per-box SSH keys go away?
+   makes `lunaroute` one env var, and the import and the copy in `agent.db`
+   go away.
+5. Do you want wrapper mode in the first release, or resolver mode only until
+   a Doppler or secretspec user asks?
+6. Which git identity do agents commit as: you, or a bot identity?
+7. Can phase 0 create a scratch GitHub repository to test the push of
+   `refs/borant/*`?
 
 ## Sources
 
@@ -559,8 +635,6 @@ small amount of model quota, so the daemon runs it at most once an hour.
 - [S6] Claude Code setup and binary integrity: https://code.claude.com/docs/en/setup
 - [S7] Claude Code 2.1.310 manifest: https://downloads.claude.ai/claude-code-releases/2.1.310/manifest.json
 - [S8] Onboarding screen with a token: https://github.com/anthropics/claude-code/issues/46259
-- [S9] nixpkgs `claude-code`: https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/cl/claude-code
-- [S10] claude-code-nix: https://github.com/sadjow/claude-code-nix
 - [S11] LunaRoute Pi extension: https://github.com/lunaroute/lunaroute-pi-extension
 - [S12] oh-my-pi (omp): https://github.com/can1357/oh-my-pi
 - [S13] GitHub personal access tokens: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
@@ -574,22 +648,33 @@ small amount of model quota, so the daemon runs it at most once an hour.
 - [S21] NixOS Tailscale module: https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/networking/tailscale.nix
 - [S22] Hetzner API tokens: https://docs.hetzner.com/cloud/api/getting-started/generating-api-token/
 - [S23] Hetzner snapshots FAQ: https://docs.hetzner.com/cloud/servers/backups-snapshots/faq/
-- [S24] Hetzner servers FAQ, cloud-init on Hetzner images only: https://docs.hetzner.com/cloud/servers/faq/
-- [S25] Hetzner price adjustment: https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/
 - [S26] cloud-init Hetzner datasource patch: https://archive.lists.launchpad.net/cloud-init-dev/msg04260.html
-- [S27] hcloud-upload-image: https://github.com/apricote/hcloud-upload-image
 - [S28] sops-nix: https://github.com/Mic92/sops-nix
-- [S29] Secret management with sops-nix: https://michael.stapelberg.ch/posts/2025-08-24-secret-management-with-sops-nix/
-- [S30] agenix: https://github.com/ryantm/agenix, agenix-rekey: https://github.com/oddlama/agenix-rekey
+- [S30] agenix: https://github.com/ryantm/agenix
 - [S31] 1Password service account rate limits: https://www.1password.dev/service-accounts/rate-limits/
 - [S32] 1Password service accounts: https://www.1password.dev/service-accounts/get-started/
 - [S33] 1Password Environments: https://www.1password.dev/environments
 - [S34] systemd credentials: https://systemd.io/CREDENTIALS/
-- [S35] nixos-generators, archived: https://github.com/nix-community/nixos-generators
 - [S36] disko images: https://github.com/nix-community/disko/blob/master/docs/disko-images.md
-- [S37] NixOS Hetzner images, Outskirts Labs: https://docs.outskirtslabs.com/nixos-hetzner/next/index.md
-- [S38] Infisical pricing: https://infisical.com/pricing.md
-- [S39] nixpkgs image variants: https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/image/images.nix
+- [S38] Infisical pricing: https://infisical.com/pricing
 - [S40] Tailscale workload identity federation: https://tailscale.com/kb/1581/workload-identity-federation
 - [S41] February 2026 OAuth clarification: https://winbuzzer.com/2026/02/19/anthropic-bans-claude-subscription-oauth-in-third-party-apps-xcxwbn/
-- Local, read on 2026-10-24: `@lunaroute/pi-extension` 0.14.1 `src/login.ts` and `src/lunaroute.ts`, `omp` 18.12.6 help and `agent.db` schema, `claude` 2.1.310 key names, and the Borant crates named in the text.
+- [S42] secretspec: https://secretspec.dev/
+- [S43] secretspec 1Password provider: https://secretspec.dev/providers/onepassword/
+- [S44] secretspec repository and CLI: https://github.com/cachix/secretspec
+- [S45] secretspec crate 0.21.1: https://docs.rs/secretspec/latest/secretspec/
+- [S46] Doppler CLI, `doppler run` and service tokens: https://docs.doppler.com/docs/cli
+- [S47] Doppler accessing secrets: https://docs.doppler.com/docs/accessing-secrets
+- [S48] Doppler automatic fallbacks: https://docs.doppler.com/docs/automatic-fallbacks
+- [S49] Doppler pricing: https://www.doppler.com/pricing
+- [S50] 1Password `op run`: https://www.1password.dev/cli/reference/commands/run/
+- [S51] 1Password `op inject`: https://www.1password.dev/cli/reference/commands/inject/
+- [S52] 1Password `op read`: https://www.1password.dev/cli/reference/commands/read/
+- [S53] 1Password SDKs: https://www.1password.dev/sdks/
+- [S54] Infisical `infisical run`: https://infisical.com/docs/cli/commands/run
+- [S55] Infisical CLI usage, machine identities: https://infisical.com/docs/cli/usage
+- [S56] Infisical Rust SDK: https://infisical.com/docs/sdks/languages/rust
+- [S57] Infisical repository and license: https://github.com/Infisical/infisical
+- [S58] zeroize crate: https://docs.rs/zeroize
+- [S59] Linux `prctl`, `PR_SET_DUMPABLE`: https://man7.org/linux/man-pages/man2/prctl.2.html
+- Local, read on 2026-10-24: `@lunaroute/pi-extension` 0.14.1, `omp` 18.12.6 help and `agent.db` schema, `claude` 2.1.310 key names, and the Borant files named in the text. Revision 1 sources S9, S10, S24, S25, S27, S29, S35, S37, and S39 are cut with the text that cited them.

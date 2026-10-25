@@ -1,52 +1,40 @@
 # Elastic compute and economics for Borant
 
-Date: 2026-10-24. Status: draft for review. Track 2 of 5.
+Date: 2026-10-24. Status: draft for review, revision 2. Track 2 of 5.
 
-Related designs from the same review:
-
-- `2026-10-24-secrets-and-host-bootstrap-design.md`: the golden NixOS image,
-  zero-touch harness logins, and the host readiness check. This doc uses the
-  image and does not design it.
-- `2026-10-24-orchestration-api-and-sandboxes-design.md`: the spawn API,
-  placement in general, sandboxes, and launchers.
-- `2026-10-24-observability-design.md`: dashboards and cost metrics.
-- `2026-10-24-durable-orchestration-vision-design.md`: the long roadmap.
+Related designs: `2026-10-24-secrets-and-host-bootstrap-design.md` (golden
+image, logins, and the `SecretStore` port, which uses the "Exec plugin
+protocol" section of this doc), `2026-10-24-orchestration-api-and-sandboxes-design.md`
+(spawn, placement labels and taints), and `2026-10-24-observability-design.md`.
 
 ## Summary
 
-Hetzner Cloud has no "suspend" that stops the bill. A powered-off server costs
-the full price until you delete it. Thus scale to zero on Hetzner means
-"delete the worker, then create it again from a snapshot". The recommendation
-is a small always-on hub box, plus elastic worker boxes that a new
-provisioner port in the hub creates on demand and deletes when idle. On the
-June 2026 prices, the two always-on CPX31 boxes cost about $148 per month,
-and today they run no agents. The elastic design costs about $24 to $81 per
-month for 50 to 1,000 agent-hours. Fly.io Machines cost about the same per
-agent-hour as Hetzner hourly boxes, so they give no economic gain. They give a
-faster start (seconds, not minutes). A self-hosted "Fly clone" with
-Firecracker is not worth the operations work for one person. A Hetzner
-dedicated box (EU only) becomes the cheapest option above about 1,200
-agent-hours per month. LLM API spend is 5 to 10 times the compute spend for
-Claude models at API prices, but only about half of it for DeepSeek Flash.
+Borant core stays agnostic about where compute runs. A new `Provisioner`
+port in `borant-core` creates, lists, and deletes hosts with neutral types.
+Demand, pools, timers, budgets, and the reconcile loop are pure rules in
+`borant-core` plus a small executor in the hub, so every backend gets them
+for free. A backend plugs in as an adapter crate behind a Cargo feature, for
+public APIs such as Fly.io. Or it is an external program that the built-in
+`exec` adapter runs with a small JSON protocol. The Hetzner backend becomes
+an exec plugin in the private `borant-infra` repo. The open-source repo gets
+no Hetzner code.
+
+The economics do not change from revision 1. Hetzner has no "suspend" that
+stops the bill, so scale to zero means "delete, then create again from a
+snapshot". The two always-on CPX31 boxes cost about $148 per month and run
+no agents. A small hub plus elastic workers costs about $24 to $81 per month
+for 50 to 1,000 agent-hours. Fly.io costs about the same, but starts in
+seconds.
 
 ## Goals and non-goals
 
-Goals:
+Goals: stop paying for idle worker boxes. Start a host without a human when
+the hub has work and no free slot. Remove a host only when no agent can lose
+work. Keep `borant-core` and `borant-hub` free of cloud vendors, with several
+backends at once. Test the elastic path in CI with no cloud account.
 
-1. Stop paying for idle worker boxes.
-2. Start a worker box without a human when the hub has work and no free slot.
-3. Delete a worker box only when no agent can lose work.
-4. Keep one adapter (Hetzner) now, and keep the port open for Fly.io later.
-5. Show Chris the cost formula, so he can plug in his own numbers.
-
-Non-goals:
-
-- A highly available hub. The hub stays a single point of failure (design
-  section 20). This doc only makes the hub box smaller.
-- The golden image and the harness logins. The secrets-and-host-bootstrap doc
-  owns them.
-- Sandboxes and isolation between agents. The orchestration doc owns them.
-- A multi-cloud scheduler that compares live prices.
+Non-goals: a highly available hub (design section 20), the golden image
+(secrets doc), sandboxes (orchestration doc), and live price comparison.
 
 ## Facts on 2026-10-24
 
@@ -55,40 +43,18 @@ Non-goals:
 | Fact | Value | Source |
 |---|---|---|
 | Powered-off server | Billed in full until deleted ("independent of their state") | [1] |
-| Hourly billing | Lower of hourly rate x hours and the monthly cap. Hetzner rounds each started hour up. | [1] |
-| Snapshots | About €0.0143 per GB per month, on the compressed size | [1], [8] |
-| Backups | 20% of the server price | [1] |
-| Primary IPv4 | €0.50 per month (€0.0008 per hour), billed also when unassigned | [9] |
-| Primary IPv6 | Free | [1], [9] |
+| Hourly billing | Lower of hourly rate x hours and the monthly cap. Each started hour is rounded up. | [1] |
+| Snapshots and IPv4 | Snapshots $0.0199 per GB per month (API). IPv4 $0.60 per month in `hil`, billed also when unassigned. | [1], [8], [9] |
 | Price increase | New prices from 2026-06-15 for new orders and rescales. Old orders keep old prices. | [5], [6] |
 | Nested virtualization | "No, this is not possible on cloud server." | [7] |
-| Rescale | The server must be off. You cannot shrink the disk. A rescale moves the server to the new prices. | [7], [10] |
-| Snapshot to another location | Allowed: create a new server from the snapshot | [7] |
-| API rate limit | 3,600 requests per hour per project | [10] |
-| Time to create from a snapshot | Not published. Estimate 1 to 2 minutes to a running NixOS host (unverified). Phase 0 measures it. | none |
-
-The API calls (all under `https://api.hetzner.cloud/v1`, from [10]):
-
-| Action | Call |
-|---|---|
-| Create from snapshot | `POST /servers` with `image`, `server_type`, `location`, `labels`, `user_data` (32 KiB max), `firewalls`, `ssh_keys`, `public_net` |
-| Delete | `DELETE /servers/{id}` |
-| Snapshot | `POST /servers/{id}/actions/create_image` (shut down first for a clean disk) |
-| Rescale | `POST /servers/{id}/actions/change_type` (server off) |
-| Find the image | `GET /images?type=snapshot&label_selector=borant.image=worker` |
-| Track progress | `GET /actions/{id}` |
+| Names, labels, rate limit | Names are unique in a project. `GET /servers` takes a `label_selector`. 3,600 requests per hour. | [10] |
+| Create from a snapshot | Not published. Estimate 1 to 2 minutes (unverified). Phase 0 measures it. | none |
 
 ### Hetzner Cloud prices
 
-All prices exclude VAT and include the IPv4 address. Hillsboro (`hil`) and
-Ashburn (`ash`) have their own price list, and it is much higher than the EU
-list after the June increase [2], [5].
-
-Correction (2026-10-24, from the Hetzner API for Chris's `borant` project):
-the account bills in USD with no VAT, and the CPX line runs in the EU too.
-The table below replaces the web-page figures. `fsn1` stands for the EU
-regions (`nbg1` and `hel1` have the same prices). Snapshots cost $0.0199 per
-GB per month, and a primary IPv4 in `hil` costs $0.60 per month.
+From the Hetzner API for Chris's `borant` project (2026-10-24). The account
+bills in USD with no VAT, and the prices include the IPv4 address. `fsn1`
+stands for the EU regions (`nbg1` and `hel1` have the same prices).
 
 | Type | vCPU / RAM / disk | `hil` per month | `hil` per hour | `fsn1` per month | `fsn1` per hour |
 |---|---|---|---|---|---|
@@ -101,478 +67,535 @@ GB per month, and a primary IPv4 in `hil` costs $0.60 per month.
 | CAX21 (Arm) | 4 / 8 GB / 80 GB | not offered | | $12.49 | $0.0200 |
 | CCX13 (dedicated vCPU) | 2 / 8 GB / 80 GB | $50.99 | $0.0817 | $50.49 | $0.0809 |
 
-The cost model in this doc used $74.08 per month for the CPX31 in `hil`, so
-its US totals are about 1% high. The EU column makes EU workers 3.6 times
-cheaper than `hil` workers of the same size, which strengthens the question
-about EU workers at the end of this doc.
+The cost model used $74.08 for the CPX31 in `hil`, so its US totals are about
+1% high. EU workers cost 3.6 times less. The CX, CAX, and CCX lines showed
+"currently unavailable" on the web pages [3], [4], [11].
 
-Notes:
-
-- The CX and CAX "cost-optimized" lines showed "currently unavailable" on
-  2026-10-24 [3], [11]. The CCX create buttons showed the same [4].
-- CAX (Arm) runs only in the EU. Claude Code and omp ship Linux Arm builds,
-  but the flake builds `x86_64-linux` today.
-- The CPX31 in `hil` costs 3.0 times its pre-June price (€20.99 before) [5].
-  It reaches its monthly cap after about 624 hours.
-- This doc uses Hetzner's own USD to EUR ratio for US servers ($73.49 for
-  €62.49 [5], so 1.176). CPX31 in `hil` is then $74.08 per month or $0.1187
-  per hour.
-
-### Hetzner dedicated
-
-| Offer | CPU / RAM / disk | Price per month | Setup | Source |
-|---|---|---|---|---|
-| AX41 | Ryzen 5 3600, 6 cores / 64 GB / 2x 512 GB NVMe | €59.00 | €0 | [12] |
-| AX42 | Ryzen 7 PRO 8700GE, 8 cores / 64 GB ECC | €79 to €99 | €49 | [12] |
-| AX102 | Ryzen 9 7950X3D, 16 cores / 128 GB ECC | €159 to €259 | €129 | [12] |
-| Server auction | Used hardware, no setup fee | From €67.70 | €0 | [13] |
-
-Dedicated servers run only in Germany and Finland. None is in the US [12].
-They are bare metal, so KVM, Firecracker, and Cloud Hypervisor work. Billing
-is pro rata with a monthly cap, and the longest notice is "30 days to the end
-of the month" [14]. The IPv4 price for dedicated servers is extra and was not
-found (unverified, about €2).
+Hetzner dedicated servers run only in Germany and Finland. An AX41 (6 cores,
+64 GB, 2x 512 GB NVMe) costs €59.00 per month with no setup fee [12], [13].
+The notice is "30 days to the end of the month" [14]. It is a static host.
 
 ### Fly.io Machines
 
 | Fact | Value | Source |
 |---|---|---|
-| Billing | Per second while started | [15] |
-| Shared vCPU | $0.69 per month in `iad` (derived from presets) | [15], [16] |
-| Performance vCPU | $21.00 per month in `iad` (derived) | [15], [16] |
-| RAM | $6.00 per GB per month | [15] |
-| Region multiplier | `sjc` 1.192, `lax` 1.200, `dfw` 1.250. Fly has no `sea` region. | [16], [17] |
+| Billing | Per second while started. Shared vCPU $0.69, performance vCPU $21.00, RAM $6.00 per GB, each per month in `iad`. `sjc` costs 1.192 times more. | [15], [16], [17] |
 | Stopped or suspended machine | $0.15 per GB per month of rootfs only | [15] |
-| Volumes | $0.15 per GB per month, also when detached | [15] |
-| Egress | $0.02 per GB in North America. Inbound is free. | [15] |
-| Private traffic between regions | $0.01 per GB in, $0.02 per GB out, since February 2026 (secondary source) | [18] |
-| Shared CPU limit | 6.25% baseline per vCPU, 5 s starting burst, 500 s burst maximum | [19] |
-| RAM per vCPU | Shared: 256 MB to 2 GB. Performance: 2 GB to 8 GB. | [20] |
-| Start a stopped machine | "Usually well under a second" | [21] |
-| Create a machine | "Low double digit seconds". No capacity guarantee. | [21] |
+| Shared CPU limit | 6.25% baseline per vCPU, 5 s starting burst. Builds need performance CPUs. | [19] |
+| Start and create | Start of a stopped machine "usually well under a second". Create "low double digit seconds", no capacity guarantee. | [21] |
 | Rootfs | "Blank slate on every startup". About 8 GB maximum (community posts). | [21], [22] |
-| Suspend and resume | Firecracker snapshot, resume in "a few hundred ms", only up to 2 GB RAM. Snapshots can be lost, then the machine cold-boots. | [23] |
-| Run time limit | None stated | [21] |
-| Machines API | `POST /v1/apps/{app}/machines`, `.../{id}/start`, `.../stop`, `.../suspend`, `GET .../wait`, `DELETE .../{id}` | [24] |
-| Tailscale | Run `tailscaled` in the image with an ephemeral, tagged auth key from a Fly secret | [25] |
-| Image | Any OCI image. A Nix-built image (`dockerTools.buildLayeredImage` or nix2container) pushed to `registry.fly.io` fits. | [24] |
+| Suspend | Snapshot with memory, resume in "a few hundred ms", only up to 2 GB RAM. A lost snapshot cold-boots. | [23] |
+| Machines API | `POST /v1/apps/{app}/machines` with `name`, `region`, `config.guest`, `config.env`, `config.metadata`. `GET .../machines?metadata.{key}=value`. `.../{id}/stop`, `/suspend`, `/start`, `DELETE`. | [24] |
 
-The shared CPU limit matters. A new `shared-cpu-2x` machine has 5 seconds of
-burst, so the first `npm install` or `cargo build` runs at 12.5% of two cores.
-Builds need performance CPUs on Fly. GPUs are not relevant for Borant,
-because the models run behind remote APIs.
+A CPX31 slot (2 vCPU, 4 GB, one hour) in `hil` costs $0.030. Other options
+cost more: Fly Sprites about $0.033 (plan fees not verified) [26],
+Northflank $0.067 [27], and E2B, Daytona, Modal, Railway, Cloudflare
+Containers, and Fargate $0.08 to $0.27, with session caps or much setup
+[28] to [33].
 
-Fly also sells Sprites: persistent Firecracker VMs for agents. A Sprite bills
-measured CPU ($0.0385 per CPU-hour) and measured memory ($0.021875 per
-GB-hour), and nothing while it sleeps [26]. A Sprite is one machine for one
-agent, and Borant then needs one host daemon in each Sprite.
-
-### Other on-demand options
-
-Each row prices one agent slot of 2 vCPU and 4 GB for one hour.
-
-| Option | Price per slot-hour | Fit for Borant | Source |
-|---|---|---|---|
-| Hetzner CPX31 `hil`, hourly, 4 slots | $0.030 (full box) | Good. Today's stack. | [2] |
-| Fly `shared-cpu-2x` 4 GB `sjc` | $0.042 | Good for idle agents, slow for builds | [15], [16] |
-| Fly `performance-1x` 4 GB `sjc` | $0.075 | Good | [15], [16] |
-| Fly Sprites (measured: 0.1 CPU, 1 GB) | about $0.033 | Possible. One host daemon per Sprite. Plan fees not verified. | [26] |
-| Northflank | $0.067 | Possible. Long-running services, BYOC. | [27] |
-| Railway (VM rates) | $0.27 | Poor. Container rates are lower, but billing is on usage. | [28] |
-| E2B | $0.166, Pro plan $150 per month, 24 h session cap | Poor | [29] |
-| Daytona | $0.166 | Poor | [30] |
-| Modal sandboxes | $0.238 | Poor | [31] |
-| Cloudflare Containers `standard-3` | about $0.08, made for request-driven work | Poor | [32] |
-| AWS Fargate (`us-east-1` rates) | $0.099, `us-west-2` not verified | Poor. Much setup. | [33] |
-
-## Agent sizing
-
-Measured on 2026-10-24:
-
-- Claude Code processes on the laptop use 0.46 to 0.68 GB RSS, and one long
-  session uses 1.5 GB. Idle CPU is 0.1% to 0.6%.
-- `borant-1` uses 870 MB with NATS, the hub, and the host daemon, and no
-  agents. `borant-2` uses 503 MB. Both had a load average of 0.00 and no
-  tmux sessions. The fleet was idle.
-
-The sizing for this doc is one slot per agent: 2 GB RAM and 1 vCPU, plus a
-shared build reserve on the box. A CPX31 (8 GB, 4 vCPU) holds 4 agents, which
-matches `max_agents = 4`. omp is a bun binary and uses less RAM than Claude
-Code (unverified). A repository build is the peak, not the harness.
+Agent sizing: Claude Code uses 0.46 to 0.68 GB RSS (1.5 GB for one long
+session), and `borant-1` uses 870 MB with NATS, the hub, and the host daemon.
+One slot is 2 GB RAM and 1 vCPU, so a CPX31 holds 4 agents.
 
 ## Options compared
 
-| Option | Idea | Cold start | Gain | Cost to build |
-|---|---|---|---|---|
-| A. Keep 2 always-on CPX31 | Today | None | Nothing to build | None |
-| B. Small hub plus Hetzner elastic workers | Delete idle workers, create from snapshot | 2 to 4 min (unverified) | Pays per hour of use | Provisioner port, adapter, image |
-| C. Small hub plus Fly Machines workers | Start a stopped machine per agent | Seconds | Faster start, per-second billing | Provisioner adapter, OCI image, Tailscale in the image |
-| D. One dedicated AX41 with microVMs or plain agents | Many cheap slots in the EU | None | Cheapest slots at high use | A new box type, EU latency |
-| E. Self-hosted Fly clone | Firecracker pool on dedicated metal | About 1 s | Fast and cheap at scale | Weeks of work, ongoing upkeep |
+| Option | Idea | Cold start | Cost to build |
+|---|---|---|---|
+| A. Keep 2 always-on CPX31 | Today | None | None |
+| B. Small hub plus a Hetzner pool | Delete idle workers, create from a snapshot | 2 to 4 min (unverified) | Port, pools, exec adapter, Hetzner plugin, image |
+| C. Small hub plus a Fly pool | One machine per agent, stop when idle | Seconds | B, plus `borant-fly` and an OCI image |
+| D. One dedicated AX41 | Many cheap slots in the EU | None | A static host, EU latency |
+| E. Self-hosted Fly clone | Firecracker on dedicated metal | About 1 s | Weeks of work, ongoing upkeep |
 
-### Self-hosted "Fly clone"
-
-Recommendation: do not build it. The economics come from the price of the
-dedicated box, not from the microVMs. A plain `borant host` on an AX41 with
-`max_agents = 20` gets the same slots.
-
-| Tool | State on 2026-10-24 | Note |
-|---|---|---|
-| Firecracker v1.17.0 | Active | Needs `/dev/kvm`, so dedicated metal only. Maintainers do not support nested virtualization. [34] |
-| Cloud Hypervisor v54.0 | Active | Snapshot and restore. Can expose virtualization to guests. [34] |
-| microvm.nix | Active, about 3,000 stars, no tagged releases | Declarative NixOS microVMs with eight hypervisors. Shares `/nix/store`. Snapshots not documented. [35] |
-| flintlock | Active, small | gRPC service for microVMs (Liquid Metal) |
-| firecracker-containerd | Active | containerd runtime for Firecracker |
-| Kata Containers | Active | VM isolation for containers, best with Kubernetes |
-| Weave Ignite | Archived since 2023-12 | Do not use |
-| NixOS containers (systemd-nspawn) | Part of NixOS | No VM isolation, almost no cost |
-
-Snapshot restore (milliseconds) does not help much here. The slow part is a
-new Hetzner box (minutes), not the VM boot (about 1 s) or the harness start
-(a few seconds). If the orchestration doc asks for isolation later, use
-microvm.nix with Cloud Hypervisor on a dedicated box. Ops estimate for one
-person (unverified): 2 to 4 weeks to build, then a few hours each month.
+Do not build option E. The savings come from the dedicated box, not from
+microVMs: a plain `borant host` with `max_agents = 20` on an AX41 gets the
+same slots [34], [35]. Options B and C can run side by side as two pools.
 
 ## Cost model
 
-### Formulas
-
 ```
 H      = live agent-hours per month (a session holds a lease)
-slot_h = price per server-hour / max_agents
+slot_h = price per host-hour / agents_per_host
 pack   = used slots / paid slots, including idle tails (0.5 assumed)
 
 A (always on) = n_boxes * monthly_price
 B (Hetzner)   = hub + H * slot_h / pack + snapshots
-C (Fly)       = hub + H * fly_hour * 1.05 + pool * rootfs_gb * 0.15
+C (Fly)       = hub + H * fly_hour * 1.05 + stopped * rootfs_gb * 0.15
 D (dedicated) = dedicated_monthly + hub (or 0 if the hub runs on it)
-LLM           = H * active_share * tokens_cost_per_active_hour
 ```
 
-Inputs in USD:
+Inputs in USD: hub CPX11 in `hil` $21.16 per month. B: CPX31 $0.1187 per
+hour, 4 slots, so $0.059 per agent-hour at `pack = 0.5`. C: `shared-cpu-2x`
+4 GB in `sjc` $0.0420 per hour, `performance-1x` $0.0745, a 5-minute idle
+tail (1.05), and $3.60 per month for eight stopped machines. D: AX41 $71.
 
-- Hub: CPX11 in `hil`, $21.16 per month. It has enough RAM for NATS and the
-  hub (870 MB measured on `borant-1`).
-- B: CPX31 at $0.1187 per hour with 4 slots. With `pack = 0.5`, a slot costs
-  $0.059 per agent-hour. Snapshots of about 8 GB cost about $0.13 per month.
-- C: `shared-cpu-2x` 4 GB in `sjc` at $0.0420 per hour. The factor 1.05 is a
-  5-minute idle tail per session. Eight stopped machines with a 3 GB rootfs
-  cost $3.60 per month. The build profile is `performance-1x` 4 GB at
-  $0.0745 per hour.
-- D: AX41 at about $71 per month with IPv4, plus the hub.
-
-### Scenarios
-
-| Agent-hours per month | A: 2x CPX31 | B: hub + Hetzner elastic | C: hub + Fly shared | C: hub + Fly performance | D: AX41 + hub |
+| Agent-hours per month | A: 2x CPX31 | B: hub + Hetzner pool | C: hub + Fly shared | C: hub + Fly performance | D: AX41 + hub |
 |---|---|---|---|---|---|
 | 50 | $148 | $24 | $27 | $29 | $92 |
 | 200 | $148 | $33 | $34 | $41 | $92 |
 | 1,000 | $148 | $81 | $69 | $103 | $92 |
-| Concurrent agents at most | 8 | 4 per box, `max_hosts` boxes | `pool` | `pool` | about 24 |
 
-Break-even points:
+B beats A below about 2,150 agent-hours per month. B and C are within $12 at
+1,000 agent-hours, so the choice is on start time and build speed. D beats B
+above about 1,200 agent-hours. A box created before 2026-06-15 keeps its old
+price, and a delete loses that price.
 
-- B beats A below about 2,150 agent-hours per month.
-- B and C are within $12 of each other at 1,000 agent-hours. This is a tie.
-  Choose on start time and build speed, not on price.
-- D beats B above about 1,200 agent-hours, and beats C above about 1,500.
-- Without the price increase, A cost $50 per month. A box created before
-  2026-06-15 keeps its old price, and a delete loses that price.
-
-### LLM spend for scale
-
-Assumptions for one active agent-hour (unverified estimates): 40 requests,
-3.2 M cache-read input tokens, 0.3 M cache-write input tokens at 1.25 times
-the input price, and 60 k output tokens. Half of each live hour is active.
-
-| Model | Price per M tokens (in / out / cache read) | Per live agent-hour | At 200 agent-hours | Compute share with B |
-|---|---|---|---|---|
-| Claude Opus 5.5 | $4 / $20 / $0.20 [36] | $1.67 | $334 | 9% |
-| Claude Sonnet 5.5 | $2 / $10 / $0.20 [36] | $1.00 | $200 | 14% |
-| DeepSeek V4.1 Flash, peak | $0.30 / $1.20 / $0.006 [37] | $0.09 | $18 | 65% |
-
-The LunaRoute markup is not known. A Claude subscription makes the Claude
-rows a flat fee. Thus compute is a small part of the bill for Claude agents,
-and a large part for omp agents on DeepSeek Flash.
+LLM spend for scale uses unverified token estimates, with half of each live
+hour active. One live agent-hour costs about $1.67 on Claude Opus 5.5, $1.00
+on Claude Sonnet 5.5, and $0.09 on DeepSeek V4.1 Flash at API prices [36],
+[37]. Thus compute with B is about 9% to 14% of the bill for Claude agents,
+and about 65% for omp agents on DeepSeek Flash.
 
 ## Recommended design
 
-Choose option B. Keep the port open for option C. Move to option D only if
-use goes above about 1,200 agent-hours per month and EU latency is acceptable.
+Choose option B for the first pool, and keep option C one crate away. Each
+part lives here:
 
-### Topology
+| Part | Repo and crate | Knows about clouds |
+|---|---|---|
+| `Provisioner` port, its types, `provisioner_contract` | `borant` / `borant-core` | No |
+| Pool rules: demand, choice of pool, idle, budget, reconcile | `borant` / `borant-core::rules::pool` (pure) | No |
+| Pool executor: runs the rules, writes `elastic.*` keys | `borant` / `borant-hub` | No |
+| Fake provisioner for unit tests | `borant` / `borant-memory` | No |
+| `exec` adapter and the plugin protocol codec | `borant` / new `borant-exec` | No |
+| Fly adapter (later) | `borant` / new `borant-fly`, Cargo feature `fly` | Fly |
+| Hetzner plugin, golden image, the hub `hub.toml` | `borant-infra` (private) | Hetzner |
 
-- `borant-hub`: a CPX11 in `hil`, always on. It runs NATS, `borant hub`, and
-  the provisioner. It runs no agents (`max_agents = 0`, or no host daemon).
-- Elastic workers: CPX31 in `hil`, created from the newest snapshot with the
-  label `borant.image=worker`. Names are `borant-e1`, `borant-e2`, and so on.
-- Laptops: static hosts. The provisioner never creates or deletes them.
-
-Put elastic workers in their own Hetzner project, for example
-`borant-workers`. A Hetzner API token covers one project. Thus a bug in the
-provisioner cannot delete the hub box.
+The hub box is a CPX11 in `hil` with NATS, `borant hub`, and the plugins.
+Laptops and always-on boxes are static hosts. Both ways to plug in a backend
+(below) pass `provisioner_contract`.
 
 ### Provisioner port
 
-The provisioner is a port in `borant-core`, and the hub daemon calls it from
-its tick. The hub already knows the demand, because `place_agent` returns
-false when no host qualifies, and the tick retries pending spawns, pending
-moves, and takeovers. A stopped machine on Hetzner costs the full price, so
-the port has no stop or start.
+The port is `crates/borant-core/src/ports/provision.rs`. Only the hub calls
+it. Size, region, and image are opaque strings that only the backend reads.
 
 ```rust
+pub struct PoolName(String);              // ids.rs, same rules as HostName
+pub struct ProviderHostId(pub String);    // the backend's id, e.g. a server id
+
+pub struct HostSpec {
+    pub pool: PoolName,
+    pub name: HostName,                   // chosen by the hub
+    pub size: String,                     // "cpx31", "performance-1x"
+    pub region: String,                   // "hil", "sjc"
+    pub image: Option<String>,            // None: the backend default
+    pub labels: BTreeMap<String, String>,
+    /// Values the new host reads at boot: host name, pool, one-time join
+    /// data (secrets doc). Adapters must not log them.
+    pub boot: BTreeMap<String, String>,
+}
+
+pub struct HostRecord { pub id: ProviderHostId, pub pool: PoolName, pub name: HostName,
+                        pub state: ProviderState, pub created: Timestamp,
+                        pub labels: BTreeMap<String, String> }
+
+pub enum ProviderState { Creating, Running, Stopping, Stopped, Deleting, Failed(String) }
+pub enum StopMode { Stop, Suspend }
+
+pub struct SizeInfo { pub id: String, pub vcpus: u32, pub mem_mb: u32,
+                      pub price_hour_usd: Option<f64>, pub stopped_price_hour_usd: Option<f64> }
+
+pub struct Capabilities {
+    pub backend: String,                  // "hetzner", "fly", "fake": logs only
+    pub sizes: Vec<SizeInfo>,
+    pub regions: Vec<String>,
+    pub typical_start: Duration,          // create until the first heartbeat
+    pub typical_resume: Option<Duration>, // start after stop, if supported
+    pub billing_step: Duration,           // 1 h on Hetzner, 1 s on Fly
+    pub one_host_per_agent: bool,         // the natural shape of the backend
+    pub stop_modes: Vec<StopMode>,        // empty: delete only
+}
+
 #[async_trait]
-pub trait Provisioner: Send + Sync {
-    /// Agent slots that one new machine gives (its max_agents).
-    fn slots(&self) -> u32;
-    /// Orders a machine. Returns when the provider accepted the order.
-    async fn create(&self, name: &HostName) -> PortResult<Machine>;
-    /// Deletes the machine and its disk. Deleting a missing machine is Ok.
-    async fn delete(&self, name: &HostName) -> PortResult<()>;
-    /// Lists the machines that this provisioner created, by label.
-    async fn list(&self) -> PortResult<Vec<Machine>>;
+pub trait Provisioner: Send + Sync + std::fmt::Debug {
+    async fn describe(&self) -> PortResult<Capabilities>;
+    /// Returns when the backend accepted the order. Idempotent by pool and name.
+    async fn create(&self, spec: &HostSpec) -> PortResult<HostRecord>;
+    /// Deletes the host and its disk. Missing is Ok. Not ours is Denied.
+    async fn delete(&self, id: &ProviderHostId) -> PortResult<()>;
+    /// Only the hosts of this pool that this provisioner created.
+    async fn list(&self, pool: &PoolName) -> PortResult<Vec<HostRecord>>;
+    /// Optional. The hub calls them only for a mode in `stop_modes`.
+    async fn stop(&self, _id: &ProviderHostId, _mode: StopMode) -> PortResult<()> {
+        Err(PortError::new(PortErrorKind::Invalid, "stop is not supported"))
+    }
+    async fn start(&self, _id: &ProviderHostId) -> PortResult<HostRecord> {
+        Err(PortError::new(PortErrorKind::Invalid, "start is not supported"))
+    }
 }
-
-pub struct Machine {
-    pub name: HostName,
-    pub state: MachineState,
-    pub created: Timestamp,
-}
-
-pub enum MachineState { Creating, Running, Deleting, Failed(String) }
 ```
 
-The Hetzner adapter maps `create` to `POST /servers` with these values:
+`PortErrorKind` gets two new kinds, `Invalid` and `Denied`, so that the
+error codes of the exec protocol map one to one. The secrets doc needs the
+same kinds.
 
-- `image`: the newest snapshot with `borant.image=worker`.
-- `labels`: `borant.elastic=true` and `borant.swarm=<instance>`.
-- `firewalls`: `borant-locked` (no inbound rules).
-- `public_net`: IPv4 on. A box without IPv4 cannot clone from GitHub
-  (unverified for 2026).
-- `user_data`: the host name and the one-time join data. The
-  secrets-and-host-bootstrap doc defines its format.
+### Pools in `hub.toml`
 
-`list` uses `label_selector=borant.elastic=true`. `delete` refuses any server
-without that label.
-
-Configuration in `hub.toml`:
+A pool names one provisioner instance and sets the shape of its hosts. One
+instance can serve several pools, for example `hil` and EU Hetzner pools.
 
 ```toml
-[provisioner]
-adapter = "hetzner"
-max_hosts = 2            # elastic boxes at most
-min_warm = 0             # boxes that stay up when idle
+[elastic]
+tick = "10s"
+lost_timeout = "10m"
+create_backoff = "5m"            # after a failed create in a pool
+monthly_budget_usd = 80          # all pools together
+
+[provisioners.hetzner]
+adapter = "exec"
+command = ["borant-provision-hetzner"]
+config = { firewall = "borant-locked", ssh_key = "borant" }
+credential = "hcloud-token"      # systemd credential of the hub unit
+
+[[pools]]
+name = "hil-workers"
+provisioner = "hetzner"
+size = "cpx31"
+region = "hil"
+image = "label:borant.image=worker"   # opaque: the plugin reads it
+name_prefix = "borant-e"
+labels = ["vps", "us"]                # host labels for placement
+harnesses = ["claude-code", "omp"]
+agents_per_host = 4                   # 1 for one microVM per agent
+min_warm = 0
+max_hosts = 2
+keep_stopped = 0                      # stopped hosts to keep (Fly, not Hetzner)
 idle_timeout = "20m"
 boot_timeout = "10m"
-lost_timeout = "10m"
-create_backoff = "5m"    # after a failed create
-monthly_budget_usd = 60  # no new box above this estimate
-
-[provisioner.hetzner]
-token_file = "/var/lib/borant-secrets/hcloud-token"
-location = "hil"
-server_type = "cpx31"
-max_agents = 4
-image_label = "borant.image=worker"
-firewall = "borant-locked"
-name_prefix = "borant-e"
+monthly_budget_usd = 60
 ```
 
-### State of each elastic host
+A pool can set `price_hour_usd` if its backend reports no price. Each pool
+host gets the pool labels, `always_on = false`, and a new `HostInfo` field
+`pool: Option<PoolName>`, which the host daemon reads from `BORANT_POOL`.
 
-The hub writes one key for each elastic host, `elastic.{host}`, with the
-phase, the creation time, the last busy time, and the end of the paid hour.
-The hub is still the only writer.
+### Placement and choice of pool
+
+The scheduler places an agent on an existing host first. The orchestration
+doc adds labels and taints to `schedule::place`. This doc adds two terms to
+its sort key: a static host wins over a pool host, and among pool hosts, more
+active agents win. This packs the hosts, so that empty hosts can go away.
+
+When no host qualifies, `rules::pool::choose` picks a pool. For each pool, it
+builds the `HostView` of a new host (labels, harnesses, `agents_per_host`)
+and runs the same filter as `place`. Thus a spawn that
+requires `fast-start` goes only to a Fly pool, and one that requires `eu`
+goes only to an EU pool. Among the pools that qualify and are below
+`max_hosts`, below the budgets, and out of backoff, the rule picks a stopped
+host that the pool can start first. Then it picks the lowest price per
+slot-hour (`price_hour_usd / agents_per_host`, no price sorts last), then the
+shortest `typical_start`, then the pool name.
+
+### State of each pool host
+
+The hub writes one key for each pool host, `elastic.{host}`: pool, provider
+id, phase, creation time, last busy time, and end of the billing step.
 
 ```
-            demand                 API accepts          host heartbeat
- (none) ----------> Requested -----------------> Booting --------------> Ready
-                                                   |                        |
-                                     boot_timeout  |      idle and past     |
-                                                   v      the paid hour     v
-                                                 Failed               Draining
-                                                   |                        |
-                                                   +-----> Deleting <-------+
-                                                              |   0 leases
-                                                              v
-                                                           (none)
+          demand              create accepted       heartbeat
+ (none) --------> Requested ----------------> Booting ---------> Ready
+                                                 |                 |
+                                    boot_timeout |                 | idle and past the billing step
+                                                 v                 v
+                                              Failed            Draining --(lease appears)--> Ready
+                                                 |                 | 0 leases
+                                                 v                 v
+                                             Deleting <--- no --- room under keep_stopped and Stop?
+                                                 |                 | yes
+                                                 v                 v
+                                              (none)            Stopped --(demand: start)--> Booting
  Ready --(no heartbeat for lost_timeout)--> Lost --> Deleting
 ```
 
-Rules for each tick (every 10 seconds):
+`rules::pool::plan` is a pure function from the pools, hosts, `elastic.*`
+keys, unplaced agents, and time to a list of actions. The hub runs it every
+`elastic.tick` inside its 1-second tick and executes the actions:
 
-1. Demand: count the agents that `place_agent` did not place in this tick.
-   These are pending spawns, takeovers after a laptop sleeps, and parked
-   agents with a message that wakes them.
-2. Supply: count the free slots on online hosts, plus `slots()` for each
+1. Demand: the agents that `place` did not place. These are pending spawns,
+   takeovers after a laptop sleeps, and parked agents that a message woke.
+2. Supply: free slots on online hosts, plus `agents_per_host` for each pool
    host in `Requested` or `Booting`.
-3. If demand is more than supply, create `ceil((demand - supply) / slots)`
-   hosts. Do not go above `max_hosts` or the budget. Do not create during
-   `create_backoff` after a failure.
-4. A `Ready` host is idle when it holds no lease and no reservation. An idle
-   host stays until `idle_timeout` passes and its paid hour is within 5
-   minutes of its end. Hetzner bills the full hour anyway, so the box gives
-   free warm capacity until then. `min_warm` hosts never go idle.
-5. To delete: set `draining` on `host.{name}`, then read the leases again. If
-   a lease appeared in the meantime, clear `draining` and keep the host.
-   Otherwise, call `delete` and remove `host.{name}`.
-6. Reconcile: compare `list()` with the `elastic.*` keys. A labeled server
-   with no key (for example, after a hub crash during a create) gets a key in
-   `Booting`, and the normal timeouts then apply. A key with no server goes
-   away.
+3. If demand is more than supply, start stopped hosts first, then create
+   hosts in the pool that `choose` returns. Never go above `max_hosts` or a
+   budget, and never create in a pool during `create_backoff`.
+4. A `Ready` host with no lease and no reservation is idle. It stays until
+   `idle_timeout` passes and its billing step ends within 5 minutes, because
+   Hetzner bills the full hour anyway. On Fly the step is one second.
+   `min_warm` hosts never go idle.
+5. To remove an idle host: set `draining` on `host.{name}`, then read the
+   leases again. If a lease appeared, clear `draining`. Otherwise, stop the
+   host if the pool has room under `keep_stopped` and the backend has
+   `StopMode::Stop`. Else delete it.
+6. Reconcile: compare `list(pool)` with the `elastic.*` keys. A host with no
+   key (for example, after a hub crash during a create) gets a key in
+   `Booting`. A key with no host goes away.
+7. Budget: the hub adds `price_hour_usd x billed hours` to `spend.{yyyy-mm}`
+   at each delete and stop, plus an estimate for live hosts. At the budget,
+   the hub creates no host and notifies Chris. It never removes a busy host.
+   A failed create starts the backoff, and `denied` or `invalid` notifies.
 
-A box that never joins (bad image, no capacity in `hil`) costs at most one
-hour, because `boot_timeout` deletes it. If create fails with
-`placement_error`, the hub logs the error and notifies Chris.
+### Idle agents and safe deletes
 
-### Placement changes
+An idle agent holds a lease, so its host never goes idle. The hub parks an
+agent after `idle_timeout` with no turn, no claim, and an empty inbox. A park
+is a planned stop with a final checkpoint. The lease then moves to the state
+that the takeover-on-message path already handles.
 
-The placement score today prefers the host with fewer active agents. That
-spreads agents over all boxes, so no elastic box goes idle. Change the score
-for elastic hosts:
+A delete or a stop is safe, because a drain or a park writes a final
+checkpoint to the WIP ref and releases the lease first (design sections 12
+and 13). The checkpoint remote and the session log are never on a pool host.
+Files that git ignores are lost (a non-goal, design section 2). A crashed
+host loses at most the turn after the last checkpoint.
 
-1. The same harness wins (no change).
-2. A static host (VPS that is always on, or an awake laptop) wins over an
-   elastic host.
-3. Among static hosts, fewer active agents win (no change).
-4. Among elastic hosts, more active agents win. This packs the boxes.
+Laptop free slots count as supply only while the laptop is online. Add
+`accept_spawns = false` as the laptop default in `host.toml`, so that a later
+sleep does not move a new agent. A spawn with `--host` still goes there.
 
-Add `elastic: bool` to `HostInfo`. The host daemon reads it from its
-configuration, and the golden image sets it.
+## Two ways to plug in a backend
 
-### Idle agents on an elastic box
+| Way | Use it when | Examples |
+|---|---|---|
+| Adapter crate behind a Cargo feature [43] | The API is public and generic, other Borant users want it, and its contract tests can run in CI | `borant-fly` (feature `fly`) |
+| `exec` adapter with a plugin program | The backend is private to one deployment, needs site rules (projects, firewalls, images), or is a prototype | `borant-provision-hetzner` in `borant-infra`, the CI test plugins |
 
-An idle agent with no claims holds a lease, so its box never goes idle. The
-hub parks such an agent. A park is a planned stop: the session ends its turn,
-the daemon writes a final checkpoint, and the lease moves to a state that the
-takeover-on-message path already handles. When a message wakes the agent,
-the hub places it again, and the provisioner creates a box if necessary.
-Park after `idle_timeout` with no turn, no claim, and an empty inbox.
+## Exec plugin protocol
 
-### Why a delete is safe
+The `exec` adapter is in the new crate `borant-exec`. Every exec plugin in
+Borant uses this protocol, for `Provisioner` and for the `SecretStore` port
+of the secrets doc. Kubernetes and Docker credential helpers use the same
+shape [39], [40].
 
-- A planned drain or park writes a final checkpoint to the WIP ref and
-  releases the lease before the delete (design sections 12 and 13).
-- The checkpoint remote must never be on an elastic box. Use GitHub or a bare
-  repository on the hub.
-- The session log lives on the hub. The next session reads it through
-  `session_history`.
-- Files that git ignores (`.env`, `node_modules`, build output) are lost. The
-  next host builds again. This is a known non-goal (design section 2).
-- A lost box (crash) loses at most the turn after the last checkpoint. The
-  hub takes over after the grace period and deletes the box after
-  `lost_timeout`.
+1. The caller starts the program once for each operation. The program reads
+   one JSON object from stdin: `{"v": 1, "op": "<name>", ...args}`.
+2. The program writes one JSON object to stdout, either `{"ok": <value>}`
+   or `{"error": {"code": "<code>", "message": "<text>"}}`.
+3. The error codes are `unavailable` (retry later), `not_found`, `invalid`,
+   `denied`, and `internal`. They map to `PortErrorKind` `Unavailable`,
+   `NotFound`, `Invalid`, `Denied`, and `Other`.
+4. A non-zero exit with no JSON counts as `internal`. Invalid JSON on stdout
+   also counts as `internal`.
+5. Stderr is for logs only. The caller (the hub or a host daemon) redacts it
+   and copies it to its log at `debug`.
+6. The caller sets a timeout for each op. At the timeout, it kills the
+   program and reports `PortErrorKind::Timeout`.
+7. The program never gets secrets in its arguments. It reads its own
+   credentials from its environment or from a file. The caller starts it
+   with an empty environment plus `PATH`, `HOME`, the `env` table of its
+   configuration, and `BORANT_CREDENTIALS_DIRECTORY` if the configuration
+   names a `credential` (the systemd credential folder of the caller unit).
+8. The first request is `describe`. Its `ok` value always holds `"v"` (the
+   protocol version) and `"kind"` (`"provisioner"` or `"secrets"`), plus the
+   capabilities of the port. If the program returns `invalid`, a `v` that the
+   caller does not support, or the wrong `kind`, the caller disables it.
 
-### How a new host registers
+For provisioner plugins, each request also carries `config`, the `config`
+table of the provisioner in `hub.toml`. The hub runs one op at a time for
+each provisioner instance, so a plugin needs no locks. Default timeouts are
+10 s for `describe`, 30 s for `list`, 120 s for `create`, and 60 s for the
+others. `timeout_secs` sets one value for all ops. A create that times out
+can still succeed. The next reconcile finds the host, and a create with the
+same name returns it.
 
-The image comes from the secrets-and-host-bootstrap doc. This doc needs only
-these properties from it:
+### Provisioner ops
 
-1. The image holds no Tailscale node state. Each box joins with a new,
-   ephemeral, tagged key from `user_data`. A box from a snapshot of a joined
-   box has the same node key, and Tailscale then sees two nodes as one.
-2. The host name comes from `user_data`, not from the flake. The host daemon
-   reads `BORANT_HOST_NAME`.
-3. Harness logins work with no browser.
-4. The image is built on a CPX11 (40 GB disk). A snapshot keeps its
-   `disk_size`, and Hetzner cannot create a server with a smaller disk than
-   the image (unverified). A 40 GB image fits every type.
+Each pair shows a request on stdin, then a response on stdout.
 
-The host daemon starts at boot and sends a heartbeat. The hub sees the new
-`host.{name}` key and moves the host to `Ready`.
+```json
+{"v": 1, "op": "describe", "config": {"firewall": "borant-locked"}}
+{"ok": {"v": 1, "kind": "provisioner", "backend": "hetzner", "regions": ["hil", "ash", "fsn1"],
+  "sizes": [{"id": "cpx31", "vcpus": 4, "mem_mb": 8192, "price_hour_usd": 0.1178, "stopped_price_hour_usd": null}],
+  "typical_start_s": 120, "typical_resume_s": null, "billing_step_s": 3600, "one_host_per_agent": false, "stop_modes": []}}
 
-### Laptops
+{"v": 1, "op": "create", "config": {"firewall": "borant-locked"},
+ "spec": {"pool": "hil-workers", "name": "borant-e1", "size": "cpx31", "region": "hil",
+          "image": "label:borant.image=worker", "labels": {"borant.swarm": "main"},
+          "boot": {"BORANT_HOST_NAME": "borant-e1", "BORANT_POOL": "hil-workers", "BORANT_JOIN": "<one-time>"}}}
+{"ok": {"id": "61234567", "pool": "hil-workers", "name": "borant-e1", "state": "creating", "created": "2026-10-24T18:00:00Z",
+        "labels": {"borant.swarm": "main", "borant.pool": "hil-workers", "borant.managed": "hub"}}}
 
-Laptops are free compute while they are awake. The provisioner treats them as
-static hosts. It never creates or deletes them, and it counts their free
-slots as supply only while they are online. When a laptop sleeps, its agents
-become takeovers. If no static host has a slot, the provisioner creates an
-elastic box. This is the main wake path for "Chris closes the laptop and
-walks to work".
+{"v": 1, "op": "list", "config": {}, "pool": "hil-workers"}
+{"ok": [{"id": "61234567", "pool": "hil-workers", "name": "borant-e1", "state": "running",
+         "created": "2026-10-24T18:00:00Z", "labels": {"borant.pool": "hil-workers"}}]}
 
-An empty laptop wins placement for a spawn today, and a later sleep then
-moves the agent again. Add `accept_spawns = false` to the laptop
-`host.toml` as the default. A spawn with `--host` still goes there.
+{"v": 1, "op": "delete", "config": {}, "id": "61234567"}
+{"ok": null}
+{"error": {"code": "denied", "message": "server 61234567 has no borant.managed=hub label"}}
+```
 
-### Fly.io adapter (later)
+`stop` (with `id` and `"mode": "stop"`) returns `{"ok": null}`, and `start`
+(with `id`) returns the host record. A plugin that lists a mode in
+`stop_modes` must answer them. An unknown op returns `invalid`. `state` is
+`creating`, `running`, `stopping`, `stopped`, `deleting`, or `failed`.
 
-The same port fits Fly. `create` starts a stopped machine from a pool, or
-creates one. `delete` stops it, and the pool keeps it for the next start.
-Each machine runs one host daemon with `max_agents = 1`, so packing is 1.0.
-The image is a Nix-built OCI image with `borant`, `tailscaled`, git, tmux,
-and the harnesses. The rootfs is blank at each start, so logins come from Fly
-secrets in the environment. Do not use suspend: it allows only 2 GB, and a
-lost snapshot cold-boots the machine anyway.
+## The Hetzner plugin in `borant-infra`
+
+The plugin is `pkgs/borant-provision-hetzner.nix`, a `writeShellApplication`
+script of about 150 lines with `hcloud` and `jq` [38]. The flake builds it
+next to the golden image, and `modules/borant.nix` installs it on the hub.
+
+| Op | `hcloud` call | Rule |
+|---|---|---|
+| `describe` | `server-type list -o json`, `location list -o json` | Prices for the types in `config` only |
+| `create` | `server create --name --type --location --image <newest snapshot with the label> --label --firewall --ssh-key --user-data-from-file -` | Adds `borant.pool` and `borant.managed=hub`. Boot values go to user-data on stdin, never in argv. On `uniqueness_error`, it returns the existing server. |
+| `list` | `server list -l borant.managed=hub,borant.pool=<pool> -o json` | Maps the Hetzner status to `state` |
+| `delete` | `server describe`, then `server delete` | `denied` without `borant.managed=hub`. A missing server is `ok`. |
+
+HTTP 429, 5xx, `resource_unavailable`, and `placement_error` (no capacity in
+`hil`) become `unavailable`. `invalid_input` becomes `invalid`.
+`unauthorized` and `forbidden` become `denied`.
+
+### The Hetzner token
+
+Decision: the plugin reads its own token file, not a value from the
+`SecretStore` port. `just hub-credential` reads the token from the `Agents`
+vault on the laptop and pushes it over Tailscale SSH to
+`/var/lib/borant/credentials/hcloud-token` (mode 0400, root) on the hub box.
+The `borant-hub` unit loads it with `LoadCredential`. The plugin reads
+`$BORANT_CREDENTIALS_DIRECTORY/hcloud-token`, or `HCLOUD_TOKEN` when Chris
+runs it by hand. Reasons:
+
+1. It keeps the rule of the secrets doc that the hub never calls `SecretStore`.
+2. It is the "secret zero" path of the secrets doc: one file, `LoadCredential`.
+3. The token stays out of the `Borant` vault, which every host reads.
+
+A rotation needs a new push and a hub restart. The token is for a separate
+Hetzner project, `borant-workers`, so a plugin bug cannot delete the hub box.
+
+### Manual use next to the hub
+
+`just create`, `install`, `deploy`, and `destroy` stay for static boxes and
+the hub box. They label servers `app=borant`, never `borant.managed=hub`, so
+the plugin never lists or deletes them. A new recipe drives the plugin by
+hand for tests and repairs. It reads `$HCLOUD_WORKERS_TOKEN_REF` with `op`
+into `HCLOUD_TOKEN`, as the other recipes do, and pipes the request:
+`just pool '{"v":1,"op":"list","config":{},"pool":"hil-workers"}'`.
+
+## A Fly.io backend
+
+A Fly backend needs `stop` and `start`, `billing_step`, `one_host_per_agent`,
+and `agents_per_host = 1`. This doc adds all of them now, so Fly needs no
+change to the port, the rules, or the hub. Write it as the crate
+`borant-fly` behind the Cargo feature `fly`, because the Fly Machines API is
+public and the same for every user. A prototype can be an exec plugin.
+
+| Port op | Fly Machines API |
+|---|---|
+| `create` | `POST /v1/apps/{app}/machines` with `name`, `region`, `config.image`, `config.guest` (`cpu_kind`, `cpus`, `memory_mb`), `config.env` (the boot values), `config.metadata` (`borant_pool`, `borant_managed`), `config.restart.policy = "no"` |
+| `list` | `GET /v1/apps/{app}/machines?metadata.borant_pool=<pool>` |
+| `stop`, `start` | `POST .../{id}/stop` (or `/suspend`), `POST .../{id}/start` |
+| `delete` | `DELETE .../{id}?force=true` |
+
+The configuration is `[provisioners.fly]` with `adapter = "fly"`, `app`, and
+a `fly-token` credential, plus a pool with `agents_per_host = 1`,
+`keep_stopped = 4`, `idle_timeout = "5m"`, and the label `fast-start`.
+
+What differs from Hetzner:
+
+- One machine per agent, so packing is 1.0. A create takes seconds and a
+  start under a second. Stopped machines bill only rootfs.
+- The rootfs is blank at each start. Each start clones again and resumes
+  from the checkpoint. Logins and the 1Password token come from Fly secrets.
+- `tailscaled` joins with an ephemeral, tagged key from the boot values
+  [25], [41]. NATS is on the tailnet, so Fly private networking is not used.
+- The flake builds the OCI image (`borant`, `tailscaled`, git, tmux, the
+  harnesses) with `dockerTools.buildLayeredImage` [42].
+- Builds need `performance` CPUs, in a second pool with a `build` label.
+
+Suspend keeps memory, so a tmux session can survive it. But it works only up
+to 2 GB RAM, and a lost snapshot cold-boots the machine. The port carries
+`StopMode::Suspend`, but the pool rules use only `Stop`, after a park.
+
+## Tests
+
+| Test | Where | Runs |
+|---|---|---|
+| `provisioner_contract(p, pool, spec)` | `borant-core::testing` | In each adapter crate |
+| `rules::pool`: demand, choice of pool, idle timing, billing step, budget, reconcile | `borant-core` | `just test-crate borant-core pool` |
+| `MemoryProvisioner` passes the contract. The hub executor runs on it with a fake clock. | `borant-memory`, `borant-hub` | Unit |
+| `ExecProvisioner` with `tests/plugins/provision-file.sh` passes the contract | `borant-exec` | Unit, needs `jq` |
+| Docker scenario `elastic` with `tests/e2e/plugins/provision-docker.sh` | `tests/e2e/scenarios` | CI |
+
+The contract suite asserts six points. `describe` returns version 1, a size,
+and a region. `create` returns the pool, the name, and the spec labels, and
+a second `create` with the same name returns the same id. `list(pool)` shows
+the host, and `list` of another pool does not. `delete` removes the host
+within a timeout, and a repeat or an unknown id is `Ok`. An unlisted size
+gives `Invalid`. If `stop_modes` has `Stop`, `stop` and `start` work.
+
+`MemoryProvisioner` keeps hosts in a map, with a start delay, a stop flag,
+and a create failure switch. `provision-file.sh` keeps a JSON file per
+host. `provision-docker.sh` maps `create`, `list`, and `delete` to
+`docker run -d --label borant.pool=...` of the e2e host image,
+`docker ps --filter label=...`, and `docker rm -f`. The hub container mounts
+the Docker socket.
+
+The `elastic` scenario starts the hub with no workers and one pool with
+`agents_per_host = 2` and `max_hosts = 2`. It spawns three agents and expects
+two containers, then expects them to go away when the agents go idle. It
+kills a container during a turn and expects a takeover and a delete. Thus CI
+tests the exec path, the rules, and the hub with no cloud account.
 
 ## Phased plan
 
-Phase 0, no code (this week):
+Phase 0, no code (this week): make sure that `borant-2` runs no agents
+(`borant status`), then run `just destroy borant-2` in `borant-infra`. This
+saves about $74 per month. Then measure one create from a snapshot, from
+`hcloud server create` to a host heartbeat, for less than $0.20.
 
-1. Make sure that `borant-2` runs no agents (`borant status`), then run
-   `just destroy borant-2`. This saves about $74 per month. The flake can
-   create it again in about 10 minutes.
-2. Measure one create from a snapshot: time from `hcloud server create` to a
-   host heartbeat. The cost is less than $0.20.
+Phase 1, operations in `borant-infra`: build the golden image (secrets doc).
+Create `borant-hub` (CPX11), move the hub with `borant hub move`, then delete
+`borant-1`. This saves about $53 per month more.
 
-Phase 1, operations only:
+Phase 2, the port and pools in `borant`: the `Provisioner` port, `PoolName`,
+the two new `PortErrorKind` values, `provisioner_contract`, and
+`MemoryProvisioner`. Then `rules::pool`, pools in `hub.toml`, the hub
+executor, the `elastic.*` and `spend.*` keys, `pool` in `HostInfo`, the two
+placement terms, parking, and `accept_spawns`.
 
-1. Build the golden image with a new `just image` recipe (from the
-   secrets-and-host-bootstrap doc).
-2. Create `borant-hub` (CPX11) and move the hub with `borant hub move`. Then
-   delete `borant-1`. This saves about $53 per month more.
-3. Add `just up <name>` and `just down <name>` recipes that create and delete
-   elastic boxes by hand.
+Phase 3, the exec adapter in `borant`: `borant-exec` with `ExecProvisioner`,
+the codec, `credential`, and timeouts, then the test plugins and the
+`elastic` scenario.
 
-Phase 2, the provisioner:
+Phase 4, the Hetzner plugin in `borant-infra`: the `borant-workers`
+project and its token, `just hub-credential`, `borant-provision-hetzner`,
+`just pool`, and the hub `hub.toml` with one pool at `max_hosts = 1`. Raise
+`max_hosts` after a week with no orphaned box.
 
-1. Add the `Provisioner` port, the Hetzner adapter, the `elastic.*` key, and
-   the tick rules, with `max_hosts = 1`.
-2. Change the placement score and add `elastic` and `accept_spawns`.
-3. Add parking for idle agents.
-4. Test with a fake provisioner in the Docker multi-host tests. Focused tests
-   only outside CI.
+Phase 5, only if needed: set `min_warm = 1` or add `borant-fly` and a Fly
+pool if cold starts hurt. Add one AX41 as a static EU host if use goes above
+about 1,200 agent-hours per month.
 
-Phase 3, only if needed:
-
-- If cold starts hurt, set `min_warm = 1` or add the Fly adapter.
-- If use goes above about 1,200 agent-hours per month, add one AX41 as a
-  static host in the EU.
-
-Cut from this design: the Fly adapter now, a Firecracker or microVM platform,
-Fly suspend, rescale for more CPU (it needs a power-off), schedules for warm
-boxes, price-aware placement across providers, auction bidding, IPv6-only
-boxes, and one Hetzner box per agent.
+Cut from this design: Hetzner code in the open-source repo, a Fly adapter
+now, a microVM platform, suspend with live sessions, rescale, warm-host
+schedules, live price comparison, a cost rule by expected job length,
+long-running plugins, plugin discovery, and one Hetzner box per agent.
 
 ## Risks
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| No CPX31 capacity in `hil` | Create fails | Log, notify, back off. Allow a second `server_type` or `ash` later. |
-| An orphaned box | Money each hour | Labels, reconcile each tick, `boot_timeout`, budget cap |
-| A provisioner bug deletes a box with work | Lost turn | Delete only after `draining` and a second lease read. Checkpoints. |
-| Cold start longer than measured | Agents wait | `min_warm`, or Fly for fast starts |
-| Hetzner prices change again | The model is wrong | The formula takes new prices |
-| The image ages | Old harness versions | Rebuild the image on each flake change. Claude Code updates itself at start. |
-| A hub token that can create servers | A stolen hub creates boxes | Separate project, budget cap, `max_hosts` |
+| No capacity in a region | Create fails | `unavailable`, backoff, notify. A second pool in another region. |
+| An orphaned host | Money each hour | Labels, reconcile each tick, `boot_timeout`, budgets |
+| A rule bug deletes a host with work | Lost turn | Delete only after `draining` and a second lease read. Checkpoints. |
+| A plugin hangs or prints junk | One pool stops | Op timeouts, `internal`, backoff. Other pools keep working. |
+| A stolen hub token creates hosts | Money | Separate project, root-only credential file, budgets, `max_hosts` |
+| Cold start longer than measured | Agents wait | `min_warm`, or a Fly pool |
 
 ## Open questions for Chris
 
-1. Were `borant-1` and `borant-2` created before 2026-06-15? If so, they keep
-   the old €20.99 price, and you do not delete them. The invoice shows the
-   price.
-2. How many agent-hours per month do you expect, and how many agents at the
-   peak? This decides B against D.
-3. Can workers run in the EU? EU cloud boxes cost about half, and an AX41
-   gives about 24 slots for $71. `borant attach` then has about 150 ms of
-   latency.
-4. Can unattended spawns land on an awake laptop, or do they go to the cloud
-   by default (`accept_spawns = false`)?
-5. What monthly compute budget and `max_hosts` do you want? Is a separate
-   Hetzner project for workers acceptable?
-6. Do you use Claude Code on a subscription or on the API? This changes the
-   LLM share of the bill.
-7. Is a cold start of 2 to 4 minutes acceptable after a laptop sleeps? The
-   2-minute grace period comes first.
+1. Were `borant-1` and `borant-2` created before 2026-06-15? If so, they
+   keep the old €20.99 price (see the invoice), and you do not delete them.
+2. How many agent-hours per month, and how many agents at the peak? This
+   decides B against D.
+3. Can workers run in the EU (3.6 times cheaper, about 150 ms to
+   `borant attach`)? With pools, this is one more `[[pools]]` entry.
+4. Can unattended spawns land on an awake laptop, or do they go to a pool by
+   default (`accept_spawns = false`)? What budget and `max_hosts` per pool?
+5. Is a pushed token file on the hub box acceptable for the Hetzner token?
+   The other choice is a hub-side `SecretStore` with its own vault.
+6. Do you want `borant-fly` only in phase 5, or an earlier Fly prototype as
+   an exec plugin, to measure the start time?
 
 ## Sources
 
@@ -599,7 +622,7 @@ boxes, and one Hetzner box per agent.
 21. Fly.io Machines overview: https://docs.fly.io/machines/overview/
 22. Fly.io rootfs size (community): https://community.fly.io/t/is-it-possible-to-extend-the-root-volume-beyond-8gb/21055
 23. Fly.io suspend and resume: https://docs.fly.io/reference/suspend-resume/
-24. Fly.io Machines API: https://docs.fly.io/machines/api/machines-resource/
+24. Fly.io Machines API (create fields, `metadata.{key}` list filter, stop, suspend, start): https://docs.fly.io/machines/api/machines-resource/
 25. Tailscale on Fly.io: https://tailscale.com/kb/1132/flydotio
 26. Fly.io Sprites: https://fly.io/sprites.md
 27. Northflank pricing: https://northflank.com/pricing
@@ -609,12 +632,19 @@ boxes, and one Hetzner box per agent.
 31. Modal pricing: https://modal.com/pricing
 32. Cloudflare Containers pricing: https://developers.cloudflare.com/containers/pricing/
 33. AWS Fargate pricing: https://aws.amazon.com/fargate/pricing/ (rates from https://cloudburn.io/blog/aws-fargate-pricing)
-34. Firecracker and Cloud Hypervisor releases: https://github.com/firecracker-microvm/firecracker and https://github.com/cloud-hypervisor/cloud-hypervisor (GitHub API, 2026-10-24). Nested virtualization: https://github.com/firecracker-microvm/firecracker/issues/1721
+34. Firecracker and Cloud Hypervisor: https://github.com/firecracker-microvm/firecracker and https://github.com/cloud-hypervisor/cloud-hypervisor. Nested virtualization: https://github.com/firecracker-microvm/firecracker/issues/1721
 35. microvm.nix: https://github.com/microvm-nix/microvm.nix
 36. Claude prices (Claude API skill table, cached 2026-10-06): https://docs.claude.com/en/docs/about-claude/pricing
 37. DeepSeek V4.1 Flash prices (secondary): https://www.requesty.ai/models/deepseek/deepseek-v4.1-flash and https://propakistani.pk/2026/09/11/deepseek-v4-1-flash-launches-with-lower-prices-and-native-vision/
+38. hcloud CLI: https://github.com/hetznercloud/cli. nixpkgs `writeShellApplication`: https://nixos.org/manual/nixpkgs/stable/#trivial-builder-writeShellApplication
+39. Kubernetes client-go credential plugins: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#client-go-credential-plugins
+40. Docker credential helpers: https://github.com/docker/docker-credential-helpers
+41. Tailscale ephemeral nodes: https://tailscale.com/kb/1111/ephemeral-nodes
+42. nixpkgs `dockerTools`: https://nixos.org/manual/nixpkgs/stable/#sec-pkgs-dockerTools
+43. Cargo features: https://doc.rust-lang.org/cargo/reference/features.html
+44. Local, read on 2026-10-24: `crates/borant-core/src/ports/mod.rs` and `launch.rs`, `crates/borant-core/src/rules/schedule.rs`, `HostInfo` in `model.rs`, the hub tick in `crates/borant-hub/src/lib.rs`, and the `borant-infra` justfile.
 
-Not verified: the time to create a Hetzner server from a snapshot, the rule
-that a snapshot cannot go to a smaller disk, the IPv4 price for dedicated
-servers, GitHub over IPv6, the Fly rootfs limit, Sprites plan fees, Fargate
-in `us-west-2`, omp RAM use, and all LLM token counts per hour.
+Not verified: the time to create a Hetzner server from a snapshot, the IPv4
+price for dedicated servers, the Fly rootfs limit, whether Fly machine names
+are unique per app, Sprites plan fees, omp RAM use, and all LLM token counts
+per hour.

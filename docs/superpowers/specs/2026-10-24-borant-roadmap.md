@@ -28,6 +28,24 @@ the order and the reasons.
 - Hetzner bills a powered-off server at the full price. "Auto-suspend" on
   Hetzner means: delete the server, and create it again from a snapshot.
 
+## Design rule: pluggable backends
+
+The open-source core stays neutral about where agents run and where
+secrets live. The `Provisioner` and `SecretStore` ports live in
+`borant-core` with neutral types. A backend plugs in two ways:
+
+- A compiled adapter crate behind a Cargo feature, for a public and generic
+  backend such as Fly.io.
+- The built-in `exec` adapter. It runs an outside program and speaks one
+  versioned JSON protocol over stdin and stdout, described in the elastic
+  compute document ("Exec plugin protocol"). Both ports use the same
+  protocol and the same `describe` handshake.
+
+The private `borant-infra` repo ships the Hetzner provisioner and the
+1Password secrets plugin as exec plugins. The hub never resolves agent
+secrets: only host daemons call `SecretStore`, so secret values never
+travel through NATS.
+
 ## Conflicts between the documents
 
 | Conflict | Resolution |
@@ -54,14 +72,18 @@ manual work, then visibility, then cost, then new power.
 3. Log the silent failures at `warn`: a failed ack, a failed session-log
    append, a failed hub request. Add `borant agents prune --dry-run`.
 
-### Phase 1: zero-touch hosts (M), secrets document phases 0 and 1
+### Phase 1: zero-touch hosts (M), secrets document phases 0 to 2
 
 1. Run the phase 0 fact checks of the secrets document on borant-2.
-2. Create the `Borant` vault and the `borant-hosts` service account. Add
-   `modules/secrets.nix` with `op inject` at boot.
-3. Seed the first-run settings of Claude Code and omp, the LunaRoute key
-   and catalog, the git identity, and `gh` as the git credential helper.
-4. Done when `just create borant-3` gives a working host with no login.
+2. In `borant`: the `SecretStore` port, the `env`, `file`, and `exec`
+   adapters, bundles in `host.toml`, and resolver mode with the
+   `borant secret-exec` shim. Harness logins become default bundles for
+   each harness.
+3. In `borant-infra`: the `borant-secrets-1password` plugin, the `Borant`
+   vault and its read-only service account as secret zero, and the seed
+   unit for the first-run screens only.
+4. Done when `just create borant-3` gives a working host with no login, and
+   no secret value shows in `ps`, the session log, or NATS.
 
 ### Phase 2: see the swarm (M), observability phases 1 to 3
 
@@ -89,9 +111,17 @@ manual work, then visibility, then cost, then new power.
 1. Measure the time to create a box from a snapshot. Build the golden image
    (secrets document phase 2).
 2. Move the hub to a small always-on box. Delete the idle worker box.
-3. Add the `Provisioner` port with the Hetzner adapter, fill-first
-   placement, and parking of idle agents.
-4. Decide on EU workers (question 3). EU boxes cost 3.6 times less.
+3. In `borant`: the `Provisioner` port, pools in `hub.toml`, the pure pool
+   rules, fill-first placement, parking of idle agents, and the `exec`
+   adapter. A Docker e2e scenario tests them with a fake plugin and no
+   cloud account.
+4. In `borant-infra`: the `borant-provision-hetzner` plugin and its pools.
+   The open-source repo holds no Hetzner code.
+5. Decide on EU workers (question 3). EU boxes cost 3.6 times less, and
+   with pools they are one more pool entry.
+6. Fly.io Machines come later as a compiled `borant-fly` crate or an exec
+   plugin. The port already has the optional stop, start, and suspend
+   operations that they need.
 
 ### Phase 5: contain the agents (M), orchestration phases 3 to 5
 
@@ -124,8 +154,10 @@ hub high availability.
   Hetzner. They stay an option if a 2 to 4 minute cold start is too slow.
 - Temporal, Restate, DBOS, or Inngest as dependencies. The hub tick and the
   state store cover the durable primitives that Borant needs.
-- sops-nix, agenix, Vault, OpenBao, and Infisical as the secrets store.
-  1Password stays the store.
+- sops-nix, agenix, Vault, and OpenBao as the first secrets backends.
+  1Password is the default plugin. Doppler, secretspec, and Infisical plug
+  in through the same port, as plugins or wrapper presets, when someone
+  needs them.
 - Grafana and VictoriaMetrics until weeks of history matter.
 
 ## Decisions for Chris
@@ -157,6 +189,13 @@ built.
    propose no, with a `laptop` taint.
 10. Sandboxes: every worker by default, or only workers in channels that you
     mark as untrusted?
+11. Hetzner token for the hub: a root-only token file that `just
+    hub-credential` pushes to the hub box, or a hub-side secret store with
+    its own vault? The documents propose the file.
+12. Store token on hosts: the host daemon runs as the same user as the
+    agents, so an agent without a sandbox can most likely read the
+    1Password token. Is that acceptable until sandboxes land, or does phase
+    1 need a separate plugin user?
 
 Each design document lists more questions that matter only for its own
 phase.
