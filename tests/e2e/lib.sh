@@ -5,7 +5,9 @@ COMPOSE="$ROOT/docker/compose.yaml"
 PROJECT=borant-e2e
 NETWORK="${PROJECT}_default"
 
-dc() { docker compose -f "$COMPOSE" "$@"; }
+# `E2E_ROOT` is the path of the repository for the bind mounts of the elastic
+# services, so that no relative path is resolved by the compose version.
+dc() { E2E_ROOT="$ROOT" docker compose -f "$COMPOSE" "$@"; }
 
 # Removes the containers that the fake provisioner of the elastic scenario
 # started: `compose down` does not know them, because the plugin starts them

@@ -263,7 +263,7 @@ for s in $SCENARIOS; do
 done
 
 if [ "$FAILED" != "0" ]; then
-  echo "Some scenarios failed. Logs: docker compose -f docker/compose.yaml logs"
+  echo "Some scenarios failed. Logs: E2E_ROOT=$ROOT docker compose -f $COMPOSE logs"
   if [ "${KEEP:-0}" != "1" ]; then
     dc logs --no-color 2>/dev/null | tail -150
   fi
