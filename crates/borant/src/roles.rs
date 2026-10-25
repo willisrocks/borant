@@ -131,7 +131,10 @@ pub async fn run_host() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn export(out: &Path) -> anyhow::Result<()> {
+pub async fn export(out: &Path, snapshot: bool) -> anyhow::Result<()> {
+    if snapshot {
+        return export_snapshot(out).await;
+    }
     let (nats, cfg) = hub_parts("borant-export").await?;
     let bus = nats.bus();
     let on = serde_json::to_vec(&CtlRequest::Maintenance { on: true })?;
@@ -158,6 +161,38 @@ pub async fn export(out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Asks the running hub for a snapshot. The hub writes the file on its own
+/// box, so this works from any host and without maintenance mode.
+async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
+    let (nats, _) = hub_parts("borant-export").await?;
+    let bus = nats.bus();
+    let payload = serde_json::to_vec(&CtlRequest::Snapshot {
+        out: out.to_path_buf(),
+    })?;
+    let reply = borant_core::ports::MessageBus::request(
+        &bus,
+        subjects::CTL,
+        payload.into(),
+        Duration::from_secs(60),
+    )
+    .await
+    .with_context(|| "no running hub answered the snapshot request")?;
+    let reply: borant_core::proto::Reply =
+        serde_json::from_slice(&reply).context("the hub sent an unreadable snapshot reply")?;
+    let report = reply
+        .into_result()
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    println!(
+        "Wrote {}: {} state keys, {} session events, {} pending messages (hub lock {} ms).",
+        report["path"].as_str().unwrap_or("?"),
+        report["state"].as_u64().unwrap_or(0),
+        report["sessions"].as_u64().unwrap_or(0),
+        report["pending"].as_u64().unwrap_or(0),
+        report["lock_ms"].as_u64().unwrap_or(0),
+    );
+    Ok(())
+}
+
 pub async fn import(input: &Path) -> anyhow::Result<()> {
     let (nats, _) = hub_parts("borant-import").await?;
     let file = std::fs::File::open(input).with_context(|| format!("open {}", input.display()))?;
@@ -175,7 +210,7 @@ pub async fn import(input: &Path) -> anyhow::Result<()> {
 /// the `borant` binary of that host.
 pub async fn hub_move(ssh_host: &str) -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("borant-export-{}.jsonl", std::process::id()));
-    export(&tmp).await?;
+    export(&tmp, false).await?;
     let remote_file = "/tmp/borant-hub-import.jsonl";
     let status = tokio::process::Command::new("scp")
         .arg(&tmp)
