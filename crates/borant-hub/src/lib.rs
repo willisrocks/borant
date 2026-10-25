@@ -1,7 +1,9 @@
 //! The Borant hub daemon: the only writer of control-plane state.
 //!
 //! [`Hub::handle`] serves one request at a time behind a mutex, so the rules
-//! that span several keys (cycle checks, claims, leases) are safe.
+//! that span several keys (cycle checks, claims, leases) are safe. The tick
+//! takes the same mutex for one lease at a time, never for a whole pass, so a
+//! restart on a large store still answers requests.
 
 mod calls;
 pub mod export;
@@ -15,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use borant_core::model::{HubLease, MoveReason};
+use borant_core::model::{HubLease, Lease, MoveReason};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
@@ -143,12 +145,16 @@ impl Hub {
     }
 
     /// One pass of lease expiry, takeovers, and claim timeouts.
+    ///
+    /// The pass takes the memory lock for one lease at a time, never for the
+    /// whole pass, so requests are served while a restart catches up on a
+    /// large store.
     pub async fn tick(&self) -> Result<(), ApiError> {
-        let mut mem = self.mem.lock().await;
-        if mem.maintenance {
+        if self.mem.lock().await.maintenance {
             return Ok(());
         }
-        self.tick_leases(&mut mem).await
+        let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
+        self.tick_leases(leases).await
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then

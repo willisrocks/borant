@@ -93,7 +93,7 @@ pub async fn connect(cfg: &NatsConfig) -> Result<Nats, PortError> {
 
 impl Nats {
     pub fn state(&self) -> NatsState {
-        NatsState::new(self.js.clone())
+        NatsState::new(self.client.clone(), self.js.clone())
     }
 
     pub fn bus(&self) -> NatsBus {

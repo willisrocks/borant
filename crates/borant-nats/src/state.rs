@@ -1,4 +1,5 @@
 use async_nats::jetstream;
+use async_nats::jetstream::consumer::{DeliverPolicy, ReplayPolicy, push};
 use async_nats::jetstream::kv::{self, CreateErrorKind, Operation, UpdateErrorKind};
 use borant_core::ports::{Change, Entry, PortError, PortResult, StateStore};
 use bytes::Bytes;
@@ -10,13 +11,15 @@ use crate::{KV_BUCKET, unavailable};
 
 #[derive(Debug, Clone)]
 pub struct NatsState {
+    client: async_nats::Client,
     js: jetstream::Context,
     store: std::sync::Arc<OnceCell<kv::Store>>,
 }
 
 impl NatsState {
-    pub(crate) fn new(js: jetstream::Context) -> Self {
+    pub(crate) fn new(client: async_nats::Client, js: jetstream::Context) -> Self {
         Self {
+            client,
             js,
             store: Default::default(),
         }
@@ -45,6 +48,37 @@ impl NatsState {
 fn is_wrong_revision(e: &impl std::fmt::Display) -> bool {
     let s = e.to_string().to_lowercase();
     s.contains("wrong last sequence") || s.contains("10071")
+}
+
+/// Turns a delivered KV message into an entry, and the number of messages the
+/// consumer still has pending. The last message of a key can be a delete or
+/// purge marker, which holds no value.
+fn entry_from_message(
+    prefix: &str,
+    message: jetstream::Message,
+) -> PortResult<(Option<Entry>, u64)> {
+    let info = message
+        .info()
+        .map_err(|e| PortError::other(format!("KV list metadata: {e}")))?;
+    let pending = info.pending;
+    let mut out = None;
+    if let Some(headers) = message.headers.as_ref() {
+        let removed = headers
+            .get("KV-Operation")
+            .is_some_and(|op| matches!(op.as_str(), "DEL" | "PURGE"))
+            || headers.get("NATS-Marker-Reason").is_some();
+        if removed {
+            return Ok((None, pending));
+        }
+    }
+    if let Some(key) = message.subject.strip_prefix(prefix) {
+        out = Some(Entry {
+            key: key.to_owned(),
+            value: message.payload.clone(),
+            revision: info.stream_sequence,
+        });
+    }
+    Ok((out, pending))
 }
 
 #[async_trait::async_trait]
@@ -109,23 +143,52 @@ impl StateStore for NatsState {
 
     async fn list(&self, prefix: &str) -> PortResult<Vec<Entry>> {
         let store = self.store().await?;
-        let mut keys: Vec<String> = match store.keys().await {
-            Ok(k) => {
-                k.filter_map(|k| futures::future::ready(k.ok()))
-                    .filter(|k| futures::future::ready(k.starts_with(prefix)))
-                    .collect()
-                    .await
+        // One consumer filtered to the prefix delivers the last message of each
+        // key under it, values included, so the cost is the keys under the
+        // prefix rather than every key in the bucket plus one get per key.
+        // A NATS subject filter matches whole tokens, so a prefix that ends
+        // inside a token is filtered on its last whole token here and finished
+        // on the client below.
+        let whole = prefix.rfind('.').map(|i| i + 1).unwrap_or(0);
+        let scope = &prefix[..whole];
+        let filter = format!("{}{scope}>", store.prefix);
+        let consumer = store
+            .stream
+            .create_consumer(push::OrderedConfig {
+                deliver_subject: self.client.new_inbox(),
+                description: Some(format!("kv list {prefix}")),
+                filter_subject: filter,
+                replay_policy: ReplayPolicy::Instant,
+                deliver_policy: DeliverPolicy::LastPerSubject,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| unavailable("KV list", e))?;
+        // The consumer can deliver before any info round trip, so the count of
+        // pending messages is not the number of entries. Read until the last
+        // message says nothing is pending, like the KV `keys` stream does.
+        if consumer.cached_info().num_pending == 0 {
+            return Ok(Vec::new());
+        }
+        let mut messages = consumer
+            .messages()
+            .await
+            .map_err(|e| unavailable("KV list", e))?;
+        let mut out = Vec::new();
+        loop {
+            let Some(message) = messages.next().await else {
+                break;
+            };
+            let message = message.map_err(|e| unavailable("KV list", e))?;
+            let (entry, pending) = entry_from_message(&store.prefix, message)?;
+            if let Some(entry) = entry.filter(|e| e.key.starts_with(prefix)) {
+                out.push(entry);
             }
-            Err(e) if e.to_string().to_lowercase().contains("no keys") => Vec::new(),
-            Err(e) => return Err(unavailable("KV keys", e)),
-        };
-        keys.sort();
-        let mut out = Vec::with_capacity(keys.len());
-        for k in keys {
-            if let Some(e) = self.get(&k).await? {
-                out.push(e);
+            if pending == 0 {
+                break;
             }
         }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(out)
     }
 
