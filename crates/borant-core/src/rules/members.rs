@@ -13,6 +13,16 @@ use crate::time::Timestamp;
 /// [`pick`].
 pub const REPORT_FRESH_FOR: Duration = Duration::from_secs(15 * 60);
 
+/// How long the limit restarts of one member are kept, for `borant members`.
+pub const RESTART_KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Counts one limit restart, or one wait, of a member at `now`, and drops
+/// the times that are older than [`RESTART_KEEP`].
+pub fn note_restart(state: &mut MemberState, now: Timestamp) {
+    state.restarts.retain(|at| now.since(*at) <= RESTART_KEEP);
+    state.restarts.push(now);
+}
+
 /// The rules for bundle members, from `[secrets.members]` in `hub.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -112,6 +122,7 @@ mod tests {
             member: member.parse().unwrap(),
             limited_until,
             waiting: vec![],
+            restarts: Vec::new(),
         }
     }
 
@@ -197,5 +208,31 @@ mod tests {
         let states = [state("a", Some(Timestamp(5_000)))];
         let picked = pick(&members, None, &states, &[], Timestamp(1_000));
         assert_eq!(name(picked), member("b"));
+    }
+
+    /// A member state of v0.8.0 has no `restarts`, and it still parses.
+    #[test]
+    fn members_an_old_member_state_parses_without_restarts() {
+        let old = serde_json::json!({
+            "bundle": "claude_auth",
+            "member": "a",
+            "limited_until": 1_792_929_600_000i64,
+            "waiting": ["w1"],
+        });
+        let state: MemberState = serde_json::from_value(old).expect("a v0.8.0 member state");
+        assert_eq!(state.member, member("a"));
+        assert!(state.restarts.is_empty());
+    }
+
+    /// A limit restart adds its time, and the times of a week ago drop.
+    #[test]
+    fn members_a_restart_keeps_the_last_week() {
+        let now = Timestamp(1_792_929_600_000);
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let mut state = state("a", None);
+        state.restarts = vec![now.minus(week + Duration::from_secs(1)), now.minus(week)];
+        note_restart(&mut state, now);
+        // Exactly one week old is still counted; older is gone.
+        assert_eq!(state.restarts, vec![now.minus(week), now]);
     }
 }
