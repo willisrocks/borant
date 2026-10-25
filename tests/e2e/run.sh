@@ -514,7 +514,17 @@ if [ "$FAILED" != "0" ]; then
       echo "  hub-elastic and host-control:"
       dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
     fi
-    dc --profile elastic logs --no-color 2>/dev/null | tail -200
+    if [ "$SCENARIOS" = "sandbox" ]; then
+      echo "  hosts:"
+      borant_on host-a hosts 2>/dev/null |
+        jq -c '.[] | {name: .host.name, sandboxes: .host.sandboxes,
+                      harnesses: .host.harnesses, online}' | head -10
+      echo "  the boss log:"
+      log_of host-a boss 2>/dev/null | tail -20
+      echo "  hub-sandbox and host-sandbox:"
+      dc --profile sandbox logs --no-color hub-sandbox host-sandbox 2>/dev/null | tail -200
+    fi
+    dc --profile elastic --profile sandbox --profile move logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
 fi
