@@ -584,7 +584,16 @@ host_r_pid_file() { on host-r test -s /tmp/host-r.pid; }
 
 host_r_pid() { on host-r cat /tmp/host-r.pid 2>/dev/null | tr -d '[:space:]'; }
 
-host_r_log() { on host-r cat "/tmp/host-r-$1.log" 2>/dev/null; }
+host_r_log() { on host-r cat "/tmp/host-r-$1.log" 2>/dev/null | strip_colours; }
+
+# The daemon writes its log to a file, and the logger still colours the field
+# names and values: every match and every line that the scenario prints drops
+# the SGR sequences first. printf builds the ESC, because BSD sed has no \x.
+strip_colours() {
+  local esc
+  esc=$(printf '\033')
+  sed "s/${esc}\[[0-9;]*m//g"
+}
 
 # The host daemon answers and the hub lists it online.
 host_r_online() {
@@ -592,10 +601,17 @@ host_r_online() {
     jq -e 'any(.[]; .host.name == "host-r" and .online)' >/dev/null
 }
 
-# The restore line of the second start: the sessions that the host restored
-# and the milliseconds of the restore.
+# The restore line of the second start as `restored=<n> ms=<m>`: the sessions
+# that the host restored and the milliseconds of the restore. The order of the
+# two fields is the logger's, so each is taken where it is.
 host_r_restored() {
-  host_r_log 2 | grep -o 'restored=[0-9]* ms=[0-9]* restored local sessions' | head -1
+  local line restored ms
+  line=$(host_r_log 2 | grep 'restored local sessions' | head -1)
+  [ -n "$line" ] || return 1
+  restored=$(printf '%s\n' "$line" | grep -o 'restored=[0-9]*' | head -1)
+  ms=$(printf '%s\n' "$line" | grep -o 'ms=[0-9]*' | head -1)
+  [ -n "$restored" ] && [ -n "$ms" ] || return 1
+  printf '%s %s\n' "$restored" "$ms"
 }
 
 # A PID that is gone, or one that the container never reaped, is not the
