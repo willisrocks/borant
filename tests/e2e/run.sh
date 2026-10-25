@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart sandbox"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -25,6 +25,9 @@ ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move qu
 # already runs every scenario.
 SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
 
+# The paths of the pause scenario: its own swarm, which runs alone.
+PAUSE_PATHS='^tests/e2e/pause/'
+
 # The scenarios that a diff touches. Every scenario drives the same swarm, so
 # a change to one crate can break all of them: only the paths that no
 # scenario loads skip the run, and every other path runs the whole set.
@@ -35,6 +38,7 @@ SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/san
 #   everything else, and any change under crates/borant-core,
 #   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
 #   the sandbox and its scenario -> sandbox, or all when other paths changed
+#   the pause scenario and its swarm -> pause, or all when other paths changed
 affected() {
   local base=$1 files
   files=$(git diff --name-only "$base"...HEAD) || return 1
@@ -44,12 +48,21 @@ affected() {
   fi
   # A diff of the sandbox or its scenario needs that scenario. When nothing
   # else changed, it runs alone; otherwise the default set runs first and the
-  # script then runs itself for the sandbox swarm.
+  # script then runs itself for the sandbox swarm. The pause scenario runs
+  # alone the same way.
   if printf '%s\n' "$files" | grep -qE "$SANDBOX_PATHS"; then
     if printf '%s\n' "$files" | grep -qvE "$SANDBOX_PATHS"; then
       echo "$ALL"
     else
       echo sandbox
+    fi
+    return 0
+  fi
+  if printf '%s\n' "$files" | grep -qE "$PAUSE_PATHS"; then
+    if printf '%s\n' "$files" | grep -qvE "$PAUSE_PATHS"; then
+      echo "$ALL"
+    else
+      echo pause
     fi
     return 0
   fi
@@ -78,9 +91,9 @@ esac
 SCENARIOS=${*:-$ALL}
 # The elastic and members scenarios bring their own swarm (a hub with no
 # worker hosts, and one host with a bundle), so each runs alone. The sandbox
-# scenario has its own swarm as well, and it can share a run with the default
-# set: the default scenarios run first in a child, then this script continues
-# with the sandbox swarm.
+# and pause scenarios bring their own swarms as well, and they can share a run
+# with the default set: the other scenarios run first in a child, then this
+# script continues with the swarm of the scenario that runs alone.
 for s in $SCENARIOS; do
   case "$s" in
     elastic|members) SCENARIOS=$s ;;
@@ -95,6 +108,17 @@ case " $SCENARIOS " in
       "$0" $others || exit 1
     fi
     SCENARIOS=sandbox
+    ;;
+esac
+case " $SCENARIOS " in
+  *" pause "*)
+    others=$(printf '%s\n' $SCENARIOS | grep -vx pause | tr '\n' ' ')
+    if [ -n "$others" ]; then
+      # The word splitting is the point: one argument per scenario.
+      # shellcheck disable=SC2086
+      "$0" $others || exit 1
+    fi
+    SCENARIOS=pause
     ;;
 esac
 
@@ -159,6 +183,14 @@ elif [ "$SCENARIOS" = "members" ]; then
     || { echo "FAIL start"; dc --profile members logs --no-color 2>/dev/null | tail -200; exit 1; }
   hosts_online() { borant_on host-members hosts | jq -e 'length == 1 and all(.online)'; }
   wait_for "host daemons" hosts_online || exit 1
+elif [ "$SCENARIOS" = "pause" ]; then
+  # One host with a slow heartbeat: the hub places agents on it only after its
+  # first heartbeat, so the wait is longer than the default swarm's.
+  echo "Starting the pause swarm..."
+  dc --profile pause up -d nats git hub-pause host-pause >/dev/null \
+    || { echo "FAIL start"; dc --profile pause logs --no-color 2>/dev/null | tail -200; exit 1; }
+  hosts_online() { borant_on host-pause hosts | jq -e 'length == 1 and all(.online)'; }
+  WAIT=90 wait_for "host daemons" hosts_online || exit 1
 else
   echo "Starting the swarm..."
   dc up -d nats git hub host-a host-b host-c >/dev/null \
@@ -945,6 +977,139 @@ limit_agent() {
   echo "$resets"
 }
 
+# The pause scenario of phase 10, on its own swarm (see the start block). The
+# hub of tests/e2e/pause holds a role with `max_turns_per_day = 2`, and its one
+# host reports a heartbeat every 20 s. The hub counts the turns of a session on
+# the heartbeat, so the three turns of the capped agent land in one window of
+# the count and the third is the turn that reaches the cap: the hub stops the
+# agent with one `agent.paused` event whose reason starts with `cap:`, its
+# claim goes to a person, and no placement brings it back. `borant resume`
+# places it again. A person also stops a second agent and resumes it.
+scenario_pause() {
+  local task out seen
+
+  # The boss creates the channel with its project, and the task that the
+  # capped agent claims.
+  start_agent host-pause boss
+  wait_for "boss registered" pause_holds boss || return 1
+  borant_on host-pause project add demo git://git/demo.git --branch main >/dev/null || return 1
+  borant_on host-pause send boss "CHANNEL demo demo" >/dev/null
+  wait_for "the channel with its project" log_has host-pause boss "CHANNEL demo ok" || return 1
+  borant_on host-pause send boss "CREATE demo capped" >/dev/null
+  wait_for "task capped" log_has host-pause boss "CREATED .* capped" || return 1
+  task=$(task_id host-pause boss capped)
+  [ -n "$task" ] || { echo "  the id of the task capped" >&2; return 1; }
+
+  # The capped agent claims the task in the turn of its launch prompt.
+  on host-pause sh -c "printf 'CLAIM demo $task\n' > /tmp/pause-capped.md" || return 1
+  out=$(borant_on host-pause spawn --channel demo --role capped --name capped \
+    --prompt-file /tmp/pause-capped.md) || return 1
+  case "$out" in
+    "agent capped placed"*) ;;
+    *) echo "  capped: $out" >&2; return 1 ;;
+  esac
+  wait_for "the capped agent claimed the task" log_has host-pause capped "CLAIM $task ok" || return 1
+
+  # The next heartbeat reports the first turn and the idle session, so the hub
+  # stops the session at once when the cap is reached instead of after the
+  # grace. The two turns that follow are in the window of the count.
+  sleep 2
+  seen=$(pause_heartbeat) || return 1
+  wait_for "a heartbeat of the pause host" pause_beat "$seen" || return 1
+  borant_on host-pause send capped "WRITE step2.txt two" >/dev/null
+  wait_for "the second turn of the capped agent" log_has host-pause capped "WROTE step2.txt" || return 1
+  borant_on host-pause send capped "WRITE step3.txt three" >/dev/null
+  wait_for "the third turn of the capped agent" log_has host-pause capped "WROTE step3.txt" || return 1
+
+  # The third turn reaches the cap of two.
+  wait_for "the agent.paused event of the cap" pause_capped_event || return 1
+  wait_for "the claim of the capped agent in needs_human" pause_capped_claim "$task" || return 1
+  wait_for "the stopped session of the capped agent" log_has host-pause capped SIGTERM || return 1
+  echo "  the cap stopped capped: $(pause_capped_why)"
+
+  # No placement brings the stopped agent back.
+  wait_for "the capped agent holds no lease" pause_free capped || return 1
+  sleep 30
+  pause_free capped || { echo "  the hub placed the stopped agent again" >&2; return 1; }
+
+  # A person resumes it, and it holds a lease again. The resume of a
+  # cap-stopped agent starts the cap over, so the agent stays placed.
+  out=$(borant_on host-pause resume capped) || return 1
+  pause_placed "$out" capped || return 1
+  wait_for "the resumed agent holds its lease" pause_holds capped || return 1
+
+  # A person stops a second agent, which is idle, and resumes it. An idle
+  # session ends at once with its lease released; a fenced turn does not
+  # release its lease, so the scenario waits for a heartbeat that carries the
+  # idle report of the agent before it stops it.
+  start_agent host-pause helper demo
+  wait_for "the helper registered" pause_holds helper || return 1
+  borant_on host-pause send helper "WRITE helper.txt ready" >/dev/null
+  wait_for "the first turn of the helper" log_has host-pause helper "WROTE helper.txt" || return 1
+  sleep 2
+  seen=$(pause_heartbeat) || return 1
+  wait_for "a heartbeat of the pause host" pause_beat "$seen" || return 1
+  borant_on host-pause stop helper --grace 5 >/dev/null || return 1
+  wait_for "the stopped helper ended" log_has host-pause helper SIGTERM || return 1
+  wait_for "the stopped helper holds no lease" pause_free helper || return 1
+  wait_for "the inbox names the stop of the helper" pause_helper_stopped || return 1
+  out=$(borant_on host-pause resume helper) || return 1
+  pause_placed "$out" helper || return 1
+  wait_for "the resumed helper holds its lease" pause_holds helper || return 1
+}
+
+# The agent holds a held lease on the one host of the pause swarm.
+pause_holds() { [ "$(where_on host-pause "$1")" = "host-pause" ]; }
+
+# The agent holds no held lease: no placement brought it back.
+pause_free() { [ -z "$(where_on host-pause "$1")" ]; }
+
+# The reply of `borant resume` clears the pause and places the agent again.
+pause_placed() {
+  printf '%s' "$1" | jq -e --arg a "$2" 'select(.agent == $a and .paused == false and .placed)' >/dev/null ||
+    { echo "  resume $2 answered: $1" >&2; return 1; }
+}
+
+# The `last_seen` of the pause host, which the hub moves on each heartbeat.
+pause_heartbeat() {
+  borant_on host-pause hosts 2>/dev/null |
+    jq -r '.[] | select(.host.name == "host-pause") | .last_seen'
+}
+
+# The pause host sent a heartbeat after the one of `$1`.
+pause_beat() {
+  local now
+  now=$(pause_heartbeat) || return 1
+  [ -n "$1" ] && [ -n "$now" ] && [ "$now" != "$1" ]
+}
+
+# The hub published `agent.paused` for the capped agent, with the cap as the
+# reason. A stop by a person has another reason, so this one is the cap.
+pause_capped_event() {
+  borant_on host-pause events --json --kind agent.paused 2>/dev/null |
+    jq -e 'select(.agent == "capped" and .kind == "agent.paused"
+                and (.why | startswith("cap:")))' >/dev/null
+}
+
+# The reason of the cap pause, for the log of the scenario.
+pause_capped_why() {
+  borant_on host-pause events --json --kind agent.paused 2>/dev/null |
+    jq -r 'select(.agent == "capped" and (.why | startswith("cap:"))) | .why' | tail -1
+}
+
+# The claim of the capped agent is in `needs_human`, with the reason of the cap.
+pause_capped_claim() {
+  borant_on host-pause inbox --json 2>/dev/null |
+    jq -e --arg t "$1" 'any(.tasks[]; .id == $t and .status == "needs_human"
+                and (.attention_msg | startswith("cap:")))' >/dev/null
+}
+
+# The inbox lists the helper, which holds no claim, as stopped by a person.
+pause_helper_stopped() {
+  borant_on host-pause inbox --json 2>/dev/null |
+    jq -e 'any(.agents[]; .agent == "helper" and .why == "stopped by human")' >/dev/null
+}
+
 for s in $SCENARIOS; do
   if "scenario_$s"; then pass "$s"; else fail "$s"; fi
 done
@@ -998,7 +1163,22 @@ if [ "$FAILED" != "0" ]; then
         harness_pids
         ;;
     esac
-    dc --profile elastic --profile sandbox --profile members --profile move logs --no-color 2>/dev/null | tail -200
+    if [ "$SCENARIOS" = "pause" ]; then
+      echo "  agents:"
+      borant_on host-pause agents 2>/dev/null |
+        jq -c '.[] | {agent, role, host, lease: .lease.state}' | head -10
+      echo "  inbox:"
+      borant_on host-pause inbox --json 2>/dev/null | head -40
+      echo "  pause events:"
+      borant_on host-pause events --json 2>/dev/null |
+        grep -E 'agent.paused|agent.resumed' | tail -10
+      echo "  the boss and capped logs:"
+      log_of host-pause boss 2>/dev/null | tail -20
+      log_of host-pause capped 2>/dev/null | tail -30
+      echo "  hub-pause and host-pause:"
+      dc --profile pause logs --no-color hub-pause host-pause 2>/dev/null | tail -200
+    fi
+    dc --profile elastic --profile sandbox --profile members --profile pause --profile move logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
 fi
