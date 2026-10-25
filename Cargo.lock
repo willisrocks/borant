@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "borant"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "borant-core",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "borant-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borant-core",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "borant-exec"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borant-core",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "borant-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "borant-hub"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "borant-launch"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borant-core",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "borant-memory"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borant-core",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "borant-nats"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "borant-secrets"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borant-core",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "borant-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "borant-core",
