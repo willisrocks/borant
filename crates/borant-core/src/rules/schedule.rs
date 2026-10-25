@@ -29,13 +29,19 @@ fn pick_harness(h: &HostView, preferred: Harness, forced: Option<Harness>) -> Op
     }
 }
 
-/// Orders two candidates. Fill first: a static host (no pool) wins over a pool
-/// host, and among pool hosts the one with more active agents wins, so that a
-/// pool host goes idle and can be deleted. Among static hosts the order is the
-/// one of before: the same harness, then fewer active agents, then always-on
-/// hosts, then the name.
+/// Orders two candidates. The requested harness comes first: a host that runs
+/// another harness changes the model and the cost of the agent, which costs
+/// more than a pool slot. Then fill first: a static host (no pool) wins over a
+/// pool host, and among pool hosts the one with more active agents wins, so
+/// that a pool host goes idle and can be deleted. Among static hosts the order
+/// is the one of before: fewer active agents, then always-on hosts, then the
+/// name.
 fn order(a: (&HostView, Harness), b: (&HostView, Harness), preferred: Harness) -> Ordering {
     let (x, y) = (a.0, b.0);
+    let harness = (a.1 != preferred).cmp(&(b.1 != preferred));
+    if harness != Ordering::Equal {
+        return harness;
+    }
     match (x.pool.is_some(), y.pool.is_some()) {
         (false, true) => return Ordering::Less,
         (true, false) => return Ordering::Greater,
@@ -43,14 +49,12 @@ fn order(a: (&HostView, Harness), b: (&HostView, Harness), preferred: Harness) -
             return y
                 .active_agents
                 .cmp(&x.active_agents)
-                .then_with(|| (a.1 != preferred).cmp(&(b.1 != preferred)))
                 .then_with(|| x.info.name.cmp(&y.info.name));
         }
         (false, false) => {}
     }
-    (a.1 != preferred)
-        .cmp(&(b.1 != preferred))
-        .then_with(|| x.active_agents.cmp(&y.active_agents))
+    x.active_agents
+        .cmp(&y.active_agents)
         .then_with(|| (!x.info.always_on).cmp(&(!y.info.always_on)))
         .then_with(|| x.info.name.cmp(&y.info.name))
 }
@@ -188,15 +192,29 @@ mod tests {
 
     #[test]
     fn static_host_beats_pool_host() {
-        // The static host is already paid for, even when it runs another
-        // harness and is busier than the pool host.
+        // The static host is already paid for, even when it is busier than
+        // the pool host.
         let hosts = [
             pool_host("p", &[Harness::ClaudeCode], 0),
-            host("s", &[Harness::Pi], 3, true),
+            host("s", &[Harness::ClaudeCode], 3, true),
         ];
         assert_eq!(
             place(Harness::ClaudeCode, None, None, &hosts),
-            Some((name("s"), Harness::Pi))
+            Some((name("s"), Harness::ClaudeCode))
+        );
+    }
+
+    #[test]
+    fn requested_harness_beats_a_static_host() {
+        // Another harness changes the model and the cost of the agent, which
+        // costs more than a pool slot.
+        let hosts = [
+            host("s", &[Harness::Pi], 0, true),
+            pool_host("p", &[Harness::ClaudeCode], 2),
+        ];
+        assert_eq!(
+            place(Harness::ClaudeCode, None, None, &hosts),
+            Some((name("p"), Harness::ClaudeCode))
         );
     }
 
