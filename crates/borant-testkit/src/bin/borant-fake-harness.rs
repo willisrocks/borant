@@ -10,6 +10,7 @@
 //! - `AFTER <channel> <blocker> <title>`: create a task blocked by another
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
 //! - `SEND <agent|#channel> <text>`
+//! - `SPAWN <channel> <prompt>`: spawn an agent, and log `SPAWNED <agent>`
 //! - `HISTORY`: read the session history
 //! - `EXIT`: end the session and exit
 //!
@@ -154,6 +155,12 @@ impl Fake {
                 self.call(json!({"tool": "send", "to": to, "text": b}))
                     .await?;
                 self.line(&format!("SENT {a}"));
+            }
+            "SPAWN" => {
+                let v = self
+                    .call(json!({"tool": "spawn", "channel": a, "prompt": b}))
+                    .await?;
+                self.line(&format!("SPAWNED {}", v["agent"].as_str().unwrap_or("?")));
             }
             "HISTORY" => self.history().await?,
             "EXIT" => {
