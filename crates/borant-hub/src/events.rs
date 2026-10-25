@@ -758,6 +758,7 @@ mod tests {
                         member: member.clone(),
                         limited_until: Some(NOW.plus(Duration::from_secs(3600))),
                         waiting: Vec::new(),
+                        restarts: Vec::new(),
                     },
                 )
                 .await
