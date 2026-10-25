@@ -19,7 +19,7 @@ use crate::{MSG_STREAM, unavailable};
 
 const ACK_WAIT: Duration = Duration::from_secs(60);
 
-fn consumer_name(agent: &AgentId) -> String {
+pub fn consumer_name(agent: &AgentId) -> String {
     format!("inbox-{agent}")
 }
 
@@ -195,6 +195,26 @@ impl MessageBus for NatsBus {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+
+    async fn recover_inbox(&self, agent: &AgentId, subjects: &[String]) -> PortResult<()> {
+        let stream = self.stream().await?;
+        // A consumer that NATS lost took its acks with it. Start from the
+        // oldest message in the stream and let the host drop what it logged
+        // already: the stream keeps messages for 30 days.
+        let config = pull::Config {
+            durable_name: Some(consumer_name(agent)),
+            deliver_policy: DeliverPolicy::All,
+            ack_wait: ACK_WAIT,
+            filter_subjects: subjects.to_vec(),
+            ..Default::default()
+        };
+        match stream.create_consumer(config).await {
+            Ok(_) => Ok(()),
+            // A pull in another task won the race.
+            Err(e) if e.to_string().to_lowercase().contains("exists") => Ok(()),
+            Err(e) => Err(unavailable("recover inbox", e)),
         }
     }
 

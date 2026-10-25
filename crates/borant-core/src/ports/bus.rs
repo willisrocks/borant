@@ -69,6 +69,13 @@ pub trait MessageBus: Send + Sync + std::fmt::Debug {
     /// Creates the inbox of the agent, or replaces its subject list. A new
     /// inbox gets only messages published after its creation.
     async fn ensure_inbox(&self, agent: &AgentId, subjects: &[String]) -> PortResult<()>;
+    /// Creates the inbox of an agent that lost it, keeping the messages that
+    /// arrived while it was gone. An inbox that never existed uses
+    /// `ensure_inbox`, which starts from now; the host drops the messages it
+    /// logged already by envelope ID.
+    async fn recover_inbox(&self, agent: &AgentId, subjects: &[String]) -> PortResult<()> {
+        self.ensure_inbox(agent, subjects).await
+    }
     /// Up to `max` messages, waiting up to `wait` for the first one. A
     /// message that is not acked comes back in a later pull.
     async fn pull(&self, agent: &AgentId, max: usize, wait: Duration) -> PortResult<Vec<Delivery>>;
