@@ -155,3 +155,15 @@ services:
       BORANT_HOST_NAME: host-c
       BORANT_LAUNCHER: process
       BORANT_HARNESSES: fake
+
+  # The one-slot host of the queue scenario, which starts it on demand: one
+  # slot makes a forced spawn queue. It has no profile, so no swarm starts it.
+  host-q:
+    <<: *host
+    hostname: host-q
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-q
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "1"

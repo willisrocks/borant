@@ -128,6 +128,50 @@ Delivery rules:
 - A task event wakes the owner only when a task closes, gets stuck, or needs
   a human.
 
+## Orchestrate from a shell
+
+A person or a channel owner can drive the swarm from any machine that runs a
+host daemon. The CLI talks to that host on `~/.borant/host.sock`, and the
+host forwards the call to the hub. Use the same commands in a terminal or a
+script. A spawn from a shell has no session behind it, so it must name
+`--harness` or a `--role` that has one; without them the hub answers
+`a spawn by a person needs a harness or a role with one`.
+
+```sh
+cat > brief.md <<'EOF'
+Fix the parser in src/parser.rs. The tests in tests/parser.rs say what it
+should do.
+EOF
+
+# --key makes the call idempotent: a retry with the same key and arguments
+# returns the same agent, so a lost reply is safe to repeat.
+borant spawn --channel api --prompt-file brief.md --harness omp \
+  --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --key api-parser-1
+
+# When no slot fits, the same command prints `agent <id> queued`; add --json
+# for the whole reply.
+
+# exit 0: the task closed as done. exit 1: it closed for another reason.
+# exit 2: the timeout, set here with --timeout (the default is 2h).
+borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
+```
+
+- `borant ps --queued` shows each queued spawn and why each host refused it,
+  for example `host-1: full (1/1)`. The hub stores the queue, so a queued
+  spawn survives a hub restart and starts on the next free slot.
+- `borant cancel <agent>` stops a running agent or cancels a queued spawn;
+  `--close-task <reason>` also closes the task it is bound to.
+- `borant logs <agent> [--follow]` prints the session log.
+- A worker bound to a task (`--task` or `--task-title`) stops when the task
+  closes (`--no-stop-on-close` keeps it), which frees its slot for the next
+  spawn.
+- A launch that does not register fails after `launch_timeout_secs` in
+  `[timing]` (default 90 s). The hub runs at most 3 launches for a spawn, then
+  the spawn waits for a person.
+- `borant inbox` lists the tasks that wait for a person, and `borant answer
+  <channel>/<id> <text>` answers one. Only the channel owner closes a task as
+  done.
+
 ## Projects
 
 A project is a named git repository in the hub. Add one from any machine
