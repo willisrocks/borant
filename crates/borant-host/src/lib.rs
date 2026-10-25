@@ -13,6 +13,7 @@ mod sessions;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,8 @@ pub(crate) struct Inner {
     pub outbox: Outbox,
     pub state: Mutex<State>,
     pub last_ok: Mutex<Instant>,
+    /// True while heartbeats fail, so a run of failures logs one `warn`.
+    pub heartbeat_failing: AtomicBool,
 }
 
 impl std::fmt::Debug for Inner {
@@ -209,6 +212,7 @@ impl Host {
                     restored: false,
                 }),
                 last_ok: Mutex::new(Instant::now()),
+                heartbeat_failing: AtomicBool::new(false),
             }),
         }
     }
@@ -270,8 +274,9 @@ impl Host {
             let req = CtlRequest::RegisterHost {
                 info: self.inner.cfg.info(),
             };
-            if self.hub(&req).await.is_ok() {
-                self.state().host_registered = true;
+            match self.hub(&req).await {
+                Ok(_) => self.state().host_registered = true,
+                Err(e) => self.heartbeat_failure("cannot register the host", &e),
             }
         }
         let refs = self.lease_refs();
@@ -304,6 +309,7 @@ impl Host {
                     let host = self.clone();
                     tokio::spawn(async move { host.stop_fenced(sid).await });
                 }
+                self.heartbeat_recovered();
             }
             Err(e) => {
                 self.state().host_registered = false;
@@ -313,11 +319,26 @@ impl Host {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .elapsed();
+                self.heartbeat_failure(&format!("hub unreachable for {since:?}"), &e);
                 if since > self.inner.cfg.lease {
-                    tracing::warn!("hub unreachable for {since:?}: {e}");
                     self.set_paused(true);
                 }
             }
+        }
+    }
+
+    /// Logs the first failure of a run at `warn`, and later ones at `debug`.
+    fn heartbeat_failure(&self, what: &str, e: &ApiError) {
+        if self.inner.heartbeat_failing.swap(true, Ordering::Relaxed) {
+            tracing::debug!("{what}: {e}");
+        } else {
+            tracing::warn!("{what}: {e}");
+        }
+    }
+
+    fn heartbeat_recovered(&self) {
+        if self.inner.heartbeat_failing.swap(false, Ordering::Relaxed) {
+            tracing::info!("hub reachable again");
         }
     }
 

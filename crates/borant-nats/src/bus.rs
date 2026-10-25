@@ -95,7 +95,9 @@ async fn take(agent: &AgentId, mut batch: pull::Batch, out: &mut Vec<Delivery>) 
             }),
             Err(e) => {
                 tracing::warn!(%agent, "drop bad envelope: {e}");
-                let _ = m.ack().await;
+                if let Err(e) = m.ack().await {
+                    tracing::warn!(%agent, "ack failed, the message can arrive again: {e}");
+                }
             }
         }
     }
