@@ -46,7 +46,7 @@ pub struct HubConfig {
     /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of
     /// `hub.toml`. `None`, or no pool, keeps today's hub.
     pub elastic: Option<ElasticConfig>,
-    /// The `[roles]` of `hub.toml`, for the placement rule of each role.
+    /// The roles from `hub.toml`, for spawns, calls, and registrations.
     pub roles: BTreeMap<RoleName, RoleConfig>,
 }
 

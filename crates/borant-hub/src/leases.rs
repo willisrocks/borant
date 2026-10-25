@@ -5,8 +5,11 @@ use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, RegisterSession, Registered, RenewedLease,
     SessionLeaseRef,
 };
+use borant_core::rules::roles::OnePer;
 use borant_core::rules::{lease, session_log, wake};
-use borant_core::{AgentId, FencingToken, HostName, SessionId, keys};
+use borant_core::{
+    AgentId, CollectionName, FencingToken, HostName, ProjectName, RoleName, SessionId, keys,
+};
 use serde_json::{Value, json};
 
 use crate::store::Doc;
@@ -119,6 +122,49 @@ impl Hub {
         Err(ApiError::internal("could not pick a free agent ID"))
     }
 
+    /// True when another agent of `role` already fills its `one_per` slot in
+    /// the same collection or project: a held or reserved lease, a pending
+    /// spawn, or a pin.
+    pub(crate) async fn role_taken(
+        &self,
+        mem: &Memory,
+        role: &RoleName,
+        one_per: OnePer,
+        collection: Option<&CollectionName>,
+        project: Option<&ProjectName>,
+        except: Option<&AgentId>,
+    ) -> Result<bool, ApiError> {
+        for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
+            let agent = doc.value;
+            if agent.role.as_ref() != Some(role) || except == Some(&agent.id) {
+                continue;
+            }
+            let same_scope = match one_per {
+                OnePer::Collection => agent.collection.as_ref() == collection,
+                OnePer::Project => agent.project.as_ref() == project,
+            };
+            if !same_scope {
+                continue;
+            }
+            if agent.pinned || mem.pending_moves.contains_key(&agent.id) {
+                return Ok(true);
+            }
+            let lease = self
+                .store
+                .get::<Lease>(&keys::lease_agent(&agent.id))
+                .await?;
+            if lease.as_ref().is_some_and(|l| {
+                matches!(
+                    l.value.state,
+                    LeaseState::Held { .. } | LeaseState::Reserved { .. }
+                )
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) async fn register_session(
         &self,
         mem: &mut Memory,
@@ -162,6 +208,69 @@ impl Hub {
                     "agent {agent_id} is pinned; only its current session can register"
                 )));
             }
+        }
+        // Roles and collections: keep the stored ones when the session sends
+        // none, refuse a change, and check one_per before the lease is taken
+        // or a membership is written.
+        let stored_role = existing.as_ref().and_then(|d| d.value.role.clone());
+        let stored_collection = existing.as_ref().and_then(|d| d.value.collection.clone());
+        if let Some(role) = &r.role
+            && stored_role.as_ref().is_some_and(|stored| stored != role)
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!(
+                    "agent {agent_id} has role {}",
+                    stored_role.as_ref().map(RoleName::as_str).unwrap_or("none")
+                ),
+            ));
+        }
+        if let Some(collection) = &r.collection
+            && stored_collection
+                .as_ref()
+                .is_some_and(|stored| stored != collection)
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!(
+                    "agent {agent_id} is in collection {}",
+                    stored_collection
+                        .as_ref()
+                        .map(CollectionName::as_str)
+                        .unwrap_or("none")
+                ),
+            ));
+        }
+        let role = r.role.clone().or(stored_role);
+        let collection = r.collection.clone().or(stored_collection);
+        let project = match existing.as_ref().and_then(|d| d.value.project.clone()) {
+            Some(p) => Some(p),
+            None => match &r.channel {
+                Some(c) => self.channel(c).await.ok().and_then(|ch| ch.value.project),
+                None => None,
+            },
+        };
+        if let Some(role) = &role
+            && let Some(one_per) = self.cfg.roles.get(role).and_then(|c| c.one_per)
+            && self
+                .role_taken(
+                    mem,
+                    role,
+                    one_per,
+                    collection.as_ref(),
+                    project.as_ref(),
+                    Some(&agent_id),
+                )
+                .await?
+        {
+            let scope = match one_per {
+                OnePer::Collection => "collection",
+                OnePer::Project => "project",
+            };
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("only one {role} per {scope}"),
+            ));
         }
         let new_lease = lease::acquire(
             &agent_id,
@@ -212,6 +321,8 @@ impl Hub {
         agent.host = Some(r.host.clone());
         agent.harness_session_id = r.harness_session_id.clone();
         agent.preferred_harness = r.harness;
+        agent.role = role;
+        agent.collection = collection;
         self.store.put(&agent_key, &agent, rev).await?;
 
         let session = Session {

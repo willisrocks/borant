@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
-use borant_core::rules::schema;
+use borant_core::rules::{roles, schema};
 use borant_core::{AgentId, ChannelName, ProjectName, keys, subjects};
 use serde_json::{Value, json};
 
@@ -13,6 +13,14 @@ use crate::{Hub, Memory};
 
 fn to_value<T: serde::Serialize>(v: &T) -> Result<Value, ApiError> {
     serde_json::to_value(v).map_err(|e| ApiError::internal(e.to_string()))
+}
+
+/// The tool name of a call, as `tools_deny` writes it: the MCP tool name.
+fn tool_name(call: &ToolCall) -> String {
+    serde_json::to_value(call)
+        .ok()
+        .and_then(|v| v.get("tool").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default()
 }
 
 impl Hub {
@@ -84,6 +92,15 @@ impl Hub {
         }
         let me = actor.as_ref().map(|a| a.agent.clone());
         let sender = me.clone().map_or(Sender::Human, Sender::Agent);
+        if let Some(who) = &me {
+            let agent = self.agent(who).await?;
+            let tool = tool_name(&call);
+            if !roles::may_call(agent.value.role.as_ref(), &tool, &self.cfg.roles) {
+                return Err(ApiError::denied(format!(
+                    "the role of {who} may not call {tool}"
+                )));
+            }
+        }
         match call {
             ToolCall::Whoami => {
                 let a = actor.ok_or_else(|| ApiError::invalid("whoami needs a session"))?;
@@ -232,13 +249,11 @@ impl Hub {
                 host,
                 name,
                 model,
-                // The role is wired in by the roles task; a spawn uses no role
-                // for now.
-                role: _,
+                role,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 let id = self
-                    .spawn(mem, &me, &channel, prompt, harness, host, name, model)
+                    .spawn(mem, &me, &channel, prompt, harness, host, name, model, role)
                     .await?;
                 Ok(json!({ "agent": id }))
             }
