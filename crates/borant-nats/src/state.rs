@@ -52,10 +52,7 @@ fn is_wrong_revision(e: &impl std::fmt::Display) -> bool {
 
 /// Turns a delivered KV message into an entry. The last message of a key can be
 /// a delete or purge marker, which holds no value.
-fn entry_from_message(
-    prefix: &str,
-    message: jetstream::Message,
-) -> PortResult<Option<Entry>> {
+fn entry_from_message(prefix: &str, message: jetstream::Message) -> PortResult<Option<Entry>> {
     if let Some(headers) = message.headers.as_ref() {
         let removed = headers
             .get("KV-Operation")
