@@ -79,6 +79,7 @@ impl Host {
                     busy: false,
                     fenced: None,
                     paused: false,
+                    wake_pending: false,
                     moving: false,
                     last_tree: None,
                     checkpointing: false,
@@ -289,7 +290,17 @@ impl Host {
 
     pub(crate) fn set_paused(&self, on: bool) {
         let mut st = self.state();
+        // A pause after a full recovery is a new outage: its sessions get one
+        // wake message when the hub is back. A pause during the same outage,
+        // which a flapping hub causes, does not.
+        let arm = on && st.outage_over;
+        if arm {
+            st.outage_over = false;
+        }
         for s in st.sessions.values_mut() {
+            if arm && s.fenced.is_none() {
+                s.wake_pending = true;
+            }
             if s.paused != on {
                 s.paused = on;
                 s.notify.notify_waiters();

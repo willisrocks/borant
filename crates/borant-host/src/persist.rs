@@ -120,6 +120,7 @@ impl Host {
                     busy: false,
                     fenced: s.fenced,
                     paused: false,
+                    wake_pending: false,
                     moving: false,
                     last_tree: None,
                     checkpointing: false,

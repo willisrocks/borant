@@ -30,6 +30,33 @@ async fn send(fx: &Fx, from: &borant_core::proto::LocalSession, to: Target, text
         .unwrap();
 }
 
+const HUB_BACK: &str = "Borant is back. Your tools work again. Continue your task.";
+
+/// Counts the hub-is-back messages in the session log of `agent`.
+async fn wake_messages(fx: &Fx, agent: &AgentId) -> usize {
+    fx.sessions
+        .read(agent)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|(_, e)| {
+            matches!(
+                &e.body,
+                SessionEventBody::SwarmMessage { envelope } if envelope.text == HUB_BACK
+            )
+        })
+        .count()
+}
+
+/// The reason the tools of a session are blocked, if any.
+async fn fence(fx: &Fx, session: SessionId) -> Option<String> {
+    fx.host
+        .event(session, LocalEvent::TurnStart)
+        .await
+        .unwrap()
+        .fenced
+}
+
 #[tokio::test]
 async fn register_when_hub_down_detaches_then_attaches() {
     let mut fx = Fx::new(false, |_| {}).await;
@@ -342,6 +369,72 @@ async fn no_heartbeat_for_lease_pauses_then_resumes() {
         .await
         .unwrap();
     assert_eq!(back.fenced, None);
+}
+
+#[tokio::test]
+async fn hub_return_wakes_paused_sessions_once() {
+    let mut fx = Fx::new(true, |c| c.lease = Duration::from_millis(300)).await;
+    let a = fx.session("a", "wa").await;
+    fx.host.heartbeat_once().await;
+
+    // The hub is gone for longer than the lease: the session pauses.
+    fx.hub_stop.take().unwrap().cancel();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
+
+    // A brief success is not a stable recovery: the tools work again, but
+    // the session is not woken into a hub that may go away again.
+    fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
+    fx.host.heartbeat_once().await;
+    assert_eq!(fence(&fx, a.session).await, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 0);
+
+    // The hub flaps: down past the lease again, then up.
+    fx.hub_stop.take().unwrap().cancel();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
+    fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
+    fx.host.heartbeat_once().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 0);
+
+    // One wake per session, once the hub stays reachable for a lease. The
+    // message goes through the normal delivery path.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    let woken = fx
+        .host
+        .wait(a.session, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(
+        woken.iter().any(|e| e.text == HUB_BACK),
+        "the session did not wake: {woken:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 1);
+
+    // A session that the pause did not catch gets nothing.
+    let b = fx.session("b", "wb").await;
+    fx.host.heartbeat_once().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(wake_messages(&fx, &agent("b")).await, 0);
+
+    // A new outage after the full recovery wakes every session once.
+    fx.hub_stop.take().unwrap().cancel();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
+    fx.host.heartbeat_once().await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 2);
+    assert_eq!(wake_messages(&fx, &agent("b")).await, 1);
+    assert_eq!(fence(&fx, b.session).await, None);
 }
 
 #[tokio::test]

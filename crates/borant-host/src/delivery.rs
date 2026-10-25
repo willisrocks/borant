@@ -135,6 +135,54 @@ impl Host {
         tracing::debug!(%agent, id = %env.id, wake, "message queued");
     }
 
+    /// Tells the sessions that a pause caught, and whose tools work again,
+    /// that the hub is back. The message goes to the agent inbox, so the
+    /// inbox loop logs and delivers it like any received message, and an idle
+    /// session wakes.
+    pub(crate) async fn wake_unpaused(&self) {
+        const TEXT: &str = "Borant is back. Your tools work again. Continue your task.";
+        let targets: Vec<(SessionId, AgentId)> = {
+            let mut st = self.state();
+            let mut targets = Vec::new();
+            for s in st.sessions.values_mut() {
+                if !s.wake_pending || s.paused {
+                    continue;
+                }
+                if s.fenced.is_some() {
+                    // The harness is told that it lost its lease instead.
+                    s.wake_pending = false;
+                    continue;
+                }
+                if let Some(reg) = &s.reg {
+                    targets.push((s.id, reg.agent.clone()));
+                }
+            }
+            targets
+        };
+        for (id, agent) in targets {
+            let env = Envelope {
+                id: MessageId::new(),
+                from: Sender::Human,
+                to: Target::Agent(agent.clone()),
+                kind: EnvelopeKind::Direct,
+                text: TEXT.to_owned(),
+                urgent: false,
+                event: None,
+                sent: self.inner.clock.now(),
+            };
+            match self.inner.bus.publish(&subjects::agent(&agent), &env).await {
+                Ok(()) => {
+                    if let Some(s) = self.state().sessions.get_mut(&id) {
+                        s.wake_pending = false;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(%agent, "cannot send the hub-is-back message yet: {e}");
+                }
+            }
+        }
+    }
+
     /// Takes every queued message of a session and logs the deliveries.
     pub(crate) async fn drain(&self, id: SessionId) -> Vec<Envelope> {
         let (agent, msgs) = {
