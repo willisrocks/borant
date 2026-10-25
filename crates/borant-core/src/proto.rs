@@ -565,6 +565,11 @@ pub enum HostCommand {
     Park {
         session: SessionId,
     },
+    /// Deletes the work dir of a retired agent, so its clone does not fill the
+    /// disk. The host keeps it while a session of the agent runs there.
+    DeleteWork {
+        agent: AgentId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

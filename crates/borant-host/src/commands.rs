@@ -82,6 +82,41 @@ impl Host {
                 self.end_session(session, "stopped by the hub").await;
             }
             HostCommand::Park { session } => self.park(session).await,
+            HostCommand::DeleteWork { agent } => self.delete_work(&agent).await,
+        }
+    }
+
+    /// Deletes the work dir of an agent that the hub retired, when no local
+    /// session of the agent runs here. The clone is the biggest thing that an
+    /// agent leaves behind, so this is what keeps a host's disk from filling.
+    /// Public for tests.
+    pub async fn delete_work(&self, agent: &AgentId) {
+        let live = {
+            let st = self.state();
+            st.sessions.values().any(|s| {
+                s.agent_hint.as_ref() == Some(agent)
+                    || s.reg.as_ref().is_some_and(|r| &r.agent == agent)
+            })
+        };
+        if live {
+            tracing::info!(%agent, "keeping the work dir: a session of the agent runs here");
+            return;
+        }
+        let dir = self.inner.cfg.home.join("work").join(agent.as_str());
+        if !dir.is_dir() {
+            return;
+        }
+        let freed = dir_size(&dir).await;
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => tracing::info!(
+                %agent,
+                freed_mb = freed / (1024 * 1024),
+                dir = %dir.display(),
+                "deleted the work dir of a retired agent"
+            ),
+            Err(e) => {
+                tracing::warn!(%agent, dir = %dir.display(), "cannot delete the work dir: {e}")
+            }
         }
     }
 
@@ -418,6 +453,29 @@ impl Notifier for DesktopNotifier {
             Err(e) => Err(PortError::other(e.to_string())),
         }
     }
+}
+
+/// The bytes of a directory tree, for the log of a deleted work dir. A tree
+/// that shrinks or vanishes while we walk it counts what it counted.
+async fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&next).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
 }
 
 fn apple_string(s: &str) -> String {

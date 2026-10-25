@@ -64,6 +64,12 @@ impl Hub {
             self.stop_session(mem, &agent.id, report.session, &report.host)
                 .await?;
         }
+        // The clone is the biggest thing a retired agent leaves behind, but
+        // the host deletes it only when no session of the agent runs there.
+        // The heartbeat sends the order once the session is gone.
+        if let Some(host) = &agent.host {
+            mem.delete_pending.insert(agent.id.clone(), host.clone());
+        }
         Ok(())
     }
 
@@ -88,6 +94,33 @@ impl Hub {
             }
             self.stop_session(mem, &s.agent, s.session, host).await?;
         }
+        // A retired agent whose session the host no longer reports has ended
+        // it, so its work dir can go.
+        let waiting: Vec<AgentId> = mem
+            .delete_pending
+            .iter()
+            .filter(|(agent, at)| *at == host && !sessions.iter().any(|s| s.agent == **agent))
+            .map(|(agent, _)| agent.clone())
+            .collect();
+        for agent in waiting {
+            self.delete_work(host, &agent).await?;
+            mem.delete_pending.remove(&agent);
+        }
+        Ok(())
+    }
+
+    /// Tells the host to delete the work dir of a retired agent. The host
+    /// deletes it only when no session of the agent runs there, so this is
+    /// safe to send before a session has ended.
+    async fn delete_work(&self, host: &HostName, agent: &AgentId) -> Result<(), ApiError> {
+        let payload = serde_json::to_vec(&HostCommand::DeleteWork {
+            agent: agent.clone(),
+        })
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        self.bus
+            .send(&subjects::host_cmd(host), payload.into())
+            .await?;
+        tracing::info!(%agent, %host, "delete-work order sent for a retired agent");
         Ok(())
     }
 

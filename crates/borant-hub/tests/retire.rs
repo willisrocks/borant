@@ -119,6 +119,17 @@ impl Fx {
         .unwrap();
     }
 
+    /// A heartbeat after the session ended: the host reports no session.
+    async fn heartbeat_empty(&self, host: &str) {
+        self.req(CtlRequest::HostHeartbeat {
+            host: host.parse().unwrap(),
+            sessions: Vec::new(),
+            stats: None,
+        })
+        .await
+        .unwrap();
+    }
+
     async fn commands(&self, host: &str) -> futures::stream::BoxStream<'static, HostCommand> {
         let host: HostName = host.parse().unwrap();
         self.bus
@@ -319,6 +330,41 @@ async fn retire_an_idle_session_stops_at_once() {
     // A later turn end does not send a second stop.
     fx.heartbeat("h1", &w, Some(now)).await;
     assert!(next_cmd(&mut cmds).await.is_none());
+}
+
+/// The work dir of a retired agent goes only after its session ended: the
+/// stop first, and the delete from a heartbeat that no longer reports it.
+#[tokio::test]
+async fn retire_deletes_the_work_dir_only_after_the_session_ended() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    let now = fx.now();
+    fx.heartbeat("h1", &w, Some(now)).await;
+    close(&fx, &owner, &bound).await;
+
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop first, got {other:?}"),
+    }
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "no delete before the session ends"
+    );
+    // The host still reports the session, so the clone stays.
+    fx.heartbeat("h1", &w, Some(now)).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "the session is there");
+
+    // The session ended: one delete for the agent, and only one.
+    fx.heartbeat_empty("h1").await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::DeleteWork { agent }) => assert_eq!(agent, w.agent),
+        other => panic!("expected a delete-work order, got {other:?}"),
+    }
+    fx.heartbeat_empty("h1").await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "one delete for the agent"
+    );
 }
 
 /// A retired worker is never placed again: no takeover, no wake, no move.

@@ -606,6 +606,8 @@ pub struct AlertsFile {
     pub host_offline_minutes: Option<u64>,
     /// Minutes without a heartbeat before the hub counts as down.
     pub hub_down_minutes: Option<u64>,
+    /// A host whose disk is this full gets the `host_disk` alert.
+    pub disk_warn_pct: Option<u8>,
 }
 
 impl AlertsFile {
@@ -635,6 +637,7 @@ impl AlertsFile {
             stall_minutes: self.stall_minutes.unwrap_or(d.stall_minutes),
             host_offline_minutes: self.host_offline_minutes.unwrap_or(d.host_offline_minutes),
             hub_down_minutes: self.hub_down_minutes.unwrap_or(d.hub_down_minutes),
+            disk_warn_pct: self.disk_warn_pct.unwrap_or(d.disk_warn_pct),
         }
     }
 }

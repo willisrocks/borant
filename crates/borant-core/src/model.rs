@@ -792,6 +792,9 @@ pub struct HostStats {
     /// The free space of the disk that holds `BORANT_HOME`, in megabytes.
     #[serde(default)]
     pub disk_avail_mb: Option<u64>,
+    /// How full that disk is, as a percentage from 0 to 100.
+    #[serde(default)]
+    pub disk_used_pct: Option<f64>,
     #[serde(default)]
     pub outbox_depth: u64,
     /// The round trip of the previous heartbeat, in milliseconds.

@@ -36,6 +36,7 @@ async fn heartbeat_with_stats(fx: &Fx, host: &str, load1: f64, session: SessionS
         mem_used_pct: 12.5,
         mem_avail_mb: None,
         disk_avail_mb: None,
+        disk_used_pct: None,
         outbox_depth: 0,
         last_heartbeat_rtt_ms: Some(3),
         nats_reconnects: 1,

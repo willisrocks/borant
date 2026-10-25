@@ -613,6 +613,7 @@ impl Host {
             mem_used_pct,
             mem_avail_mb: Some(system.available_memory() / (1024 * 1024)),
             disk_avail_mb: disk_avail_mb(&self.inner.cfg.home),
+            disk_used_pct: disk_used_pct(&self.inner.cfg.home),
             outbox_depth,
             last_heartbeat_rtt_ms,
             // The bus port has no reconnect counter yet.
@@ -899,6 +900,24 @@ pub(crate) fn terminate(pid: u32) {
     }
 }
 
+/// How full the file system that holds `path` is, as a percentage, from the
+/// longest mount point that contains it. `None` when no disk matches, so an
+/// unknown disk passes every rule that reads it.
+fn disk_used_pct(path: &Path) -> Option<f64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk = disks
+        .list()
+        .iter()
+        .filter(|d| path.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())?;
+    let total = disk.total_space();
+    if total == 0 {
+        return None;
+    }
+    let used = total.saturating_sub(disk.available_space());
+    Some((used as f64 / total as f64) * 100.0)
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;
@@ -932,6 +951,9 @@ mod stats_tests {
         assert!(mem > 0, "{mem} MB free");
         let disk = stats.disk_avail_mb.expect("the free disk of BORANT_HOME");
         assert!(disk > 0, "{disk} MB free");
+        // The disk guard reads this one.
+        let used = stats.disk_used_pct.expect("how full the disk is");
+        assert!((0.0..=100.0).contains(&used), "{used}% used");
     }
 
     #[test]
