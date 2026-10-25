@@ -121,11 +121,7 @@ pub async fn state_store_key_rules(store: &dyn StateStore) {
     // The KV takes `.`-separated tokens of letters, digits, `-`, `_`, `/`, and
     // `=`; an empty token, `:`, a space, or a wildcard is refused.
     let refused = ["a:b", ".a", "a.", "a..b", "a b", "", "a*", "a>"];
-    let accepted = [
-        "agent.a1",
-        "alert.members_limited.fake-auth",
-        "x/y=z_-",
-    ];
+    let accepted = ["agent.a1", "alert.members_limited.fake-auth", "x/y=z_-"];
 
     for key in refused {
         if let Ok(rev) = store.create(key, Bytes::from_static(b"refused")).await {

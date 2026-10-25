@@ -25,6 +25,13 @@ async fn state_store_contract() {
 }
 
 #[tokio::test]
+async fn key_rules() {
+    if let Some(n) = nats().await {
+        testing::state_store_key_rules(&n.state()).await;
+    }
+}
+
+#[tokio::test]
 async fn message_bus_contract() {
     if let Some(n) = nats().await {
         testing::message_bus_contract(&n.bus()).await;
