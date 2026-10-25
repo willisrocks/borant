@@ -36,13 +36,17 @@ them differently.
 1. `whoami`. Note your agent ID and the collection; orchestrators send to it.
 2. `project_list` and `channel_list`. Note the projects of the collection and which
    channels of the collection exist.
-3. `members` on each project channel. Note the orchestrator that is online there, if
+3. `channel_join` each existing project channel of the collection that you are not in
+   yet. Task events reach you only for the channels you are a member of, so a channel
+   you skip is a project you cannot see.
+4. `members` on each project channel. Note the orchestrator that is online there, if
    any, and the tasks that are open, stuck, or need a human.
-4. Note the standing permissions the person gave, in their words: merges, releases,
+5. Note the standing permissions the person gave, in their words: merges, releases,
    deploys, spend, and anything that needs a person. Put them in every brief.
-5. For each project without a live orchestrator: create its channel if it has none
+6. For each project without a live orchestrator: create its channel if it has none
    (`channel_create` with the project, its base `branch`, and the
-   `<collection>-<project>` name), then spawn one orchestrator with the brief below.
+   `<collection>-<project>` name), join it, then spawn one orchestrator with the brief
+   below.
 
 ## Orchestrator brief
 
@@ -71,8 +75,12 @@ change to CI, secrets, releases, or infrastructure.
   the options, and your suggested default, then relay the answer as a direct message.
 - **A task is stuck:** read `attention_msg`. Suggest a rewrite, a split, or a stronger
   role, and tell the orchestrator. After two failed tries, bring it to the person.
-- **A task needs a human:** whether the person decides or you can answer from the
-  standing permissions, never guess a product decision.
+- **A task needs a human - your main duty:** read its `attention_msg`. If the
+  person's standing permissions already answer it, answer the orchestrator with `send`
+  and `task_update(status: "open")`, naming the permission you used. Otherwise bring
+  it to the person in this session with the background, the options, and a suggested
+  default, then relay the answer as a direct message and set the task back to `open`.
+  Never guess a product decision.
 - **An orchestrator goes quiet:** `members` for `online` and the host. If it is
   moving, wait. If it is gone, spawn one replacement for the project, with the same
   goal and the tasks that are still open.
