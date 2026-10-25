@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use borant_core::model::{
-    CloseReason, Harness, HostInfo, NewTask, SpawnRecord, SpawnState, Task, TaskBinding, TaskStatus,
+    Agent, CloseReason, Harness, HostInfo, NewTask, Sender, SpawnRecord, SpawnState, Task,
+    TaskBinding, TaskStatus,
 };
 use borant_core::ports::StateStore;
 use borant_core::proto::{Actor, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
@@ -548,4 +549,87 @@ async fn spawns_the_queue_lists_the_placement_order() {
     assert_eq!(rows[0]["spec"]["channel"], serde_json::json!("api"));
     let reject = rows[0]["last_reject"].as_str().expect("a reject line");
     assert!(reject.starts_with("h1: full"), "{reject}");
+}
+
+async fn read_agent(fx: &Fx, id: &AgentId) -> Agent {
+    let doc = fx
+        .state
+        .get(&keys::agent(id))
+        .await
+        .expect("read the agent")
+        .expect("the agent");
+    serde_json::from_slice(&doc.value).expect("an agent")
+}
+
+/// A person spawns from a shell with no session: the hub takes the call with no
+/// actor, gives the agent the collection of the channel, and queues it.
+#[tokio::test]
+async fn a_person_spawns_from_the_cli() {
+    let fx = Fx::new();
+    host(&fx, "h1", 1).await;
+    // The creator holds the only slot, and its collection owns the channel.
+    let owner = fx
+        .register_in("h1", Some("boss"), None, Some("personal"))
+        .await;
+    let channel: ChannelName = "personal-api".parse().unwrap();
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: channel.clone(),
+            schema: None,
+            project: None,
+            branch: None,
+        },
+    )
+    .await
+    .expect("create the channel");
+    let person = |harness: Option<Harness>, key: Option<&str>| CtlRequest::Call {
+        actor: None,
+        key: key.map(str::to_owned),
+        call: ToolCall::Spawn {
+            channel: channel.clone(),
+            prompt: "from a shell".into(),
+            harness,
+            host: None,
+            name: Some("from-cli".parse().unwrap()),
+            model: None,
+            role: None,
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
+        },
+    };
+
+    // Without a role, a person's spawn must name its harness.
+    let err = fx
+        .req(person(None, None))
+        .await
+        .expect_err("a person needs a harness");
+    assert_eq!(err.code, ApiErrorCode::Invalid, "{err}");
+    assert!(err.message.contains("needs a harness"), "{err}");
+
+    let spawned = fx
+        .req(person(Some(Harness::Fake), Some("cli-1")))
+        .await
+        .expect("a person spawns");
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+    let agent = read_agent(&fx, &"from-cli".parse().unwrap()).await;
+    assert_eq!(
+        agent.collection.as_ref().map(|c| c.as_str()),
+        Some("personal"),
+        "a person's spawn takes the collection of its channel"
+    );
+    assert!(agent.parent.is_none(), "a person's spawn has no parent");
+    assert_eq!(
+        record(&fx, &agent.id).await.unwrap().by,
+        Sender::Human,
+        "the record names the person"
+    );
+    // And the key still makes a retry the same spawn.
+    let again = fx
+        .req(person(Some(Harness::Fake), Some("cli-1")))
+        .await
+        .expect("the retry");
+    assert_eq!(again["agent"]["agent"], serde_json::json!(agent.id));
 }
