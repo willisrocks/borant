@@ -1,11 +1,12 @@
 //! Launcher adapters for the [`Launcher`] port: a detached process, tmux,
 //! zellij, Orca, and herdr. [`harness::command`] builds the program for each
-//! harness.
+//! harness, and [`sandbox::wrap`] puts the bubblewrap sandbox in front of it.
 
 pub mod harness;
 pub mod herdr;
 mod orca;
 mod process;
+pub mod sandbox;
 mod tmux;
 mod zellij;
 
@@ -18,6 +19,7 @@ use borant_core::ports::{LaunchHandle, Launcher, PortError, PortResult};
 pub use herdr::{HerdrConfig, HerdrLauncher};
 pub use orca::OrcaLauncher;
 pub use process::ProcessLauncher;
+pub use sandbox::{SandboxPlan, wrap};
 pub use tmux::TmuxLauncher;
 pub use zellij::ZellijLauncher;
 

@@ -10,6 +10,7 @@ mod delivery;
 mod hub_down;
 pub mod outbox;
 mod persist;
+pub mod sandbox;
 mod secrets;
 mod sessions;
 
@@ -39,6 +40,7 @@ use tokio_util::sync::CancellationToken;
 use crate::checkpoint::RepoFacts;
 use crate::hub_down::{HubAlert, HubDownWatch};
 use crate::outbox::Outbox;
+pub use crate::sandbox::SandboxConfig;
 use crate::secrets::{LaunchSecrets, Redactor};
 
 pub use client::LocalClient;
@@ -79,6 +81,9 @@ pub struct HostConfig {
     pub hub_down: Duration,
     /// The local API socket, if not `{home}/host.sock`.
     pub socket: Option<PathBuf>,
+    /// `[sandbox]` of `host.toml`, when this host offers one. The start check
+    /// clears it if the program cannot sandbox.
+    pub sandbox: Option<SandboxConfig>,
     /// The opened secret stores and bundles, from `[secrets]` in `host.toml`.
     pub secrets: Option<HostSecrets>,
     /// Where the secret directories go: `/run/borant/agents` on Linux and
@@ -111,6 +116,7 @@ impl HostConfig {
             watch_hub: false,
             hub_down: Duration::from_secs(120),
             socket: None,
+            sandbox: None,
             secrets: None,
             secrets_root: None,
         }
@@ -144,7 +150,12 @@ impl HostConfig {
                 .map(|s| s.bundles.keys().cloned().collect())
                 .unwrap_or_default(),
             reserve_mem_mb: Some(self.reserve_mem_mb),
-            sandboxes: Vec::new(),
+            // The sandbox kind is what `[sandbox]` enables, once the start
+            // check passed.
+            sandboxes: match self.sandbox {
+                Some(_) => vec![borant_core::model::SandboxKind::Namespace],
+                None => Vec::new(),
+            },
         }
     }
 }
