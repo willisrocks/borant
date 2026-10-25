@@ -454,6 +454,7 @@ impl Hub {
                 windows,
             } => self.usage_report(mem, bundle, member, windows).await,
             ToolCall::ListMembers => self.list_members(mem).await,
+            ToolCall::Schedules => self.schedules().await,
             // `Hub::handle` routes a view before it takes the request mutex,
             // because the view reads every key and inbox.
             ToolCall::View => Err(ApiError::internal(
