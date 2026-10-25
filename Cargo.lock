@@ -341,6 +341,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
