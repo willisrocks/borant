@@ -260,6 +260,10 @@ fn detail(event: &SwarmEvent) -> String {
         },
         B::AgentPaused { by, why } => format!("by {by}: {why}"),
         B::AgentResumed => String::new(),
+        B::ChannelOwner { previous, owner } => match owner {
+            Some(owner) => format!("{previous} -> {owner}"),
+            None => format!("{previous} -> no owner"),
+        },
         B::ChangeUpdated {
             state,
             head,

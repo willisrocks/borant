@@ -114,7 +114,11 @@ impl Hub {
         }
 
         let Some(claimer) = doc.value.claimed_by.clone() else {
-            let owner = ch.value.owner.clone();
+            let Some(owner) = ch.value.owner.clone() else {
+                return Err(ApiError::invalid(format!(
+                    "#{channel} has no owner to send the answer to"
+                )));
+            };
             self.tell(&owner, &text).await?;
             return Ok(json!({
                 "task": doc.value,

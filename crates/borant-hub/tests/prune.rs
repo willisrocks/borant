@@ -239,7 +239,7 @@ async fn prune_keeps_a_channel_owner() {
     let id = seed(&fx, "old", None, old(&fx)).await;
     let channel = Channel {
         name: api(),
-        owner: id.clone(),
+        owner: Some(id.clone()),
         schema: json!({}),
         created: Timestamp(1),
         closed: None,

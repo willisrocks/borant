@@ -170,11 +170,10 @@ impl Hub {
         // The owner hears that the checks pass, once per head.
         let pass = matches!(status.checks, CheckState::Pass { .. });
         if !watched.told_green && pass && status.state == ChangeState::Open {
-            self.say(
-                &channel.owner,
-                &format!("PR {url} green at {}", short(head)),
-            )
-            .await;
+            if let Some(owner) = &channel.owner {
+                self.say(owner, &format!("PR {url} green at {}", short(head)))
+                    .await;
+            }
             watched.told_green = true;
         }
         // The owner hears about a merge or a close, once.
@@ -183,11 +182,10 @@ impl Hub {
                 ChangeState::Merged => "merged",
                 _ => "closed without a merge",
             };
-            self.say(
-                &channel.owner,
-                &format!("PR {url} {what} at {}", short(head)),
-            )
-            .await;
+            if let Some(owner) = &channel.owner {
+                self.say(owner, &format!("PR {url} {what} at {}", short(head)))
+                    .await;
+            }
             watched.told_done = true;
         }
         watched.last = Some(status.clone());

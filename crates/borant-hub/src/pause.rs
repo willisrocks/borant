@@ -492,7 +492,7 @@ impl Hub {
     async fn owns_channel(&self, actor: &AgentId, name: &ChannelName) -> bool {
         self.channel(name)
             .await
-            .map(|doc| doc.value.owner == *actor)
+            .map(|doc| doc.value.owner.as_ref() == Some(actor))
             .unwrap_or(false)
     }
 

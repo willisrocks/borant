@@ -165,7 +165,7 @@ impl Fx {
             let name = channel(c);
             let chan = Channel {
                 name: name.clone(),
-                owner: agent(c),
+                owner: Some(agent(c)),
                 schema: serde_json::json!({}),
                 created: now,
                 closed: None,

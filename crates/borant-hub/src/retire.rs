@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use borant_core::TaskId;
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::Agent;
+use borant_core::model::{Agent, Channel};
 use borant_core::proto::{ApiError, HostCommand, SessionLeaseRef};
 use borant_core::{AgentId, ChannelName, HostName, SessionId, Timestamp, keys, subjects};
 
@@ -80,6 +80,37 @@ impl Hub {
         let mut saved = agent.clone();
         saved.retired = true;
         self.store.upsert(&keys::agent(&agent.id), &saved).await?;
+        // A channel that this agent owned passes to the agent that spawned
+        // it, when that agent is alive and not retired. With no heir the
+        // channel has no owner, so an orchestrator, a chief, or a person can
+        // take it. One event per channel says who owns it now.
+        let heir = self.owner_heir(agent).await?;
+        let owned: Vec<(String, Channel, u64)> = self
+            .store
+            .list::<serde_json::Value>(keys::CHANNEL_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|d| d.key.matches('.').count() == 1)
+            .filter_map(|d| {
+                let ch = serde_json::from_value::<Channel>(d.value).ok()?;
+                (ch.owner.as_ref() == Some(&agent.id)).then_some((d.key, ch, d.revision))
+            })
+            .collect();
+        for (key, mut ch, revision) in owned {
+            ch.owner = heir.clone();
+            self.store.put(&key, &ch, Some(revision)).await?;
+            let event = self
+                .event(
+                    now,
+                    Severity::Info,
+                    SwarmEventBody::ChannelOwner {
+                        previous: agent.id.clone(),
+                        owner: ch.owner.clone(),
+                    },
+                )
+                .about_channel(ch.name.clone());
+            Self::queue(mem, event);
+        }
         // A retired agent has no demand: no pool host is created for it.
         mem.pending_moves.remove(&agent.id);
         tracing::info!(agent = %agent.id, claims = released, "agent retired with its bound task");
@@ -124,6 +155,18 @@ impl Hub {
             mem.delete_pending.insert(agent.id.clone(), host.clone());
         }
         Ok(stopped)
+    }
+
+    /// The agent that takes over the channels of a retired owner: its
+    /// spawner, when that agent is still here and not retired itself.
+    async fn owner_heir(&self, agent: &Agent) -> Result<Option<AgentId>, ApiError> {
+        let Some(parent) = &agent.parent else {
+            return Ok(None);
+        };
+        let Some(doc) = self.store.get::<Agent>(&keys::agent(parent)).await? else {
+            return Ok(None);
+        };
+        Ok((!doc.value.retired).then(|| parent.clone()))
     }
 
     /// Stops the sessions of retired agents that are not busy, or that the hub
