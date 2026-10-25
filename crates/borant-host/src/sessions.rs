@@ -174,7 +174,7 @@ impl Host {
         let agent = reg.agent.clone();
         let cancel = {
             let mut st = self.state();
-            let launch = st.pending_launch.remove(&agent);
+            let launch = st.pending_launch.remove(&agent).map(|p| p.handle);
             let Some(s) = st.sessions.get_mut(&id) else {
                 return true;
             };
