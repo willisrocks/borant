@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>borant</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --fg: #12161c;
+    --muted: #5b6472;
+    --border: #d8dde5;
+    --accent: #2563eb;
+    --open: #2563eb;
+    --progress: #0f9d58;
+    --human: #d97706;
+    --stuck: #dc2626;
+    --closed: #6b7280;
+    --ok: #0f9d58;
+    --warn: #d97706;
+    --err: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #161a21;
+      --fg: #e6e9ef;
+      --muted: #98a2b3;
+      --border: #2a303a;
+      --accent: #60a5fa;
+      --open: #60a5fa;
+      --progress: #34d399;
+      --human: #fbbf24;
+      --stuck: #f87171;
+      --closed: #9ca3af;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  header {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 14px 12px 0;
+  }
+  header h1 {
+    display: inline;
+    margin: 0 8px 0 0;
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+  #status { font-size: 12px; }
+  #status.bad { color: var(--err); }
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 10px 12px 24px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .panel {
+    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px 12px;
+  }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+  .row:first-child { border-top: 0; padding-top: 0; }
+  .rowhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+  .name { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--closed); }
+  .badge {
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.err { color: var(--err); border-color: var(--err); }
+  .badge.open, .badge.progress, .badge.human, .badge.stuck, .badge.closed { border-color: currentColor; }
+  .badge.open { color: var(--open); }
+  .badge.progress { color: var(--progress); }
+  .badge.human { color: var(--human); }
+  .badge.stuck { color: var(--stuck); }
+  .badge.closed { color: var(--closed); }
+  .graph-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    min-width: 0;
+  }
+  .graph-head label { font-size: 12px; color: var(--muted); }
+  .graph-head select {
+    min-width: 0;
+    max-width: 100%;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 6px;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .stages {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 6px;
+    align-items: start;
+  }
+  .stage { min-width: 0; }
+  .stage h3 {
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .cards { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .card {
+    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--closed);
+    border-radius: 6px;
+    padding: 6px 7px;
+    overflow-wrap: anywhere;
+  }
+  .card.open { border-left-color: var(--open); }
+  .card.in_progress { border-left-color: var(--progress); }
+  .card.needs_human { border-left-color: var(--human); }
+  .card.stuck { border-left-color: var(--stuck); }
+  .card.closed { border-left-color: var(--closed); }
+  .card .title { font-size: 12px; line-height: 1.3; }
+  .card .claimer { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .card.closed .title { color: var(--muted); }
+  .ev .time { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+  .ev .kind { font-size: 12px; overflow-wrap: anywhere; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px 10px 20px; }
+    header { padding: 12px 10px 0; }
+    .panel { padding: 9px 10px 10px; }
+    .panel.wide { grid-column: auto; }
+  }
+  @media (max-width: 520px) {
+    body { font-size: 13px; }
+    .stages { gap: 4px; }
+    .stage h3 { font-size: 10px; }
+    .card { padding: 4px 5px; }
+    .card .title { font-size: 11px; }
+    .card .claimer { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>borant</h1>
+  <span id="status" class="meta">connecting&hellip;</span>
+</header>
+<main>
+  <section class="panel" id="panel-hosts">
+    <h2>Hosts</h2>
+    <div class="rows" id="hosts"></div>
+  </section>
+  <section class="panel" id="panel-agents">
+    <h2>Agents</h2>
+    <div class="rows" id="agents"></div>
+  </section>
+  <section class="panel wide" id="panel-graph">
+    <h2>Task graph</h2>
+    <div class="graph-head">
+      <label for="channel">channel</label>
+      <select id="channel"></select>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="stages" id="stages"></div>
+  </section>
+  <section class="panel wide" id="panel-events">
+    <h2>Events</h2>
+    <div class="rows" id="events"></div>
+  </section>
+</main>
+<script>
+"use strict";
+
+// Read-only page: it only calls GET routes and keeps no server state. The
+// graph of the chosen channel and the whole snapshot refresh every 5 s; the
+// event timeline follows /api/events and keeps the newest 50.
+
+const POLL_MS = 5000;
+const CHANNELS_MS = 30000;
+const TIMELINE_MAX = 50;
+const STATUSES = ["open", "in_progress", "needs_human", "stuck", "closed"];
+
+const state = {
+  snapshot: null,
+  channels: [],
+  channel: null,
+  graph: null,
+  events: [],
+  seen: new Set(),
+  busy: false,
+  demo: false,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function clear(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function setStatus(text, bad) {
+  const node = $("status");
+  node.textContent = text;
+  node.classList.toggle("bad", !!bad);
+}
+
+function clock(ms) {
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function plain(status) {
+  return String(status || "unknown").replace(/_/g, " ");
+}
+
+function pct(value) {
+  return typeof value === "number" && isFinite(value) ? value.toFixed(0) + "%" : "?";
+}
+
+function gb(mb) {
+  return typeof mb === "number" && isFinite(mb) ? (mb / 1024).toFixed(1) + " GB" : "?";
+}
+
+function num(value, digits) {
+  return typeof value === "number" && isFinite(value) ? value.toFixed(digits || 0) : "?";
+}
+
+function short(id) {
+  const text = String(id || "");
+  return text.length > 12 ? text.slice(-8) : text;
+}
+
+function meta(parts) {
+  return parts.filter((p) => p !== null && p !== undefined && p !== "").join(" · ");
+}
+
+function inboxFor(agent) {
+  const hit = (state.snapshot && state.snapshot.inboxes || []).find((i) => i.agent === agent);
+  return hit && hit.stats ? hit.stats : null;
+}
+
+function agentsOn(host) {
+  return ((state.snapshot && state.snapshot.agents) || []).filter((a) => a.host === host);
+}
+
+function leaseState(agent) {
+  return agent && agent.lease && agent.lease.state ? agent.lease.state : null;
+}
+
+function leaseClass(lease) {
+  if (lease === "held") return "ok";
+  if (lease === "reserved") return "warn";
+  if (lease === "expired") return "err";
+  return "";
+}
+
+function renderHosts(snapshot) {
+  const box = $("hosts");
+  clear(box);
+  const hosts = (snapshot && snapshot.hosts) || [];
+  if (!hosts.length) {
+    box.appendChild(el("p", "empty", "no hosts"));
+    return;
+  }
+  hosts.forEach((host) => {
+    const info = host.info || {};
+    const stats = host.stats || {};
+    const live = agentsOn(info.name).length;
+    const row = el("div", "row");
+    const head = el("div", "rowhead");
+    head.appendChild(el("span", "name", info.name || "?"));
+    head.appendChild(el("span", "dot " + (host.online ? "on" : "off")));
+    head.appendChild(el("span", "meta", host.online ? "online" : "offline"));
+    head.appendChild(el("span", "badge", live + "/" + (info.max_agents || 0) + " agents"));
+    row.appendChild(head);
+    row.appendChild(el("div", "meta", meta([
+      "load " + num(stats.load1, 2) + (stats.cpus ? "/" + stats.cpus : ""),
+      "mem " + pct(stats.mem_used_pct) + (stats.mem_avail_mb !== undefined && stats.mem_avail_mb !== null ? " (" + gb(stats.mem_avail_mb) + " free)" : ""),
+      "disk " + pct(stats.disk_used_pct) + (stats.disk_avail_mb !== undefined && stats.disk_avail_mb !== null ? " (" + gb(stats.disk_avail_mb) + " free)" : ""),
+    ])));
+    box.appendChild(row);
+  });
+}
+
+function renderAgents(snapshot) {
+  const box = $("agents");
+  clear(box);
+  const agents = ((snapshot && snapshot.agents) || []).slice().sort((a, b) => String(a.agent).localeCompare(String(b.agent)));
+  if (!agents.length) {
+    box.appendChild(el("p", "empty", "no agents"));
+    return;
+  }
+  agents.forEach((agent) => {
+    const lease = leaseState(agent);
+    const box2 = inboxFor(agent.agent);
+    const row = el("div", "row");
+    const head = el("div", "rowhead");
+    head.appendChild(el("span", "name", agent.agent));
+    head.appendChild(el("span", "badge " + leaseClass(lease), lease ? lease : "no lease"));
+    if (agent.busy) head.appendChild(el("span", "badge", "busy"));
+    if (agent.retired) head.appendChild(el("span", "badge", "retired"));
+    if (agent.pinned) head.appendChild(el("span", "badge", "pinned"));
+    row.appendChild(head);
+    row.appendChild(el("div", "meta", meta([
+      agent.host ? "host " + agent.host : "host none",
+      agent.role ? "role " + agent.role : "role none",
+      box2 ? "inbox " + box2.pending + " pending" + (box2.redelivered ? ", " + box2.redelivered + " redelivered" : "") : "inbox 0 pending",
+      agent.claim ? "claim " + short(agent.claim) : null,
+    ])));
+    box.appendChild(row);
+  });
+}
+
+function renderLegend() {
+  const box = $("legend");
+  clear(box);
+  STATUSES.forEach((status) => {
+    box.appendChild(el("span", "badge " + status, plain(status)));
+  });
+}
+
+function renderGraph(graph) {
+  const box = $("stages");
+  clear(box);
+  const tasks = (graph && graph.tasks) || [];
+  if (!tasks.length) {
+    box.appendChild(el("p", "empty", state.channel ? "no tasks in " + state.channel : "no channel"));
+    return;
+  }
+  const byStage = new Map();
+  tasks.forEach((task) => {
+    const stage = typeof task.stage === "number" ? task.stage : 0;
+    if (!byStage.has(stage)) byStage.set(stage, []);
+    byStage.get(stage).push(task);
+  });
+  Array.from(byStage.keys()).sort((a, b) => a - b).forEach((stage) => {
+    const column = el("div", "stage");
+    column.appendChild(el("h3", null, "stage " + stage));
+    const cards = el("div", "cards");
+    byStage.get(stage).forEach((task) => {
+      const status = STATUSES.indexOf(task.status) >= 0 ? task.status : "closed";
+      const card = el("div", "card " + status);
+      card.appendChild(el("div", "title", task.title || "(no title)"));
+      card.appendChild(el("div", "claimer", task.claimed_by ? String(task.claimed_by) : "unclaimed"));
+      cards.appendChild(card);
+    });
+    column.appendChild(cards);
+    box.appendChild(column);
+  });
+}
+
+function renderEvents() {
+  const box = $("events");
+  clear(box);
+  if (!state.events.length) {
+    box.appendChild(el("p", "empty", "no events yet"));
+    return;
+  }
+  state.events.forEach((event) => {
+    const row = el("div", "row ev");
+    const head = el("div", "rowhead");
+    head.appendChild(el("span", "time", clock(event.at || Date.now())));
+    const severity = event.severity || "info";
+    head.appendChild(el("span", "badge " + (severity === "error" ? "err" : severity === "warn" ? "warn" : ""), severity));
+    head.appendChild(el("span", "kind", event.kind || "event"));
+    row.appendChild(head);
+    row.appendChild(el("div", "meta", meta([
+      event.agent ? "agent " + event.agent : null,
+      event.host ? "host " + event.host : null,
+      event.channel ? "channel " + event.channel : null,
+      event.task ? "task " + short(event.task) : null,
+      event.note || null,
+    ])));
+    box.appendChild(row);
+  });
+}
+
+function renderSnapshot(snapshot) {
+  state.snapshot = snapshot;
+  renderHosts(snapshot);
+  renderAgents(snapshot);
+}
+
+function channelNames(body) {
+  const from = (list) => (Array.isArray(list) ? list : []).map((c) => (typeof c === "string" ? c : c && c.name ? c.name : String(c)));
+  if (Array.isArray(body)) return from(body);
+  if (body && Array.isArray(body.channels)) return from(body.channels);
+  return [];
+}
+
+function populateChannels(names) {
+  state.channels = names.slice();
+  const box = $("channel");
+  clear(box);
+  names.forEach((name) => {
+    const option = el("option", null, name);
+    option.value = name;
+    if (name === state.channel) option.selected = true;
+    box.appendChild(option);
+  });
+}
+
+async function getJSON(path) {
+  const response = await fetch(path, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new Error(path + " " + response.status);
+  return response.json();
+}
+
+async function chooseChannel(name) {
+  state.channel = name || null;
+  if (!state.channel) {
+    state.graph = null;
+    renderGraph(null);
+    return;
+  }
+  if (state.demo) {
+    state.graph = (DEMO.graphs && DEMO.graphs[state.channel]) || { channel: state.channel, tasks: [] };
+    renderGraph(state.graph);
+    return;
+  }
+  try {
+    const graph = await getJSON("/api/channels/" + encodeURIComponent(state.channel) + "/graph");
+    if (graph && graph.channel === state.channel) {
+      state.graph = graph;
+      renderGraph(graph);
+    }
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function refresh() {
+  if (state.busy || state.demo) return;
+  state.busy = true;
+  try {
+    const snapshot = await getJSON("/api/snapshot");
+    renderSnapshot(snapshot);
+    if (state.channel) {
+      const graph = await getJSON("/api/channels/" + encodeURIComponent(state.channel) + "/graph");
+      if (graph && graph.channel === state.channel) {
+        state.graph = graph;
+        renderGraph(graph);
+      }
+    }
+    setStatus("updated " + clock(Date.now()));
+  } catch (error) {
+    setStatus("error: " + error.message, true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function loadChannels() {
+  if (state.demo) return;
+  try {
+    const names = channelNames(await getJSON("/api/channels"));
+    const keep = state.channel && names.indexOf(state.channel) >= 0;
+    populateChannels(names);
+    const next = keep ? state.channel : names[0] || null;
+    if (next !== state.channel) {
+      await chooseChannel(next);
+    }
+  } catch (error) {
+    setStatus("error: " + error.message, true);
+  }
+}
+
+function followEvents() {
+  const source = new EventSource("/api/events");
+  source.onmessage = (message) => {
+    let event;
+    try {
+      event = JSON.parse(message.data);
+    } catch (error) {
+      return;
+    }
+    if (!event || typeof event !== "object" || Array.isArray(event)) return;
+    const key = event.id ? String(event.id) : "";
+    if (key && state.seen.has(key)) return;
+    if (key) {
+      state.seen.add(key);
+      if (state.seen.size > 8 * TIMELINE_MAX) state.seen.clear();
+    }
+    state.events.unshift(event);
+    if (state.events.length > TIMELINE_MAX) state.events.length = TIMELINE_MAX;
+    renderEvents();
+  };
+  source.onerror = () => {
+    setStatus("event stream reconnecting", true);
+  };
+}
+
+function startDemo() {
+  state.demo = true;
+  state.channel = (DEMO.channels[0] && DEMO.channels[0].channel) || null;
+  populateChannels(DEMO.channels.map((c) => c.channel));
+  renderLegend();
+  renderSnapshot(DEMO.snapshot);
+  state.events = DEMO.events.slice(0, TIMELINE_MAX);
+  renderEvents();
+  renderGraph((DEMO.graphs && DEMO.graphs[state.channel]) || null);
+  setStatus("demo data (not live)");
+}
+
+function start() {
+  renderLegend();
+  $("channel").addEventListener("change", (event) => chooseChannel(event.target.value));
+  if (new URLSearchParams(window.location.search).get("demo") === "1") {
+    startDemo();
+    return;
+  }
+  loadChannels().then(refresh);
+  followEvents();
+  window.setInterval(refresh, POLL_MS);
+  window.setInterval(loadChannels, CHANNELS_MS);
+}
+
+// A saved sample of /api/snapshot, /api/channels, the channel graphs, and the
+// event stream, so that the page opens from disk with ?demo=1.
+const DEMO = (() => {
+  const now = Date.now();
+  const agentA = "01M5SFWC6RSVDM9297NZR7991W";
+  const agentB = "w-graph";
+  const agentC = "w-http";
+  const agentD = "helper";
+  const hostStats = (extra) => Object.assign({
+    version: "0.9.0",
+    started: now - 7200000,
+    load1: 0.42,
+    cpus: 4,
+    mem_used_pct: 63.4,
+    mem_avail_mb: 2341,
+    disk_avail_mb: 18432,
+    disk_used_pct: 71.2,
+    outbox_depth: 0,
+    last_heartbeat_rtt_ms: 12,
+    nats_reconnects: 0,
+    sessions: [],
+  }, extra);
+  return {
+    snapshot: {
+      hosts: [
+        {
+          info: { name: "borant-1", harnesses: ["omp"], launcher: "tmux", max_agents: 6, always_on: true, draining: false, ssh: "me@borant-1", members: {}, pool: null, tags: ["vps"], bundles: [], reserve_mem_mb: 1024, sandboxes: [] },
+          online: true,
+          last_seen: now - 4000,
+          stats: hostStats({}),
+        },
+        {
+          info: { name: "builder-2", harnesses: ["claude"], launcher: "process", max_agents: 4, always_on: false, draining: false, ssh: "me@builder-2", members: {}, pool: null, tags: ["vps"], bundles: [], reserve_mem_mb: null, sandboxes: [] },
+          online: false,
+          last_seen: now - 900000,
+          stats: hostStats({ load1: 0.08, mem_used_pct: 21.7, mem_avail_mb: 6031, disk_used_pct: 44.9, disk_avail_mb: 22110 }),
+        },
+      ],
+      agents: [
+        { agent: agentA, harness: "omp", host: "borant-1", lease: { state: "held", session: "01M5SFWC6RSVDM9297NZR7991X", host: "borant-1", expires: now + 45000 }, session: "01M5SFWC6RSVDM9297NZR7991X", busy: true, claim: "01M5SFWC6RSVDM9297NZR7991W", role: "worker", collection: null, pinned: false, retired: false, model: "deepseek" },
+        { agent: agentB, harness: "omp", host: "borant-1", lease: { state: "held", session: "01M5SFWC6RSVDM9297NZR7992A", host: "borant-1", expires: now + 30000 }, session: "01M5SFWC6RSVDM9297NZR7992A", busy: true, claim: "01M5SFWC6RSVDM9297NZR7992B", role: "worker", collection: null, pinned: false, retired: false, model: null },
+        { agent: agentC, harness: "claude", host: null, lease: { state: "reserved", host: "builder-2", until: now + 120000, reason: "spawn" }, session: null, busy: false, claim: null, role: "worker", collection: null, pinned: false, retired: false, model: null },
+        { agent: agentD, harness: "pi", host: null, lease: { state: "released", since: now - 600000, parked: false }, session: null, busy: false, claim: null, role: "helper", collection: null, pinned: false, retired: true, model: null },
+      ],
+      inboxes: [
+        { agent: agentA, stats: { pending: 2, ack_pending: 1, redelivered: 1 } },
+        { agent: agentB, stats: { pending: 0, ack_pending: 0, redelivered: 0 } },
+        { agent: agentD, stats: { pending: 3, ack_pending: 0, redelivered: 0 } },
+      ],
+      at: now,
+    },
+    channels: [{ channel: "roadmap-p8" }, { channel: "borant" }],
+    graphs: {
+      "roadmap-p8": {
+        channel: "roadmap-p8",
+        tasks: [
+          { id: "01M5SFWC6RSVDM9297NZR79930", title: "Core: graph stages and the [http] config type", status: "in_progress", claimed_by: agentB, blocked_by: [], stage: 0 },
+          { id: "01M5SFWC6RSVDM9297NZR79931", title: "Hub HTTP listener, API routes, and /metrics", status: "open", claimed_by: agentC, blocked_by: ["01M5SFWC6RSVDM9297NZR79930"], stage: 1 },
+          { id: "01M5SFWC6RSVDM9297NZR79932", title: "The read-only web page", status: "in_progress", claimed_by: agentA, blocked_by: [], stage: 0 },
+          { id: "01M5SFWC6RSVDM9297NZR79933", title: "Infra: bind to the tailnet IP, firewall on tailscale0 only", status: "needs_human", claimed_by: null, blocked_by: ["01M5SFWC6RSVDM9297NZR79931", "01M5SFWC6RSVDM9297NZR79932"], stage: 2 },
+          { id: "01M5SFWC6RSVDM9297NZR79934", title: "Docs: phase 8 notes", status: "closed", claimed_by: agentD, blocked_by: [], stage: 0 },
+          { id: "01M5SFWC6RSVDM9297NZR79935", title: "Retire the old dashboard", status: "stuck", claimed_by: "w-retire", blocked_by: [], stage: 0 },
+        ],
+      },
+      "borant": {
+        channel: "borant",
+        tasks: [
+          { id: "01M5SFWC6RSVDM9297NZR79940", title: "Wire the MCP server", status: "closed", claimed_by: agentB, blocked_by: [], stage: 0 },
+          { id: "01M5SFWC6RSVDM9297NZR79941", title: "Watchdog for lost leases", status: "in_progress", claimed_by: agentC, blocked_by: [], stage: 0 },
+        ],
+      },
+    },
+    events: [
+      { id: "01M5SFWC6RSVDM9297NZR80001", at: now - 3000, source: "hub", severity: "info", agent: agentA, host: "borant-1", kind: "lease.held", note: "worker claimed the web page" },
+      { id: "01M5SFWC6RSVDM9297NZR80002", at: now - 12000, source: { host: "borant-1" }, severity: "info", host: "borant-1", kind: "host.stats", note: "heartbeat 12ms" },
+      { id: "01M5SFWC6RSVDM9297NZR80003", at: now - 41000, source: "hub", severity: "warn", agent: "w-retire", kind: "lease.expired", note: "no heartbeat for 30s" },
+      { id: "01M5SFWC6RSVDM9297NZR80004", at: now - 55000, source: "hub", severity: "info", channel: "roadmap-p8", task: "01M5SFWC6RSVDM9297NZR79932", kind: "task.claimed", note: "w-web" },
+      { id: "01M5SFWC6RSVDM9297NZR80005", at: now - 90000, source: "hub", severity: "info", channel: "roadmap-p8", task: "01M5SFWC6RSVDM9297NZR79930", kind: "task.created", note: null },
+      { id: "01M5SFWC6RSVDM9297NZR80006", at: now - 240000, source: "hub", severity: "error", agent: agentD, host: "borant-1", kind: "delivery.ack_failed", note: "ack timeout" },
+      { id: "01M5SFWC6RSVDM9297NZR80007", at: now - 600000, source: "hub", severity: "info", host: "builder-2", kind: "host.offline", note: "missed 3 heartbeats" },
+      { id: "01M5SFWC6RSVDM9297NZR80008", at: now - 3600000, source: "hub", severity: "info", agent: agentC, kind: "placement.chosen", note: "borant-1 is full" },
+    ],
+  };
+})();
+
+start();
+</script>
+</body>
+</html>
