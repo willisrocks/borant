@@ -1429,11 +1429,22 @@ scenario_cancel() {
 # stops the continues, and the limit sends the task to a person. A host daemon
 # restart and a planned move keep the count. The scenario runs on the default
 # swarm, with host-r as the host whose daemon alone can be stopped.
+#
+# In the full run this comes after the hub move, so the live hub is hub2 and
+# the live broker is nats2. It starts its own host alone, with --no-deps, and
+# waits for the live hub to answer: nothing here may start a second broker or
+# a second hub. The boss agent has a name of its own as well: the cancel
+# scenario retires its boss for good, and a retired agent is never woken
+# again, so reusing that name would leave the channel call in a dead inbox.
 scenario_continue() {
   local out task_a task_b pid
 
+  # The hub of the live swarm answers before this scenario touches it.
+  wait_for "the live hub" continue_hub_up || return 1
+
   # host-r is not part of the default swarm: the host_restart scenario starts
-  # it on demand, and this one does the same.
+  # it on demand, and this one does the same. --no-deps keeps compose from
+  # starting the old nats: after the hub move the swarm runs on nats2.
   dc up -d --no-deps host-r >/dev/null || return 1
   start_host_r 1 || return 1
   if ! wait_for "host-r online" host_r_online; then
@@ -1443,16 +1454,16 @@ scenario_continue() {
   fi
 
   # The channel and the two tasks that the workers bind.
-  start_agent host-a cboss
-  wait_for "cboss registered" is_at cboss host-a || return 1
-  borant_on host-a send cboss "CHANNEL continue" >/dev/null
-  wait_for "channel continue" log_has host-a cboss "CHANNEL continue ok" || return 1
-  borant_on host-a send cboss "CREATE continue waits
-CREATE continue limit" >/dev/null
-  wait_for "the task waits" log_has host-a cboss "CREATED .* waits" || return 1
-  wait_for "the task limit" log_has host-a cboss "CREATED .* limit" || return 1
-  task_a=$(task_id host-a cboss waits)
-  task_b=$(task_id host-a cboss limit)
+  start_agent host-a cont-boss
+  wait_for "cont-boss registered" is_at cont-boss host-a || return 1
+  borant_on host-a send cont-boss "CHANNEL continue" >/dev/null || return 1
+  wait_for "channel continue" log_has host-a cont-boss "CHANNEL continue ok" || return 1
+  borant_on host-a send cont-boss "CREATE continue waits
+CREATE continue limit" >/dev/null || return 1
+  wait_for "the task waits" log_has host-a cont-boss "CREATED .* waits" || return 1
+  wait_for "the task limit" log_has host-a cont-boss "CREATED .* limit" || return 1
+  task_a=$(task_id host-a cont-boss waits)
+  task_b=$(task_id host-a cont-boss limit)
   [ -n "$task_a" ] && [ -n "$task_b" ] \
     || { echo "  the task ids of the scenario" >&2; return 1; }
 
@@ -1522,13 +1533,15 @@ CREATE continue limit" >/dev/null
     || { echo "  cont-b after the restart: $(continue_state cont-b)" >&2; return 1; }
 
   # A planned move keeps the count too, and its new idle period gets no
-  # continue: the wait of the worker still covers the task.
-  borant_on host-a move cont-a --host host-a >/dev/null || return 1
-  wait_for "cont-a on host-a" is_at cont-a host-a || return 1
-  wait_for "cont-a continued on host-a" \
-    log_has host-a cont-a "You continue Borant agent cont-a" || return 1
+  # continue: the wait of the worker still covers the task. host-b holds one
+  # session after the earlier scenarios (nr-a of nats_restart), so it has the
+  # room that host-a may not have.
+  borant_on host-a move cont-a --host host-b >/dev/null || return 1
+  wait_for "cont-a on host-b" is_at cont-a host-b || return 1
+  wait_for "cont-a continued on host-b" \
+    log_has host-b cont-a "You continue Borant agent cont-a" || return 1
   sleep 8
-  [ "$(continue_count host-a cont-a)" = "0" ] \
+  [ "$(continue_count host-b cont-a)" = "0" ] \
     || { echo "  the move sent cont-a another continue" >&2; return 1; }
   [ "$(continue_state cont-a)" = "1 false" ] \
     || { echo "  cont-a after the move: $(continue_state cont-a)" >&2; return 1; }
@@ -1536,7 +1549,7 @@ CREATE continue limit" >/dev/null
   # Leave no agent or host of this scenario for a later one.
   borant_on host-a cancel cont-a >/dev/null 2>&1
   borant_on host-r cancel cont-b >/dev/null 2>&1
-  borant_on host-a cancel cboss >/dev/null 2>&1
+  borant_on host-a cancel cont-boss >/dev/null 2>&1
   dc stop host-r >/dev/null 2>&1
   return 0
 }
@@ -1544,6 +1557,9 @@ CREATE continue limit" >/dev/null
 # The continues that an agent got: the hub's direct message is one line per
 # continue in the fake log of the agent.
 continue_count() { log_of "$1" "$2" | grep -c "Continue with task continue/"; }
+
+# The live hub answers a request from the default swarm.
+continue_hub_up() { borant_on host-a hosts >/dev/null 2>&1; }
 
 # Waits up to WAIT seconds for a log line, polling every 100 ms: the wait that
 # stops the next continue must land before the next heartbeat of the host.
@@ -1558,21 +1574,25 @@ wait_log_fast() {
 }
 
 # The continue state of an agent in the hub record, as `<used> <exhausted>`.
-# The snapshot lands in the hub container; after the hub move scenario that is
-# hub2, and a run of this scenario alone still serves from hub.
+# The snapshot lands on the box of the live hub: hub2 after the hub move
+# scenario, hub on a run of this scenario alone. The name is fresh, so only
+# the container that wrote it holds the file and a stopped hub cannot be read.
 continue_state() {
-  local svc tmp=/tmp/e2e-continue-state.jsonl
-  if docker inspect --format '{{.State.Running}}' "$(container hub2)" 2>/dev/null | grep -qx true; then
-    svc=hub2
-  else
-    svc=hub
-  fi
+  CONTINUE_STATE_N=$((CONTINUE_STATE_N + 1))
+  local tmp="/tmp/e2e-continue-state-$$-$CONTINUE_STATE_N.jsonl" svc rc
   borant_on host-a hub export --snapshot --out "$tmp" >/dev/null || return 1
-  on "$svc" jq -r --arg k "agent.$1" \
-    'select(.t == "state" and .key == $k)
-     | "\(.value.continues.used) \(.value.continues.exhausted)"' "$tmp" || return 1
-  on "$svc" rm -f "$tmp"
+  for svc in hub2 hub; do
+    on "$svc" test -s "$tmp" 2>/dev/null || continue
+    on "$svc" jq -r --arg k "agent.$1" \
+      'select(.t == "state" and .key == $k)
+       | "\(.value.continues.used) \(.value.continues.exhausted)"' "$tmp"
+    rc=$?
+    on "$svc" rm -f "$tmp"
+    return "$rc"
+  done
+  return 1
 }
+CONTINUE_STATE_N=0
 
 # The task is in `needs_human` with the message of the exhausted continues.
 continue_needs_human() {
@@ -1643,8 +1663,9 @@ if [ "$FAILED" != "0" ]; then
         borant_on host-a inbox --json 2>/dev/null | head -40
         echo "  the continue logs:"
         log_of host-r cont-a 2>/dev/null | tail -20
-        log_of host-a cont-a 2>/dev/null | tail -20
+        log_of host-b cont-a 2>/dev/null | tail -20
         log_of host-r cont-b 2>/dev/null | tail -20
+        log_of host-a cont-boss 2>/dev/null | tail -20
         echo "  the daemon logs of host-r:"
         host_r_log 1 | tail -20
         host_r_log 2 | tail -40
