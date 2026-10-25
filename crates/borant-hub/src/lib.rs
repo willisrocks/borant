@@ -14,6 +14,7 @@ mod members;
 mod moves;
 mod park;
 mod prune;
+mod retire;
 mod store;
 mod tasks;
 mod view;
@@ -92,6 +93,8 @@ pub(crate) struct Memory {
     pub idle: HashMap<AgentId, IdleReport>,
     /// When the hub last sent a park command, per agent.
     pub park_sent: HashMap<AgentId, Timestamp>,
+    /// The sessions that the hub already told to stop, so it sends one.
+    pub stopped: HashSet<SessionId>,
     pub pending_moves: HashMap<AgentId, PendingMove>,
     /// Hosts where a launch failed, for each agent, until the agent registers.
     pub failed_hosts: HashMap<AgentId, HashSet<HostName>>,

@@ -144,6 +144,8 @@ impl Hub {
                 token: l.token,
             });
         }
+        // A retired agent stops at the turn end that this heartbeat reports.
+        self.stop_retired(mem, host, sessions).await?;
         Ok(HeartbeatReply { lost, renewed })
     }
 
@@ -617,6 +619,10 @@ impl Hub {
             return Ok(());
         };
         let agent = agent.value;
+        // A retired agent is never placed again: no takeover and no wake.
+        if agent.retired {
+            return Ok(());
+        }
 
         // Claims return to open when no session held the agent for the
         // claim timeout, measured from the first expiry. A pinned agent keeps

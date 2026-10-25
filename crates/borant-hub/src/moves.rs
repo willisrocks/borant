@@ -176,6 +176,12 @@ impl Hub {
         prompt: Option<String>,
     ) -> Result<bool, ApiError> {
         let now = self.now();
+        // A retired agent is gone for good: no spawn, move, takeover, or wake
+        // places it again.
+        if agent.retired {
+            tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
+            return Ok(false);
+        }
         // A pinned agent is never replaced while its session may still run.
         // Only a clean end (a released lease) lets the hub place it again.
         if agent.pinned {
@@ -412,6 +418,11 @@ impl Hub {
         // Slots that earlier agents of this move take on their target.
         let mut planned: HashMap<HostName, u32> = HashMap::new();
         for id in self.selected(selector).await? {
+            // A retired agent is never placed again, so it does not move.
+            if self.agent(&id).await?.value.retired {
+                tracing::info!(agent = %id, "move skipped: the agent is retired");
+                continue;
+            }
             let lease = self.store.get::<Lease>(&keys::lease_agent(&id)).await?;
             // A move would start a second session. A pinned agent moves only
             // after a clean end, like a placement.

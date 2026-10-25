@@ -125,7 +125,7 @@ impl Hub {
         &self,
         mem: &mut Memory,
         actor: Option<Actor>,
-        _key: Option<String>,
+        key: Option<String>,
         call: ToolCall,
     ) -> Result<Value, ApiError> {
         if actor.is_none() && !call.allowed_for_human() {
@@ -243,7 +243,7 @@ impl Hub {
             )),
             ToolCall::TaskCreate { channel, task } => {
                 self.channel_for(mine.as_ref(), &channel).await?;
-                to_value(&self.task_create(&sender, &channel, task).await?)
+                to_value(&self.task_create(&sender, &channel, task, key).await?)
             }
             ToolCall::TaskGet { channel, id } => {
                 self.channel_for(mine.as_ref(), &channel).await?;
