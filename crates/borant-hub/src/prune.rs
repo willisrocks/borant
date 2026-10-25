@@ -5,8 +5,9 @@
 //! list must still be exact: it names every key that a later prune would
 //! remove, and it keeps an agent whose work is not provably done.
 //!
-//! Inboxes and session logs are read outside the `mem` mutex, because every
-//! heartbeat waits for that mutex and there are about 146 inboxes.
+//! Inboxes, session logs, and the KV state are read outside the `mem` mutex,
+//! because every heartbeat waits for that mutex. A dry run needs no
+//! consistent read, so the lock only copies the pending moves.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -33,21 +34,22 @@ struct Removed {
 /// `older_than` ago, and the reason that every other agent stays.
 pub(crate) async fn prune_agents(hub: &Hub, older_than: Duration) -> Result<Value, ApiError> {
     let now = hub.now();
-    // The lock covers the state reads and the copy of the pending moves only.
-    let (entries, pending) = {
+    // A dry run needs no consistent read, so the lock copies the pending
+    // moves only. `NatsState::list` does one get per key, and every
+    // heartbeat waits for `mem`.
+    let pending: HashSet<AgentId> = {
         let mem = hub.mem.lock().await;
-        let mut entries = Vec::new();
-        for prefix in [
-            keys::AGENT_PREFIX,
-            keys::LEASE_AGENT_PREFIX,
-            keys::CHANNEL_PREFIX,
-            SESSION_PREFIX,
-        ] {
-            entries.extend(hub.store.0.list(prefix).await?);
-        }
-        let pending: HashSet<AgentId> = mem.pending_moves.keys().cloned().collect();
-        (entries, pending)
+        mem.pending_moves.keys().cloned().collect()
     };
+    let mut entries = Vec::new();
+    for prefix in [
+        keys::AGENT_PREFIX,
+        keys::LEASE_AGENT_PREFIX,
+        keys::CHANNEL_PREFIX,
+        SESSION_PREFIX,
+    ] {
+        entries.extend(hub.store.0.list(prefix).await?);
+    }
 
     let scan = Scan::read(&entries);
     let mut candidates = Vec::new();
