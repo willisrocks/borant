@@ -48,6 +48,12 @@ pub struct RoleConfig {
     pub bundles: Vec<BundleName>,
     /// The sandbox that a launch of this role asks of a host.
     pub sandbox: Option<SandboxKind>,
+    /// The cap of turns per UTC day. At the cap the hub stops the agent.
+    #[serde(default)]
+    pub max_turns_per_day: Option<u32>,
+    /// The cap of one session, in hours. At the cap the hub stops the agent.
+    #[serde(default)]
+    pub max_session_hours: Option<u32>,
 }
 
 /// One `[collections.<name>]` entry of `hub.toml`.
@@ -298,6 +304,8 @@ mod tests {
             prefer: vec![],
             bundles: vec!["github-work".parse().unwrap()],
             sandbox: None,
+            max_turns_per_day: None,
+            max_session_hours: None,
         };
         let table = roles(&[("worker", worker.clone())]);
         let parent = Agent {

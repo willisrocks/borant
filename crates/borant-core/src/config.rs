@@ -1,5 +1,6 @@
-//! Config records shared with the daemons: `[alerts]` and `[notifiers.<name>]`
-//! of `hub.toml` and `host.toml` (phase 2 spec, "Records and protocol").
+//! Config records shared with the daemons: `[alerts]`, `[notifiers.<name>]`,
+//! `[channels.<name>]`, and `[changes]` of `hub.toml` and `host.toml` (phase 2
+//! spec, "Records and protocol"; phase 6 spec, "Interfaces").
 
 use std::collections::BTreeMap;
 
@@ -73,4 +74,43 @@ pub struct NotifierConfig {
     /// A credential file name in `$CREDENTIALS_DIRECTORY`.
     #[serde(default)]
     pub credential: Option<String>,
+}
+
+/// One `[channels.<name>]` entry of `hub.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelConfig {
+    /// How many agents the channel may hold. A spawn past it queues.
+    #[serde(default)]
+    pub max_agents: Option<u32>,
+}
+
+/// `[changes]` of `hub.toml`: the PR watch. The hub polls the change requests
+/// of tasks with a `pr_url` through this adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChangesConfig {
+    /// The adapter, for example `exec`.
+    #[serde(default)]
+    pub adapter: Option<String>,
+    /// The program of an exec adapter.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// How often the hub polls, `60` seconds by default.
+    #[serde(default = "sixty_secs")]
+    pub every_secs: u64,
+}
+
+fn sixty_secs() -> u64 {
+    60
+}
+
+impl Default for ChangesConfig {
+    fn default() -> Self {
+        Self {
+            adapter: None,
+            program: None,
+            every_secs: sixty_secs(),
+        }
+    }
 }
