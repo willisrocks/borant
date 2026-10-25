@@ -14,7 +14,7 @@ mod secrets;
 mod sessions;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -52,6 +52,9 @@ pub struct HostConfig {
     pub launcher: String,
     pub max_agents: u32,
     pub always_on: bool,
+    /// The memory that this host keeps free for itself, from `[host]
+    /// reserve_mem_mb`. A placement below it is refused with `LowMemory`.
+    pub reserve_mem_mb: u32,
     /// The pool that created this host. `None` for a static host.
     pub pool: Option<PoolName>,
     /// The tags of this host, for example `vps` for a pool host.
@@ -91,6 +94,7 @@ impl HostConfig {
             launcher: "tmux".into(),
             max_agents: 4,
             always_on: false,
+            reserve_mem_mb: 1024,
             pool: None,
             tags: Vec::new(),
             ssh: None,
@@ -139,10 +143,7 @@ impl HostConfig {
                 .as_ref()
                 .map(|s| s.bundles.keys().cloned().collect())
                 .unwrap_or_default(),
-            // The resource rules of phase 5 fill these: a reserve from
-            // `[host] reserve_mem_mb`, and the sandboxes that `[sandbox]`
-            // enables.
-            reserve_mem_mb: None,
+            reserve_mem_mb: Some(self.reserve_mem_mb),
             sandboxes: Vec::new(),
         }
     }
@@ -381,6 +382,21 @@ pub(crate) struct State {
     pub redactors: HashMap<AgentId, Arc<Redactor>>,
 }
 
+/// The free space of the disk that holds `dir`, in megabytes.
+fn disk_avail_mb(dir: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(&Path, u64)> = None;
+    for disk in disks.list() {
+        let mount = disk.mount_point();
+        if dir.starts_with(mount)
+            && best.is_none_or(|(found, _)| mount.as_os_str().len() > found.as_os_str().len())
+        {
+            best = Some((mount, disk.available_space()));
+        }
+    }
+    best.map(|(_, bytes)| bytes / (1024 * 1024))
+}
+
 pub(crate) struct Inner {
     pub cfg: HostConfig,
     pub bus: Arc<dyn MessageBus>,
@@ -584,9 +600,8 @@ impl Host {
             load1: load.one,
             cpus,
             mem_used_pct,
-            // The resources task fills these from sysinfo.
-            mem_avail_mb: None,
-            disk_avail_mb: None,
+            mem_avail_mb: Some(system.available_memory() / (1024 * 1024)),
+            disk_avail_mb: disk_avail_mb(&self.inner.cfg.home),
             outbox_depth,
             last_heartbeat_rtt_ms,
             // The bus port has no reconnect counter yet.
@@ -870,5 +885,50 @@ pub(crate) fn terminate(pid: u32) {
     use nix::unistd::Pid;
     if let Ok(raw) = i32::try_from(pid) {
         let _ = kill(Pid::from_raw(raw), Signal::SIGTERM);
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    /// A host with an in-memory bus and store, and a real clock.
+    fn new_host(reserve_mem_mb: Option<u32>) -> (Host, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf());
+        cfg.harnesses = vec![Harness::Fake];
+        if let Some(v) = reserve_mem_mb {
+            cfg.reserve_mem_mb = v;
+        }
+        let host = Host::new(
+            cfg,
+            Arc::new(borant_memory::MemoryBus::new()),
+            Arc::new(borant_memory::MemorySession::new()),
+            Arc::new(borant_core::SystemClock),
+            Box::new(borant_launch::ProcessLauncher::new(dir.path().join("logs"))),
+            None,
+            None,
+            Outbox::in_memory().unwrap(),
+        );
+        (host, dir)
+    }
+
+    #[test]
+    fn stats_report_the_memory_and_the_disk_that_are_free() {
+        let (host, _dir) = new_host(None);
+        let stats = host.stats();
+        let mem = stats.mem_avail_mb.expect("the free memory of the host");
+        assert!(mem > 0, "{mem} MB free");
+        let disk = stats.disk_avail_mb.expect("the free disk of BORANT_HOME");
+        assert!(disk > 0, "{disk} MB free");
+    }
+
+    #[test]
+    fn stats_carry_the_memory_reserve_of_the_host() {
+        let (host, _dir) = new_host(None);
+        assert_eq!(host.config().reserve_mem_mb, 1024, "the default reserve");
+        assert_eq!(host.config().info().reserve_mem_mb, Some(1024));
+        let (big, _dir) = new_host(Some(4096));
+        assert_eq!(big.config().info().reserve_mem_mb, Some(4096));
     }
 }
