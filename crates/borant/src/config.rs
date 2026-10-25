@@ -406,6 +406,9 @@ fn open_provisioners(
                     env: BTreeMap::new(),
                     credential,
                     timeout: Duration::from_secs(60),
+                    // A create carries boot values, one-time join data, so a
+                    // plugin that echoes them must not put them in the log.
+                    log_stderr: false,
                 };
                 let config = file
                     .config

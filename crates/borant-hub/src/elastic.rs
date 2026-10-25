@@ -654,6 +654,9 @@ mod tests {
             project: None,
             members: Default::default(),
             pinned: false,
+            role: None,
+            collection: None,
+            parent: None,
         };
         fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
         let lease = Lease {
@@ -692,6 +695,7 @@ mod tests {
             members: Default::default(),
             pool: Some("workers".parse().unwrap()),
             tags: vec!["vps".parse().unwrap()],
+            bundles: Vec::new(),
         };
         fx.hub
             .handle(CtlRequest::RegisterHost { info })
