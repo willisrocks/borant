@@ -88,7 +88,14 @@ skill) shipped in v0.3.0.
 3. In `borant-infra`: the `borant-secrets-1password` plugin, the `Borant`
    vault and its read-only service account as secret zero, and the seed
    unit for the first-run screens only.
-4. Done when `just create borant-3` gives a working host with no login, and
+4. Token pools in the `SecretStore` design: for example one Claude Code
+   token for each account (`claude setup-token`) and several LunaRoute
+   keys, which Borant can rotate or balance. A research report on how
+   (a proxy such as LunaRoute, or a restart of a session on another token
+   at its limit) comes as a separate design document in
+   `docs/superpowers/specs/`. The phase 1 spec folds it in. Nothing for
+   token pools gets built before that document exists.
+5. Done when `just create borant-3` gives a working host with no login, and
    no secret value shows in `ps`, the session log, or NATS.
 
 ### Phase 1b: collections, roles, and host tags (L)
@@ -96,15 +103,10 @@ skill) shipped in v0.3.0.
 Chris made these decisions. The spec for this phase settles the rest.
 
 1. Collections. Borant stays one swarm. A collection groups projects and
-   owns an identity: secret bundles, the `gh` account and the git author,
-   and a pool of Claude Code accounts. The first two collections are
-   `personal` and `work`. The accounts are ModelDeck profiles in
-   `~/Library/Application Support/ModelDeck/claude-profiles/` (`fentonit`,
-   `fentonit-2`, `personal-1`, `personal-2`, `work`). Each profile is a
-   `CLAUDE_CONFIG_DIR`. Borant assigns one account from the pool to each
-   agent. When an account reaches its quota, Borant can start the next
-   launch on another account. The hub keeps each agent inside its
-   collection. Phase 1b adds no stronger isolation.
+   owns an identity: secret bundles, and the `gh` account and the git
+   author. The first two collections are `personal` and `work`. The hub
+   keeps each agent inside its collection. Phase 1b adds no stronger
+   isolation.
 2. Roles. The agent record and `spawn` get a role:
    - `chief`: one for each collection. It prefers the laptop and is pinned.
    - `orchestrator`: one for each project. It requires a `vps` host.
