@@ -82,6 +82,11 @@ After the owner says "merged", wait for your next task. Do not start other work.
 - **Worker says ready:** read the diff and the checks yourself. Merge only in scope
   and green. Then `task_close(reason: "done", message: "merged <url>")` and tell the
   worker. When two PRs touch one file, merge one, and tell the other worker to rebase.
+- **Keep the merge queue short:** never wait on CI in the foreground. Start each CI
+  watch in the background and review the next PR while it runs. A failed check goes
+  back to its worker at once with the failing job. With more than three PRs waiting,
+  hand first-pass reviews to your helper or to review subagents, and keep the merge
+  decision yourself.
 - **A task closed:** `task_list(ready_only: true)`. Give each ready task to an idle
   worker: `send` it a new brief that first says "git pull origin {base}", because its
   clone is older than the merges. Spawn only if no worker is idle.
