@@ -6,7 +6,9 @@ sections 5 to 7 of the
 [orchestration design](2026-10-24-orchestration-api-and-sandboxes-design.md)
 ("the orchestration doc"), adapted to the code of v0.7.0: host tags and roles
 (phase 1b) replace labels and taints, and the persisted spawn queue (phase 3)
-holds the reject reasons.
+holds the reject reasons. The research found that bubblewrap 0.12.0 runs
+unprivileged on the boxes (kernel 6.18.57, NixOS 26.05) and adds 3 to 7 ms to
+a launch.
 
 The orchestrator wrote it in auto-pilot from two research tasks on the boxes:
 [herdr facts](../../research/2026-10-25-herdr-facts.md) (branch
@@ -95,8 +97,12 @@ The orchestrator wrote it in auto-pilot from two research tasks on the boxes:
 - `borant-launch/src/sandbox.rs`: `pub fn wrap(plan: &SandboxPlan, program:
   Vec<String>) -> Vec<String>`, a pure function, with `SandboxPlan { program,
   home, work_dir, harness_dirs, sockets, secrets_dir, ro, rw, cwd }`. The argv
-  follows section 6 of the orchestration doc, with the binds that the bwrap
-  research found (see that file). It never has `--unshare-pid`, because the
+  follows section 6 of the orchestration doc, plus the binds that the bwrap
+  research found on borant-2: `--ro-bind /lib64 /lib64` for both harnesses
+  (they are generic ELF binaries that run through nix-ld; without it
+  `execvp` fails), `~/.local` read-only (the harness binaries), and for omp
+  `~/.pi/agent/models-store.json` read-only (without it omp has no models).
+  `/etc/passwd`, `/etc/group`, and `/etc/hosts` are not needed. It never has `--unshare-pid`, because the
   host tests liveness by the harness PID.
 - `crates/borant-host/src/commands.rs`: the launch wraps outside the secret
   shim: `bwrap ... -- borant secret-exec <dir> -- <harness argv>`. The secrets
@@ -165,8 +171,14 @@ sandbox` (a failed start check offers no sandbox).
 
 Decision: build the file-system sandbox (`Namespace`) now, and move
 `BwrapNoNet` with the proxy and the shim to a later phase.
-Evidence: see the bubblewrap research, question 5 (proxy honoring of omp,
-Claude Code, and git).
+Evidence: the bubblewrap research, question 5. Both harnesses are Bun and
+honor `HTTPS_PROXY`, and `git clone` goes through it, so the proxy design
+works. But an allowlist of the API hosts alone breaks both: omp calls seven
+model-catalog hosts of Pi (zenmux.ai, hyper.charm.land, and five more), and
+Claude Code sends telemetry to Datadog. The allowlist needs a longer list and
+a log of denied hosts before it can be the default, which is more than this
+phase needs. The file-system sandbox alone hides the credentials, the SSH
+keys, and the other clones, which is the main gain.
 Reversible: yes. `SandboxKind` gets a second variant later.
 
 ### A pure wrap function, not a port
