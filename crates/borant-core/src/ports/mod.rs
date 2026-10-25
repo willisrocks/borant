@@ -4,6 +4,7 @@
 mod bus;
 mod launch;
 mod notify;
+pub mod provision;
 pub mod secrets;
 mod session;
 mod state;
@@ -11,6 +12,10 @@ mod state;
 pub use bus::{Acker, Delivery, Incoming, MessageBus, Responder, subject_matches};
 pub use launch::{LaunchHandle, LaunchSpec, Launcher};
 pub use notify::Notifier;
+pub use provision::{
+    HostRecord, HostSpec, ProviderHostId, ProviderState, Provisioner, ProvisionerCapabilities,
+    SizeInfo, StopMode,
+};
 pub use secrets::{Secret, SecretRef, SecretStore};
 pub use session::SessionStore;
 pub use state::{Change, Entry, StateStore};
