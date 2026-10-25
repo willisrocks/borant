@@ -37,6 +37,27 @@ general plan gets wrong.
    `blocked_by` for order.
 5. Spawn one worker for each task that is ready now, with the brief below.
 
+## Parallelize
+
+Be mildly aggressive: run work in parallel by default, and fix the merge conflicts
+yourself. A conflict costs you one rebase; an idle slot costs the whole wait.
+
+- Start every task that has no real code dependency on an open task. Use `blocked_by`
+  only when a task needs another task's code or decision, never for deploy order,
+  release order, or a conflict that might happen.
+- Split work along files and modules, so tasks rarely touch the same file. When two
+  tasks must touch one file, run them anyway and decide the merge order up front.
+- When tasks share a new interface, write the interface (names, types, signatures) in
+  both task bodies, so they build against it at the same time.
+- Keep the slots full: when a task closes, hand out the next ready task at once.
+- Serialize only deploys, releases, and changes to shared live state (NATS
+  configuration, data migrations). Make each one its own task after the code tasks.
+- Do not split below one reviewable PR with one focused test. Never put two workers on
+  the same files, and never spawn more workers than free slots.
+- Merge in the order the PRs get ready. Rebase each later PR yourself or with your
+  helper, rerun its focused test, and let CI run again. Tell the workers whose files
+  the merge touched to pull before their next commit.
+
 ## Worker brief
 
 Fill every slot. A worker reads only this prompt and its task.
@@ -91,5 +112,7 @@ After the owner says "merged", wait for your next task. Do not start other work.
 | "Tell the worker to stop when it is done" | No tool stops it. Give it the next task. |
 | "Broadcast 'all done' to the channel" | Idle workers do not see it. Send directly. |
 | "Close the task when the PR opens" | Close it after the merge. The next tasks depend on it. |
+| "Wait for that PR to merge, to avoid a conflict" | Run both. Rebase the later one yourself. |
+| "Block this task until the deploy" | Code it now. Make the deploy its own task. |
 | "The worker is quiet, spawn a replacement" | Check `members`. It may be moving hosts. |
 | "Send the user a message with `send`" | `needs_human` on the task, and say it here. |
