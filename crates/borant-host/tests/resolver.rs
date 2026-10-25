@@ -202,6 +202,7 @@ async fn rig(secrets: Option<HostSecrets>) -> Rig {
         Arc::new(SystemClock),
         Box::new(RecordingLauncher(rec.clone())),
         None,
+        None,
         Outbox::in_memory().unwrap(),
     );
     Rig {
