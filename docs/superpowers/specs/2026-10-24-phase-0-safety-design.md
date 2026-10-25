@@ -312,7 +312,7 @@ The hub must not hold the `mem` mutex while it reads about 146 inboxes and
 session logs, because every heartbeat waits for that mutex. Like the
 snapshot, the hub reads the KV state under the mutex, releases it, then reads
 the inboxes and the session logs. The CLI prints the result. Without `--dry-run`, the command exits with
-"only --dry-run is available". `--older-than` takes a duration, default `24h`.
+"only --dry-run is available". `--older-than-hours` sets the age, default 24.
 
 An agent is a candidate only if all of these are true:
 
