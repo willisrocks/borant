@@ -88,7 +88,7 @@ impl StateStore for NatsState {
         let entry = store
             .entry(key)
             .await
-            .map_err(|e| unavailable("KV get", e))?;
+            .map_err(|e| unavailable(&format!("KV get {key}"), e))?;
         Ok(entry
             .filter(|e| e.operation == Operation::Put)
             .map(|e| Entry {
@@ -103,7 +103,7 @@ impl StateStore for NatsState {
         store.create(key, value).await.map_err(|e| match e.kind() {
             CreateErrorKind::AlreadyExists => PortError::conflict(format!("key {key} exists")),
             CreateErrorKind::InvalidKey => PortError::other(format!("invalid key {key}")),
-            _ => unavailable("KV create", e),
+            _ => unavailable(&format!("KV create {key}"), e),
         })
     }
 
@@ -120,7 +120,7 @@ impl StateStore for NatsState {
                     PortError::conflict(format!("key {key} is not at revision {expected}"))
                 }
                 UpdateErrorKind::InvalidKey => PortError::other(format!("invalid key {key}")),
-                _ => unavailable("KV update", e),
+                _ => unavailable(&format!("KV update {key}"), e),
             })
     }
 
@@ -136,7 +136,7 @@ impl StateStore for NatsState {
                 if matches!(e.kind(), UpdateErrorKind::WrongLastRevision) || is_wrong_revision(&e) {
                     PortError::conflict(format!("key {key} is not at revision {expected:?}"))
                 } else {
-                    unavailable("KV delete", e)
+                    unavailable(&format!("KV delete {key}"), e)
                 }
             })
     }
@@ -163,7 +163,7 @@ impl StateStore for NatsState {
                 ..Default::default()
             })
             .await
-            .map_err(|e| unavailable("KV list", e))?;
+            .map_err(|e| unavailable(&format!("KV list {prefix}"), e))?;
         // The consumer can deliver before any info round trip, so the count of
         // pending messages is not the number of entries. Read until the last
         // message says nothing is pending, like the KV `keys` stream does.
@@ -173,13 +173,13 @@ impl StateStore for NatsState {
         let mut messages = consumer
             .messages()
             .await
-            .map_err(|e| unavailable("KV list", e))?;
+            .map_err(|e| unavailable(&format!("KV list {prefix}"), e))?;
         let mut out = Vec::new();
         loop {
             let Some(message) = messages.next().await else {
                 break;
             };
-            let message = message.map_err(|e| unavailable("KV list", e))?;
+            let message = message.map_err(|e| unavailable(&format!("KV list {prefix}"), e))?;
             let (entry, pending) = entry_from_message(&store.prefix, message)?;
             if let Some(entry) = entry.filter(|e| e.key.starts_with(prefix)) {
                 out.push(entry);
@@ -199,7 +199,7 @@ impl StateStore for NatsState {
         } else {
             store.watch(format!("{prefix}>")).await
         }
-        .map_err(|e| unavailable("KV watch", e))?;
+        .map_err(|e| unavailable(&format!("KV watch {prefix}"), e))?;
         Ok(w.filter_map(|e| {
             futures::future::ready(e.ok().map(|e| match e.operation {
                 Operation::Put => Change::Put(Entry {

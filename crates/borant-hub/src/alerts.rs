@@ -246,6 +246,10 @@ impl Hub {
             return Ok(());
         }
         let key = keys::task(channel, &task.id);
+        if !keys::valid_key(&key) {
+            tracing::debug!(key = %key, task = %task.id, "skipping a task key the store refuses");
+            return Ok(());
+        }
         let Some(doc) = self.store.get::<Task>(&key).await? else {
             return Ok(());
         };
@@ -297,9 +301,9 @@ mod tests {
             clock.clone(),
             HubConfig::default(),
         );
-        // The two shapes that broke the pass on borant-1, written the way an
-        // old version left them in the real KV.
-        for key in ["alert.", "alert..broken"] {
+        // The shapes that broke the pass on borant-1, written the way an old
+        // version left them in the real KV.
+        for key in ["alert.", "alert..broken", "alert.a b", "alert.a>b"] {
             state.seed(key, bytes::Bytes::from_static(b"{}"));
         }
         // An always-on host with no heartbeat, so host_offline is true.
