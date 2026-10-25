@@ -34,9 +34,6 @@ async fn host(fx: &Fx, harnesses: &[Harness], members: &[&str]) {
         harnesses: harnesses.to_vec(),
         launcher: "process".into(),
         max_agents: 4,
-        always_on: false,
-        draining: false,
-        ssh: None,
         members: BTreeMap::from([(
             bundle(),
             MemberBundle {
@@ -44,9 +41,7 @@ async fn host(fx: &Fx, harnesses: &[Harness], members: &[&str]) {
                 harnesses: vec![Harness::ClaudeCode],
             },
         )]),
-        pool: None,
-        tags: Vec::new(),
-        bundles: Vec::new(),
+        ..Default::default()
     };
     fx.req(CtlRequest::RegisterHost { info })
         .await

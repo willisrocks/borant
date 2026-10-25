@@ -353,21 +353,8 @@ mod tests {
         Agent {
             id: "a1".parse().unwrap(),
             preferred_harness: Harness::Fake,
-            repo: None,
-            movable: false,
-            channels: vec![],
-            session: None,
-            host: None,
-            harness_session_id: None,
             created: crate::time::Timestamp(1),
-            model: None,
-            model_harness: None,
-            project: None,
-            members: BTreeMap::new(),
-            pinned: false,
-            role: None,
-            collection: None,
-            parent: None,
+            ..Default::default()
         }
     }
 }

@@ -217,18 +217,8 @@ impl Fx {
                 }),
                 movable: true,
                 channels: vec![channel(i % CHANNELS)],
-                session: None,
-                host: None,
-                harness_session_id: None,
                 created: now,
-                model: None,
-                model_harness: None,
-                project: None,
-                members: Default::default(),
-                pinned: false,
-                role: None,
-                collection: None,
-                parent: None,
+                ..Default::default()
             };
             put(&self.state, &keys::agent(&id), &a).await;
             let lease = Lease {
@@ -335,7 +325,6 @@ async fn a_session_that_registers_during_the_tick_keeps_its_claims() {
                 session: SessionId::new(),
                 host: "h1".parse().unwrap(),
                 harness: Harness::Fake,
-                harness_session_id: None,
                 pid: Some(1),
                 cwd: "/work".into(),
                 repo: Some(RepoInfo {
@@ -344,10 +333,7 @@ async fn a_session_that_registers_during_the_tick_keeps_its_claims() {
                     subdir: String::new(),
                 }),
                 agent: Some(agent(i)),
-                channel: None,
-                shared_dir: false,
-                role: None,
-                collection: None,
+                ..Default::default()
             }))
             .await
         }));

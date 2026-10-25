@@ -80,9 +80,7 @@ fn order(remote: &Path, setup: &str) -> LaunchOrder {
             test: None,
             collection: None,
         }),
-        members: Default::default(),
-        bundles: Vec::new(),
-        git_author: None,
+        ..Default::default()
     }
 }
 
