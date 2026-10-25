@@ -23,9 +23,19 @@ extension). Docker multi-host tests live in `docker/` and `tests/e2e/`.
 
 ## Rules
 
-- Ports in `borant-core::ports` must not expose NATS types or behavior. A new
-  backend is a new adapter crate that passes the contract suites in
-  `borant-core::testing`.
+- Ports and adapters, strictly. Only Borant's domain logic (channels, tasks,
+  leases, delivery, moves, placement rules) lives in the core. Every outside
+  system is a port in `borant-core::ports` with neutral types and one or more
+  adapters: the bus and state store (NATS), compute and hosts (Hetzner, Fly.io,
+  Modal), secrets (1Password, Doppler, secretspec), launchers (tmux, herdr,
+  Orca), notifiers, and account usage. No core type, rule, or config key may
+  name a vendor or assume one, such as a VPS or a cloud.
+- An adapter is either a crate that passes the contract suite of its port in
+  `borant-core::testing`, or a program behind the built-in `exec` adapter (the
+  exec plugin protocol in
+  `docs/superpowers/specs/2026-10-24-elastic-compute-design.md`). Private
+  backends, such as the Hetzner provisioner and the 1Password plugin, live as
+  exec plugins in a private repo, not in this one.
 - Only the hub writes control-plane keys. Host daemons send requests.
 - Hooks and the Pi extension must never break the harness. If the daemon is
   down, they exit 0 with no output.

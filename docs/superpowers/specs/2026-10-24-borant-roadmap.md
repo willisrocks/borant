@@ -30,6 +30,14 @@ the order and the reasons.
 
 ## Design rule: pluggable backends
 
+Borant follows ports and adapters strictly. Only the domain logic (channels,
+tasks, leases, delivery, moves, and placement rules) is core. Everything
+else is a port with adapters: where agents run (Hetzner, Fly.io, Modal),
+where secrets live (1Password, Doppler, secretspec), how sessions start
+(tmux, herdr, Orca), how alerts go out, and where account usage comes from
+(for example `aiusage`). No core type or config key names a vendor, or
+assumes one, such as a VPS.
+
 The open-source core stays neutral about where agents run and where
 secrets live. The `Provisioner` and `SecretStore` ports live in
 `borant-core` with neutral types. A backend plugs in two ways:
