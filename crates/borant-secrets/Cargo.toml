@@ -1,0 +1,21 @@
+[package]
+name = "borant-secrets"
+description = "Secret store adapters: the host environment and files under a root"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+borant-core.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+borant-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+toml.workspace = true

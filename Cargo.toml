@@ -15,6 +15,7 @@ borant-nats = { path = "crates/borant-nats" }
 borant-hub = { path = "crates/borant-hub" }
 borant-host = { path = "crates/borant-host" }
 borant-launch = { path = "crates/borant-launch" }
+borant-secrets = { path = "crates/borant-secrets" }
 
 anyhow = "1.0.104"
 async-nats = "0.50.0"
