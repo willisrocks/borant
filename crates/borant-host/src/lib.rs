@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod client;
 mod commands;
 mod delivery;
+mod hub_down;
 pub mod outbox;
 mod persist;
 mod secrets;
@@ -20,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use borant_core::model::{Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats};
 use borant_core::ports::secrets::{Bundle, BundleName, MemberName, SecretStore};
-use borant_core::ports::{EventLog, LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
+use borant_core::ports::{
+    EventLog, LaunchHandle, Launcher, MessageBus, Notice, Notifier, Priority, SessionStore,
+};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
@@ -33,6 +36,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint::RepoFacts;
+use crate::hub_down::{HubAlert, HubDownWatch};
 use crate::outbox::Outbox;
 use crate::secrets::{LaunchSecrets, Redactor};
 
@@ -62,6 +66,10 @@ pub struct HostConfig {
     pub keep_turns: usize,
     pub notify: bool,
     pub hub_timeout: Duration,
+    /// `[alerts] watch_hub`: send a notice when the hub stays unreachable.
+    pub watch_hub: bool,
+    /// `[alerts] hub_down_minutes`: how long the heartbeats must fail first.
+    pub hub_down: Duration,
     /// The local API socket, if not `{home}/host.sock`.
     pub socket: Option<PathBuf>,
     /// The opened secret stores and bundles, from `[secrets]` in `host.toml`.
@@ -91,6 +99,8 @@ impl HostConfig {
             keep_turns: 50,
             notify: false,
             hub_timeout: Duration::from_secs(5),
+            watch_hub: false,
+            hub_down: Duration::from_secs(120),
             socket: None,
             secrets: None,
             secrets_root: None,
@@ -333,6 +343,8 @@ pub(crate) struct State {
     /// True when the hub was reachable for a lease, so a pause is a new
     /// outage and wakes its sessions.
     pub outage_over: bool,
+    /// The `hub.unreachable` window, when `[alerts] watch_hub` is on.
+    pub hub_down: HubDownWatch,
     /// False until the saved sessions are loaded. Until then, an unknown
     /// session can still be one that the restore brings back.
     pub restored: bool,
@@ -397,6 +409,7 @@ impl Host {
     ) -> Self {
         let wakes = cfg.wakes_per_hour;
         let started = clock.now();
+        let hub_down = HubDownWatch::new(cfg.hub_down, cfg.heartbeat);
         Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -418,6 +431,7 @@ impl Host {
                     host_registered: false,
                     up_since: None,
                     outage_over: true,
+                    hub_down,
                     restored: false,
                     event_limited: HashMap::new(),
                     launched: HashMap::new(),
@@ -612,6 +626,9 @@ impl Host {
                     self.wake_unpaused().await;
                 }
                 self.heartbeat_recovered();
+                if let Some(alert) = self.beat_recovered() {
+                    self.send_hub_alert(alert).await;
+                }
             }
             Err(e) => {
                 self.state().host_registered = false;
@@ -626,7 +643,62 @@ impl Host {
                 if since > self.inner.cfg.lease {
                     self.set_paused(true);
                 }
+                if let Some(alert) = self.beat_failed() {
+                    self.send_hub_alert(alert).await;
+                }
             }
+        }
+    }
+
+    /// One failed heartbeat in the `hub.unreachable` window, when `[alerts]
+    /// watch_hub` is on. The state lock is gone before the caller awaits the
+    /// notifier.
+    fn beat_failed(&self) -> Option<HubAlert> {
+        if !self.inner.cfg.watch_hub {
+            return None;
+        }
+        let now = self.inner.clock.now();
+        let alert = self.state().hub_down.failed(now);
+        if let Some(alert) = alert {
+            tracing::warn!(?alert, "the hub stays unreachable");
+        }
+        alert
+    }
+
+    /// One heartbeat that got through, in the `hub.unreachable` window.
+    fn beat_recovered(&self) -> Option<HubAlert> {
+        if !self.inner.cfg.watch_hub {
+            return None;
+        }
+        let now = self.inner.clock.now();
+        self.state().hub_down.recovered(now)
+    }
+
+    /// Tells the person through the notifier of this host. The stderr of a
+    /// notifier is not a secret, and a failed notice is a warning, not a
+    /// reason to stop the loop.
+    async fn send_hub_alert(&self, alert: HubAlert) {
+        let Some(notifier) = &self.inner.notifier else {
+            tracing::warn!(?alert, "watch_hub is on but this host has no notifier");
+            return;
+        };
+        let notice = match alert {
+            HubAlert::Down { minutes } => {
+                let text = format!("Borant hub unreachable for {minutes} minutes");
+                Notice::new(
+                    text,
+                    "Heartbeats to the Borant hub keep failing. Check the hub and its NATS broker.",
+                )
+                .with_priority(Priority::Urgent)
+                .with_tags(["hub".to_owned(), "hub.unreachable".to_owned()])
+            }
+            HubAlert::Back => Notice::new(
+                "Borant hub is back",
+                "The Borant hub answers heartbeats again.",
+            ),
+        };
+        if let Err(e) = notifier.notify(&notice).await {
+            tracing::warn!("cannot send the hub notice: {e}");
         }
     }
 
