@@ -15,6 +15,7 @@ async-trait.workspace = true
 axum.workspace = true
 borant-core.workspace = true
 borant-launch.workspace = true
+borant-secrets.workspace = true
 bytes.workspace = true
 futures.workspace = true
 http-body-util.workspace = true

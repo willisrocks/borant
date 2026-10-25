@@ -11,13 +11,14 @@ pub mod outbox;
 mod persist;
 mod sessions;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use borant_core::model::{Envelope, Harness, HostInfo};
+use borant_core::model::{Envelope, Harness, HostInfo, MemberBundle};
+use borant_core::ports::secrets::{Bundle, BundleName, SecretStore};
 use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
@@ -25,6 +26,7 @@ use borant_core::{
     AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, subjects,
 };
 use borant_launch::harness::HarnessCommands;
+use borant_secrets::{StoreConfig, open_store};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -59,6 +61,8 @@ pub struct HostConfig {
     pub hub_timeout: Duration,
     /// The local API socket, if not `{home}/host.sock`.
     pub socket: Option<PathBuf>,
+    /// The opened secret stores and bundles, from `[secrets]` in `host.toml`.
+    pub secrets: Option<HostSecrets>,
 }
 
 impl HostConfig {
@@ -82,6 +86,7 @@ impl HostConfig {
             notify: false,
             hub_timeout: Duration::from_secs(5),
             socket: None,
+            secrets: None,
         }
     }
 
@@ -100,10 +105,122 @@ impl HostConfig {
             always_on: self.always_on,
             draining: false,
             ssh: self.ssh.clone(),
-            members: Default::default(),
+            members: self
+                .secrets
+                .as_ref()
+                .map(|s| s.members(&self.harnesses))
+                .unwrap_or_default(),
             pool: self.pool.clone(),
             tags: self.tags.clone(),
         }
+    }
+}
+
+/// The `[secrets]` section of `host.toml`, before the stores open.
+#[derive(Debug, Clone, Default)]
+pub struct SecretConfig {
+    /// `[secrets.stores.<name>]`.
+    pub stores: BTreeMap<String, StoreConfig>,
+    /// `[secrets.bundles.<name>]`, with the table key as the bundle name.
+    pub bundles: BTreeMap<BundleName, Bundle>,
+    /// `[secrets.harness]`: `"*"` or a harness name, each with its default
+    /// bundles.
+    pub harness: BTreeMap<String, Vec<BundleName>>,
+    /// The folder of the credential file of an exec plugin, when the service
+    /// manager gives one.
+    pub credentials_dir: Option<PathBuf>,
+}
+
+/// The opened secret stores of this host, with the bundles that name them.
+#[derive(Debug, Clone)]
+pub struct HostSecrets {
+    /// The stores that opened. A store that failed is not here.
+    pub stores: BTreeMap<String, Arc<dyn SecretStore>>,
+    pub bundles: BTreeMap<BundleName, Bundle>,
+    pub harness: BTreeMap<String, Vec<BundleName>>,
+}
+
+impl SecretConfig {
+    /// Opens every store at host start. A store that fails is logged, and every
+    /// harness whose default bundles use it is left out, so a host never tries
+    /// to launch an agent whose token it cannot read.
+    pub async fn open(&self, harnesses: &[Harness]) -> (HostSecrets, Vec<Harness>) {
+        let mut stores = BTreeMap::new();
+        let mut failed = Vec::new();
+        for (name, config) in &self.stores {
+            match open_store(config, self.credentials_dir.as_deref()).await {
+                Ok(store) => {
+                    stores.insert(name.clone(), store);
+                }
+                Err(e) => {
+                    tracing::error!(store = %name, "the secret store did not open: {e}");
+                    failed.push(name.clone());
+                }
+            }
+        }
+        let secrets = HostSecrets {
+            stores,
+            bundles: self.bundles.clone(),
+            harness: self.harness.clone(),
+        };
+        let keep = harnesses
+            .iter()
+            .copied()
+            .filter(|harness| {
+                !secrets.bundles_for(*harness).iter().any(|bundle| {
+                    let store = &secrets.bundles[bundle].store;
+                    failed.iter().any(|f| f == store)
+                })
+            })
+            .collect();
+        (secrets, keep)
+    }
+}
+
+impl HostSecrets {
+    /// The bundles of a harness: the `"*"` defaults first, then its own, with
+    /// bundles that `host.toml` does not define left out.
+    pub fn bundles_for(&self, harness: Harness) -> Vec<BundleName> {
+        let mut out: Vec<BundleName> = Vec::new();
+        let star = self.harness.get("*").cloned().unwrap_or_default();
+        let own = self
+            .harness
+            .get(harness.as_str())
+            .cloned()
+            .unwrap_or_default();
+        for bundle in star.into_iter().chain(own) {
+            if self.bundles.contains_key(&bundle) && !out.contains(&bundle) {
+                out.push(bundle);
+            }
+        }
+        out
+    }
+
+    /// The bundles with two or more members, and the harnesses that get them:
+    /// what the hub needs to pick a member at each launch.
+    pub fn members(&self, harnesses: &[Harness]) -> BTreeMap<BundleName, MemberBundle> {
+        let mut out = BTreeMap::new();
+        for (name, bundle) in &self.bundles {
+            if bundle.members.len() < 2 {
+                continue;
+            }
+            let holders: Vec<Harness> = harnesses
+                .iter()
+                .copied()
+                .filter(|harness| self.bundles_for(*harness).contains(name))
+                .collect();
+            if holders.is_empty() {
+                continue;
+            }
+            out.insert(
+                name.clone(),
+                MemberBundle {
+                    members: bundle.members.keys().cloned().collect(),
+                    harnesses: holders,
+                },
+            );
+        }
+        out
     }
 }
 

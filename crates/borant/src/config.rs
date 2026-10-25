@@ -2,16 +2,19 @@
 //! with environment overrides. Every key has a default, so both files are
 //! optional.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::model::Harness;
+use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
-use borant_core::{HostName, PoolName, Tag};
-use borant_host::HostConfig;
+use borant_core::{BundleName, HostName, MemberName, PoolName, Tag};
+use borant_host::{HostConfig, SecretConfig};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
+use borant_secrets::StoreConfig;
 use serde::Deserialize;
 
 pub fn home() -> PathBuf {
@@ -183,6 +186,71 @@ pub struct HostFile {
     pub host: HostSection,
     #[serde(default)]
     pub commands: HarnessCommands,
+    pub secrets: Option<SecretsFile>,
+}
+
+/// `[secrets]` of `host.toml`. Every key is optional, so a host without
+/// secrets (a laptop) parses as before.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretsFile {
+    /// `[secrets.stores.<name>]`, one entry for each backend.
+    #[serde(default)]
+    pub stores: BTreeMap<String, StoreConfig>,
+    /// `[secrets.bundles.<name>]`, where the key is the bundle name.
+    #[serde(default)]
+    pub bundles: BTreeMap<BundleName, BundleFile>,
+    /// `[secrets.harness]`: `"*"` or a harness name, each with the bundles it
+    /// gets by default.
+    #[serde(default)]
+    pub harness: BTreeMap<String, Vec<BundleName>>,
+}
+
+/// One `[secrets.bundles.<name>]` entry. The table key is the name, so the file
+/// does not repeat it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleFile {
+    /// The store that resolves the refs of this bundle.
+    pub store: String,
+    #[serde(default)]
+    pub vars: BTreeMap<String, SecretRef>,
+    #[serde(default)]
+    pub files: BTreeMap<String, SecretRef>,
+    #[serde(default)]
+    pub pre: Vec<Vec<String>>,
+    #[serde(default)]
+    pub members: BTreeMap<MemberName, BTreeMap<String, SecretRef>>,
+}
+
+impl BundleFile {
+    /// The bundle as the core holds it, with the name from its key.
+    fn bundle(self, name: BundleName) -> Bundle {
+        Bundle {
+            name,
+            store: self.store,
+            vars: self.vars,
+            files: self.files,
+            pre: self.pre,
+            members: self.members,
+        }
+    }
+}
+
+impl SecretsFile {
+    /// The section with each bundle name filled from its key, ready to open.
+    pub fn config(&self) -> SecretConfig {
+        SecretConfig {
+            stores: self.stores.clone(),
+            bundles: self
+                .bundles
+                .iter()
+                .map(|(name, file)| (name.clone(), file.clone().bundle(name.clone())))
+                .collect(),
+            harness: self.harness.clone(),
+            credentials_dir: env("CREDENTIALS_DIRECTORY").map(PathBuf::from),
+        }
+    }
 }
 
 fn read<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> anyhow::Result<T> {
@@ -239,7 +307,9 @@ pub fn detect_harnesses() -> Vec<Harness> {
     .collect()
 }
 
-pub fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
+/// Reads `host.toml` into a [`HostConfig`], and opens the `[secrets]` stores.
+/// A store that fails drops the harnesses whose bundles use it.
+pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     let h = &file.host;
     let name: HostName = env("BORANT_HOST_NAME")
         .or(h.name.clone())
@@ -289,6 +359,17 @@ pub fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     cfg.lease = timing.lease;
     cfg.heartbeat = timing.heartbeat;
     cfg.commands = file.commands.clone();
+    if let Some(section) = &file.secrets {
+        let (opened, harnesses) = section.config().open(&cfg.harnesses).await;
+        tracing::info!(
+            stores = opened.stores.len(),
+            bundles = opened.bundles.len(),
+            harnesses = ?harnesses,
+            "secrets opened"
+        );
+        cfg.secrets = Some(opened);
+        cfg.harnesses = harnesses;
+    }
     Ok(cfg)
 }
 
@@ -357,8 +438,8 @@ mod tests {
         assert!(split_list::<PoolName>("").is_err());
     }
 
-    #[test]
-    fn host_config_reads_pool_and_tags_from_the_file() {
+    #[tokio::test]
+    async fn host_config_reads_pool_and_tags_from_the_file() {
         let file: HostFile = toml::from_str(
             r#"
             [host]
@@ -369,7 +450,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let cfg = host_config(&file).unwrap();
+        let cfg = host_config(&file).await.unwrap();
         assert_eq!(cfg.pool.as_ref().map(PoolName::as_str), Some("workers"));
         assert_eq!(cfg.tags.len(), 1);
         assert_eq!(cfg.tags[0].as_str(), "vps");
@@ -410,5 +491,131 @@ mod tests {
     #[test]
     fn default_host_name_is_valid() {
         assert!(default_host_name().parse::<HostName>().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod secrets_tests {
+    use super::*;
+
+    /// The `host.toml` example of the phase 1 spec, without comments.
+    const SPEC_HOST: &str = r#"
+[secrets.stores.op]
+kind = "exec"
+command = ["borant-secrets-1password"]
+credential = "store-token"
+timeout_secs = 10
+
+[secrets.bundles.claude-auth]
+store = "op"
+[secrets.bundles.claude-auth.members]
+a = { CLAUDE_CODE_OAUTH_TOKEN = "op://Borant/claude-a/oauth-token" }
+b = { CLAUDE_CODE_OAUTH_TOKEN = "op://Borant/claude-b/oauth-token" }
+c = { CLAUDE_CODE_OAUTH_TOKEN = "op://Borant/claude-c/oauth-token" }
+
+[secrets.harness]
+"*" = ["github"]
+claude-code = ["claude-auth"]
+omp = ["lunaroute"]
+"#;
+
+    #[test]
+    fn config_parses_the_spec_host_toml() {
+        let file: HostFile = toml::from_str(SPEC_HOST).unwrap();
+        let secrets = file.secrets.expect("a [secrets] section");
+        assert!(matches!(
+            secrets.stores["op"],
+            StoreConfig::Exec {
+                timeout_secs: 10,
+                ..
+            }
+        ));
+        let name: BundleName = "claude-auth".parse().unwrap();
+        let auth = &secrets.bundles[&name];
+        assert_eq!(auth.store, "op");
+        assert_eq!(auth.members.len(), 3);
+        let a: MemberName = "a".parse().unwrap();
+        assert_eq!(
+            auth.members[&a]["CLAUDE_CODE_OAUTH_TOKEN"],
+            SecretRef("op://Borant/claude-a/oauth-token".into())
+        );
+        assert_eq!(
+            secrets.harness["*"],
+            vec!["github".parse::<BundleName>().unwrap()]
+        );
+        assert_eq!(secrets.harness["claude-code"], vec![name.clone()]);
+        assert_eq!(
+            secrets.harness["omp"],
+            vec!["lunaroute".parse::<BundleName>().unwrap()]
+        );
+        // The bundle name comes from the table key.
+        let opened = secrets.config();
+        assert_eq!(opened.bundles[&name].name, name);
+    }
+
+    #[tokio::test]
+    async fn config_announces_the_members_of_a_bundle() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "e-2"
+            harnesses = ["claude-code", "omp"]
+
+            [secrets.stores.env]
+            kind = "env"
+
+            [secrets.bundles.claude-auth]
+            store = "env"
+            [secrets.bundles.claude-auth.members]
+            a = { CLAUDE_CODE_OAUTH_TOKEN = "TOKEN_A" }
+            b = { CLAUDE_CODE_OAUTH_TOKEN = "TOKEN_B" }
+
+            [secrets.harness]
+            claude-code = ["claude-auth"]
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        let info = cfg.info();
+        let name: BundleName = "claude-auth".parse().unwrap();
+        let bundle = info.members.get(&name).expect("the bundle is announced");
+        assert_eq!(
+            bundle.members,
+            vec!["a".parse().unwrap(), "b".parse().unwrap()]
+        );
+        assert_eq!(bundle.harnesses, vec![Harness::ClaudeCode]);
+        assert_eq!(
+            bundle.members.len(),
+            2,
+            "the hub picks only for two or more"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_without_secrets_is_todays_host() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "laptop"
+            harnesses = ["pi", "omp"]
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert!(cfg.secrets.is_none());
+        assert!(cfg.info().members.is_empty());
+        assert_eq!(cfg.harnesses, vec![Harness::Pi, Harness::Omp]);
+    }
+
+    #[test]
+    fn config_rejects_an_unknown_secrets_key() {
+        assert!(
+            toml::from_str::<HostFile>("[secrets]\nnope = 1\n").is_err(),
+            "deny_unknown_fields stays"
+        );
+        assert!(
+            toml::from_str::<HostFile>("[secrets.bundles.x]\nstore = \"s\"\nnope = 1\n").is_err(),
+            "deny_unknown_fields stays"
+        );
     }
 }
