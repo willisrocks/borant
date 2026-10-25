@@ -180,6 +180,8 @@ to agents.
 | `borant cancel <agent> [--close-task REASON]` | Stop an agent and cancel its queued spawn |
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |
 | `borant logs <agent> [--follow]` | The session log of an agent |
+| `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
+| `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant move <agent> [--host H] [--harness X] [--here]` | Move one agent |
 | `borant move --from <host> --here` | Move all agents of a host to this host |

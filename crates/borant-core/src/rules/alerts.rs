@@ -36,6 +36,9 @@ pub struct TaskAlert {
     pub id: TaskId,
     pub channel: ChannelName,
     pub title: String,
+    /// The question that the task is waiting on, when it wrote one. It is the
+    /// line that a person needs on the phone; the inbox shows it too.
+    pub attention_msg: Option<String>,
 }
 
 /// One provisioner refusal that is still current: a create or a delete
@@ -115,14 +118,15 @@ pub fn active_alerts(
     let mut active = BTreeMap::new();
     if cfg.needs_human {
         for task in &view.needs_human {
+            let mut body = format!("{} in #{}", task.title, task.channel);
+            if let Some(msg) = &task.attention_msg {
+                body.push_str(&format!(": {msg}"));
+            }
             active.insert(
                 key(NEEDS_HUMAN, &task.id.to_string()),
-                Notice::new(
-                    "A task needs a human",
-                    format!("{} in #{}", task.title, task.channel),
-                )
-                .with_priority(Priority::High)
-                .with_tags([NEEDS_HUMAN.to_owned(), format!("#{}", task.channel)]),
+                Notice::new("A task needs a human", body)
+                    .with_priority(Priority::High)
+                    .with_tags([NEEDS_HUMAN.to_owned(), format!("#{}", task.channel)]),
             );
         }
     }
@@ -371,6 +375,7 @@ mod tests {
             id: TaskId::new(),
             channel: "api".parse().unwrap(),
             title: "decide".into(),
+            attention_msg: Some("which database?".into()),
         });
         let actions = evaluate(&view, &BTreeSet::new(), &cfg(), NOW);
         let key = format!("needs_human:{}", view.needs_human[0].id);
@@ -380,6 +385,8 @@ mod tests {
             panic!("a fire")
         };
         assert_eq!(notice.priority, Priority::High);
+        // The question itself is on the phone, not only the title.
+        assert_eq!(notice.body, "decide in #api: which database?");
 
         // The same state again fires nothing.
         let open = BTreeSet::from([key.clone()]);
@@ -399,6 +406,7 @@ mod tests {
             id: TaskId::new(),
             channel: "api".parse().unwrap(),
             title: "decide".into(),
+            attention_msg: None,
         });
         let mut cfg = cfg();
         cfg.needs_human = false;

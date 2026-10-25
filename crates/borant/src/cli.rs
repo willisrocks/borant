@@ -195,6 +195,22 @@ pub enum Command {
         #[arg(long)]
         follow: bool,
     },
+    /// Show what waits for a person: the tasks that need one, and the paused
+    /// agents.
+    Inbox {
+        /// Print the inbox as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Answer the question of a task. The claimer gets the text, or the
+    /// channel owner when nobody holds it.
+    Answer {
+        /// The task to answer, as CHANNEL/ID.
+        task: String,
+        /// The answer text.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
     /// Move agents to another host or harness.
     Move {
         /// The agent to move.
@@ -755,6 +771,78 @@ fn render_reject(value: &Value) -> String {
     }
 }
 
+/// The text of `borant inbox`: the tasks that wait for a person, then the
+/// paused agents. A task's question is on its own line under it.
+fn render_inbox(v: &Value) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let tasks = v["tasks"].as_array().cloned().unwrap_or_default();
+    if tasks.is_empty() {
+        out.push_str("No task waits for a person.\n");
+    } else {
+        out.push_str(&format!("TASKS FOR A PERSON ({})\n", tasks.len()));
+        out.push_str(
+            "CHANNEL    ID                          STATUS       AGE       CLAIMER          TITLE\n",
+        );
+        for task in &tasks {
+            let _ = writeln!(
+                out,
+                "{:<10} {:<27} {:<12} {:<9} {:<16} {}",
+                task["channel"].as_str().unwrap_or("?"),
+                task["id"].as_str().unwrap_or("?"),
+                task["status"].as_str().unwrap_or("?"),
+                age_label(task["age_ms"].as_i64().unwrap_or(0)),
+                task["claimer"].as_str().unwrap_or("-"),
+                task["title"].as_str().unwrap_or(""),
+            );
+            if let Some(msg) = task["attention_msg"].as_str() {
+                let _ = writeln!(out, "           {msg}");
+            }
+        }
+    }
+
+    let agents = v["agents"].as_array().cloned().unwrap_or_default();
+    if !agents.is_empty() {
+        out.push_str("\nPAUSED AGENTS\n");
+        out.push_str("AGENT                    AGE       BY        WHY\n");
+        for agent in &agents {
+            let by = match &agent["by"] {
+                Value::String(by) => by.clone(),
+                // A `Sender` is `{"type": "agent", "id": "w1"}` or
+                // `"human"`; a missing `id` is a person.
+                Value::Object(map) => map
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| map.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_else(|| "?".to_owned()),
+                _ => "?".to_owned(),
+            };
+            let _ = writeln!(
+                out,
+                "{:<24} {:<9} {:<9} {}",
+                agent["agent"].as_str().unwrap_or("?"),
+                age_label(agent["age_ms"].as_i64().unwrap_or(0)),
+                by,
+                agent["why"].as_str().unwrap_or(""),
+            );
+        }
+    }
+    out
+}
+
+/// A count of milliseconds as seconds, minutes, hours, or days.
+fn age_label(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
 /// Prints the newest page of the session log of an agent, and then the events
 /// that arrive when `follow` is set.
 async fn logs(c: &LocalClient, agent: &AgentId, follow: bool) -> anyhow::Result<()> {
@@ -1104,6 +1192,43 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             }
         }
         Command::Logs { agent, follow } => logs(&c, &agent, follow).await?,
+        Command::Inbox { json } => {
+            let v = call(&c, ToolCall::Inbox).await?;
+            if json {
+                pretty(&v);
+            } else {
+                print!("{}", render_inbox(&v));
+            }
+        }
+        Command::Answer { task, text } => {
+            let (channel, id) = task_ref(&task)?;
+            // Read the task first: the answer names the version that the
+            // person saw, so a task that changed meanwhile is a Conflict.
+            let current = call(
+                &c,
+                ToolCall::TaskGet {
+                    channel: channel.clone(),
+                    id,
+                },
+            )
+            .await?;
+            let updated = current["updated"]
+                .as_i64()
+                .context("the task reply has no updated time")?;
+            pretty(
+                &call(
+                    &c,
+                    ToolCall::Answer {
+                        channel,
+                        task: id,
+                        text: text.join(" "),
+                        expect_updated: Timestamp(updated),
+                        key: None,
+                    },
+                )
+                .await?,
+            );
+        }
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
@@ -1236,6 +1361,9 @@ mod tests {
             "borant ps --queued --json",
             "borant logs w1",
             "borant logs w1 --follow",
+            "borant inbox",
+            "borant inbox --json",
+            "borant answer api/01M5S3PATRKMGFD9C0HB1CS4ZK use postgres",
             "borant project add api git@github.com:me/api.git --branch dev --setup just",
             "borant project add api --from-cwd",
             "borant project list",
@@ -1511,6 +1639,43 @@ mod tests {
         );
         // An older reply that names the agent at the top still reads.
         assert_eq!(spawn_line(&json!({"agent": "w1"})), "agent w1");
+    }
+
+    #[test]
+    fn cli_inbox_renders_the_tasks_and_the_paused_agents() {
+        let v = json!({
+            "at": 1_792_929_600_000i64,
+            "tasks": [{
+                "channel": "api", "id": TASK, "title": "decide the storage",
+                "status": "needs_human", "claimer": "w1",
+                "attention_msg": "which database?", "age_ms": 900_000i64,
+            }],
+            "agents": [{
+                "agent": "w2", "why": "cap: 200 turns today",
+                "by": {"type": "human"}, "at": 1_792_929_600_000i64,
+                "age_ms": 300_000i64,
+            }],
+        });
+        let text = render_inbox(&v);
+        assert!(text.contains("TASKS FOR A PERSON (1)"), "{text}");
+        assert!(text.contains("needs_human"), "{text}");
+        assert!(text.contains("15m"), "the age of the task:\n{text}");
+        assert!(text.contains("which database?"), "{text}");
+        assert!(text.contains("PAUSED AGENTS"), "{text}");
+        assert!(text.contains("cap: 200 turns today"), "{text}");
+        assert!(text.contains("human"), "the sender of the pause:\n{text}");
+        assert!(text.contains("5m"), "the age of the pause:\n{text}");
+
+        // An empty inbox says so, and prints no paused section.
+        let empty = json!({"at": 0, "tasks": [], "agents": []});
+        let text = render_inbox(&empty);
+        assert_eq!(text, "No task waits for a person.\n");
+
+        assert_eq!(age_label(0), "0s");
+        assert_eq!(age_label(59_000), "59s");
+        assert_eq!(age_label(600_000), "10m");
+        assert_eq!(age_label(7_200_000), "2h");
+        assert_eq!(age_label(2 * 86_400_000), "2d");
     }
 
     #[test]

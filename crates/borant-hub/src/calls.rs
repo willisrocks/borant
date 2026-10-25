@@ -337,8 +337,25 @@ impl Hub {
                 let me = me.ok_or_else(|| ApiError::invalid("a wait needs an agent session"))?;
                 self.wait(&me, &channel, &task, until, timeout_secs).await
             }
-            ToolCall::Inbox => Err(ApiError::invalid("inbox is not built yet")),
-            ToolCall::Answer { .. } => Err(ApiError::invalid("answer is not built yet")),
+            ToolCall::Inbox => {
+                if actor.is_some() {
+                    return Err(ApiError::invalid("the inbox is for a person"));
+                }
+                self.inbox().await
+            }
+            ToolCall::Answer {
+                channel,
+                task,
+                text,
+                expect_updated,
+                ..
+            } => {
+                if actor.is_some() {
+                    return Err(ApiError::invalid("only a person answers a task"));
+                }
+                self.answer(mem, &channel, &task, text, expect_updated)
+                    .await
+            }
             ToolCall::Stop { .. } => Err(ApiError::invalid("stop is not built yet")),
             ToolCall::Resume { .. } => Err(ApiError::invalid("resume is not built yet")),
             ToolCall::SpawnQueue => Err(ApiError::invalid("spawn_queue is not built yet")),

@@ -144,6 +144,7 @@ impl Hub {
                 id: task.id,
                 channel: channel.clone(),
                 title: task.title.clone(),
+                attention_msg: task.attention_msg.clone(),
             })
             .collect();
         let restart_grace = {
@@ -167,8 +168,9 @@ impl Hub {
         Ok((view, tasks))
     }
 
-    /// Every task with its channel, read from the KV keys.
-    async fn all_tasks(&self) -> Result<Vec<(ChannelName, Task)>, ApiError> {
+    /// Every task of every channel, with its channel. The inbox lists from
+    /// this too, so a person and an alert pass see the same tasks.
+    pub(crate) async fn all_tasks(&self) -> Result<Vec<(ChannelName, Task)>, ApiError> {
         let mut tasks = Vec::new();
         for entry in self.store.0.list(keys::CHANNEL_PREFIX).await? {
             let Some(rest) = entry.key.strip_prefix(keys::CHANNEL_PREFIX) else {

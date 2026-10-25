@@ -10,6 +10,7 @@ mod calls;
 pub mod elastic;
 mod events;
 pub mod export;
+mod inbox;
 mod leases;
 mod members;
 mod moves;
