@@ -44,6 +44,35 @@ pub enum Command {
     Host,
     /// Show the local daemon, the hosts, and the agents.
     Status,
+    /// Follow the swarm event stream of the local host daemon.
+    Events {
+        /// Wait for events published from now on, instead of printing and
+        /// ending.
+        #[arg(long)]
+        follow: bool,
+        /// Start at this time: a duration such as 30m or 2d, or an RFC 3339
+        /// time such as 2026-10-25T09:00:00Z.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only these kinds, for example lease.expired or lease.*.
+        #[arg(long = "kind")]
+        kind: Vec<String>,
+        /// Only the events about this agent.
+        #[arg(long)]
+        agent: Option<AgentId>,
+        /// Only the events about this channel.
+        #[arg(long)]
+        channel: Option<ChannelName>,
+        /// Only the events about this host.
+        #[arg(long)]
+        host: Option<HostName>,
+        /// Only this severity and worse: info, warn, or error.
+        #[arg(long, value_parser = crate::events::severity_arg)]
+        severity: Option<borant_core::events::Severity>,
+        /// Print one JSON event per line instead of a text line.
+        #[arg(long)]
+        json: bool,
+    },
     /// List all agents.
     Agents {
         #[command(subcommand)]
@@ -308,7 +337,7 @@ fn parse_window(text: &str) -> anyhow::Result<UsageWindow> {
 }
 
 /// Parses an RFC 3339 date-time into Unix milliseconds.
-fn rfc3339(text: &str) -> anyhow::Result<Timestamp> {
+pub(crate) fn rfc3339(text: &str) -> anyhow::Result<Timestamp> {
     use toml::value::{Datetime, Offset};
     let at: Datetime = text
         .parse()
@@ -375,6 +404,32 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
                     a["channels"]
                 );
             }
+        }
+        Command::Events {
+            follow,
+            since,
+            kind,
+            agent,
+            channel,
+            host,
+            severity,
+            json,
+        } => {
+            let since = match since {
+                Some(text) => Some(crate::events::parse_since(&text, crate::events::now())?),
+                None => None,
+            };
+            let args = crate::events::Args {
+                follow,
+                since,
+                kinds: kind,
+                agent,
+                channel,
+                host,
+                min_severity: severity,
+                json,
+            };
+            crate::events::run(&config::socket(), &args).await?;
         }
         Command::Agents { cmd: None } => pretty(&call(&c, ToolCall::ListAgents).await?),
         Command::Agents {
@@ -601,6 +656,11 @@ mod tests {
             "borant hub move vps-1",
             "borant host",
             "borant status",
+            "borant events",
+            "borant events --follow",
+            "borant events --since 1h --kind lease.* --kind task.status --json",
+            "borant events --since 2026-10-25T09:00:00Z --agent w1 --channel api --host borant-1",
+            "borant events --severity warn",
             "borant agents",
             "borant agents prune --dry-run",
             "borant agents prune --dry-run --older-than-hours 48",
@@ -627,6 +687,7 @@ mod tests {
             Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{line}: {e}"));
         }
         assert!(Cli::try_parse_from(["borant", "move", "w1", "--from", "h"]).is_err());
+        assert!(Cli::try_parse_from(["borant", "events", "--severity", "loud"]).is_err());
         assert!(Cli::try_parse_from(["borant", "tasks", "Bad.Name"]).is_err());
         assert!(Cli::try_parse_from(["borant", "project", "add", "api"]).is_err());
         assert!(
