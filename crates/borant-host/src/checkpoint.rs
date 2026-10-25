@@ -121,6 +121,15 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
     let tmp = tempfile::NamedTempFile::new().context("create a temporary index")?;
     if Path::new(&index_path).exists() {
         std::fs::copy(&index_path, tmp.path()).context("copy the index")?;
+        // `git add` trusts the stat data of an index entry unless the file is
+        // as new as the index, git's guard for a file written in the same
+        // second as its entry. A copy written now is newer than every file,
+        // so such a file looks unchanged and the tree keeps the old blob. The
+        // timestamp of the real index keeps the guard.
+        let real = std::fs::metadata(&index_path).context("stat the index")?;
+        tmp.as_file()
+            .set_times(std::fs::FileTimes::new().set_modified(real.modified()?))
+            .context("set the timestamp of the temporary index")?;
     }
     git(cwd, &["add", "-A"], Some(tmp.path())).await?;
     let tree = git(cwd, &["write-tree"], Some(tmp.path())).await?;
