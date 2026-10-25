@@ -92,6 +92,7 @@ impl HostConfig {
             always_on: self.always_on,
             draining: false,
             ssh: self.ssh.clone(),
+            members: Default::default(),
         }
     }
 }

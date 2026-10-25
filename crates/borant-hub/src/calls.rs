@@ -59,6 +59,8 @@ impl Hub {
             CtlRequest::Snapshot { .. } => Err(ApiError::internal(
                 "a snapshot must not run behind the hub request mutex",
             )),
+            // The limit restart task adds the handler.
+            CtlRequest::MemberLimited { .. } => Err(ApiError::invalid("not built yet")),
         }
     }
 
@@ -269,6 +271,10 @@ impl Hub {
                     .map(|d| d.value)
                     .collect();
                 to_value(&projects)
+            }
+            // The member assignment task adds these.
+            ToolCall::UsageReport { .. } | ToolCall::ListMembers => {
+                Err(ApiError::invalid("not built yet"))
             }
         }
     }

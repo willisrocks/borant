@@ -11,6 +11,7 @@ use crate::model::{
     Envelope, EnvelopeKind, Harness, Sender, SessionEvent, SessionEventBody, Target, TaskEvent,
     TaskEventKind, TaskStatus,
 };
+use crate::ports::secrets::{SecretRef, SecretStore};
 use crate::ports::{Change, MessageBus, PortErrorKind, SessionStore, StateStore};
 use crate::time::Timestamp;
 
@@ -260,4 +261,69 @@ pub async fn session_store_contract(store: &dyn SessionStore) {
     assert!(store.agents().await.expect("agents").contains(&agent));
     store.delete(&agent).await.expect("delete");
     assert!(store.read(&agent).await.expect("read").is_empty());
+}
+
+/// Rules 1 to 4 of the secrets doc, section 2.3. `known` must not be empty.
+pub async fn secret_store_contract(
+    store: &dyn SecretStore,
+    known: &[(SecretRef, &str)],
+    missing: SecretRef,
+) {
+    assert!(!known.is_empty(), "the contract needs one known ref");
+    assert!(
+        store.capabilities().resolve,
+        "a secrets store must support resolve"
+    );
+    let refs: Vec<SecretRef> = known.iter().map(|(r, _)| r.clone()).collect();
+
+    // Rule 1: every known ref gives its exact value, twice in a row.
+    for round in 0..2 {
+        let resolved = store
+            .resolve(&refs)
+            .await
+            .unwrap_or_else(|e| panic!("resolve, round {round}: {e}"));
+        assert_eq!(resolved.values.len(), refs.len(), "round {round}");
+        for (r, value) in known {
+            let got = resolved
+                .values
+                .get(r)
+                .unwrap_or_else(|| panic!("{r:?} is missing, round {round}"));
+            assert_eq!(got.expose(), *value, "the value of {r:?}, round {round}");
+        }
+        // Rule 4: the Debug output holds no value.
+        assert_no_value(&format!("{resolved:?}"), known, "the Debug output");
+    }
+
+    // Rule 2: an empty list and a duplicate ref.
+    let empty = store.resolve(&[]).await.expect("an empty list resolves");
+    assert!(empty.values.is_empty(), "an empty list gives an empty map");
+    let twice = store
+        .resolve(&[refs[0].clone(), refs[0].clone()])
+        .await
+        .expect("a duplicate ref resolves");
+    assert_eq!(twice.values.len(), 1, "a duplicate ref gives one entry");
+
+    // Rule 3: one missing ref fails the whole call and returns no values.
+    let mut asked = refs.clone();
+    asked.push(missing.clone());
+    let err = store
+        .resolve(&asked)
+        .await
+        .expect_err("one missing ref must fail the call");
+    assert_eq!(
+        err.kind,
+        PortErrorKind::NotFound,
+        "a missing ref is NotFound: {err}"
+    );
+    assert_no_value(&format!("{err:?}"), known, "the error");
+    assert_no_value(&err.message, known, "the error message");
+}
+
+fn assert_no_value(text: &str, known: &[(SecretRef, &str)], what: &str) {
+    for (r, value) in known {
+        assert!(
+            !text.contains(value),
+            "{what} holds the value of {r:?}: {text}"
+        );
+    }
 }

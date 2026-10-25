@@ -84,6 +84,17 @@ name_type!(
     HostName,
     "host name"
 );
+name_type!(
+    /// A bundle of secrets, for example `github`. Safe to log and to send to
+    /// the hub.
+    BundleName,
+    "bundle name"
+);
+name_type!(
+    /// One account behind a bundle, for example `a`. Safe to log.
+    MemberName,
+    "member name"
+);
 
 macro_rules! ulid_type {
     ($(#[$meta:meta])* $name:ident) => {

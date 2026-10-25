@@ -72,6 +72,7 @@ impl Fx {
                 always_on: false,
                 draining: false,
                 ssh: None,
+                members: Default::default(),
             },
         })
         .await
