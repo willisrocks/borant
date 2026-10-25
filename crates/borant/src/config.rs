@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use borant_core::config::AlertsConfig;
+use borant_core::config::{AlertsConfig, ChangesConfig, ChannelConfig};
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
@@ -17,7 +17,9 @@ use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
 use borant_core::rules::pool::PoolConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
-use borant_core::{BundleName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag};
+use borant_core::{
+    BundleName, ChannelName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag,
+};
 use borant_exec::ExecConfig;
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
@@ -255,6 +257,14 @@ pub struct HubFile {
     /// The collections, by name, for example `personal` and `work`.
     #[serde(default)]
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
+    /// `[channels.<name>]`: the caps of a channel.
+    #[serde(default)]
+    #[allow(dead_code)] // The stop and spawn-caps task reads it.
+    pub channels: BTreeMap<ChannelName, ChannelConfig>,
+    /// `[changes]`: the PR watch. Not wired yet.
+    #[serde(default)]
+    #[allow(dead_code)] // The PR watch task reads it.
+    pub changes: ChangesConfig,
     /// `[alerts]`: the notifier of the hub and its alert rules.
     #[serde(default)]
     pub alerts: AlertsFile,
@@ -1262,6 +1272,41 @@ omp = ["lunaroute"]
         let worker = f.roles.get(&"worker".parse().unwrap()).unwrap();
         assert_eq!(worker.tools_deny, vec!["spawn", "move"]);
         assert!(worker.spawns.is_empty());
+    }
+
+    #[test]
+    fn hub_file_parses_caps_channels_and_changes() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [roles.worker]
+            max_turns_per_day = 200
+            max_session_hours = 8
+
+            [channels.api]
+            max_agents = 4
+
+            [changes]
+            adapter = "exec"
+            program = "borant-changes-github"
+            every_secs = 30
+            "#,
+        )
+        .unwrap();
+        let worker = f.roles.get(&"worker".parse().unwrap()).unwrap();
+        assert_eq!(worker.max_turns_per_day, Some(200));
+        assert_eq!(worker.max_session_hours, Some(8));
+        let api = f.channels.get(&"api".parse().unwrap()).unwrap();
+        assert_eq!(api.max_agents, Some(4));
+        assert_eq!(f.changes.adapter.as_deref(), Some("exec"));
+        assert_eq!(f.changes.program.as_deref(), Some("borant-changes-github"));
+        assert_eq!(f.changes.every_secs, 30);
+
+        // A hub that says nothing about the new tables keeps the defaults.
+        let plain: HubFile = toml::from_str("").unwrap();
+        assert!(plain.channels.is_empty());
+        assert!(plain.roles.is_empty());
+        assert_eq!(plain.changes, ChangesConfig::default());
+        assert_eq!(plain.changes.every_secs, 60);
     }
 }
 

@@ -365,6 +365,7 @@ impl Hub {
                     role: None,
                     collection: None,
                     parent: None,
+                    paused: None,
                 },
                 None,
             ),

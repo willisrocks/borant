@@ -200,6 +200,21 @@ pub enum SwarmEventBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         git_ref: Option<String>,
     },
+    /// A person or a channel owner stopped an agent.
+    #[serde(rename = "agent.paused")]
+    AgentPaused { by: Sender, why: String },
+    /// A stopped agent, or a member of a resumed channel, is placed again.
+    #[serde(rename = "agent.resumed")]
+    AgentResumed,
+    /// The state of a task's change request changed. The task is the one of
+    /// the event context.
+    #[serde(rename = "change.updated")]
+    ChangeUpdated {
+        state: crate::ports::ChangeState,
+        head: String,
+        checks: crate::ports::CheckState,
+        review: crate::ports::ReviewState,
+    },
     #[serde(rename = "placement.chosen")]
     /// The chosen host is the one of the event context.
     PlacementChosen {
@@ -462,6 +477,9 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::LaunchStuck { .. } => "launch.stuck",
         SwarmEventBody::AgentPruned { .. } => "agent.pruned",
         SwarmEventBody::AgentParked { .. } => "agent.parked",
+        SwarmEventBody::AgentPaused { .. } => "agent.paused",
+        SwarmEventBody::AgentResumed => "agent.resumed",
+        SwarmEventBody::ChangeUpdated { .. } => "change.updated",
         SwarmEventBody::PlacementChosen { .. } => "placement.chosen",
         SwarmEventBody::PlacementRefused { .. } => "placement.refused",
         SwarmEventBody::MoveRequested { .. } => "move.requested",

@@ -136,6 +136,20 @@ pub struct Agent {
     /// turn end.
     #[serde(default)]
     pub retired: bool,
+    /// A paused agent keeps its claims, gets no stall alert, and is never
+    /// placed until it is resumed. A person or the channel owner stops it.
+    #[serde(default)]
+    pub paused: Option<PauseReason>,
+}
+
+/// Why an agent is paused (phase 6 spec, "Stop, resume, caps").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseReason {
+    /// The person or the agent that stopped it.
+    pub by: Sender,
+    /// One line for the human inbox, for example `cap: 200 turns today`.
+    pub why: String,
+    pub at: Timestamp,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -165,6 +179,7 @@ impl Default for Agent {
             task: None,
             stop_on_close: false,
             retired: false,
+            paused: None,
         }
     }
 }
@@ -348,6 +363,10 @@ pub struct Channel {
     /// field is the authority, not the name prefix.
     #[serde(default)]
     pub collection: Option<CollectionName>,
+    /// A paused channel takes no new spawn, and pauses each member whose only
+    /// channel it is.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// A named git repository that spawns clone.
@@ -406,6 +425,17 @@ pub struct Task {
     pub close_message: Option<String>,
     pub attention_msg: Option<String>,
     pub claimed_by: Option<AgentId>,
+    /// When the task is due. A passed deadline puts the task in front of its
+    /// owner once; it reassigns nothing.
+    #[serde(default)]
+    pub deadline: Option<Timestamp>,
+    /// Claims that ended without a `done` close. One claim counts once.
+    #[serde(default)]
+    pub attempts: u32,
+    /// The retry limit. At this many attempts the task goes to `needs_human`,
+    /// and a claim of it is refused until the owner reopens it.
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
     #[serde(default)]
     pub blocked_by: Vec<TaskId>,
     pub parent: Option<TaskId>,
@@ -881,6 +911,57 @@ pub struct InboxStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A v0.8.0 record has no durable-work fields; every new field is
+    /// `serde(default)`, so the old JSON parses with the defaults.
+    #[test]
+    fn old_records_parse_with_the_durable_defaults() {
+        let task = Task {
+            id: TaskId::new(),
+            title: "t".into(),
+            body: String::new(),
+            status: TaskStatus::Open,
+            close_reason: None,
+            close_message: None,
+            attention_msg: None,
+            claimed_by: None,
+            deadline: None,
+            attempts: 0,
+            max_attempts: None,
+            blocked_by: Vec::new(),
+            parent: None,
+            properties: Map::new(),
+            created: Timestamp(1),
+            updated: Timestamp(2),
+            create_key: None,
+        };
+        let mut old = serde_json::to_value(&task).unwrap();
+        let obj = old.as_object_mut().unwrap();
+        for key in ["deadline", "attempts", "max_attempts"] {
+            obj.remove(key);
+        }
+        assert_eq!(serde_json::from_value::<Task>(old).unwrap(), task);
+
+        let agent = Agent::default();
+        let mut old = serde_json::to_value(&agent).unwrap();
+        old.as_object_mut().unwrap().remove("paused");
+        assert_eq!(serde_json::from_value::<Agent>(old).unwrap(), agent);
+
+        let channel = Channel {
+            name: "api".parse().unwrap(),
+            owner: "w1".parse().unwrap(),
+            schema: Value::Null,
+            created: Timestamp(1),
+            closed: None,
+            project: None,
+            branch: None,
+            collection: None,
+            paused: false,
+        };
+        let mut old = serde_json::to_value(&channel).unwrap();
+        old.as_object_mut().unwrap().remove("paused");
+        assert_eq!(serde_json::from_value::<Channel>(old).unwrap(), channel);
+    }
 
     #[test]
     fn target_parses_channels_and_agents() {

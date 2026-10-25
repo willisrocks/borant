@@ -13,7 +13,7 @@ use crate::ids::{
 };
 use crate::model::{
     CloseReason, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason, NewTask, Project,
-    RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, UsageWindow,
+    RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -247,6 +247,14 @@ pub enum MoveSelector {
     Channel(ChannelName),
 }
 
+/// What `stop` and `resume` name: one agent, or a whole channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum PauseSelector {
+    Agent(AgentId),
+    Channel(ChannelName),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveTarget {
     pub host: Option<HostName>,
@@ -318,6 +326,28 @@ pub enum ToolCall {
         id: TaskId,
         reason: CloseReason,
         message: String,
+    },
+    /// Waits for a task to reach one of `until`, then the hub sends the agent
+    /// a direct message. The wait survives a hub restart.
+    Wait {
+        channel: ChannelName,
+        task: TaskId,
+        until: Vec<TaskStatus>,
+        /// The limit of the wait, at most one day.
+        timeout_secs: u64,
+    },
+    /// The questions of the swarm, for `borant inbox`.
+    Inbox,
+    /// Answers a task's question: the claimer gets the text, or the channel
+    /// owner when nobody holds the task.
+    Answer {
+        channel: ChannelName,
+        task: TaskId,
+        text: String,
+        /// The `updated` of the task that the person saw.
+        expect_updated: Timestamp,
+        #[serde(default)]
+        key: Option<String>,
     },
     SchemaGet {
         channel: ChannelName,
@@ -392,6 +422,18 @@ pub enum ToolCall {
     Pin {
         agent: AgentId,
         on: bool,
+    },
+    /// Stops an agent or a channel: no placement, no claim expiry, no stall
+    /// alert, and the session stops at the next turn end (or is fenced after
+    /// `grace_secs`). A person or the channel owner may call it.
+    Stop {
+        selector: PauseSelector,
+        #[serde(default)]
+        grace_secs: Option<u32>,
+    },
+    /// Resumes a stopped agent or channel and places the agent again.
+    Resume {
+        selector: PauseSelector,
     },
     /// Lists the agents that a prune would remove. Writes and deletes nothing.
     PruneAgents {
@@ -756,5 +798,86 @@ mod tests {
                 env.id
             )
         );
+    }
+
+    #[test]
+    fn the_durable_tools_use_the_tool_tag() {
+        let wait: ToolCall = serde_json::from_str(
+            r#"{"tool":"wait","channel":"api","task":"01M5S7YF2GSX8GPG3YQ2K5KH4A","until":["closed"],"timeout_secs":60}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(&wait, ToolCall::Wait { until, timeout_secs: 60, .. }
+                if until == &vec![TaskStatus::Closed]),
+            "{wait:?}"
+        );
+        let stop: ToolCall = serde_json::from_str(
+            r#"{"tool":"stop","selector":{"type":"agent","value":"w1"},"grace_secs":60}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            stop,
+            ToolCall::Stop {
+                selector: PauseSelector::Agent("w1".parse().unwrap()),
+                grace_secs: Some(60),
+            }
+        );
+        let resume: ToolCall = serde_json::from_str(
+            r#"{"tool":"resume","selector":{"type":"channel","value":"api"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resume,
+            ToolCall::Resume {
+                selector: PauseSelector::Channel("api".parse().unwrap()),
+            }
+        );
+        let answer: ToolCall = serde_json::from_str(
+            r#"{"tool":"answer","channel":"api","task":"01M5S7YF2GSX8GPG3YQ2K5KH4A","text":"go","expect_updated":5}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                answer,
+                ToolCall::Answer {
+                    expect_updated: Timestamp(5),
+                    key: None,
+                    ..
+                }
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolCall>(r#"{"tool":"inbox"}"#).unwrap(),
+            ToolCall::Inbox
+        );
+    }
+
+    #[test]
+    fn a_human_may_stop_resume_inbox_and_answer() {
+        for call in [
+            ToolCall::Stop {
+                selector: PauseSelector::Channel("api".parse().unwrap()),
+                grace_secs: None,
+            },
+            ToolCall::Resume {
+                selector: PauseSelector::Agent("w1".parse().unwrap()),
+            },
+            ToolCall::Inbox,
+            ToolCall::Answer {
+                channel: "api".parse().unwrap(),
+                task: TaskId::new(),
+                text: "go".into(),
+                expect_updated: Timestamp(0),
+                key: None,
+            },
+        ] {
+            assert!(call.allowed_for_human(), "{call:?}");
+        }
+        let claim = ToolCall::TaskClaim {
+            channel: "api".parse().unwrap(),
+            id: TaskId::new(),
+        };
+        assert!(!claim.allowed_for_human(), "an agent claims a task");
     }
 }

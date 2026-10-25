@@ -451,6 +451,7 @@ async fn export_import_sends_pending_only_to_its_agent() {
         project: None,
         branch: None,
         collection: None,
+        paused: false,
     };
     put(&fx.state, &keys::channel(&channel), &owner).await;
     for agent in [&a, &b] {

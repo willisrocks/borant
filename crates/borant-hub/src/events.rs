@@ -629,6 +629,7 @@ mod tests {
                     role: None,
                     collection: None,
                     parent: None,
+                    paused: None,
                 },
             )
             .await

@@ -172,6 +172,7 @@ impl Fx {
                 project: None,
                 branch: None,
                 collection: None,
+                paused: false,
             };
             put(&self.state, &keys::channel(&name), &chan).await;
             for m in 0..MEMBERS_PER_CHANNEL {
@@ -196,6 +197,9 @@ impl Fx {
                     attention_msg: None,
                     // The first task is still claimed by an expired agent.
                     claimed_by: (t == 0).then(|| agent(c)),
+                    deadline: None,
+                    attempts: 0,
+                    max_attempts: None,
                     blocked_by: vec![],
                     parent: None,
                     properties: Default::default(),

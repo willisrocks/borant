@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use borant_core::ids::{PoolName, Tag};
 use borant_core::ports::provision::{HostSpec, ProviderHostId};
+use borant_core::ports::{ChangeState, ChangeStatus, CheckState, ReviewState};
 use borant_core::testing;
-use borant_memory::{MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
+use borant_memory::{MemoryBus, MemoryChanges, MemoryProvisioner, MemorySession, MemoryState};
 
 #[tokio::test]
 async fn state_store_contract() {
@@ -34,6 +35,22 @@ async fn provisioner_contract() {
 #[tokio::test]
 async fn message_bus_contract() {
     testing::message_bus_contract(&MemoryBus::new()).await;
+}
+
+#[tokio::test]
+async fn changes_contract() {
+    let changes = MemoryChanges::new();
+    let url = "https://example.invalid/acme/app/pull/7";
+    let status = ChangeStatus {
+        state: ChangeState::Open,
+        head: "abc123".to_owned(),
+        checks: CheckState::Fail {
+            failed: vec!["ci".to_owned()],
+        },
+        review: ReviewState::None,
+    };
+    changes.set(url, status.clone());
+    testing::change_requests_contract(&changes, url, status).await;
 }
 
 #[tokio::test]

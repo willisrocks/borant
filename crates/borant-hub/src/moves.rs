@@ -689,6 +689,7 @@ impl Hub {
             role: resolved.role,
             collection: resolved.collection,
             parent: Some(by.clone()),
+            paused: None,
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

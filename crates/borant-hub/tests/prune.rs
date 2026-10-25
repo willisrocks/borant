@@ -211,6 +211,9 @@ async fn prune_keeps_an_agent_with_a_claim() {
         close_message: None,
         attention_msg: None,
         claimed_by: Some(id.clone()),
+        deadline: None,
+        attempts: 0,
+        max_attempts: None,
         blocked_by: Vec::new(),
         parent: None,
         properties: Default::default(),
@@ -238,6 +241,7 @@ async fn prune_keeps_a_channel_owner() {
         project: None,
         branch: None,
         collection: None,
+        paused: false,
     };
     put(&fx, &keys::channel(&api()), &channel).await;
 

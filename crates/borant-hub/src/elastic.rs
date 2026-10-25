@@ -763,6 +763,7 @@ mod tests {
             role: None,
             collection: None,
             parent: None,
+            paused: None,
         };
         fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
         let lease = Lease {
@@ -820,6 +821,7 @@ mod tests {
             role: None,
             collection: None,
             parent: None,
+            paused: None,
         };
         fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
         let lease = Lease {
@@ -845,6 +847,9 @@ mod tests {
                 close_message: None,
                 attention_msg: None,
                 claimed_by: Some(id.clone()),
+                deadline: None,
+                attempts: 0,
+                max_attempts: None,
                 blocked_by: Vec::new(),
                 parent: None,
                 properties: Default::default(),
@@ -923,6 +928,7 @@ mod tests {
             role: None,
             collection: None,
             parent: None,
+            paused: None,
         };
         fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
         let lease = Lease {

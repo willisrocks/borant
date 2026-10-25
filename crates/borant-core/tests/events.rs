@@ -2,7 +2,8 @@
 //! know fails clearly instead of being dropped.
 
 use borant_core::events::{Severity, SwarmEvent, SwarmEventBody, kind_of};
-use borant_core::model::{Harness, MoveReason, TaskStatus};
+use borant_core::model::{Harness, MoveReason, Sender, TaskStatus};
+use borant_core::ports::{ChangeState, CheckState, ReviewState};
 use borant_core::{
     AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
     PoolName, SessionId, TaskId, Timestamp,
@@ -185,6 +186,19 @@ fn every_kind() -> Vec<SwarmEventBody> {
         SwarmEventBody::MemberReset { bundle, member },
         SwarmEventBody::ElasticCreated { pool: pool.clone() },
         SwarmEventBody::ElasticDeleted { pool },
+        SwarmEventBody::AgentPaused {
+            by: Sender::Human,
+            why: "cap: 200 turns today".into(),
+        },
+        SwarmEventBody::AgentResumed,
+        SwarmEventBody::ChangeUpdated {
+            state: ChangeState::Open,
+            head: "abc123".into(),
+            checks: CheckState::Fail {
+                failed: vec!["ci".into()],
+            },
+            review: ReviewState::ChangesRequested,
+        },
         SwarmEventBody::AlertFired {
             rule: "needs_human".into(),
             subject: "api/01".into(),
