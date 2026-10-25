@@ -323,6 +323,7 @@ impl Hub {
                 task,
                 stop_on_close,
                 priority,
+                bundles,
             } => {
                 let by = match &me {
                     Some(agent) => Sender::Agent(agent.clone()),
@@ -344,6 +345,7 @@ impl Hub {
                         task,
                         stop_on_close,
                         priority,
+                        bundles,
                     },
                 )
                 .await

@@ -67,6 +67,7 @@ fn agent_doc(id: &AgentId, session: Option<SessionId>) -> Agent {
         preferred_harness: Harness::Fake,
         session,
         created: Timestamp(1),
+        bundles: Vec::new(),
         ..Default::default()
     }
 }
@@ -170,6 +171,7 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
             name: Some("spawned".parse().unwrap()),
             model: None,
             role: None,
+            bundles: Vec::new(),
         },
     )
     .await

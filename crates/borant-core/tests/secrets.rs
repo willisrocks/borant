@@ -73,6 +73,7 @@ fn secrets_old_json_parses_without_the_new_fields() {
         preferred_harness: Harness::Fake,
         channels: vec!["api".parse::<ChannelName>().unwrap()],
         created: Timestamp(1_000),
+        bundles: Vec::new(),
         ..Default::default()
     };
     let old = without(&agent, "members");

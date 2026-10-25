@@ -156,6 +156,10 @@ pub enum Command {
         /// returns the first agent.
         #[arg(long)]
         key: Option<String>,
+        /// A secret bundle for the new agent, after the collection, role,
+        /// and channel bundles.
+        #[arg(long = "bundle")]
+        bundles: Vec<BundleName>,
         /// Print the reply as JSON.
         #[arg(long)]
         json: bool,
@@ -707,6 +711,7 @@ struct SpawnArgs {
     priority: Option<i32>,
     name: Option<AgentId>,
     key: Option<String>,
+    bundles: Vec<BundleName>,
 }
 
 /// The call that a spawn makes. Split from the command so that a test can
@@ -721,6 +726,7 @@ fn spawn_call(args: SpawnArgs) -> ToolCall {
         model: args.model,
         role: args.role,
         key: args.key,
+        bundles: args.bundles,
         task: args.task,
         stop_on_close: args.stop_on_close,
         priority: args.priority,
@@ -1246,6 +1252,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             priority,
             name,
             key,
+            bundles,
             json,
         } => {
             let prompt = std::fs::read_to_string(&prompt_file)
@@ -1264,6 +1271,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 priority,
                 name,
                 key,
+                bundles,
             };
             spawn(&c, spawn_call(args), json).await?;
         }
@@ -1551,7 +1559,7 @@ mod tests {
         let cmd = cli_command(&format!(
             "borant spawn --channel api --prompt-file p.md --harness omp --model deepseek \
              --role worker --host h1 --task api/{TASK} --stop-on-close --priority 5 \
-             --name w1 --key k1"
+             --name w1 --key k1 --bundle github --bundle prod-readonly"
         ));
         let Command::Spawn {
             channel,
@@ -1567,6 +1575,7 @@ mod tests {
             priority,
             name,
             key,
+            bundles,
             json,
         } = cmd
         else {
@@ -1586,6 +1595,7 @@ mod tests {
             priority,
             name,
             key,
+            bundles,
         };
         let v = serde_json::to_value(spawn_call(args)).unwrap();
         assert_eq!(v["tool"], "spawn");
@@ -1600,6 +1610,7 @@ mod tests {
         assert_eq!(v["priority"], 5);
         assert_eq!(v["name"], "w1");
         assert_eq!(v["key"], "k1");
+        assert_eq!(v["bundles"], json!(["github", "prod-readonly"]));
     }
 
     #[test]

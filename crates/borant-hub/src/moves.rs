@@ -114,15 +114,23 @@ impl Hub {
         req
     }
 
-    /// The bundles of the launch that the hub knows before it resolves the
-    /// channel: the bundles that the role of the agent adds.
+    /// The bundles of the next launch of the agent: the collection, the role,
+    /// the channel, and the spawn, in that order, without duplicates. The host
+    /// adds the harness defaults. A move or a takeover recomputes it from
+    /// `hub.toml`, so a changed channel bundle applies at the next launch.
     pub(crate) fn launch_bundles(&self, agent: &Agent) -> Vec<BundleName> {
-        agent
-            .role
+        let collection = agent
+            .collection
             .as_ref()
-            .and_then(|r| self.cfg.roles.get(r))
-            .map(|r| r.bundles.clone())
-            .unwrap_or_default()
+            .and_then(|c| self.cfg.collections.get(c));
+        let role = agent.role.as_ref().and_then(|r| self.cfg.roles.get(r));
+        let channel: Vec<BundleName> = agent
+            .channels
+            .iter()
+            .filter_map(|c| self.cfg.channels.get(c))
+            .flat_map(|c| c.bundles.iter().cloned())
+            .collect();
+        roles::launch_bundles(collection, role, &channel, &agent.bundles)
     }
 
     pub(crate) async fn host_views(
@@ -360,8 +368,8 @@ impl Hub {
             }
             (None, _) => None,
         };
-        // The collection and the role of the agent decide the bundles of the
-        // launch (the collection first, then the role) and the git author.
+        // The collection decides the git author, and `launch_bundles` merges
+        // the bundle levels (collection, role, channel, spawn) for the launch.
         let collection = agent
             .collection
             .as_ref()
@@ -381,7 +389,7 @@ impl Hub {
             project,
             reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
             members,
-            bundles: roles::launch_bundles(collection, role),
+            bundles: self.launch_bundles(agent),
             git_author: roles::git_author(collection),
             // The role says whether the host wraps this launch in the
             // namespace sandbox.

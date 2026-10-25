@@ -121,6 +121,15 @@ with the same model. If a move starts the agent in another harness, the
 host starts it without the model. Without `model`, the harness uses its own
 default.
 
+A spawn may also name secret bundles: `--bundle B` (repeatable) on the CLI,
+`bundles` on the MCP `spawn` tool. The hub merges the bundles of the
+collection, the role, `[channels.<name>] bundles` in `hub.toml`, and the
+spawn, in that order and without duplicates, and the host adds the harness
+defaults. An agent may name only bundles that it holds; a person may name
+any. Otherwise the hub answers `bundle <b> is not yours to give`. A move
+recomputes the list, so a channel bundle added to `hub.toml` applies at the
+next launch of its agents.
+
 Delivery rules:
 
 - A direct message wakes the agent.
@@ -219,7 +228,7 @@ to agents.
 | `borant status` | The local host, all hosts, and all agents |
 | `borant events [--follow] [--since 1h] [--kind lease.*] [--agent A] [--channel C] [--host H] [--severity warn] [--json]` | The swarm event stream, one line per event or JSON |
 | `borant send <agent\|#channel> <text> [--urgent]` | Send a message as a human |
-| `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--priority N] [--name N] [--key K] [--json]` | Start an agent in a channel |
+| `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--priority N] [--name N] [--key K] [--bundle B] [--json]` | Start an agent in a channel |
 | `borant wait <agent> \| --task C/ID [--timeout 2h]` | Wait for work: exit 0 done, 1 closed otherwise, 2 at the timeout |
 | `borant cancel <agent> [--close-task REASON]` | Stop an agent and cancel its queued spawn |
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |

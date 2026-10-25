@@ -120,6 +120,10 @@ pub struct Agent {
     /// The collection that holds this agent, from its parent or its channel.
     #[serde(default)]
     pub collection: Option<CollectionName>,
+    /// The bundles that the spawn named, and no other level: the hub merges
+    /// them after the collection, role, and channel bundles at each launch.
+    #[serde(default)]
+    pub bundles: Vec<BundleName>,
     /// The agent that spawned this one. A helper runs on its parent's host.
     #[serde(default)]
     pub parent: Option<AgentId>,
@@ -174,6 +178,7 @@ impl Default for Agent {
             pinned: false,
             role: None,
             collection: None,
+            bundles: Vec::new(),
             parent: None,
             spawn_key: None,
             task: None,
@@ -494,6 +499,9 @@ pub struct SpawnSpec {
     pub stop_on_close: Option<bool>,
     #[serde(default)]
     pub priority: Option<i32>,
+    /// The bundles of the spawn level, for the key comparison and the launch.
+    #[serde(default)]
+    pub bundles: Vec<BundleName>,
 }
 
 /// One queued spawn, at the key `spawn.<agent>`. Written only by the hub.

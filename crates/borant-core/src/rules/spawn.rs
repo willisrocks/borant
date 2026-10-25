@@ -61,6 +61,7 @@ mod tests {
             task: None,
             stop_on_close: None,
             priority: None,
+            bundles: Vec::new(),
         }
     }
 

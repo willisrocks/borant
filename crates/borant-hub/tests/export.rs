@@ -35,6 +35,7 @@ fn agent_doc(id: &AgentId, channels: Vec<ChannelName>) -> Agent {
         preferred_harness: Harness::Fake,
         channels,
         created: Timestamp(1),
+        bundles: Vec::new(),
         ..Default::default()
     }
 }

@@ -64,6 +64,7 @@ async fn spawn(fx: &Fx, owner: &Registered, model: Option<&str>) {
             name: Some("helper".parse().unwrap()),
             model: model.map(Into::into),
             role: None,
+            bundles: Vec::new(),
         },
     )
     .await
@@ -276,6 +277,7 @@ async fn takeover_in_another_harness_drops_the_model() {
             name: Some("helper".parse().unwrap()),
             model: Some("opus".into()),
             role: None,
+            bundles: Vec::new(),
         },
     )
     .await

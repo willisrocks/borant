@@ -470,6 +470,7 @@ mod tests {
                 name: Some("helper".parse().unwrap()),
                 model: None,
                 role: None,
+                bundles: Vec::new(),
             },
         )
         .await
@@ -513,6 +514,7 @@ mod tests {
                 name: Some("helper".parse().unwrap()),
                 model: None,
                 role: None,
+                bundles: Vec::new(),
             },
         )
         .await
@@ -633,6 +635,7 @@ mod tests {
                     pinned: false,
                     role: None,
                     collection: None,
+                    bundles: Vec::new(),
                     parent: None,
                     paused: None,
                 },
@@ -781,6 +784,7 @@ mod tests {
                 name: Some("helper".parse().unwrap()),
                 model: None,
                 role: None,
+                bundles: Vec::new(),
             },
         )
         .await

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::BundleName;
 use crate::ids::{AgentId, ChannelName};
 use crate::rules::schedules::Overlap;
 
@@ -95,6 +96,10 @@ pub struct ChannelConfig {
     /// How many agents the channel may hold. A spawn past it queues.
     #[serde(default)]
     pub max_agents: Option<u32>,
+    /// The bundles that every agent of the channel gets, after the bundles of
+    /// its collection and its role.
+    #[serde(default)]
+    pub bundles: Vec<BundleName>,
 }
 
 /// `[changes]` of `hub.toml`: the PR watch. The hub polls the change requests

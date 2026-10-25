@@ -389,6 +389,10 @@ pub enum ToolCall {
         /// Higher goes first in the spawn queue.
         #[serde(default)]
         priority: Option<i32>,
+        /// The bundles that this spawn adds. An agent may name only bundles
+        /// that it holds; a person may name any.
+        #[serde(default)]
+        bundles: Vec<BundleName>,
     },
     /// Stops an agent and cancels its queued spawn. A repeat succeeds.
     Cancel {
@@ -605,8 +609,9 @@ pub struct LaunchOrder {
     /// The member of each bundle with several members, picked by the hub.
     #[serde(default)]
     pub members: BTreeMap<BundleName, MemberName>,
-    /// The bundles of the collection and the role, in that order. The host
-    /// resolves them after the harness defaults, so a later bundle wins.
+    /// The bundles of the collection, the role, the channel, and the spawn, in
+    /// that order, without duplicates. The host resolves them after the
+    /// harness defaults, so a later bundle wins.
     #[serde(default)]
     pub bundles: Vec<BundleName>,
     /// The author and committer of this agent's commits, from its collection.

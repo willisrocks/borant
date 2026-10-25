@@ -61,6 +61,7 @@ async fn setup(fx: &Fx, roles: &[(&str, RoleConfig)]) -> (Registered, Registered
             task: None,
             stop_on_close: None,
             priority: None,
+            bundles: Vec::new(),
             channel: api(),
             prompt: "work".into(),
             harness: Some(Harness::Fake),
@@ -416,6 +417,7 @@ async fn pause_of_a_channel_blocks_a_spawn() {
                 task: None,
                 stop_on_close: None,
                 priority: None,
+                bundles: Vec::new(),
                 channel: api(),
                 prompt: "more".into(),
                 harness: Some(Harness::Fake),
@@ -523,6 +525,7 @@ async fn pause_channel_cap_queues_the_spawn() {
             api(),
             ChannelConfig {
                 max_agents: Some(2),
+                bundles: Vec::new(),
             },
         )]),
         ..hub(&[])
@@ -549,6 +552,7 @@ async fn pause_channel_cap_queues_the_spawn() {
                 task: None,
                 stop_on_close: None,
                 priority: None,
+                bundles: Vec::new(),
                 channel: api(),
                 prompt: "work".into(),
                 harness: Some(Harness::Fake),

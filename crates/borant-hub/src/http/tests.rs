@@ -124,6 +124,7 @@ impl Fx {
             bytes(&Agent {
                 id: agent.clone(),
                 host: Some(host.clone()),
+                bundles: Vec::new(),
                 ..Agent::default()
             }),
         );
