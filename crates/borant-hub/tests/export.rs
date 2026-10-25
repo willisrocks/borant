@@ -28,6 +28,10 @@ fn api() -> ChannelName {
 fn agent_doc(id: &AgentId, channels: Vec<ChannelName>) -> Agent {
     Agent {
         id: id.clone(),
+        spawn_key: None,
+        task: None,
+        stop_on_close: false,
+        retired: false,
         preferred_harness: Harness::Fake,
         channels,
         created: Timestamp(1),
@@ -196,6 +200,7 @@ async fn export_snapshot_keeps_serving() {
     // Wait until the hub serves requests.
     let list = serde_json::to_vec(&CtlRequest::Call {
         actor: None,
+        key: None,
         call: ToolCall::ListAgents,
     })
     .unwrap();

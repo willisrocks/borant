@@ -8,5 +8,6 @@ pub mod roles;
 pub mod schedule;
 pub mod schema;
 pub mod session_log;
+pub mod spawn;
 pub mod tasks;
 pub mod wake;

@@ -83,6 +83,7 @@ impl Hub {
             properties: new.properties,
             created: now,
             updated: now,
+            create_key: None,
         };
         self.store
             .put(&keys::task(channel, &id), &task, None)

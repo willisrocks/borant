@@ -201,6 +201,7 @@ impl Fx {
                     properties: Default::default(),
                     created: now,
                     updated: now,
+                    create_key: None,
                 };
                 put(&self.state, &keys::task(&name, &task.id), &task).await;
             }
@@ -209,6 +210,10 @@ impl Fx {
             let id = agent(i);
             let a = Agent {
                 id: id.clone(),
+                spawn_key: None,
+                task: None,
+                stop_on_close: false,
+                retired: false,
                 preferred_harness: Harness::Fake,
                 repo: Some(RepoInfo {
                     remote_url: "git://git/demo.git".into(),
@@ -269,6 +274,7 @@ async fn answers_a_request_while_the_first_tick_catches_up() {
         Duration::from_secs(5),
         fx.hub.handle(CtlRequest::Call {
             actor: None,
+            key: None,
             call: ToolCall::ChannelList,
         }),
     )

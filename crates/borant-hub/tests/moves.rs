@@ -347,6 +347,10 @@ async fn spawn_places_new_agent_with_prompt() {
         .call(
             Some(&owner),
             ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                priority: None,
                 channel: api(),
                 prompt: "Fix the build".into(),
                 harness: None,
@@ -419,6 +423,10 @@ async fn failed_spawn_is_placed_again_with_its_prompt() {
     fx.call(
         Some(&owner),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "Fix the build".into(),
             harness: None,

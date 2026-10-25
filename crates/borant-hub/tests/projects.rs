@@ -53,6 +53,10 @@ async fn spawn(fx: &Fx, owner: &Registered, model: Option<&str>) {
     fx.call(
         Some(owner),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "Fix the build".into(),
             harness: None,
@@ -261,6 +265,10 @@ async fn takeover_in_another_harness_drops_the_model() {
     fx.call(
         Some(&owner),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "Fix the build".into(),
             harness: Some(Harness::Pi),

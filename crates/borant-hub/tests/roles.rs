@@ -144,6 +144,10 @@ async fn spawn(
     fx.call(
         Some(who),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: "personal-api".parse().unwrap(),
             prompt: "do the work".into(),
             harness: None,

@@ -343,6 +343,10 @@ impl Hub {
             None => (
                 Agent {
                     id: agent_id.clone(),
+                    spawn_key: None,
+                    task: None,
+                    stop_on_close: false,
+                    retired: false,
                     preferred_harness: r.harness,
                     repo: None,
                     movable: false,

@@ -668,6 +668,10 @@ mod tests {
         let id: AgentId = agent.parse().unwrap();
         let a = Agent {
             id: id.clone(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
             preferred_harness: Harness::ClaudeCode,
             repo: None,
             movable: true,
@@ -743,6 +747,10 @@ mod tests {
         let session = SessionId::new();
         let a = Agent {
             id: id.clone(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
             preferred_harness: Harness::ClaudeCode,
             repo: None,
             movable: true,

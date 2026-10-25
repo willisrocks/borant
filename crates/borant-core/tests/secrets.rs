@@ -66,6 +66,10 @@ fn secrets_secret_debug_prints_no_value() {
 fn secrets_old_json_parses_without_the_new_fields() {
     let agent = Agent {
         id: "w1".parse().unwrap(),
+        spawn_key: None,
+        task: None,
+        stop_on_close: false,
+        retired: false,
         preferred_harness: Harness::Fake,
         channels: vec!["api".parse::<ChannelName>().unwrap()],
         created: Timestamp(1_000),

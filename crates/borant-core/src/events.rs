@@ -7,7 +7,7 @@ use crate::ids::{
     AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
     PoolName, SessionId, TaskId,
 };
-use crate::model::{Harness, MoveReason, TaskStatus};
+use crate::model::{Harness, MoveReason, Sender, TaskStatus};
 use crate::time::Timestamp;
 
 /// How bad an event is. A reader can filter on the minimum.
@@ -159,9 +159,31 @@ pub enum SwarmEventBody {
     SessionFenced { why: String },
     #[serde(rename = "agent.spawned")]
     AgentSpawned {
-        /// The agent that spawned it.
-        by: AgentId,
+        /// The person or the agent that spawned it.
+        by: Sender,
         harness: Harness,
+    },
+    /// A spawn waits in the queue at `spawn.<agent>`.
+    #[serde(rename = "spawn.queued")]
+    SpawnQueued {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        /// Higher goes first.
+        priority: i32,
+    },
+    #[serde(rename = "spawn.cancelled")]
+    SpawnCancelled,
+    /// The agent is retired: no more placements, and its session stops at the
+    /// next turn end.
+    #[serde(rename = "agent.retired")]
+    AgentRetired,
+    /// A launch did not register within the timeout of its host.
+    #[serde(rename = "launch.stuck")]
+    LaunchStuck {
+        /// The redacted end of the session screen.
+        screen: String,
+        /// Which try this was.
+        attempts: u32,
     },
     #[serde(rename = "agent.pruned")]
     AgentPruned {
@@ -434,6 +456,10 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::SessionResumed { .. } => "session.resumed",
         SwarmEventBody::SessionFenced { .. } => "session.fenced",
         SwarmEventBody::AgentSpawned { .. } => "agent.spawned",
+        SwarmEventBody::SpawnQueued { .. } => "spawn.queued",
+        SwarmEventBody::SpawnCancelled => "spawn.cancelled",
+        SwarmEventBody::AgentRetired => "agent.retired",
+        SwarmEventBody::LaunchStuck { .. } => "launch.stuck",
         SwarmEventBody::AgentPruned { .. } => "agent.pruned",
         SwarmEventBody::AgentParked { .. } => "agent.parked",
         SwarmEventBody::PlacementChosen { .. } => "placement.chosen",

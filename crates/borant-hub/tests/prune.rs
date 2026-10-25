@@ -60,6 +60,10 @@ fn reason(v: &Value, agent: &str) -> Option<String> {
 fn agent_doc(id: &AgentId, session: Option<SessionId>) -> Agent {
     Agent {
         id: id.clone(),
+        spawn_key: None,
+        task: None,
+        stop_on_close: false,
+        retired: false,
         preferred_harness: Harness::Fake,
         session,
         created: Timestamp(1),
@@ -155,6 +159,10 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
     fx.call(
         Some(&parent),
         ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            priority: None,
             channel: api(),
             prompt: "go".into(),
             harness: Some(Harness::Fake),
@@ -208,6 +216,7 @@ async fn prune_keeps_an_agent_with_a_claim() {
         properties: Default::default(),
         created: Timestamp(1),
         updated: Timestamp(1),
+        create_key: None,
     };
     put(&fx, &keys::task(&api(), &task.id), &task).await;
 

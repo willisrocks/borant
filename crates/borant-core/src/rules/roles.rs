@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{BundleName, CollectionName, RoleName, Tag};
 use crate::model::{Agent, GitAuthor, Harness};
@@ -60,7 +60,7 @@ pub struct CollectionConfig {
 }
 
 /// `one_per` of a role: one agent of the role in each collection or project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnePer {
     Collection,
@@ -68,7 +68,7 @@ pub enum OnePer {
 }
 
 /// What a spawn asks for, before its role fills in the rest.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnInput {
     /// The role that the call names.
     pub role: Option<RoleName>,
@@ -79,7 +79,7 @@ pub struct SpawnInput {
 }
 
 /// Where a role may run.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
     pub require: Vec<Tag>,
     pub prefer: Vec<Tag>,
@@ -89,7 +89,7 @@ pub struct Placement {
 }
 
 /// The child of a spawn after its role, ready for the launch.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Resolved {
     pub role: Option<RoleName>,
     pub harness: Option<Harness>,
@@ -295,6 +295,10 @@ mod tests {
         let table = roles(&[("worker", worker.clone())]);
         let parent = Agent {
             id: "boss".parse().unwrap(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
             collection: Some("work".parse().unwrap()),
             ..agent()
         };
@@ -368,6 +372,10 @@ mod tests {
     fn agent() -> Agent {
         Agent {
             id: "a1".parse().unwrap(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
             preferred_harness: Harness::Fake,
             created: crate::time::Timestamp(1),
             ..Default::default()
