@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use borant_core::model::Harness;
-use borant_core::ports::MessageBus;
+use borant_core::ports::{MessageBus, PortErrorKind};
 use borant_core::proto::{CtlRequest, Reply, ToolCall};
 use borant_core::rules::schedule::DEFAULT_DISK_STOP_PCT;
 use borant_core::subjects;
@@ -28,6 +28,14 @@ use crate::config::{self, HostFile};
 
 /// How long one network check waits for its reply.
 const NET_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The line of the NATS check when the server refused an anonymous
+/// connection: the host daemon's env file holds the login.
+const MISSING_CREDENTIALS: &str = concat!(
+    "NATS credentials are missing: load the env file of the host daemon ",
+    "(for example ~/.borant/nats.env, or the EnvironmentFile of the ",
+    "borant-host unit) and run again"
+);
 
 /// The result of one check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,15 +170,30 @@ async fn daemon_check(socket: &Path) -> Check {
 /// the hub proves the whole path. The caller builds the config, from
 /// `[nats]` and the environment, so a test can point it at a closed port
 /// without touching `BORANT_NATS_URL`.
+///
+/// The connection is a single attempt, so a server that refuses the login
+/// answers at once with an authorization error. That error means that the
+/// server wants credentials, not that it is down, so the check names the
+/// missing env file, or the refused login, instead of a request that timed
+/// out. No credential of `cfg` goes into the line.
 async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
     let urls = if cfg.urls.is_empty() {
         "nats://127.0.0.1:4222".to_owned()
     } else {
         cfg.urls.join(",")
     };
-    let nats = match borant_nats::connect(&cfg).await {
-        Ok(nats) => nats,
-        Err(e) => return Check::fail("nats", format!("{urls}: {e}")),
+    let nats = match tokio::time::timeout(timeout, borant_nats::connect_once(&cfg)).await {
+        Ok(Ok(nats)) => nats,
+        Ok(Err(e)) if e.kind == PortErrorKind::Denied => {
+            return Check::fail("nats", login_detail(&cfg, &urls));
+        }
+        Ok(Err(e)) => return Check::fail("nats", format!("{urls}: {e}")),
+        Err(_) => {
+            return Check::fail(
+                "nats",
+                format!("{urls}: the connection was not up in {timeout:?}"),
+            );
+        }
     };
     let req = CtlRequest::Call {
         actor: None,
@@ -206,6 +229,24 @@ async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
             format!("the hub answered with an error over {urls}: {}", e.message),
         ),
     }
+}
+
+/// The line of a server that refused the login: the credentials of `cfg` are
+/// missing when it carries none, and refused when it does. Neither the user
+/// nor the password goes into the line.
+fn login_detail(cfg: &borant_nats::NatsConfig, urls: &str) -> String {
+    if has_credentials(cfg) {
+        format!("NATS refused the credentials over {urls}")
+    } else {
+        format!("{MISSING_CREDENTIALS} ({urls})")
+    }
+}
+
+/// Whether `cfg` carries a login: a credentials file, or a user and a
+/// password. A user without a password is not a login, because the client
+/// sends neither.
+fn has_credentials(cfg: &borant_nats::NatsConfig) -> bool {
+    cfg.creds_file.is_some() || (cfg.user.is_some() && cfg.password.is_some())
 }
 
 /// Each harness command of `host.toml` resolves on `PATH`.
@@ -388,6 +429,7 @@ fn env(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -620,6 +662,94 @@ mod tests {
         assert!(check.detail.contains("host.sock"), "{}", check.detail);
     }
 
+    /// A NATS server that wants a login and refuses every one: it sends the
+    /// `INFO` line with `auth_required`, reads the `CONNECT` and the `PING` of
+    /// the client, and answers `-ERR 'Authorization Violation'`.
+    fn refusing_nats() -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(b"INFO {\"server_id\":\"doctor\",\"auth_required\":true}\r\n")
+                .unwrap();
+            stream.flush().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.starts_with("PING") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"-ERR 'Authorization Violation'\r\n")
+                .unwrap();
+            stream.flush().unwrap();
+        });
+        (port, server)
+    }
+
+    /// A config of `port`, with no credentials.
+    fn nats_cfg(port: u16) -> borant_nats::NatsConfig {
+        borant_nats::NatsConfig {
+            urls: vec![format!("nats://127.0.0.1:{port}")],
+            ..borant_nats::NatsConfig::default()
+        }
+    }
+
+    /// A server that wants a login refuses the anonymous connection at once:
+    /// the check names the missing env file, and does not wait out the
+    /// timeout that hid the cause.
+    #[tokio::test]
+    async fn nats_without_credentials_names_the_env_file() {
+        let (port, server) = refusing_nats();
+        let started = std::time::Instant::now();
+        let check = nats_check(nats_cfg(port), Duration::from_secs(3)).await;
+        server.join().unwrap();
+        assert_eq!(check.level, Level::Fail);
+        assert!(
+            check
+                .detail
+                .starts_with("NATS credentials are missing: load the env file"),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.detail.contains("~/.borant/nats.env"),
+            "{}",
+            check.detail
+        );
+        assert!(!check.detail.contains("timed out"), "{}", check.detail);
+        assert!(check.detail.contains(&port.to_string()), "{}", check.detail);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the check waited out the timeout: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A login that the server refuses is a fail, and neither the user nor the
+    /// password goes into the line.
+    #[tokio::test]
+    async fn nats_with_refused_credentials_says_so() {
+        let (port, server) = refusing_nats();
+        let cfg = borant_nats::NatsConfig {
+            user: Some("u-doctor".to_owned()),
+            password: Some("p-doctor".to_owned()),
+            ..nats_cfg(port)
+        };
+        let check = nats_check(cfg, Duration::from_secs(3)).await;
+        server.join().unwrap();
+        assert_eq!(check.level, Level::Fail);
+        assert!(
+            check.detail.starts_with("NATS refused the credentials"),
+            "{}",
+            check.detail
+        );
+        assert!(!check.detail.contains("u-doctor"), "{}", check.detail);
+        assert!(!check.detail.contains("p-doctor"), "{}", check.detail);
+    }
+
     /// A NATS server that does not answer is a fail that names the URL, even
     /// on a machine that runs one: the port is bound here, so nothing listens
     /// on it, and `BORANT_NATS_URL` plays no part.
@@ -629,11 +759,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
         };
-        let cfg = borant_nats::NatsConfig {
-            urls: vec![format!("nats://127.0.0.1:{port}")],
-            ..borant_nats::NatsConfig::default()
-        };
-        let check = nats_check(cfg, Duration::from_millis(100)).await;
+        let check = nats_check(nats_cfg(port), Duration::from_millis(100)).await;
         assert_eq!(check.level, Level::Fail);
         assert!(check.detail.contains(&port.to_string()), "{}", check.detail);
     }

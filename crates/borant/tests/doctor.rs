@@ -61,10 +61,16 @@ fn plugin(dir: &Path, name: &str, reply: &str) -> PathBuf {
 /// this test holds and nothing answers on, so a real server of the machine or
 /// of CI cannot make the check pass.
 fn host() -> (tempfile::TempDir, PathBuf, std::net::TcpListener) {
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("host.sock");
     let nats = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = nats.local_addr().unwrap().port();
+    let (dir, socket) = host_at(port);
+    (dir, socket, nats)
+}
+
+/// The same host, with `[nats] urls` pointing at `port`.
+fn host_at(port: u16) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("host.sock");
     let secrets = plugin(
         dir.path(),
         "secrets.sh",
@@ -107,25 +113,35 @@ fn host() -> (tempfile::TempDir, PathBuf, std::net::TcpListener) {
         ),
     )
     .unwrap();
-    (dir, socket, nats)
+    (dir, socket)
 }
 
 fn doctor(home: &Path, socket: &Path, json: bool) -> Output {
+    doctor_env(home, socket, json, &[])
+}
+
+/// The same run, with `extra` in the environment.
+fn doctor_env(home: &Path, socket: &Path, json: bool, extra: &[(&str, &str)]) -> Output {
     let mut args = vec!["doctor"];
     if json {
         args.push("--json");
     }
-    Command::new(env!("CARGO_BIN_EXE_borant"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_borant"));
+    command
         .args(args)
         .env("BORANT_HOME", home)
         .env("BORANT_SOCKET", socket)
         .env_remove("BORANT_NATS_URL")
         .env_remove("BORANT_NATS_CREDS")
+        .env_remove("BORANT_NATS_USER")
+        .env_remove("BORANT_NATS_PASSWORD")
         .env_remove("BORANT_HARNESSES")
         .env_remove("BORANT_LAUNCHER")
-        .env_remove("CREDENTIALS_DIRECTORY")
-        .output()
-        .unwrap()
+        .env_remove("CREDENTIALS_DIRECTORY");
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    command.output().unwrap()
 }
 
 /// Every file of the home, for the read-only check.
@@ -214,4 +230,117 @@ fn doctor_json_has_the_checks_and_the_exit_code() {
         assert!(!detail.is_empty(), "{c}");
         assert!(!detail.contains('\n'), "{c}");
     }
+}
+
+/// A NATS server that wants a login and refuses every one: it sends the
+/// `INFO` line with `auth_required`, reads the `CONNECT` and the `PING` of the
+/// client, and answers `-ERR 'Authorization Violation'`. The CLI reads no
+/// answer from it, so the run must not wait for the request timeout.
+fn refusing_nats() -> (u16, std::thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(b"INFO {\"server_id\":\"doctor\",\"auth_required\":true}\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 || line.starts_with("PING") {
+                break;
+            }
+        }
+        stream
+            .write_all(b"-ERR 'Authorization Violation'\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+    });
+    (port, server)
+}
+
+/// The detail of the one check named `name` of a JSON run.
+fn detail_of(v: &serde_json::Value, name: &str) -> String {
+    v["checks"]
+        .as_array()
+        .expect("a checks array")
+        .iter()
+        .find(|c| c["check"] == serde_json::json!(name))
+        .unwrap_or_else(|| panic!("no check {name:?} in {v}"))["detail"]
+        .as_str()
+        .expect("a detail string")
+        .to_owned()
+}
+
+/// A shell without NATS credentials against a server that wants a login: the
+/// check names the env file of the host daemon at once. It used to report
+/// `Timeout: request to borant.ctl timed out`, which hid the cause.
+#[test]
+fn doctor_names_missing_nats_credentials() {
+    let (port, nats) = refusing_nats();
+    let (home, socket) = host_at(port);
+    let server = fake_daemon(&socket);
+    let started = std::time::Instant::now();
+    let out = doctor(home.path(), &socket, true);
+    server.join().unwrap();
+    nats.join().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let detail = detail_of(&v, "nats");
+    assert!(
+        detail.starts_with(
+            "NATS credentials are missing: load the env file of the host daemon \
+             (for example ~/.borant/nats.env, or the EnvironmentFile of the \
+             borant-host unit) and run again"
+        ),
+        "{detail}"
+    );
+    assert!(!detail.contains("timed out"), "{detail}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "the run waited out the network timeout: {:?}",
+        started.elapsed()
+    );
+}
+
+/// Credentials that the server refuses: the check says so, and prints neither
+/// the user nor the password.
+#[test]
+fn doctor_names_refused_nats_credentials() {
+    let (port, nats) = refusing_nats();
+    let (home, socket) = host_at(port);
+    let server = fake_daemon(&socket);
+    let out = doctor_env(
+        home.path(),
+        &socket,
+        true,
+        &[
+            ("BORANT_NATS_USER", "doctor-user"),
+            ("BORANT_NATS_PASSWORD", "doctor-password"),
+        ],
+    );
+    server.join().unwrap();
+    nats.join().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let detail = detail_of(&v, "nats");
+    assert!(
+        detail.starts_with("NATS refused the credentials"),
+        "{detail}"
+    );
+    assert!(!detail.contains("timed out"), "{detail}");
+    assert!(!detail.contains("doctor-user"), "{detail}");
+    assert!(!detail.contains("doctor-password"), "{detail}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("doctor-password"));
 }
