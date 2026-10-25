@@ -62,6 +62,12 @@ Each phase is small enough for one or two pull requests, and each phase
 makes the next one easier. The order puts safety first, then the end of
 manual work, then visibility, then cost, then new power.
 
+Run order, as Chris set it: phase 0, phase 1, phase 1b, phase 4, phase 2,
+phase 3, phase 5, phase 6. Phase 1b needs the secret bundles of phase 1.
+Phase 4 comes early because fast provisioning of VMs lets the swarm grow.
+Phase 3 items 1, 2, and 6 (projects, `model` on spawn, and the `orchestrate`
+skill) shipped in v0.3.0.
+
 ### Phase 0: safety fixes (S)
 
 1. Restrict NATS. Add a tailnet ACL rule that opens port 4222 only to
@@ -84,6 +90,39 @@ manual work, then visibility, then cost, then new power.
    unit for the first-run screens only.
 4. Done when `just create borant-3` gives a working host with no login, and
    no secret value shows in `ps`, the session log, or NATS.
+
+### Phase 1b: collections, roles, and host tags (L)
+
+Chris made these decisions. The spec for this phase settles the rest.
+
+1. Collections. Borant stays one swarm. A collection groups projects and
+   owns an identity: secret bundles, the `gh` account and the git author,
+   and a pool of Claude Code accounts. The first two collections are
+   `personal` and `work`. The accounts are ModelDeck profiles in
+   `~/Library/Application Support/ModelDeck/claude-profiles/` (`fentonit`,
+   `fentonit-2`, `personal-1`, `personal-2`, `work`). Each profile is a
+   `CLAUDE_CONFIG_DIR`. Borant assigns one account from the pool to each
+   agent. When an account reaches its quota, Borant can start the next
+   launch on another account. The hub keeps each agent inside its
+   collection. Phase 1b adds no stronger isolation.
+2. Roles. The agent record and `spawn` get a role:
+   - `chief`: one for each collection. It prefers the laptop and is pinned.
+   - `orchestrator`: one for each project. It requires a `vps` host.
+   - `worker`: requires a `vps` host, avoids the laptop, and is bound to a
+     task.
+   - `helper`: runs on the host of its parent.
+
+   A role sets the default harness and model pair, the placement, the tools
+   that the agent can call, and the skill that its brief loads. Only a chief
+   spawns orchestrators. Workers cannot spawn.
+3. Host tags. `host.toml` gets tags (`laptop`, `vps`, `oregon`, `eu`), and
+   each role has `require`, `prefer`, and `avoid` rules over them. Host tags
+   replace the labels and taints of the orchestration document. Elastic
+   pools (phase 4) carry tags too.
+4. Two chiefs, `chief-personal` and `chief-work`, run as Orca tabs on the
+   laptop. Channel names get a collection prefix.
+5. Orchestrators run on the remote boxes.
+6. The Claude Code plugin gets a `borant:chief-of-staff` skill.
 
 ### Phase 2: see the swarm (M), observability phases 1 to 3
 
@@ -125,8 +164,8 @@ manual work, then visibility, then cost, then new power.
 
 ### Phase 5: contain the agents (M), orchestration phases 3 to 5
 
-1. Placement labels and taints, resources in the heartbeat, and reject
-   reasons in `borant ps`.
+1. Resources in the heartbeat, and reject reasons in `borant ps`. Host tags
+   and roles (phase 1b) replace the placement labels and taints.
 2. The bubblewrap sandbox, then the network allowlist.
 3. The herdr launcher on the VPS hosts.
 
@@ -183,10 +222,11 @@ built.
    remove the import step and the catalog file. Does LunaRoute report usage?
 6. 1Password plan. On Teams, the whole account gets 5,000 service-account
    reads a day. Is one shared token for all hosts acceptable?
-7. Git identity for agents: you with the noreply address, or a bot account?
+7. Git identity for agents. Answered: each collection owns its `gh` account
+   and git author (phase 1b).
 8. Phone path: hosted ntfy.sh, ntfy on the hub, or Slack threads?
-9. Laptops: may unattended spawns land on an awake laptop? The documents
-   propose no, with a `laptop` taint.
+9. Laptops. Answered: a chief prefers the laptop, and a worker avoids it,
+   through host tags and role rules (phase 1b).
 10. Sandboxes: every worker by default, or only workers in channels that you
     mark as untrusted?
 11. Hetzner token for the hub: a root-only token file that `just
