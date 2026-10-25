@@ -22,6 +22,7 @@ clap.workspace = true
 dirs.workspace = true
 futures.workspace = true
 nix = { version = "0.31", features = ["signal", "process"] }
+ratatui.workspace = true
 rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
 schemars.workspace = true
 serde.workspace = true

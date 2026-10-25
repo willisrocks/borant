@@ -42,8 +42,14 @@ pub enum Command {
     },
     /// Run the host daemon.
     Host,
-    /// Show the local daemon, the hosts, and the agents.
-    Status,
+    /// Show the local daemon, the hosts, and the agents. With `--json`, the
+    /// live view of the swarm as JSON.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// A live screen of the hosts and agents, refreshed every 2 s.
+    Top,
     /// Follow the swarm event stream of the local host daemon.
     Events {
         /// Wait for events published from now on, instead of printing and
@@ -230,13 +236,13 @@ pub enum HubCmd {
     Move { ssh_host: String },
 }
 
-fn client() -> LocalClient {
+pub(crate) fn client() -> LocalClient {
     LocalClient::new(config::socket())
 }
 
 const CALL: Duration = Duration::from_secs(30);
 
-async fn call(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
+pub(crate) async fn call(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
     match c
         .post::<_, Value>("/v1/call", &json!({ "call": call }), CALL)
         .await
@@ -377,7 +383,12 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
     let c = client();
     match cmd {
-        Command::Status => {
+        Command::Status { json } => {
+            if json {
+                // The live view of the swarm, for a dashboard or a script.
+                pretty(&call(&c, ToolCall::View).await?);
+                return Ok(());
+            }
             let host = local_host(&c).await?;
             println!("Local host: {host}");
             let hosts = call(&c, ToolCall::ListHosts).await?;
@@ -572,6 +583,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
         }
         Command::Members => pretty(&call(&c, ToolCall::ListMembers).await?),
         Command::Attach { agent } => attach(&c, &agent).await?,
+        Command::Top => crate::top::run().await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
         }
@@ -644,6 +656,19 @@ async fn attach(c: &LocalClient, agent: &AgentId) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// `status --json` asks the hub for the live view; plain `status` keeps
+    /// today's text.
+    #[test]
+    fn status_json_flag_parses() {
+        let cli = Cli::try_parse_from(["borant", "status", "--json"]).unwrap();
+        assert!(matches!(cli.command, Command::Status { json: true }));
+        let cli = Cli::try_parse_from(["borant", "status"]).unwrap();
+        assert!(matches!(cli.command, Command::Status { json: false }));
+        // `top` is a command of its own.
+        let cli = Cli::try_parse_from(["borant", "top"]).unwrap();
+        assert!(matches!(cli.command, Command::Top));
+    }
 
     #[test]
     fn parses_all_commands() {
