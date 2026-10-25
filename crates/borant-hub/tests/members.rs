@@ -5,7 +5,9 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use borant_core::model::{Agent, Harness, HostInfo, MemberBundle, MemberState, UsageWindow};
+use borant_core::model::{
+    Agent, Harness, HostInfo, MemberBundle, MemberState, SpawnRecord, SpawnState, UsageWindow,
+};
 use borant_core::ports::StateStore;
 use borant_core::proto::{CtlRequest, HostCommand, ToolCall};
 use borant_core::{AgentId, BundleName, ChannelName, Clock, MemberName, keys};
@@ -67,6 +69,17 @@ async fn setup(fx: &Fx) -> borant_core::proto::Registered {
 }
 
 async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str, harness: Harness) {
+    spawn_on(fx, owner, who, harness, "h1").await;
+}
+
+/// A spawn that names its host.
+async fn spawn_on(
+    fx: &Fx,
+    owner: &borant_core::proto::Registered,
+    who: &str,
+    harness: Harness,
+    host: &str,
+) {
     fx.call(
         Some(owner),
         ToolCall::Spawn {
@@ -79,7 +92,7 @@ async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str, harne
             channel: api(),
             prompt: "fix the build".into(),
             harness: Some(harness),
-            host: Some(name("h1")),
+            host: Some(name(host)),
             name: Some(agent(who)),
             model: None,
             role: None,
@@ -126,6 +139,92 @@ async fn members_omp_launch_gets_no_claude_code_member() {
                 "omp must not get a claude-code-only member: {:?}",
                 o.members
             );
+        }
+        other => panic!("expected a launch, got {other:?}"),
+    }
+}
+
+/// A failed pool launch on h1 must not fall back to h2, which has no
+/// `[secrets]`: the launch would run on the login of the box instead of the
+/// pool. The spawn waits in the queue, and the reason names the bundle.
+#[tokio::test]
+async fn members_a_failed_pool_launch_does_not_fall_back_to_a_host_without_the_bundle() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    // h2 runs Claude Code and holds no secrets.
+    fx.host("h2", &[Harness::ClaudeCode]).await;
+    let mut h1 = fx.commands("h1").await;
+    let mut h2 = fx.commands("h2").await;
+    spawn(&fx, &owner, "w1", Harness::ClaudeCode).await;
+    match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.members.get(&bundle()), Some(&member("a")), "{o:?}");
+        }
+        other => panic!("expected the pool launch, got {other:?}"),
+    }
+    // The launch stalls on the first-run screen; the watchdog fails it.
+    fx.req(CtlRequest::LaunchFailed {
+        agent: agent("w1"),
+        host: name("h1"),
+        error: "first-run screen".into(),
+    })
+    .await
+    .unwrap();
+    // The hub tries again. h1 failed the agent, h2 has no member bundle.
+    fx.hub.tick().await.unwrap();
+    assert!(
+        next_cmd(&mut h2).await.is_none(),
+        "a host without the member bundle must not take the agent"
+    );
+    let doc = fx
+        .state
+        .get(&keys::spawn(&agent("w1")))
+        .await
+        .unwrap()
+        .expect("the spawn record");
+    let record: SpawnRecord = serde_json::from_slice(&doc.value).unwrap();
+    assert_eq!(record.state, SpawnState::Queued, "{record:?}");
+    assert!(
+        record
+            .last_reject
+            .iter()
+            .any(|(host, why)| host == &name("h2") && why == "no member bundle claude_auth"),
+        "the queue names the bundle: {:?}",
+        record.last_reject
+    );
+    assert!(
+        record
+            .last_reject
+            .iter()
+            .any(|(host, why)| host == &name("h1") && why == "failed recently"),
+        "{:?}",
+        record.last_reject
+    );
+}
+
+/// An agent with no member keeps today's placement: a host without secrets
+/// takes it.
+#[tokio::test]
+async fn members_no_member_agent_still_lands_on_a_host_without_the_bundle() {
+    let fx = Fx::new();
+    fx.host("h2", &[Harness::ClaudeCode]).await;
+    let owner = fx.register("h2", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: api(),
+            schema: None,
+            project: None,
+            branch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut cmds = fx.commands("h2").await;
+    spawn_on(&fx, &owner, "plain", Harness::ClaudeCode, "h2").await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Launch(o)) => {
+            assert!(o.members.is_empty(), "{:?}", o.members);
         }
         other => panic!("expected a launch, got {other:?}"),
     }

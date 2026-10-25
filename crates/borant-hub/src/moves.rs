@@ -85,8 +85,10 @@ impl Hub {
     }
 
     /// What a placement asks of a host: the tags of the role of the agent,
-    /// and the host of its parent when the role runs on the parent's host.
-    /// With no role the request is empty, but for the host that the hub names.
+    /// the host of its parent when the role runs on the parent's host, and the
+    /// bundles of which the agent already holds a member. With no role the
+    /// request asks for those members only, but for the host that the hub
+    /// names.
     pub(crate) async fn placement_req(
         &self,
         agent: &Agent,
@@ -94,6 +96,10 @@ impl Hub {
     ) -> PlacementReq {
         let mut req = PlacementReq {
             host: host.cloned(),
+            // A member is the account of a pool: a host that cannot give the
+            // launch that bundle runs the agent on its own credentials, which
+            // is how a failed pool launch fell back to a box login.
+            members: agent.members.keys().cloned().collect(),
             ..Default::default()
         };
         let Some(role) = agent.role.as_ref().and_then(|r| self.cfg.roles.get(r)) else {

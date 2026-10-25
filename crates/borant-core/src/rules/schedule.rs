@@ -49,6 +49,10 @@ pub enum Reject {
     NoHarness,
     MissingTag(Tag),
     MissingBundle(BundleName),
+    /// The agent has a member of the bundle, and the host cannot give it that
+    /// bundle for the launch harness, so the launch would run on the
+    /// credentials of the host itself instead of the pool.
+    NoMemberBundle(BundleName),
     LowMemory {
         avail_mb: u64,
         reserve_mb: u32,
@@ -71,6 +75,7 @@ impl fmt::Display for Reject {
             Self::NoHarness => f.write_str("no harness"),
             Self::MissingTag(tag) => write!(f, "missing tag {tag}"),
             Self::MissingBundle(bundle) => write!(f, "missing bundle {bundle}"),
+            Self::NoMemberBundle(bundle) => write!(f, "no member bundle {bundle}"),
             Self::LowMemory {
                 avail_mb,
                 reserve_mb,
@@ -97,6 +102,11 @@ pub struct PlacementReq {
     pub avoid: Vec<Tag>,
     /// The sandbox that the launch needs. `None` needs none.
     pub sandbox: Option<SandboxKind>,
+    /// The bundles of which the agent already holds a member, for example
+    /// `claude-auth` after its first launch. The host must hold each of them
+    /// for the launch harness: a host without the bundle would launch the
+    /// agent on its own credentials, not on the pool.
+    pub members: Vec<BundleName>,
     /// The disk percentage at which a host takes no new agent. `None` uses
     /// [`DEFAULT_DISK_STOP_PCT`].
     pub disk_stop_pct: Option<u8>,
@@ -159,46 +169,69 @@ fn order(
         .then_with(|| x.info.name.cmp(&y.info.name))
 }
 
-/// The first rule that `h` fails, in the order of the rules: the reason that
-/// `borant ps --queued` prints for it.
+/// True if `h` holds `bundle` for a launch with `harness`: the members of the
+/// bundle cover the harness, or the bundle has no members on the host (one
+/// member, or none at all) and the host defines it.
+fn holds_member_bundle(h: &HostView, bundle: &BundleName, harness: Harness) -> bool {
+    match h.info.members.get(bundle) {
+        Some(known) => known.harnesses.contains(&harness),
+        None => h.info.bundles.contains(bundle),
+    }
+}
+
+/// The harness that `h` runs for this placement, or the first rule that `h`
+/// fails, in the order of the rules: the reason that `borant ps --queued`
+/// prints for it.
 fn reject(
     h: &HostView,
     req: &PlacementReq,
     bundles: &[BundleName],
+    preferred: Harness,
     forced_harness: Option<Harness>,
-) -> Option<Reject> {
+) -> Result<Harness, Reject> {
     if !h.online {
-        return Some(Reject::Offline);
+        return Err(Reject::Offline);
     }
     if h.info.draining {
-        return Some(Reject::Draining);
+        return Err(Reject::Draining);
     }
     if h.active_agents >= h.info.max_agents {
-        return Some(Reject::Full {
+        return Err(Reject::Full {
             active: h.active_agents,
             max: h.info.max_agents,
         });
     }
     if !h.has_repo_access {
-        return Some(Reject::NoRepo);
+        return Err(Reject::NoRepo);
     }
     if h.recently_failed {
-        return Some(Reject::RecentlyFailed);
+        return Err(Reject::RecentlyFailed);
     }
     if forced_harness.is_some_and(|f| !h.info.harnesses.contains(&f)) {
-        return Some(Reject::NoHarness);
+        return Err(Reject::NoHarness);
     }
     if let Some(tag) = req.require.iter().find(|t| !h.info.tags.contains(t)) {
-        return Some(Reject::MissingTag(tag.clone()));
+        return Err(Reject::MissingTag(tag.clone()));
     }
     if let Some(bundle) = bundles.iter().find(|b| !h.info.bundles.contains(b)) {
-        return Some(Reject::MissingBundle(bundle.clone()));
+        return Err(Reject::MissingBundle(bundle.clone()));
+    }
+    let harness = pick_harness(h, preferred, forced_harness).ok_or(Reject::NoHarness)?;
+    // A member is the account of the pool. A host that cannot give the
+    // launch the bundle of that member, for the harness of the launch, would
+    // run the agent on its own credentials instead.
+    if let Some(bundle) = req
+        .members
+        .iter()
+        .find(|b| !holds_member_bundle(h, b, harness))
+    {
+        return Err(Reject::NoMemberBundle(bundle.clone()));
     }
     // A host that reports no memory passes: a v0.7.0 host keeps working.
     if let Some(avail_mb) = h.mem_avail_mb {
         let reserve_mb = h.info.reserve_mem_mb.unwrap_or(DEFAULT_RESERVE_MEM_MB);
         if avail_mb < u64::from(reserve_mb) {
-            return Some(Reject::LowMemory {
+            return Err(Reject::LowMemory {
                 avail_mb,
                 reserve_mb,
             });
@@ -209,23 +242,24 @@ fn reject(
         let stop = req.disk_stop_pct.unwrap_or(DEFAULT_DISK_STOP_PCT);
         if used >= f64::from(stop) {
             let used_pct = used.round().clamp(0.0, 100.0) as u8;
-            return Some(Reject::LowDisk { used_pct });
+            return Err(Reject::LowDisk { used_pct });
         }
     }
     if let Some(kind) = req.sandbox
         && !h.info.sandboxes.contains(&kind)
     {
-        return Some(Reject::NoSandbox);
+        return Err(Reject::NoSandbox);
     }
-    None
+    Ok(harness)
 }
 
 /// Picks a host and a harness. A host qualifies when no rule of `reject`
 /// fails, that is: it is online, not draining, below its limit, can reach the
 /// repository, was not recently failed, has the forced harness, every
-/// `require` tag of `req`, every bundle of the launch, enough free memory for
-/// its reserve, enough free disk, and the sandbox of the request. The score is
-/// `order`.
+/// `require` tag of `req`, every bundle of the launch, a member of every
+/// bundle of `req.members` for the harness that it runs, enough free memory
+/// for its reserve, enough free disk, and the sandbox of the request. The
+/// score is `order`.
 ///
 /// The error lists every host that was asked, with its first failed rule, so
 /// that a refused placement can name them all.
@@ -240,13 +274,15 @@ pub fn place(
     let candidates: Vec<(&HostView, Harness)> = hosts
         .iter()
         .filter(|h| req.host.as_ref().is_none_or(|f| *f == h.info.name))
-        .filter_map(|h| match reject(h, req, bundles, forced_harness) {
-            Some(reason) => {
-                rejected.push((h.info.name.clone(), reason));
-                None
-            }
-            None => pick_harness(h, preferred, forced_harness).map(|harness| (h, harness)),
-        })
+        .filter_map(
+            |h| match reject(h, req, bundles, preferred, forced_harness) {
+                Ok(harness) => Some((h, harness)),
+                Err(reason) => {
+                    rejected.push((h.info.name.clone(), reason));
+                    None
+                }
+            },
+        )
         .collect();
     candidates
         .into_iter()
@@ -258,7 +294,7 @@ pub fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{HostStats, SandboxKind, Sender, SpawnRecord, SpawnState};
+    use crate::model::{HostStats, MemberBundle, SandboxKind, Sender, SpawnRecord, SpawnState};
     use crate::rules::roles::{Resolved, RoleConfig};
     use crate::time::Timestamp;
 
@@ -550,6 +586,97 @@ mod tests {
         assert_eq!(
             place(Harness::Pi, None, &PlacementReq::default(), &both, &hosts),
             None
+        );
+    }
+
+    /// The host with `members` of `bundle`, for `harnesses` only. The bundle
+    /// is also one that the host defines.
+    fn member_bundled(
+        mut h: HostView,
+        bundle: &str,
+        harnesses: &[Harness],
+        members: &[&str],
+    ) -> HostView {
+        let bundle: BundleName = bundle.parse().unwrap();
+        h.info.bundles.push(bundle.clone());
+        h.info.members.insert(
+            bundle,
+            MemberBundle {
+                members: members.iter().map(|m| m.parse().unwrap()).collect(),
+                harnesses: harnesses.to_vec(),
+            },
+        );
+        h
+    }
+
+    #[test]
+    fn a_member_bundle_filters_hosts() {
+        let bundle: BundleName = "claude-auth".parse().unwrap();
+        let req = PlacementReq {
+            members: vec![bundle.clone()],
+            ..Default::default()
+        };
+        let pool = member_bundled(
+            host("pool", &[Harness::ClaudeCode], 0, true),
+            "claude-auth",
+            &[Harness::ClaudeCode],
+            &["a", "b"],
+        );
+        // A host with no secrets at all would launch the agent on the login
+        // of the box instead of the pool: the bug of phase 10.
+        let bare = host("bare", &[Harness::ClaudeCode], 0, true);
+        assert_eq!(
+            place(
+                Harness::ClaudeCode,
+                None,
+                &req,
+                &[],
+                &[bare.clone(), pool.clone()]
+            ),
+            Some((name("pool"), Harness::ClaudeCode))
+        );
+        let err = super::place(
+            Harness::ClaudeCode,
+            None,
+            &req,
+            &[],
+            std::slice::from_ref(&bare),
+        )
+        .unwrap_err();
+        assert_eq!(err[0].1, Reject::NoMemberBundle(bundle.clone()));
+        assert_eq!(err[0].1.to_string(), "no member bundle claude-auth");
+
+        // The bundle for another harness is no member of this launch.
+        let other_harness = member_bundled(
+            host("other-harness", &[Harness::ClaudeCode], 0, true),
+            "claude-auth",
+            &[Harness::Pi],
+            &["a", "b"],
+        );
+        let err = super::place(Harness::ClaudeCode, None, &req, &[], &[other_harness]).unwrap_err();
+        assert_eq!(err[0].1.to_string(), "no member bundle claude-auth");
+
+        // A bundle with one member is a plain bundle of the host: it has no
+        // member to hold, and the host takes the agent.
+        let single = bundled(
+            host("single", &[Harness::ClaudeCode], 0, true),
+            &["claude-auth"],
+        );
+        assert_eq!(
+            place(Harness::ClaudeCode, None, &req, &[], &[single]),
+            Some((name("single"), Harness::ClaudeCode))
+        );
+
+        // An agent with no member keeps today's placement.
+        assert_eq!(
+            place(
+                Harness::ClaudeCode,
+                None,
+                &PlacementReq::default(),
+                &[],
+                &[bare]
+            ),
+            Some((name("bare"), Harness::ClaudeCode))
         );
     }
 
