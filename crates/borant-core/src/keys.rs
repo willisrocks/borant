@@ -124,6 +124,13 @@ pub fn wait(agent: &AgentId, id: &str) -> String {
 
 pub const WAIT_PREFIX: &str = "wait.";
 
+/// The state of one `[schedules.<name>]` entry: its last fire, the task that
+/// the fire made, and the one fire that waits for it. The name is a table
+/// key of `hub.toml`, so it is escaped for the KV.
+pub fn schedule(name: &str) -> String {
+    format!("sched.{}", escape_part(name))
+}
+
 /// Bus subjects.
 pub mod subjects {
     use super::{AgentId, ChannelName, HostName};
@@ -225,5 +232,16 @@ mod tests {
         assert_eq!(key, "alert.agent_stalled.a=3ab=2ec");
         assert!(valid_key(&key));
         assert_eq!(escape_part("="), "=3d");
+    }
+
+    /// A schedule's name is a table key of `hub.toml`, so its state key is
+    /// escaped too.
+    #[test]
+    fn schedule_keys_escape_the_table_name() {
+        assert_eq!(schedule("nightly-report"), "sched.nightly-report");
+        assert!(valid_key(&schedule("nightly-report")));
+        let key = schedule("a.b:c");
+        assert_eq!(key, "sched.a=2eb=3ac");
+        assert!(valid_key(&key));
     }
 }

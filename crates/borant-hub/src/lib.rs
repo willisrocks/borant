@@ -20,6 +20,7 @@ mod park;
 mod pause;
 mod prune;
 mod retire;
+mod schedules;
 mod spawns;
 mod store;
 mod tasks;
@@ -28,6 +29,7 @@ mod waits;
 
 pub use changes::ChangeWatch;
 pub use elastic::ElasticConfig;
+pub use schedules::{FireTask, ScheduleState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -175,6 +177,8 @@ pub(crate) struct Memory {
     pub last_elastic: Option<Timestamp>,
     /// When the alert pass last ran.
     pub last_alerts: Option<Timestamp>,
+    /// When the schedule pass last ran.
+    pub last_schedules: Option<Timestamp>,
     /// When the deadline pass last ran.
     pub last_deadlines: Option<Timestamp>,
     /// The provisioner refusals that the alerts report, per pool.
@@ -357,6 +361,11 @@ impl Hub {
         // The waits of the agents, then the alerts that see what the tick
         // changed.
         self.tick_waits().await?;
+        // The schedules of `hub.toml`, before the alerts see the tasks that
+        // they made. A bad schedule is a warn, never a failed tick.
+        if let Err(e) = self.tick_schedules().await {
+            tracing::warn!("the schedule pass failed: {e}");
+        }
         self.tick_alerts().await
     }
 

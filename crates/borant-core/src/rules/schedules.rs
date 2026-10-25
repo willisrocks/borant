@@ -8,7 +8,7 @@ use chrono_tz::Tz;
 use croner::Cron;
 use croner::errors::CronError;
 use croner::parser::{CronParser, Seconds, Year};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ScheduleConfig;
 use crate::ids::{AgentId, ChannelName};
@@ -28,7 +28,7 @@ pub enum ScheduleTarget {
 }
 
 /// `overlap` of `[schedules.<name>]`, `skip` by default.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Overlap {
     /// No new task while the task of the previous fire is still open.

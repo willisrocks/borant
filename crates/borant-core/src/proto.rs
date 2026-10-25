@@ -467,6 +467,9 @@ pub enum ToolCall {
     },
     /// The members of each bundle, with their state and their latest report.
     ListMembers,
+    /// The `[schedules.<name>]` of `hub.toml`, with the next and the last
+    /// fire of each. A person asks this from `borant schedules`.
+    Schedules,
 }
 
 fn default_page_size() -> usize {
@@ -878,6 +881,7 @@ mod tests {
                 selector: PauseSelector::Agent("w1".parse().unwrap()),
             },
             ToolCall::Inbox,
+            ToolCall::Schedules,
             ToolCall::Answer {
                 channel: "api".parse().unwrap(),
                 task: TaskId::new(),
