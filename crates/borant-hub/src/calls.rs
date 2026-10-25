@@ -5,7 +5,7 @@ use std::time::Duration;
 use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::{roles, schema};
-use borant_core::{AgentId, ChannelName, ProjectName, keys, subjects};
+use borant_core::{AgentId, ChannelName, CollectionName, ProjectName, keys, subjects};
 use serde_json::{Value, json};
 
 use crate::store::Doc;
@@ -21,6 +21,25 @@ fn tool_name(call: &ToolCall) -> String {
         .ok()
         .and_then(|v| v.get("tool").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// A person (no collection) may use every record. An agent may use the
+/// records of its own collection and the records with no collection.
+pub(crate) fn allowed(mine: Option<&CollectionName>, record: Option<&CollectionName>) -> bool {
+    mine.is_none_or(|mine| record.is_none_or(|record| record == mine))
+}
+
+/// Fails with `denied` when the caller may not use a record.
+fn check_allowed(
+    mine: Option<&CollectionName>,
+    record: Option<&CollectionName>,
+    what: &str,
+) -> Result<(), ApiError> {
+    if allowed(mine, record) {
+        Ok(())
+    } else {
+        Err(ApiError::denied(format!("{what} is in another collection")))
+    }
 }
 
 impl Hub {
@@ -115,6 +134,7 @@ impl Hub {
         }
         self.authorize(&actor, &call).await?;
         let me = actor.as_ref().map(|a| a.agent.clone());
+        let mine = self.collection_of(&me).await?;
         let sender = me.clone().map_or(Sender::Human, Sender::Agent);
         match call {
             ToolCall::Whoami => {
@@ -145,11 +165,15 @@ impl Hub {
                 branch,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
-                to_value(&self.channel_create(&me, &name, s, project, branch).await?)
+                to_value(
+                    &self
+                        .channel_create(&me, mine.as_ref(), &name, s, project, branch)
+                        .await?,
+                )
             }
             ToolCall::ChannelJoin { name } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
-                self.channel(&name).await?;
+                self.channel_for(mine.as_ref(), &name).await?;
                 self.join(&me, &name).await?;
                 Ok(json!({ "joined": name }))
             }
@@ -165,12 +189,13 @@ impl Hub {
                     .await?
                     .into_iter()
                     .filter(|d| d.key.matches('.').count() == 1)
-                    .filter_map(|d| serde_json::from_value(d.value).ok())
+                    .filter_map(|d| serde_json::from_value::<Channel>(d.value).ok())
+                    .filter(|ch| allowed(mine.as_ref(), ch.collection.as_ref()))
                     .collect();
                 to_value(&chans)
             }
             ToolCall::ChannelTransfer { name, to } => {
-                let mut ch = self.channel(&name).await?;
+                let mut ch = self.channel_for(mine.as_ref(), &name).await?;
                 if let Some(me) = &me
                     && ch.value.owner != *me
                 {
@@ -193,7 +218,7 @@ impl Hub {
                 to_value(&ch.value)
             }
             ToolCall::Members { name } => {
-                self.channel(&name).await?;
+                self.channel_for(mine.as_ref(), &name).await?;
                 let mut out = Vec::new();
                 for m in self
                     .store
@@ -216,18 +241,27 @@ impl Hub {
                 "send and session_history run in the host daemon",
             )),
             ToolCall::TaskCreate { channel, task } => {
+                self.channel_for(mine.as_ref(), &channel).await?;
                 to_value(&self.task_create(&sender, &channel, task).await?)
             }
-            ToolCall::TaskGet { channel, id } => to_value(&self.task(&channel, &id).await?.value),
+            ToolCall::TaskGet { channel, id } => {
+                self.channel_for(mine.as_ref(), &channel).await?;
+                to_value(&self.task(&channel, &id).await?.value)
+            }
             ToolCall::TaskList {
                 channel,
                 ready_only,
-            } => to_value(&self.task_list(&channel, ready_only).await?),
+            } => {
+                self.channel_for(mine.as_ref(), &channel).await?;
+                to_value(&self.task_list(&channel, ready_only).await?)
+            }
             ToolCall::TaskUpdate { channel, id, patch } => {
+                self.channel_for(mine.as_ref(), &channel).await?;
                 to_value(&self.task_update(mem, &sender, &channel, &id, patch).await?)
             }
             ToolCall::TaskClaim { channel, id } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
+                self.channel_for(mine.as_ref(), &channel).await?;
                 to_value(&self.task_claim(mem, &me, &channel, &id).await?)
             }
             ToolCall::TaskClose {
@@ -235,17 +269,24 @@ impl Hub {
                 id,
                 reason,
                 message,
-            } => to_value(
-                &self
-                    .task_close(mem, &sender, &channel, &id, reason, message)
-                    .await?,
-            ),
-            ToolCall::SchemaGet { channel } => Ok(self.channel(&channel).await?.value.schema),
+            } => {
+                self.channel_for(mine.as_ref(), &channel).await?;
+                to_value(
+                    &self
+                        .task_close(mem, &sender, &channel, &id, reason, message)
+                        .await?,
+                )
+            }
+            ToolCall::SchemaGet { channel } => Ok(self
+                .channel_for(mine.as_ref(), &channel)
+                .await?
+                .value
+                .schema),
             ToolCall::SchemaExtend {
                 channel,
                 properties,
             } => {
-                let mut ch = self.channel(&channel).await?;
+                let mut ch = self.channel_for(mine.as_ref(), &channel).await?;
                 if let Some(me) = &me
                     && ch.value.owner != *me
                 {
@@ -280,7 +321,7 @@ impl Hub {
                 let moved = self.drain(mem, &host).await?;
                 Ok(json!({ "draining": host, "moving": moved }))
             }
-            ToolCall::ListAgents => self.list_agents().await,
+            ToolCall::ListAgents => self.list_agents(mine.as_ref()).await,
             ToolCall::Pin { agent, on } => {
                 if actor.is_some() {
                     return Err(ApiError::invalid("only a human can pin an agent"));
@@ -317,6 +358,7 @@ impl Hub {
                     .await?
                     .into_iter()
                     .map(|d| d.value)
+                    .filter(|p| allowed(mine.as_ref(), p.collection.as_ref()))
                     .collect();
                 to_value(&projects)
             }
@@ -360,6 +402,28 @@ impl Hub {
             .ok_or_else(|| ApiError::not_found(format!("no agent {id}")))
     }
 
+    /// The collection of the caller: its own, or `None` for a person.
+    async fn collection_of(
+        &self,
+        me: &Option<AgentId>,
+    ) -> Result<Option<CollectionName>, ApiError> {
+        match me {
+            Some(id) => Ok(self.agent(id).await?.value.collection),
+            None => Ok(None),
+        }
+    }
+
+    /// The channel, checked against the collection of the caller.
+    async fn channel_for(
+        &self,
+        mine: Option<&CollectionName>,
+        name: &ChannelName,
+    ) -> Result<Doc<Channel>, ApiError> {
+        let ch = self.channel(name).await?;
+        check_allowed(mine, ch.value.collection.as_ref(), &format!("#{name}"))?;
+        Ok(ch)
+    }
+
     pub(crate) async fn channel(&self, name: &ChannelName) -> Result<Doc<Channel>, ApiError> {
         self.store
             .get::<Channel>(&keys::channel(name))
@@ -378,18 +442,36 @@ impl Hub {
     async fn channel_create(
         &self,
         owner: &AgentId,
+        mine: Option<&CollectionName>,
         name: &ChannelName,
         s: Option<Value>,
         project: Option<ProjectName>,
         branch: Option<String>,
     ) -> Result<Channel, ApiError> {
-        let branch = match &project {
-            Some(p) => Some(branch.unwrap_or(self.project(p).await?.default_branch)),
+        let (collection, branch) = match &project {
+            Some(p) => {
+                let project = self.project(p).await?;
+                check_allowed(mine, project.collection.as_ref(), &format!("project {p}"))?;
+                (
+                    project.collection.clone(),
+                    Some(branch.unwrap_or_else(|| project.default_branch.clone())),
+                )
+            }
             None if branch.is_some() => {
                 return Err(ApiError::invalid("a branch needs a project"));
             }
-            None => None,
+            None => (mine.cloned(), None),
         };
+        // The field is the authority, not the prefix. A collection never
+        // rewrites a name: the creator must use the prefix.
+        if let Some(c) = &collection {
+            let prefix = format!("{c}-");
+            if !name.as_str().starts_with(&prefix) {
+                return Err(ApiError::invalid(format!(
+                    "a channel of collection {c} must start with {prefix}"
+                )));
+            }
+        }
         let schema = match s {
             Some(s) => {
                 schema::check_schema(&s)?;
@@ -405,7 +487,7 @@ impl Hub {
             closed: None,
             project,
             branch,
-            collection: None,
+            collection,
         };
         self.store
             .put(&keys::channel(name), &ch, None)

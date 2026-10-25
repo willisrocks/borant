@@ -13,8 +13,8 @@ use borant_core::ports::provision::Provisioner;
 use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::pool::PoolConfig;
-use borant_core::rules::roles::RoleConfig;
-use borant_core::{BundleName, HostName, MemberName, PoolName, RoleName, Tag};
+use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::{BundleName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag};
 use borant_exec::ExecConfig;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
@@ -246,6 +246,9 @@ pub struct HubFile {
     /// The roles of the swarm, from `[roles.<name>]`.
     #[serde(default)]
     pub roles: BTreeMap<RoleName, RoleConfig>,
+    /// The collections, by name, for example `personal` and `work`.
+    #[serde(default)]
+    pub collections: BTreeMap<CollectionName, CollectionConfig>,
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
@@ -649,6 +652,29 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_hub_collections() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [collections.personal]
+            bundles = ["github-personal"]
+            git_author = { name = "Chris Fenton", email = "you@example.com" }
+
+            [collections.work]
+            bundles = ["github-work"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(f.collections.len(), 2);
+        let personal = &f.collections[&"personal".parse().unwrap()];
+        assert_eq!(personal.bundles, ["github-personal".parse().unwrap()]);
+        let author = personal.git_author.as_ref().unwrap();
+        assert_eq!(author.name, "Chris Fenton");
+        assert_eq!(author.email, "you@example.com");
+        let work = &f.collections[&"work".parse().unwrap()];
+        assert!(work.git_author.is_none());
+    }
 
     #[test]
     fn parses_host_file() {

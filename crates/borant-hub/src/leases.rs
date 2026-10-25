@@ -232,6 +232,19 @@ impl Hub {
         let existing = self.store.get::<Agent>(&agent_key).await?;
         let lease_key = keys::lease_agent(&agent_id);
         let lease_doc = self.store.get::<Lease>(&lease_key).await?;
+        // The auto-join of a channel of another collection is refused before
+        // the lease is taken or the agent is written.
+        if let Some(c) = &r.channel
+            && let Ok(ch) = self.channel(c).await
+        {
+            let mine = existing
+                .as_ref()
+                .and_then(|d| d.value.collection.clone())
+                .or_else(|| r.collection.clone());
+            if !crate::calls::allowed(mine.as_ref(), ch.value.collection.as_ref()) {
+                return Err(ApiError::denied(format!("#{c} is in another collection")));
+            }
+        }
         // A pinned agent keeps its session: no other session may take it while
         // the lease is held or the last session may still run.
         if existing.as_ref().is_some_and(|d| d.value.pinned) {
