@@ -122,8 +122,12 @@ pub async fn run_host() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&cfg.home).await?;
     let nats =
         borant_nats::connect(&file.nats.to_config(&format!("borant-host-{}", cfg.name))).await?;
-    let launcher = borant_launch::launcher_for(&cfg.launcher, cfg.home.join("logs"))
-        .map_err(anyhow::Error::msg)?;
+    let launcher = borant_launch::launcher_for_with(
+        &cfg.launcher,
+        cfg.home.join("logs"),
+        &file.herdr_config(),
+    )
+    .map_err(anyhow::Error::msg)?;
     let outbox = Outbox::open(&cfg.home.join("outbox.db"))?;
     let socket = config::socket();
     tracing::info!(host = %cfg.name, launcher = %cfg.launcher, harnesses = ?cfg.harnesses, "host daemon starting");

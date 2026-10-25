@@ -48,11 +48,18 @@ creds_file = "/Users/me/.borant/host.creds"
 
 [host]
 name = "laptop-a"
-launcher = "orca"        # orca, tmux, zellij, or process
+launcher = "orca"        # orca, tmux, zellij, herdr, or process
 always_on = false
 max_agents = 4
 ssh = "me@laptop-a"      # for `borant attach` from other machines
 harnesses = ["claude-code", "pi", "omp"]
+
+# Only with `launcher = "herdr"`: one herdr session per host, whose server
+# outlives a host restart. `program` is any herdr binary, for example a pinned
+# release.
+[herdr]
+session = "borant"
+program = "herdr"
 ```
 
 Then run `borant host`. Every key is optional. Without `harnesses`, the
