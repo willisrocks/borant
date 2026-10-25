@@ -1433,12 +1433,21 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-/// The attach command for a launcher kind.
-pub fn attach_command(launcher: &str, agent: &AgentId) -> Option<Vec<String>> {
+/// The attach command for a launcher kind. `tmux_socket` is the host's
+/// `[tmux] socket`, the `borant` server when unset.
+pub fn attach_command(
+    launcher: &str,
+    tmux_socket: Option<&str>,
+    agent: &AgentId,
+) -> Option<Vec<String>> {
     let name = format!("borant-{agent}");
     match launcher {
         "tmux" => Some(vec![
             "tmux".into(),
+            "-L".into(),
+            tmux_socket
+                .unwrap_or(borant_launch::DEFAULT_TMUX_SOCKET)
+                .into(),
             "attach".into(),
             "-t".into(),
             format!("={name}"),
@@ -1469,9 +1478,9 @@ async fn attach(c: &LocalClient, agent: &AgentId) -> anyhow::Result<()> {
         .find(|h| h["host"]["name"] == json!(host))
         .with_context(|| format!("no host {host}"))?;
     let launcher = info["host"]["launcher"].as_str().unwrap_or_default();
-    let cmd = attach_command(launcher, agent).with_context(|| {
-        format!("host {host} uses the {launcher} launcher, which has no terminal attach")
-    })?;
+    let cmd = attach_command(launcher, info["host"]["tmux_socket"].as_str(), agent).with_context(
+        || format!("host {host} uses the {launcher} launcher, which has no terminal attach"),
+    )?;
     let local = local_host(c).await?;
     let mut argv = cmd;
     if local.as_str() != host {
@@ -1669,10 +1678,14 @@ mod tests {
     fn attach_commands() {
         let a: AgentId = "w1".parse().unwrap();
         assert_eq!(
-            attach_command("tmux", &a).unwrap(),
-            ["tmux", "attach", "-t", "=borant-w1"]
+            attach_command("tmux", None, &a).unwrap(),
+            ["tmux", "-L", "borant", "attach", "-t", "=borant-w1"]
         );
-        assert_eq!(attach_command("orca", &a), None);
+        assert_eq!(
+            attach_command("tmux", Some("agents"), &a).unwrap(),
+            ["tmux", "-L", "agents", "attach", "-t", "=borant-w1"]
+        );
+        assert_eq!(attach_command("orca", None, &a), None);
     }
 
     /// The ULID that the spawn and wait tests use.

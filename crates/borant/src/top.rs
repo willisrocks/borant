@@ -279,6 +279,7 @@ mod tests {
                     always_on: true,
                     draining: false,
                     ssh: None,
+                    tmux_socket: None,
                     members: Default::default(),
                     pool: None,
                     tags: vec![],

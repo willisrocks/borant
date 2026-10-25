@@ -920,6 +920,11 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
         cfg.always_on = v;
     }
     cfg.ssh = env("BORANT_SSH").or(h.ssh.clone());
+    // The socket only matters to the tmux launcher, and `borant attach` gets
+    // it from the host record.
+    if cfg.launcher == "tmux" {
+        cfg.tmux_socket = Some(file.tmux_config().socket);
+    }
     (cfg.pool, cfg.tags) = pool_and_tags(
         h.pool.clone(),
         h.tags.clone(),
@@ -1255,6 +1260,18 @@ mod tests {
             plain.tmux_config().socket,
             borant_launch::DEFAULT_TMUX_SOCKET
         );
+    }
+
+    #[tokio::test]
+    async fn tmux_socket_reaches_the_host_record() {
+        let file: HostFile =
+            toml::from_str("[host]\nlauncher = \"tmux\"\n[tmux]\nsocket = \"agents\"\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.tmux_socket.as_deref(), Some("agents"));
+        // A host with another launcher carries no tmux socket.
+        let file: HostFile = toml::from_str("[host]\nlauncher = \"process\"\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.tmux_socket, None);
     }
 
     #[tokio::test]

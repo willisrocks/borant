@@ -915,6 +915,7 @@ mod tests {
             always_on: false,
             draining: false,
             ssh: None,
+            tmux_socket: None,
             members: Default::default(),
             pool: Some(pool.parse().unwrap()),
             tags: vec!["vps".parse().unwrap()],
