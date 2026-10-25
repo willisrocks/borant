@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use borant_core::config::{AlertsConfig, ChangesConfig, ChannelConfig};
+use borant_core::config::{AlertsConfig, ChangesConfig, ChannelConfig, ScheduleConfig};
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
@@ -17,6 +17,7 @@ use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
 use borant_core::rules::pool::PoolConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::rules::schedules::Schedule;
 use borant_core::{
     BundleName, ChannelName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag,
 };
@@ -266,6 +267,9 @@ pub struct HubFile {
     #[serde(default)]
     #[allow(dead_code)] // The PR watch task reads it.
     pub changes: ChangesConfig,
+    /// `[schedules.<name>]`: the recurring work of the hub.
+    #[serde(default)]
+    pub schedules: BTreeMap<String, ScheduleConfig>,
     /// `[alerts]`: the notifier of the hub and its alert rules.
     #[serde(default)]
     pub alerts: AlertsFile,
@@ -518,6 +522,16 @@ impl HubFile {
     /// The notifier of `[alerts]`, if this file names one.
     pub fn notifier(&self) -> anyhow::Result<Option<Box<dyn Notifier>>> {
         open_notifier(&self.notifiers, self.alerts.notifier.as_deref())
+    }
+
+    /// The parsed `[schedules.<name>]` entries. An invalid cron or time zone
+    /// fails here, and the error names the schedule, so the hub does not
+    /// start with one.
+    pub fn schedules(&self) -> anyhow::Result<Vec<Schedule>> {
+        self.schedules
+            .iter()
+            .map(|(name, config)| Schedule::parse(name, config).map_err(anyhow::Error::from))
+            .collect()
     }
 
     /// The PR watch of `[changes]`: the adapter that reads one change request
@@ -1752,5 +1766,167 @@ mod http_tests {
             assert_eq!(f.http, HttpConfig::default());
             assert!(f.http.listen.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use borant_core::Timestamp;
+    use borant_core::rules::schedules::Overlap;
+    use chrono::{TimeZone as _, Utc};
+
+    fn file(toml: &str) -> HubFile {
+        toml::from_str(toml).expect("a hub file")
+    }
+
+    /// The phase 9 spec example of `[schedules.nightly-report]`, which the
+    /// hub turns into one schedule.
+    #[test]
+    fn config_parses_the_spec_schedule() {
+        let f = file(
+            r#"
+            [schedules.nightly-report]
+            cron = "0 6 * * *"
+            time_zone = "America/Los_Angeles"
+            overlap = "skip"
+
+            [schedules.nightly-report.task]
+            channel = "reports"
+            title = "Morning report for {date}"
+            body = "Summarize the events of the last 24 hours."
+            "#,
+        );
+        let schedule = f.schedules().unwrap().pop().expect("one schedule");
+        assert_eq!(schedule.name, "nightly-report");
+        assert_eq!(schedule.time_zone.to_string(), "America/Los_Angeles");
+        assert_eq!(schedule.overlap, Overlap::Skip);
+        let channel: ChannelName = "reports".parse().unwrap();
+        assert_eq!(
+            schedule.target,
+            borant_core::rules::schedules::ScheduleTarget::Task {
+                channel,
+                title: "Morning report for {date}".into(),
+                body: "Summarize the events of the last 24 hours.".into(),
+            }
+        );
+        // 06:00 in Los Angeles is 13:00 UTC in June, under PDT.
+        let after = Timestamp(
+            Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_millis(),
+        );
+        let fire = Timestamp(
+            Utc.with_ymd_and_hms(2026, 6, 1, 13, 0, 0)
+                .unwrap()
+                .timestamp_millis(),
+        );
+        assert_eq!(schedule.next_fire(after), fire);
+        assert_eq!(
+            schedule.expand_date("Morning report for {date}", fire),
+            "Morning report for 2026-06-01"
+        );
+    }
+
+    /// A message target, and the `skip` default of `overlap`.
+    #[test]
+    fn config_parses_a_message_target_and_defaults_overlap_to_skip() {
+        let f = file(
+            r#"
+            [schedules.ping]
+            cron = "*/15 * * * *"
+            time_zone = "UTC"
+
+            [schedules.ping.message]
+            to = "chief"
+            text = "check the queue"
+            "#,
+        );
+        let schedule = f.schedules().unwrap().pop().unwrap();
+        assert_eq!(schedule.overlap, Overlap::Skip);
+        assert_eq!(
+            schedule.target,
+            borant_core::rules::schedules::ScheduleTarget::Message {
+                to: "chief".parse().unwrap(),
+                text: "check the queue".into(),
+            }
+        );
+    }
+
+    /// An invalid cron or time zone fails the start, and the error names the
+    /// schedule.
+    #[test]
+    fn a_bad_schedule_fails_the_start_with_its_name() {
+        let cases = [
+            (
+                r#"
+                [schedules.nightly-report]
+                cron = "0 0 6 * * *"
+                time_zone = "UTC"
+                [schedules.nightly-report.message]
+                to = "chief"
+                text = "hi"
+                "#,
+                "six cron fields",
+            ),
+            (
+                r#"
+                [schedules.nightly-report]
+                cron = "0 6 * * *"
+                time_zone = "Not/AZone"
+                [schedules.nightly-report.message]
+                to = "chief"
+                text = "hi"
+                "#,
+                "an unknown time zone",
+            ),
+            (
+                r#"
+                [schedules.nightly-report]
+                cron = "0 0 30 2 *"
+                time_zone = "UTC"
+                [schedules.nightly-report.message]
+                to = "chief"
+                text = "hi"
+                "#,
+                "a cron that never fires",
+            ),
+            (
+                r#"
+                [schedules.nightly-report]
+                cron = "0 6 * * *"
+                time_zone = "UTC"
+                [schedules.nightly-report.task]
+                channel = "reports"
+                title = "t"
+                body = "b"
+                [schedules.nightly-report.message]
+                to = "chief"
+                text = "hi"
+                "#,
+                "two targets",
+            ),
+        ];
+        for (toml, case) in cases {
+            let error = file(toml).schedules().expect_err(case);
+            assert!(
+                error.to_string().contains("nightly-report"),
+                "{case}: {error}"
+            );
+        }
+    }
+
+    /// A hub that names no schedule fires nothing, and an unknown key stays an
+    /// error.
+    #[test]
+    fn config_without_schedules_fires_nothing() {
+        assert!(file("").schedules().unwrap().is_empty());
+        assert!(
+            toml::from_str::<HubFile>(
+                "[schedules.x]\ncron = \"0 6 * * *\"\ntime_zone = \"UTC\"\nnope = 1\n"
+            )
+            .is_err(),
+            "deny_unknown_fields stays"
+        );
     }
 }

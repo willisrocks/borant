@@ -12,6 +12,9 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 bytes.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+croner.workspace = true
 futures.workspace = true
 jsonschema.workspace = true
 regex.workspace = true

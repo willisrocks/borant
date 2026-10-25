@@ -40,6 +40,9 @@ async fn hub_parts(
     // A name in [alerts] that [notifiers] does not define fails the start,
     // not the first notice. The alert pass takes the notifier this builds.
     let notifier = file.notifier()?;
+    // A bad cron or time zone in [schedules] fails the start, not the first
+    // tick, and the error names the schedule.
+    let schedules = file.schedules()?;
     tracing::info!(
         alerts = %file.alerts.summary(),
         notifier_built = notifier.is_some(),
@@ -56,6 +59,7 @@ async fn hub_parts(
         collections: file.collections,
         alerts: file.alerts.to_config(),
         changes,
+        schedules,
         member_rules: file.secrets.members,
         http: file.http,
         channels: file.channels,
