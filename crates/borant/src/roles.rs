@@ -161,9 +161,13 @@ pub async fn export(out: &Path, snapshot: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Asks the running hub for a snapshot. The hub writes the file on its own
-/// box, so this works from any host and without maintenance mode.
+/// Asks the running hub for a snapshot. The file lands on the hub box, so
+/// `out` must be absolute; the command itself works from any host and
+/// without maintenance mode.
 async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
+    if !out.is_absolute() {
+        anyhow::bail!("--out must be an absolute path on the hub box");
+    }
     let (nats, _) = hub_parts("borant-export").await?;
     let bus = nats.bus();
     let payload = serde_json::to_vec(&CtlRequest::Snapshot {
@@ -227,4 +231,18 @@ pub async fn hub_move(ssh_host: &str) -> anyhow::Result<()> {
         "Next: stop the hub on this machine, start `borant hub` on {ssh_host}, and point the hosts at its NATS URL."
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cli_snapshot_out_must_be_absolute() {
+        let err = export(Path::new("hub.jsonl"), true).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--out must be an absolute path on the hub box"
+        );
+    }
 }
