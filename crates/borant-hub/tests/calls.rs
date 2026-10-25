@@ -328,14 +328,8 @@ async fn the_durable_calls_are_not_built_yet() {
     let fx = Fx::new();
     let owner = with_channel(&fx).await;
     for call in [
-        ToolCall::Inbox,
-        ToolCall::Answer {
-            channel: api(),
-            task: TaskId::new(),
-            text: "go".into(),
-            expect_updated: borant_core::Timestamp(1),
-            key: None,
-        },
+        // `Wait`, `Inbox`, and `Answer` are built: see tests/waits.rs and
+        // tests/inbox.rs.
         ToolCall::Stop {
             selector: PauseSelector::Agent("w1".parse().unwrap()),
             grace_secs: None,
