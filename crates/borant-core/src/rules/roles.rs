@@ -328,6 +328,7 @@ mod tests {
             spawn_key: None,
             task: None,
             stop_on_close: false,
+            continues: None,
             retired: false,
             collection: Some("work".parse().unwrap()),
             ..agent()
@@ -405,6 +406,7 @@ mod tests {
             spawn_key: None,
             task: None,
             stop_on_close: false,
+            continues: None,
             retired: false,
             preferred_harness: Harness::Fake,
             created: crate::time::Timestamp(1),

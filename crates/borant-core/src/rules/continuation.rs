@@ -86,6 +86,8 @@ impl fmt::Display for Why {
 /// Whether an idle worker gets a continue. It continues only when every guard
 /// holds; it exhausts when the only thing left is the count or the hours on a
 /// task that it still claims and still works on; every other case skips.
+///
+/// The hours run from `Agent.created`, so a move keeps the same clock.
 pub fn decide(
     agent: &Agent,
     task: Option<&Task>,
@@ -131,8 +133,8 @@ pub fn decide(
     if waiting_on_task {
         return Decision::Skip(Why::WaitingOnTask);
     }
-    // The count first: it is the bound that a policy names first, and
-    // `used > max` only after a policy change must exhaust too.
+    // The count first, then the hours: a policy that a change shrank under
+    // the count exhausts with the count too.
     if state.used >= state.policy.max {
         return Decision::Exhaust(Why::LimitReached {
             max: state.policy.max,
@@ -228,7 +230,14 @@ mod tests {
     #[test]
     fn a_bound_idle_worker_continues() {
         assert_eq!(
-            decide(&agent(), Some(&task()), idle(), false, false, Timestamp(2_000)),
+            decide(
+                &agent(),
+                Some(&task()),
+                idle(),
+                false,
+                false,
+                Timestamp(2_000)
+            ),
             Decision::Continue
         );
     }
@@ -286,25 +295,25 @@ mod tests {
             a
         };
         let mut recorded = agent();
-        recorded
-            .continues
-            .as_mut()
-            .unwrap()
-            .record_continue(IDLE);
+        recorded.continues.as_mut().unwrap().record_continue(IDLE);
 
         assert_eq!(skip(&no_policy, Some(&task()), idle()), Why::NoPolicy);
         assert_eq!(skip(&exhausted, Some(&task()), idle()), Why::Exhausted);
         assert_eq!(skip(&paused, Some(&task()), idle()), Why::Paused);
         assert_eq!(skip(&retired, Some(&task()), idle()), Why::Retired);
         assert_eq!(
-            decide(&agent(), Some(&task()), idle(), false, true, Timestamp(2_000)),
+            decide(
+                &agent(),
+                Some(&task()),
+                idle(),
+                false,
+                true,
+                Timestamp(2_000)
+            ),
             Decision::Skip(Why::Moving)
         );
         assert_eq!(skip(&agent(), Some(&task()), None), Why::NotIdle);
-        assert_eq!(
-            skip(&recorded, Some(&task()), idle()),
-            Why::SameIdlePeriod
-        );
+        assert_eq!(skip(&recorded, Some(&task()), idle()), Why::SameIdlePeriod);
         assert_eq!(skip(&other_task, Some(&task()), idle()), Why::NotBoundTask);
         // A task handed to an agent that is bound to nothing is not its own.
         assert_eq!(skip(&unbound, Some(&task()), idle()), Why::NotBoundTask);
@@ -314,11 +323,25 @@ mod tests {
             Why::TaskNotClaimedByAgent
         );
         assert_eq!(
-            decide(&another, Some(&task()), idle(), false, false, Timestamp(2_000)),
+            decide(
+                &another,
+                Some(&task()),
+                idle(),
+                false,
+                false,
+                Timestamp(2_000)
+            ),
             Decision::Skip(Why::TaskNotClaimedByAgent)
         );
         assert_eq!(
-            decide(&agent(), Some(&task()), idle(), true, false, Timestamp(2_000)),
+            decide(
+                &agent(),
+                Some(&task()),
+                idle(),
+                true,
+                false,
+                Timestamp(2_000)
+            ),
             Decision::Skip(Why::WaitingOnTask)
         );
         assert_eq!(
@@ -466,8 +489,7 @@ mod tests {
             Err(CoreError::ContinuesWithoutTask)
         );
         // The wire refuses a limit below one, so a stored record cannot.
-        let zero: Result<ContinuePolicy, _> =
-            serde_json::from_str(r#"{"max":0}"#);
+        let zero: Result<ContinuePolicy, _> = serde_json::from_str(r#"{"max":0}"#);
         assert!(zero.is_err());
         assert_eq!(
             check_spawn(
@@ -502,7 +524,10 @@ mod tests {
         .unwrap();
         assert!(matches!(
             old,
-            crate::proto::ToolCall::Spawn { continues: None, .. }
+            crate::proto::ToolCall::Spawn {
+                continues: None,
+                ..
+            }
         ));
         let new: crate::proto::ToolCall = serde_json::from_value(serde_json::json!({
             "tool": "spawn",
@@ -514,7 +539,10 @@ mod tests {
         assert!(matches!(
             new,
             crate::proto::ToolCall::Spawn {
-                continues: Some(ContinuePolicy { max: 2, max_hours: Some(4) }),
+                continues: Some(ContinuePolicy {
+                    max: 2,
+                    max_hours: Some(4)
+                }),
                 ..
             }
         ));

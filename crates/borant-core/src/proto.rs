@@ -13,7 +13,8 @@ use crate::ids::{
 };
 use crate::model::{
     CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason,
-    NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus, UsageWindow,
+    NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus,
+    UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;

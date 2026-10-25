@@ -84,10 +84,7 @@ mod tests {
             max: 2,
             max_hours: None,
         });
-        assert_eq!(
-            spawn_key_matches(&spec("do"), &continues),
-            Err(Conflict)
-        );
+        assert_eq!(spawn_key_matches(&spec("do"), &continues), Err(Conflict));
         assert_eq!(
             spawn_key_matches(&spec("do"), &spec("another")),
             Err(Conflict)

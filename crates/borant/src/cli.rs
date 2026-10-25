@@ -775,6 +775,7 @@ fn spawn_call(args: SpawnArgs) -> ToolCall {
         bundles: args.bundles,
         task: args.task,
         stop_on_close: args.stop_on_close,
+        continues: None,
         priority: args.priority,
     }
 }
