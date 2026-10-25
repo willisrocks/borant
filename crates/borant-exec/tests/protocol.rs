@@ -203,3 +203,67 @@ async fn a_missing_program_is_invalid() {
     let err = call(&cfg, "describe", Value::Null).await.unwrap_err();
     assert_eq!(err.kind, PortErrorKind::Invalid, "{err}");
 }
+
+/// A writer that keeps what the subscriber formats.
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("the capture is not poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Runs `f` with a subscriber that keeps the lines of level `max` and
+/// returns them.
+async fn log_lines<F>(max: tracing::Level, f: F) -> String
+where
+    F: Future<Output = ()>,
+{
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(max)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    f.await;
+    drop(guard);
+    let bytes = capture
+        .0
+        .lock()
+        .expect("the capture is not poisoned")
+        .clone();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[tokio::test]
+async fn the_stderr_of_the_program_goes_to_debug() {
+    let cfg = cfg("stderr.sh");
+    let lines = log_lines(tracing::Level::DEBUG, async {
+        call(&cfg, "describe", Value::Null).await.unwrap();
+    })
+    .await;
+    assert!(lines.contains("note for the log"), "{lines}");
+    let lines = log_lines(tracing::Level::INFO, async {
+        call(&cfg, "describe", Value::Null).await.unwrap();
+    })
+    .await;
+    assert!(!lines.contains("note for the log"), "{lines}");
+}
