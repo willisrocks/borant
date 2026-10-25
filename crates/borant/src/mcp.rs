@@ -169,6 +169,8 @@ pub struct Spawn {
     pub name: Option<String>,
     /// The model for the harness, for example 'opus'. Defaults to the harness default.
     pub model: Option<String>,
+    /// A role from hub.toml: its harness, model, and placement.
+    pub role: Option<String>,
     /// An idempotency key: a retry with the same key and arguments returns the first agent.
     pub key: Option<String>,
     /// Bind the worker to an existing task, as CHANNEL/ID.
@@ -216,6 +218,7 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
         "host": a.host,
         "name": a.name,
         "model": a.model,
+        "role": a.role,
         "key": a.key,
         "task": task,
         "stop_on_close": a.stop_on_close,
@@ -526,23 +529,27 @@ mod tests {
             host: None,
             name: None,
             model: None,
+            role: Some("chief".into()),
             key: Some("k1".into()),
             task: Some("api/01M5S3PATRKMGFD9C0HB1CS4ZK".into()),
             task_title: None,
             stop_on_close: Some(false),
             priority: Some(3),
         };
+        assert_eq!(spawn_request(&a).unwrap()["role"], "chief");
         let call: ToolCall =
             serde_json::from_value(strip_nulls(spawn_request(&a).unwrap())).unwrap();
         match call {
             ToolCall::Spawn {
                 task,
                 key,
+                role,
                 stop_on_close,
                 priority,
                 ..
             } => {
                 assert_eq!(key.as_deref(), Some("k1"));
+                assert_eq!(role.map(|r| r.as_str().to_owned()), Some("chief".into()));
                 assert_eq!(stop_on_close, Some(false));
                 assert_eq!(priority, Some(3));
                 assert_eq!(
