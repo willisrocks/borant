@@ -57,10 +57,14 @@ fn plugin(dir: &Path, name: &str, reply: &str) -> PathBuf {
 }
 
 /// A host with a fake daemon, one good plugin of each kind, a missing harness
-/// command, and a missing sandbox program.
-fn host() -> (tempfile::TempDir, PathBuf) {
+/// command, and a missing sandbox program. The NATS address is a port that
+/// this test holds and nothing answers on, so a real server of the machine or
+/// of CI cannot make the check pass.
+fn host() -> (tempfile::TempDir, PathBuf, std::net::TcpListener) {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("host.sock");
+    let nats = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = nats.local_addr().unwrap().port();
     let secrets = plugin(
         dir.path(),
         "secrets.sh",
@@ -81,7 +85,7 @@ fn host() -> (tempfile::TempDir, PathBuf) {
             harnesses = ["claude-code"]
 
             [nats]
-            urls = ["nats://127.0.0.1:1"]
+            urls = ["nats://127.0.0.1:{port}"]
 
             [commands]
             claude = ["borant-doctor-no-such-program"]
@@ -103,7 +107,7 @@ fn host() -> (tempfile::TempDir, PathBuf) {
         ),
     )
     .unwrap();
-    (dir, socket)
+    (dir, socket, nats)
 }
 
 fn doctor(home: &Path, socket: &Path, json: bool) -> Output {
@@ -136,7 +140,7 @@ fn entries(home: &Path) -> BTreeSet<String> {
 /// harness, the sandbox, and NATS fail.
 #[test]
 fn doctor_prints_each_check_and_exits_one() {
-    let (home, socket) = host();
+    let (home, socket, _nats) = host();
     let server = fake_daemon(&socket);
     let before = entries(home.path());
     let out = doctor(home.path(), &socket, false);
@@ -177,7 +181,7 @@ fn doctor_prints_each_check_and_exits_one() {
 /// and exits 1 when one failed.
 #[test]
 fn doctor_json_has_the_checks_and_the_exit_code() {
-    let (home, socket) = host();
+    let (home, socket, _nats) = host();
     let server = fake_daemon(&socket);
     let out = doctor(home.path(), &socket, true);
     server.join().unwrap();

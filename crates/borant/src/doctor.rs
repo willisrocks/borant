@@ -121,7 +121,7 @@ async fn checks() -> Vec<Check> {
     let home = config::home();
     let mut out = Vec::new();
     out.push(daemon_check(&config::socket()).await);
-    out.push(nats_check(&file, NET_TIMEOUT).await);
+    out.push(nats_check(file.nats.to_config("borant-doctor"), NET_TIMEOUT).await);
     out.extend(harness_checks(&file));
     out.extend(launcher_checks(&file));
     out.push(disk_check(&home, &file));
@@ -159,9 +159,10 @@ async fn daemon_check(socket: &Path) -> Check {
 }
 
 /// NATS is reachable with the host's credentials: a `ListHosts` request to
-/// the hub proves the whole path.
-async fn nats_check(file: &HostFile, timeout: Duration) -> Check {
-    let cfg = file.nats.to_config("borant-doctor");
+/// the hub proves the whole path. The caller builds the config, from
+/// `[nats]` and the environment, so a test can point it at a closed port
+/// without touching `BORANT_NATS_URL`.
+async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
     let urls = if cfg.urls.is_empty() {
         "nats://127.0.0.1:4222".to_owned()
     } else {
@@ -619,13 +620,22 @@ mod tests {
         assert!(check.detail.contains("host.sock"), "{}", check.detail);
     }
 
-    /// A NATS server that does not answer is a fail that names the URL.
+    /// A NATS server that does not answer is a fail that names the URL, even
+    /// on a machine that runs one: the port is bound here, so nothing listens
+    /// on it, and `BORANT_NATS_URL` plays no part.
     #[tokio::test]
     async fn nats_without_a_server_fails() {
-        let f = file("[nats]\nurls = [\"nats://127.0.0.1:1\"]\n");
-        let check = nats_check(&f, Duration::from_millis(100)).await;
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let cfg = borant_nats::NatsConfig {
+            urls: vec![format!("nats://127.0.0.1:{port}")],
+            ..borant_nats::NatsConfig::default()
+        };
+        let check = nats_check(cfg, Duration::from_millis(100)).await;
         assert_eq!(check.level, Level::Fail);
-        assert!(check.detail.contains("127.0.0.1:1"), "{}", check.detail);
+        assert!(check.detail.contains(&port.to_string()), "{}", check.detail);
     }
 
     /// A detail is one line, whatever the error held.
