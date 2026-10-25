@@ -77,6 +77,7 @@ impl Host {
                     notify: Arc::new(Notify::new()),
                     turn: 0,
                     busy: false,
+                    idle_since: None,
                     fenced: None,
                     paused: false,
                     wake_pending: false,
@@ -259,6 +260,7 @@ impl Host {
                     session: s.id,
                     agent: r.agent.clone(),
                     token: r.token,
+                    idle_since: s.idle_since,
                 })
             })
             .collect()
@@ -310,6 +312,7 @@ impl Host {
 
     /// Handles one event from a harness adapter.
     pub async fn event(&self, id: SessionId, ev: LocalEvent) -> Result<EventReply, ApiError> {
+        let now = self.inner.clock.now();
         let (agent, start_turn) = {
             let mut st = self.state();
             let restored = st.restored;
@@ -324,9 +327,11 @@ impl Host {
             if start {
                 s.turn += 1;
                 s.busy = true;
+                s.idle_since = None;
             }
             if matches!(ev, LocalEvent::TurnEnd) {
                 s.busy = false;
+                s.idle_since = Some(now);
             }
             (s.reg.as_ref().map(|r| r.agent.clone()), start)
         };
@@ -586,10 +591,8 @@ impl Host {
         true
     }
 
-    /// Finishes a planned move: waits for a running checkpoint, writes a
-    /// final one, stops the session, and tells the hub.
-    pub(crate) async fn finish_move(&self, id: SessionId) {
-        // A running checkpoint ends within the git timeout.
+    /// Waits for a running checkpoint, which ends within the git timeout.
+    async fn settled(&self, id: SessionId) {
         for _ in 0..700 {
             let busy = self
                 .state()
@@ -597,10 +600,16 @@ impl Host {
                 .get(&id)
                 .is_some_and(|s| s.checkpointing);
             if !busy {
-                break;
+                return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Finishes a planned move: waits for a running checkpoint, writes a
+    /// final one, stops the session, and tells the hub.
+    pub(crate) async fn finish_move(&self, id: SessionId) {
+        self.settled(id).await;
         if !self.checkpoint_now(id).await {
             // A planned move must lose nothing, so the session keeps running.
             if let Some(s) = self.state().sessions.get_mut(&id) {
@@ -632,6 +641,71 @@ impl Host {
         match self.hub(&req).await {
             Ok(_) => tracing::info!(agent = %reg.agent, "planned move: session stopped"),
             Err(e) => tracing::warn!(agent = %reg.agent, "move_ready failed: {}", e.message),
+        }
+    }
+
+    /// Parks an idle session: writes the final checkpoint, stops the harness,
+    /// and ends the session with reason `park`, so the hub learns in one
+    /// write that the agent is parked. A session in a turn keeps running, and
+    /// so does one whose final checkpoint fails.
+    pub(crate) async fn park(&self, id: SessionId) {
+        {
+            let st = self.state();
+            let Some(s) = st.sessions.get(&id) else {
+                return;
+            };
+            if s.busy || s.fenced.is_some() || s.reg.is_none() {
+                tracing::warn!(session = %id, "park skipped: the session is not idle");
+                return;
+            }
+        }
+        self.settled(id).await;
+        if !self.checkpoint_now(id).await {
+            tracing::error!(session = %id, "park stopped: the final checkpoint failed");
+            return;
+        }
+        let info = {
+            let mut st = self.state();
+            let Some(s) = st.sessions.get_mut(&id) else {
+                return;
+            };
+            if s.busy {
+                tracing::warn!(session = %id, "park stopped: the session started a turn");
+                return;
+            }
+            s.cancel.cancel();
+            s.notify.notify_waiters();
+            (s.reg.clone(), s.pid, s.launch.clone())
+        };
+        if self.state().sessions.remove(&id).is_none() {
+            return;
+        }
+        self.save();
+        let (Some(reg), pid, launch) = info else {
+            return;
+        };
+        // The session is gone before the harness stops, so a hook that
+        // reports the end cannot label this release as an ordinary end.
+        self.append(
+            &reg.agent,
+            Some(id),
+            SessionEventBody::SessionEnd {
+                reason: "park".into(),
+            },
+        )
+        .await;
+        self.stop_process(pid, launch.as_ref()).await;
+        let req = CtlRequest::EndSession {
+            session: id,
+            agent: reg.agent.clone(),
+            token: reg.token,
+            reason: "park".into(),
+        };
+        match self.hub(&req).await {
+            Ok(_) => tracing::info!(agent = %reg.agent, session = %id, "session parked"),
+            Err(e) => {
+                tracing::warn!(agent = %reg.agent, "could not tell the hub about the park: {}", e.message)
+            }
         }
     }
 

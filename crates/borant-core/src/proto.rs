@@ -141,6 +141,10 @@ pub struct SessionLeaseRef {
     pub session: SessionId,
     pub agent: AgentId,
     pub token: FencingToken,
+    /// The end of the last turn of the session, or `None` while it is in a
+    /// turn. The hub parks agents that stay idle past the pool timeout.
+    #[serde(default)]
+    pub idle_since: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -404,9 +408,22 @@ pub enum CtlRequest {
 #[allow(clippy::large_enum_variant)]
 pub enum HostCommand {
     Launch(LaunchOrder),
-    PrepareMove { agent: AgentId, session: SessionId },
-    Fence { session: SessionId, reason: String },
-    Stop { session: SessionId },
+    PrepareMove {
+        agent: AgentId,
+        session: SessionId,
+    },
+    Fence {
+        session: SessionId,
+        reason: String,
+    },
+    Stop {
+        session: SessionId,
+    },
+    /// Parks an idle session: a final checkpoint, then the harness stops, so
+    /// the hub can delete the host. The host refuses a session in a turn.
+    Park {
+        session: SessionId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

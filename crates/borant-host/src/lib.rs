@@ -22,7 +22,8 @@ use borant_core::ports::{LaunchHandle, Launcher, MessageBus, Notifier, SessionSt
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
-    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, subjects,
+    AgentId, ChannelName, Clock, HostName, MessageId, PoolName, SessionId, Tag, Timestamp,
+    subjects,
 };
 use borant_launch::harness::HarnessCommands;
 use tokio::sync::Notify;
@@ -129,6 +130,9 @@ pub(crate) struct LocalSess {
     pub notify: Arc<Notify>,
     pub turn: u64,
     pub busy: bool,
+    /// The end of the last turn, or `None` while the session is in one. The
+    /// hub parks sessions that stay idle past the pool timeout.
+    pub idle_since: Option<Timestamp>,
     /// Set when the session lost its lease. Tools stay blocked.
     pub fenced: Option<String>,
     /// Set while the hub is unreachable for longer than a lease.

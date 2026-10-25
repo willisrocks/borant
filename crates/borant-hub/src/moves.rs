@@ -124,7 +124,10 @@ impl Hub {
         let base = doc.as_ref().map(|d| d.value.clone()).unwrap_or(Lease {
             agent: agent.id.clone(),
             token: FencingToken(0),
-            state: LeaseState::Released { since: now },
+            state: LeaseState::Released {
+                since: now,
+                parked: false,
+            },
         });
         let reserved = lease::reserve(&base, &host, reason, now, &self.cfg.lease);
         self.store

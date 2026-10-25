@@ -146,6 +146,10 @@ pub enum LeaseState {
     },
     Released {
         since: Timestamp,
+        /// The host parked the session to free its box. A parked agent wakes
+        /// on a message that wakes it or on a claim, unlike a plain release.
+        #[serde(default)]
+        parked: bool,
     },
 }
 

@@ -10,6 +10,7 @@ pub mod export;
 mod leases;
 mod members;
 mod moves;
+mod park;
 mod prune;
 mod store;
 mod tasks;
@@ -23,7 +24,8 @@ use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::{
-    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, Timestamp, keys, subjects,
+    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, SessionId, Timestamp, keys,
+    subjects,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -56,10 +58,24 @@ pub(crate) struct PendingMove {
     pub prompt: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct IdleReport {
+    pub session: SessionId,
+    pub host: HostName,
+    /// The end of the last turn, or `None` while the session is in a turn.
+    pub since: Option<Timestamp>,
+    /// When the host reported it, on the hub clock.
+    pub at: Timestamp,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Memory {
     /// The last heartbeat of each host, on the hub clock.
     pub hosts_seen: HashMap<HostName, Timestamp>,
+    /// The idle signal of each agent, from its host's latest heartbeat.
+    pub idle: HashMap<AgentId, IdleReport>,
+    /// When the hub last sent a park command, per agent.
+    pub park_sent: HashMap<AgentId, Timestamp>,
     pub pending_moves: HashMap<AgentId, PendingMove>,
     /// Hosts where a launch failed, for each agent, until the agent registers.
     pub failed_hosts: HashMap<AgentId, HashSet<HostName>>,
@@ -182,7 +198,8 @@ impl Hub {
             return Ok(());
         }
         let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
-        self.tick_leases(leases).await
+        self.tick_leases(leases).await?;
+        self.park_idle(park::DEFAULT_IDLE_TIMEOUT).await.map(|_| ())
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then

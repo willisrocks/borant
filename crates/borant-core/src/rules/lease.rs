@@ -163,10 +163,20 @@ pub fn restart_grace(lease: &Lease, now: Timestamp, cfg: &LeaseConfig) -> Lease 
 
 /// Ends a lease on purpose, for example at session end or a planned move.
 pub fn release(lease: &Lease, now: Timestamp) -> Lease {
+    released(lease, now, false)
+}
+
+/// Ends a lease because the host parked the session. A parked agent wakes on
+/// a message that wakes it or on a claim; a plain release stays asleep.
+pub fn park(lease: &Lease, now: Timestamp) -> Lease {
+    released(lease, now, true)
+}
+
+fn released(lease: &Lease, now: Timestamp, parked: bool) -> Lease {
     Lease {
         agent: lease.agent.clone(),
         token: FencingToken(lease.token.0 + 1),
-        state: LeaseState::Released { since: now },
+        state: LeaseState::Released { since: now, parked },
     }
 }
 

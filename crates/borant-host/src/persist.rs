@@ -118,6 +118,9 @@ impl Host {
                     notify: Arc::new(Notify::new()),
                     turn: s.turn,
                     busy: false,
+                    // The last turn of a restored session is unknown, so the
+                    // host reports no idle signal until a turn ends.
+                    idle_since: None,
                     fenced: s.fenced,
                     paused: false,
                     wake_pending: false,
