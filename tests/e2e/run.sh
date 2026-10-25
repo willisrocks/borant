@@ -1437,7 +1437,7 @@ scenario_cancel() {
 # scenario retires its boss for good, and a retired agent is never woken
 # again, so reusing that name would leave the channel call in a dead inbox.
 scenario_continue() {
-  local out task_a task_b pid
+  local out task_a task_b pid target
 
   # The hub of the live swarm answers before this scenario touches it.
   wait_for "the live hub" continue_hub_up || return 1
@@ -1533,15 +1533,20 @@ CREATE continue limit" >/dev/null || return 1
     || { echo "  cont-b after the restart: $(continue_state cont-b)" >&2; return 1; }
 
   # A planned move keeps the count too, and its new idle period gets no
-  # continue: the wait of the worker still covers the task. host-b holds one
-  # session after the earlier scenarios (nr-a of nats_restart), so it has the
-  # room that host-a may not have.
-  borant_on host-a move cont-a --host host-b >/dev/null || return 1
-  wait_for "cont-a on host-b" is_at cont-a host-b || return 1
-  wait_for "cont-a continued on host-b" \
-    log_has host-b cont-a "You continue Borant agent cont-a" || return 1
+  # continue: the wait of the worker still covers the task. The target is the
+  # least loaded host that can take a session now, read from the swarm: the
+  # earlier scenarios drain host-b for the rest of the run, and fill host-a.
+  target=$(continue_move_target) || return 1
+  [ -n "$target" ] \
+    || { echo "  no host can take the planned move of cont-a" >&2; return 1; }
+  echo "  the planned move of cont-a goes to $target"
+  CONTINUE_MOVE_HOST=$target
+  borant_on host-a move cont-a --host "$target" >/dev/null || return 1
+  wait_for "cont-a on $target" is_at cont-a "$target" || return 1
+  wait_for "cont-a continued on $target" \
+    log_has "$target" cont-a "You continue Borant agent cont-a" || return 1
   sleep 8
-  [ "$(continue_count host-b cont-a)" = "0" ] \
+  [ "$(continue_count "$target" cont-a)" = "0" ] \
     || { echo "  the move sent cont-a another continue" >&2; return 1; }
   [ "$(continue_state cont-a)" = "1 false" ] \
     || { echo "  cont-a after the move: $(continue_state cont-a)" >&2; return 1; }
@@ -1560,6 +1565,32 @@ continue_count() { log_of "$1" "$2" | grep -c "Continue with task continue/"; }
 
 # The live hub answers a request from the default swarm.
 continue_hub_up() { borant_on host-a hosts >/dev/null 2>&1; }
+
+# The host of the planned move: the least loaded host of the swarm that is
+# online, not draining, offers the fake harness, and has a free slot. host-r is
+# left out: it runs the two sessions that the move is about. The name cannot be
+# written in the scenario, because the earlier scenarios change the set: drain
+# leaves host-b draining for the rest of the run. A lease that is held or
+# reserved is the count that the hub's own placement uses.
+continue_move_target() {
+  local agents
+  agents=$(borant_on host-a agents 2>/dev/null) || return 1
+  [ -n "$agents" ] || return 1
+  borant_on host-a hosts 2>/dev/null | jq -r --argjson agents "$agents" \
+    --arg skip host-r '
+    [ .[]
+      | select(.online and (.host.name != $skip))
+      | select(.host.draining != true)
+      | select((.host.harnesses | index("fake")) != null)
+      | .host.name as $name
+      | ([ $agents[]
+           | select(.host == $name
+                    and (.lease.state == "held" or .lease.state == "reserved")) ]
+         | length) as $used
+      | select($used < .host.max_agents)
+      | { name: $name, used: $used } ]
+    | sort_by(.used, .name) | .[0].name // empty'
+}
 
 # Waits up to WAIT seconds for a log line, polling every 100 ms: the wait that
 # stops the next continue must land before the next heartbeat of the host.
@@ -1593,6 +1624,8 @@ continue_state() {
   return 1
 }
 CONTINUE_STATE_N=0
+# The host of the planned move of cont-a, for the diagnostics of a failure.
+CONTINUE_MOVE_HOST=
 
 # The task is in `needs_human` with the message of the exhausted continues.
 continue_needs_human() {
@@ -1663,9 +1696,15 @@ if [ "$FAILED" != "0" ]; then
         borant_on host-a inbox --json 2>/dev/null | head -40
         echo "  the continue logs:"
         log_of host-r cont-a 2>/dev/null | tail -20
-        log_of host-b cont-a 2>/dev/null | tail -20
+        [ -n "$CONTINUE_MOVE_HOST" ] \
+          && log_of "$CONTINUE_MOVE_HOST" cont-a 2>/dev/null | tail -20
         log_of host-r cont-b 2>/dev/null | tail -20
         log_of host-a cont-boss 2>/dev/null | tail -20
+        echo "  hosts:"
+        borant_on host-a hosts 2>/dev/null |
+          jq -c '.[] | {name: .host.name, online, draining: .host.draining,
+                        max_agents: .host.max_agents,
+                        harnesses: .host.harnesses}' | head -10
         echo "  the daemon logs of host-r:"
         host_r_log 1 | tail -20
         host_r_log 2 | tail -40
