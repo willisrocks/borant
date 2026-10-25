@@ -18,7 +18,13 @@ pub struct HarnessCommands {
 
 /// Builds the program for `harness` with `prompt`. The fake harness takes no
 /// prompt argument: the caller sets the `BORANT_PROMPT` environment variable.
-pub fn command(harness: Harness, prompt: &str, cfg: &HarnessCommands) -> Vec<String> {
+/// A `model` adds `--model <model>` for Claude Code, Pi, and omp.
+pub fn command(
+    harness: Harness,
+    prompt: &str,
+    model: Option<&str>,
+    cfg: &HarnessCommands,
+) -> Vec<String> {
     let (custom, default): (&Option<Vec<String>>, &[&str]) = match harness {
         Harness::ClaudeCode => (&cfg.claude, &["claude", "--dangerously-skip-permissions"]),
         Harness::Pi => (&cfg.pi, &["pi"]),
@@ -33,6 +39,12 @@ pub fn command(harness: Harness, prompt: &str, cfg: &HarnessCommands) -> Vec<Str
         Some(program) => program.clone(),
         None => default.iter().map(|s| (*s).to_owned()).collect(),
     };
+    if let Some(m) = model
+        && matches!(harness, Harness::ClaudeCode | Harness::Pi | Harness::Omp)
+    {
+        argv.push("--model".to_owned());
+        argv.push(m.to_owned());
+    }
     if harness != Harness::Fake {
         // `--` ends the options, so a prompt that starts with `-` stays a
         // prompt. Claude Code, Pi, and omp accept it.
@@ -54,13 +66,19 @@ mod tests {
     fn defaults_and_overrides() {
         let cfg = HarnessCommands::default();
         assert_eq!(
-            command(Harness::ClaudeCode, "hi", &cfg),
+            command(Harness::ClaudeCode, "hi", None, &cfg),
             v(&["claude", "--dangerously-skip-permissions", "--", "hi"])
         );
-        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi", "--", "hi"]));
-        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "--", "hi"]));
         assert_eq!(
-            command(Harness::Codex, "hi", &cfg),
+            command(Harness::Pi, "hi", None, &cfg),
+            v(&["pi", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Omp, "hi", None, &cfg),
+            v(&["omp", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Codex, "hi", None, &cfg),
             v(&[
                 "codex",
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -69,7 +87,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            command(Harness::Fake, "hi", &cfg),
+            command(Harness::Fake, "hi", None, &cfg),
             v(&["borant-fake-harness"])
         );
 
@@ -80,14 +98,52 @@ mod tests {
             ..HarnessCommands::default()
         };
         assert_eq!(
-            command(Harness::ClaudeCode, "hi", &cfg),
+            command(Harness::ClaudeCode, "hi", None, &cfg),
             v(&["/opt/claude", "--model", "x", "--", "hi"])
         );
-        assert_eq!(command(Harness::Pi, "hi", &cfg), v(&["pi-dev", "--", "hi"]));
-        assert_eq!(command(Harness::Omp, "hi", &cfg), v(&["omp", "--", "hi"]));
         assert_eq!(
-            command(Harness::Fake, "hi", &cfg),
+            command(Harness::Pi, "hi", None, &cfg),
+            v(&["pi-dev", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Omp, "hi", None, &cfg),
+            v(&["omp", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Fake, "hi", None, &cfg),
             v(&["/bin/fake", "--fast"])
+        );
+    }
+
+    #[test]
+    fn model_flag_goes_before_the_prompt() {
+        let cfg = HarnessCommands {
+            pi: Some(v(&["pi-dev", "-v"])),
+            ..HarnessCommands::default()
+        };
+        let m = Some("opus");
+        assert_eq!(
+            command(Harness::ClaudeCode, "hi", m, &cfg),
+            v(&[
+                "claude",
+                "--dangerously-skip-permissions",
+                "--model",
+                "opus",
+                "--",
+                "hi"
+            ])
+        );
+        assert_eq!(
+            command(Harness::Pi, "hi", m, &cfg),
+            v(&["pi-dev", "-v", "--model", "opus", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Omp, "hi", m, &cfg),
+            v(&["omp", "--model", "opus", "--", "hi"])
+        );
+        assert_eq!(
+            command(Harness::Fake, "hi", m, &cfg),
+            v(&["borant-fake-harness"])
         );
     }
 

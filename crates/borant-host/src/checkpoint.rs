@@ -47,6 +47,18 @@ async fn git(dir: &Path, args: &[&str], index: Option<&Path>) -> anyhow::Result<
 pub struct RepoFacts {
     pub root: PathBuf,
     pub info: RepoInfo,
+    /// The checkpoint remote of the project, from `set_checkpoint_remote`.
+    pub checkpoint_remote: Option<String>,
+}
+
+/// The git config key that holds the checkpoint remote of a project clone.
+const CHECKPOINT_REMOTE_KEY: &str = "borant.checkpointRemote";
+
+/// Stores the checkpoint remote of a project in the clone, so `detect`
+/// finds it again for each session, also after a daemon restart.
+pub async fn set_checkpoint_remote(dir: &Path, remote: &str) -> anyhow::Result<()> {
+    git(dir, &["config", CHECKPOINT_REMOTE_KEY, remote], None).await?;
+    Ok(())
 }
 
 /// Finds the repository of `cwd`. The remote URL is the `origin` remote, or
@@ -71,6 +83,10 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
         .strip_prefix(&canon_root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let checkpoint_remote = git(cwd, &["config", "--get", CHECKPOINT_REMOTE_KEY], None)
+        .await
+        .ok()
+        .filter(|r| !r.is_empty());
     Some(RepoFacts {
         root,
         info: RepoInfo {
@@ -78,6 +94,7 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
             branch,
             subdir,
         },
+        checkpoint_remote,
     })
 }
 

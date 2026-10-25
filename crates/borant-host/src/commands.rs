@@ -1,5 +1,10 @@
 //! Commands from the hub: launch, prepare a move, fence, and stop.
 
+use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
+
+use anyhow::Context;
 use borant_core::model::Harness;
 use borant_core::ports::{LaunchSpec, Notifier, PortError, PortResult};
 use borant_core::proto::{CtlRequest, HostCommand, LaunchOrder};
@@ -72,7 +77,8 @@ impl Host {
         }
     }
 
-    async fn launch(&self, o: LaunchOrder) -> anyhow::Result<()> {
+    /// Prepares the working directory and starts the harness. Public for tests.
+    pub async fn launch(&self, o: LaunchOrder) -> anyhow::Result<()> {
         let cfg = &self.inner.cfg;
         if !cfg.harnesses.contains(&o.harness) {
             anyhow::bail!(
@@ -82,10 +88,29 @@ impl Host {
             );
         }
         let work_root = cfg.home.join("work");
+        let project = o.project.as_ref();
         let cwd = match &o.repo {
             Some(repo) => {
-                let remote = self.remote_for(&repo.remote_url);
-                checkpoint::restore(&work_root, repo, &o.agent, &remote, o.wip.as_deref()).await?
+                let project_remote = project.and_then(|p| p.checkpoint_remote.as_deref());
+                let remote = match project_remote {
+                    Some(r) => r.to_owned(),
+                    None => self
+                        .inner
+                        .cfg
+                        .checkpoint_remote
+                        .clone()
+                        .unwrap_or_else(|| repo.remote_url.clone()),
+                };
+                let dir =
+                    checkpoint::restore(&work_root, repo, &o.agent, &remote, o.wip.as_deref())
+                        .await?;
+                if let Some(r) = project_remote {
+                    checkpoint::set_checkpoint_remote(&dir, r).await?;
+                }
+                if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
+                    run_setup(&dir, cmd).await?;
+                }
+                dir
             }
             None => {
                 let d = work_root.join(o.agent.as_str());
@@ -114,7 +139,7 @@ impl Host {
             agent: o.agent.clone(),
             harness: o.harness,
             cwd: cwd.clone(),
-            program: harness::command(o.harness, &o.prompt, &cfg.commands),
+            program: harness::command(o.harness, &o.prompt, o.model.as_deref(), &cfg.commands),
             env,
         };
         let handle = self.inner.launcher.launch(&spec).await?;
@@ -137,6 +162,43 @@ impl Host {
             self.finish_move(session).await;
         }
     }
+}
+
+const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
+/// The most output of a failed setup command that goes into the error.
+const SETUP_OUTPUT_CHARS: usize = 4000;
+
+/// Runs the setup command of a project once in a clone. A marker in the git
+/// directory records a success, so a restore of the same clone skips it, and
+/// a clone whose setup failed runs it again.
+async fn run_setup(dir: &Path, cmd: &str) -> anyhow::Result<()> {
+    let marker = dir.join(".git").join("borant-setup-done");
+    if marker.exists() {
+        return Ok(());
+    }
+    let mut c = tokio::process::Command::new("sh");
+    c.arg("-c")
+        .arg(cmd)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(SETUP_TIMEOUT, c.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("setup `{cmd}` timed out after {SETUP_TIMEOUT:?}"))?
+        .with_context(|| format!("run setup `{cmd}`"))?;
+    if !out.status.success() {
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = text.trim();
+        let skip = text.chars().count().saturating_sub(SETUP_OUTPUT_CHARS);
+        let tail: String = text.chars().skip(skip).collect();
+        anyhow::bail!("setup `{cmd}` failed with {}: {tail}", out.status);
+    }
+    tokio::fs::write(&marker, b"").await?;
+    Ok(())
 }
 
 /// Desktop notifications through `osascript` on macOS, and `notify-send`
