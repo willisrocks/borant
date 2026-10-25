@@ -8,7 +8,7 @@ use std::sync::Arc;
 use borant_core::model::Harness;
 use borant_core::ports::LaunchHandle;
 use borant_core::proto::{ApiError, Registered};
-use borant_core::{AgentId, ChannelName, SessionId};
+use borant_core::{AgentId, ChannelName, CollectionName, RoleName, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +24,10 @@ struct Saved {
     cwd: PathBuf,
     agent_hint: Option<AgentId>,
     channel_hint: Option<ChannelName>,
+    #[serde(default)]
+    role_hint: Option<RoleName>,
+    #[serde(default)]
+    collection_hint: Option<CollectionName>,
     shared_dir: bool,
     reg: Option<Registered>,
     fenced: Option<String>,
@@ -50,6 +54,8 @@ impl Host {
                 cwd: s.cwd.clone(),
                 agent_hint: s.agent_hint.clone(),
                 channel_hint: s.channel_hint.clone(),
+                role_hint: s.role_hint.clone(),
+                collection_hint: s.collection_hint.clone(),
                 shared_dir: s.shared_dir,
                 reg: s.reg.clone(),
                 fenced: s.fenced.clone(),
@@ -111,6 +117,8 @@ impl Host {
                     cwd: s.cwd,
                     agent_hint: s.agent_hint,
                     channel_hint: s.channel_hint,
+                    role_hint: s.role_hint,
+                    collection_hint: s.collection_hint,
                     repo,
                     shared_dir: s.shared_dir,
                     reg: s.reg,

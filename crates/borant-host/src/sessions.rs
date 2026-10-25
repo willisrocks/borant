@@ -70,6 +70,8 @@ impl Host {
                     cwd,
                     agent_hint: req.agent.clone(),
                     channel_hint: req.channel.clone(),
+                    role_hint: req.role.clone(),
+                    collection_hint: req.collection.clone(),
                     repo,
                     shared_dir,
                     reg: None,
@@ -134,8 +136,8 @@ impl Host {
                 agent: s.agent_hint.clone(),
                 channel: s.channel_hint.clone(),
                 shared_dir: s.shared_dir,
-                role: None,
-                collection: None,
+                role: s.role_hint.clone(),
+                collection: s.collection_hint.clone(),
             }
         };
         let reg: Registered = match self.hub(&CtlRequest::RegisterSession(req)).await {

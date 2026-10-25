@@ -536,6 +536,9 @@ export default function borant(pi: ExtensionAPI) {
           cwd: ctx.cwd,
           agent: process.env.BORANT_AGENT || undefined,
           channel: process.env.BORANT_CHANNEL || undefined,
+          // A chief or a worker that a person starts reports its role.
+          role: process.env.BORANT_ROLE || undefined,
+          collection: process.env.BORANT_COLLECTION || undefined,
         },
         REGISTER_TIMEOUT_MS,
       );
