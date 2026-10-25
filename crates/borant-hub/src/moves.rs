@@ -872,6 +872,9 @@ impl Hub {
                 "pinned": a.value.pinned,
                 "retired": a.value.retired,
                 "model": a.value.model,
+                // The member of each bundle that the launch picked, for
+                // `borant members` and the e2e scenario.
+                "members": a.value.members,
             }));
         }
         Ok(Value::Array(out))
