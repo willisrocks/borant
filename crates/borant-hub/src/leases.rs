@@ -3,15 +3,17 @@
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session, SpawnRecord, SpawnState,
+    Task, TaskEventKind, TaskStatus,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, RegisterSession, Registered, RenewedLease,
     SessionLeaseRef,
 };
 use borant_core::rules::roles::OnePer;
-use borant_core::rules::{lease, session_log, wake};
+use borant_core::rules::{lease, schedule, session_log, wake};
 use borant_core::{
-    AgentId, CollectionName, FencingToken, HostName, ProjectName, RoleName, SessionId, keys,
+    AgentId, ChannelName, CollectionName, FencingToken, HostName, ProjectName, RoleName, SessionId,
+    keys,
 };
 use serde_json::{Value, json};
 
@@ -547,12 +549,161 @@ impl Hub {
             self.store.put(&s.key, &s.value, Some(s.revision)).await?;
         }
         tracing::info!(%agent, %session, reason, "session ended");
-        // A stale end, for example from a host that lost the lease, must not
-        // start a move.
-        if released && let Some(p) = mem.pending_moves.get(agent).cloned() {
-            let a = self.agent(agent).await?.value;
-            self.place_agent(mem, &a, p.reason, p.target, p.prompt)
-                .await?;
+        if released {
+            // A stale end, for example from a host that lost the lease, must
+            // not start a move.
+            if let Some(p) = mem.pending_moves.get(agent).cloned() {
+                let a = self.agent(agent).await?.value;
+                self.place_agent(mem, &a, p.reason, p.target, p.prompt)
+                    .await?;
+            } else if reason != "park" {
+                // Not a park, so not a deliberate sleep: a claim that the
+                // agent still holds means the end was not its own exit after
+                // the task closed.
+                self.relaunch_after_session_end(mem, agent, session, reason)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A session ended while its agent still claimed an `in_progress` task, so
+    /// the end was not the agent's own exit after it closed its work: the hub
+    /// places the agent again through the takeover path, with the prompt
+    /// context of its session, or, when no host takes it, puts the claim in
+    /// front of the channel owner as `stuck`. A retired or paused agent, and a
+    /// spawn that failed or that a person cancelled, keeps today's behavior:
+    /// no placement, and the task keeps its claim.
+    async fn relaunch_after_session_end(
+        &self,
+        mem: &mut Memory,
+        agent: &AgentId,
+        session: SessionId,
+        reason: &str,
+    ) -> Result<(), ApiError> {
+        let a = self.agent(agent).await?.value;
+        if a.retired || a.paused.is_some() {
+            tracing::debug!(%agent, "session end: the agent is retired or paused");
+            return Ok(());
+        }
+        if let Some(rec) = self.store.get::<SpawnRecord>(&keys::spawn(agent)).await?
+            && matches!(rec.value.state, SpawnState::Failed | SpawnState::Cancelled)
+        {
+            tracing::debug!(%agent, "session end: the spawn is closed");
+            return Ok(());
+        }
+        let claims = self.in_progress_claims(agent, &a.channels).await?;
+        if claims.is_empty() {
+            return Ok(());
+        }
+        let placed = self
+            .place_agent(mem, &a, MoveReason::Takeover, Default::default(), None)
+            .await?;
+        let failed = if placed {
+            None
+        } else {
+            let why = self.relaunch_refusal(mem, &a).await?;
+            let note = format!("the session of {agent} ended ({reason}); relaunch failed: {why}");
+            self.claims_stuck(mem, &claims, &note).await?;
+            Some(why)
+        };
+        let severity = match failed {
+            Some(_) => Severity::Warn,
+            None => Severity::Info,
+        };
+        // One event says which of the two happened.
+        let event = self.lease_event(
+            self.now(),
+            severity,
+            agent,
+            a.host.as_ref(),
+            SwarmEventBody::SessionRelaunch {
+                session,
+                reason: reason.to_owned(),
+                failed,
+            },
+        );
+        Self::queue(mem, event);
+        tracing::info!(%agent, %session, reason, relaunched = placed, "the session ended with a claim");
+        Ok(())
+    }
+
+    /// The `in_progress` tasks that `agent` claims in its channels.
+    async fn in_progress_claims(
+        &self,
+        agent: &AgentId,
+        channels: &[ChannelName],
+    ) -> Result<Vec<(ChannelName, Task)>, ApiError> {
+        let mut claims = Vec::new();
+        for c in channels {
+            for t in self.tasks(c).await? {
+                if t.claimed_by.as_ref() == Some(agent) && t.status == TaskStatus::InProgress {
+                    claims.push((c.clone(), t));
+                }
+            }
+        }
+        Ok(claims)
+    }
+
+    /// Why the hub could not place `agent` now, for the stuck message: the
+    /// refused hosts as `borant ps --queued` reads them, or the wait on a
+    /// bundle whose members are all limited.
+    async fn relaunch_refusal(&self, mem: &Memory, agent: &Agent) -> Result<String, ApiError> {
+        let views = self.host_views(mem, &agent.id).await?;
+        let req = self.placement_req(agent, None).await;
+        let bundles = self.launch_bundles(agent);
+        match schedule::place(agent.preferred_harness, None, &req, &bundles, &views) {
+            Ok((host, _)) => Ok(format!(
+                "no member of a bundle of the agent is free on {host}"
+            )),
+            Err(rejected) if rejected.is_empty() => Ok("no host is online".to_owned()),
+            Err(rejected) => Ok(rejected
+                .iter()
+                .map(|(host, why)| format!("{host}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; ")),
+        }
+    }
+
+    /// Sets each claimed task that is still `in_progress` to `stuck` with
+    /// `why`, in front of the owner of its channel.
+    async fn claims_stuck(
+        &self,
+        mem: &mut Memory,
+        claims: &[(ChannelName, Task)],
+        why: &str,
+    ) -> Result<(), ApiError> {
+        let now = self.now();
+        for (channel, task) in claims {
+            // A request may have changed the task since the session ended.
+            let key = keys::task(channel, &task.id);
+            let Some(doc) = self.store.get::<Task>(&key).await? else {
+                continue;
+            };
+            let before = doc.value;
+            if before.status != TaskStatus::InProgress {
+                continue;
+            }
+            let mut next = before.clone();
+            next.status = TaskStatus::Stuck;
+            next.attention_msg = Some(why.to_owned());
+            next.updated = now;
+            self.store.put(&key, &next, Some(doc.revision)).await?;
+            let owner = self.channel(channel).await?.value.owner;
+            if let Err(e) = self
+                .task_event(
+                    channel,
+                    &owner,
+                    &next,
+                    TaskEventKind::Updated,
+                    "the session of its claimer ended",
+                )
+                .await
+            {
+                tracing::warn!(task = %next.id, "task event lost: {e}");
+            }
+            self.task_status_event(mem, channel, &before, &next);
+            tracing::warn!(task = %next.id, %channel, "the claim is stuck after the session ended");
         }
         Ok(())
     }

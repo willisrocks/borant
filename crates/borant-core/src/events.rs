@@ -150,6 +150,17 @@ pub enum SwarmEventBody {
         harness: Harness,
         reason: String,
     },
+    /// A session ended while its agent held an `in_progress` claim: the hub
+    /// placed the agent again, or it could not and the claim is stuck.
+    #[serde(rename = "session.relaunch")]
+    SessionRelaunch {
+        session: SessionId,
+        /// The reason that the session reported.
+        reason: String,
+        /// Why the hub could not place the agent, when it could not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failed: Option<String>,
+    },
     #[serde(rename = "session.paused")]
     SessionPaused { why: String },
     /// The hub is back: the tools of the session work again.
@@ -467,6 +478,7 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::LeaseReservationEnded { .. } => "lease.reservation_ended",
         SwarmEventBody::SessionStarted { .. } => "session.started",
         SwarmEventBody::SessionEnded { .. } => "session.ended",
+        SwarmEventBody::SessionRelaunch { .. } => "session.relaunch",
         SwarmEventBody::SessionPaused { .. } => "session.paused",
         SwarmEventBody::SessionResumed { .. } => "session.resumed",
         SwarmEventBody::SessionFenced { .. } => "session.fenced",

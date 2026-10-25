@@ -229,6 +229,14 @@ fn detail(event: &SwarmEvent) -> String {
             harness,
             reason,
         } => format!("session {session} {} ({reason})", word(harness)),
+        B::SessionRelaunch {
+            session,
+            reason,
+            failed,
+        } => match failed {
+            Some(failed) => format!("session {session} ({reason}): relaunch failed: {failed}"),
+            None => format!("session {session} ({reason}): the agent is placed again"),
+        },
         B::SessionPaused { why } | B::SessionFenced { why } => why.clone(),
         B::SessionResumed {} => String::new(),
         B::AgentSpawned { by, harness } => format!("by {by} {}", word(harness)),

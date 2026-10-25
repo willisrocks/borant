@@ -185,7 +185,12 @@ idle, and only agents that can wake (movable, with channels). The flow:
    needs an `Expired` lease) also wakes a `Released` lease with
    `parked: true` when its inbox has a message that wakes it, or when it
    claims a task. A plain `Released` lease (an ordinary session end) stays
-   asleep. A message that arrived during the park stays in the inbox and
+   asleep, except that an end which leaves an `in_progress` claim on the
+   agent places it again at once through the takeover path, with the prompt
+   context of its session; a host that takes none sets the claim `stuck`
+   with "the session of \<agent\> ended (\<reason\>); relaunch failed:
+   \<why\>", and one `session.relaunch` event says which of the two
+   happened. A message that arrived during the park stays in the inbox and
    wakes the agent.
 
 ## Tasks

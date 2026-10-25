@@ -137,6 +137,7 @@ pub struct SwarmEvent {
 | `lease.acquired`, `lease.released`, `lease.reclaimed`, `lease.expired` | hub | `session`, `token` | info, warn for expired |
 | `lease.reserved`, `lease.reservation_ended` | hub | `host`, `reason`, `until` | info, warn |
 | `session.started`, `session.ended` | hub | `session`, `harness`, `reason` | info |
+| `session.relaunch` | hub | `session`, `reason`, `failed` (why no host took it) | info, warn when the relaunch failed |
 | `session.paused`, `session.fenced` | host | `why` | warn |
 | `agent.spawned`, `agent.pruned` | hub | `by`, `harness`, `idle_days` | info |
 | `placement.chosen`, `placement.refused` | hub | `host`, `harness`, `reason` (takeover, planned, spawn), `rejected: [{host, why}]` | info, warn |
