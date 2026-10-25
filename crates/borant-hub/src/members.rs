@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{Agent, Harness, HostInfo, MemberState, UsageWindow};
 use borant_core::proto::ApiError;
 use borant_core::rules::members::{Pick, REPORT_FRESH_FOR, pick};
@@ -142,6 +143,18 @@ impl Hub {
         self.store
             .put(&key, &state, doc.as_ref().map(|d| d.revision))
             .await?;
+        let event = self
+            .event(
+                self.now(),
+                Severity::Warn,
+                SwarmEventBody::MemberLimited {
+                    bundle: state.bundle.clone(),
+                    member: state.member.clone(),
+                    until: Some(until),
+                },
+            )
+            .about_agent(agent.id.clone());
+        Self::queue(mem, event);
         Ok(())
     }
 
