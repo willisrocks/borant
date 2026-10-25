@@ -270,7 +270,7 @@ async fn alerts_a_stalled_agent_fires_once_sets_stuck_and_resolves() {
     fx.hub.tick().await.unwrap();
 
     let keys = alert_keys(&fx).await;
-    assert_eq!(keys, vec!["alert.agent_stalled:w1".to_owned()]);
+    assert_eq!(keys, vec!["alert.agent_stalled.w1".to_owned()]);
     let notices = fx.recorder.notices();
     assert_eq!(notices.len(), 1, "{notices:?}");
     assert_eq!(notices[0].title, "An agent is stalled");

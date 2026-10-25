@@ -125,33 +125,41 @@ impl Hub {
         Ok(())
     }
 
-    /// The open alerts, by alert key. A key that the store refuses, for
-    /// example one left by an old version or a stress test, is skipped with a
-    /// debug line instead of failing the pass, so one bad record cannot stop
-    /// every alert.
+    /// The open alerts, by alert key. Read from the stored rule and subject,
+    /// not from the KV key, so the key's shape never matters and a record from
+    /// an older form is harmless. A record without a rule and a subject is
+    /// skipped with a debug line.
     async fn open_alerts(&self) -> Result<BTreeSet<String>, ApiError> {
         let mut open = BTreeSet::new();
         for entry in self.store.0.list(ALERT_PREFIX).await? {
-            let Some(key) = entry.key.strip_prefix(ALERT_PREFIX) else {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&entry.value) else {
+                tracing::debug!(key = %entry.key, "skipping an alert record that is not JSON");
                 continue;
             };
-            if Self::alert_kv(key).is_none() {
-                tracing::debug!(key = %entry.key, "skipping an alert key that the store refuses");
+            let (Some(rule), Some(subject)) = (value["rule"].as_str(), value["subject"].as_str())
+            else {
+                tracing::debug!(key = %entry.key, "skipping an alert record without a rule");
+                continue;
+            };
+            if rule.is_empty() || subject.is_empty() {
+                tracing::debug!(key = %entry.key, "skipping an alert record with an empty part");
                 continue;
             }
-            open.insert(key.to_owned());
+            open.insert(format!("{rule}:{subject}"));
         }
         Ok(open)
     }
 
-    /// The KV key of one alert, or `None` when the store would refuse it: an
-    /// empty key, or a key that would start or end with `.`.
+    /// The KV key of one alert, whose alert key is `<rule>:<subject>`, or
+    /// `None` when either part is empty. The KV refuses `:`, so the parts are
+    /// escaped ([`keys::alert`]).
     fn alert_kv(key: &str) -> Option<String> {
-        let full = format!("{ALERT_PREFIX}{key}");
-        if key.is_empty() || !keys::valid_key(&full) {
+        let (rule, subject) = key.split_once(':')?;
+        if rule.is_empty() || subject.is_empty() {
             return None;
         }
-        Some(full)
+        let kv = keys::alert(rule, subject);
+        keys::valid_key(&kv).then_some(kv)
     }
 
     /// The rules' inputs: the live view plus what only the hub keeps. The
@@ -342,7 +350,7 @@ mod tests {
             .map(|e| e.key)
             .collect();
         assert!(
-            stored.iter().any(|k| k == "alert.host_offline:vps-1"),
+            stored.iter().any(|k| k == "alert.host_offline.vps-1"),
             "the other alerts still fire: {stored:?}"
         );
     }
@@ -423,5 +431,102 @@ mod members_tests {
         }
 
         hub.alert_pass(NOW).await.expect("the pass completes");
+    }
+
+    /// Rule: `members_limited` fires while every member of the bundle is
+    /// limited and resolves when one resets, on key shapes the real KV takes.
+    #[tokio::test]
+    async fn alerts_fire_and_resolve_members_limited() {
+        let clock = Arc::new(ManualClock::new(NOW));
+        let state = Arc::new(MemoryState::new());
+        let hub = Hub::new(
+            state.clone(),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            clock,
+            HubConfig::default(),
+        );
+        let bundle: BundleName = "fake-auth".parse().unwrap();
+        let info = HostInfo {
+            name: "h1".parse().unwrap(),
+            harnesses: vec![Harness::Fake],
+            launcher: "process".into(),
+            max_agents: 4,
+            // Not always-on, so host_offline stays quiet and the test reads
+            // only the members_limited records.
+            always_on: false,
+            draining: false,
+            ssh: None,
+            members: [(
+                bundle.clone(),
+                MemberBundle {
+                    members: ["a", "b"].iter().map(|m| m.parse().unwrap()).collect(),
+                    harnesses: vec![Harness::Fake],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            pool: None,
+            tags: Vec::new(),
+            bundles: Vec::new(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
+        };
+        state
+            .create(
+                &keys::host(&info.name),
+                serde_json::to_vec(&info).expect("a host").into(),
+            )
+            .await
+            .expect("seed a host");
+        let limited = |member: &str, until: Option<Timestamp>| MemberState {
+            bundle: bundle.clone(),
+            member: member.parse().unwrap(),
+            limited_until: until,
+            waiting: Vec::new(),
+            restarts: Vec::new(),
+        };
+        let reset = NOW.plus(std::time::Duration::from_secs(600));
+        for member in ["a", "b"] {
+            hub.store
+                .upsert(
+                    &format!("member.fake-auth.{member}"),
+                    &limited(member, Some(reset)),
+                )
+                .await
+                .expect("seed a member");
+        }
+
+        // Both members limited: the alert fires, on a key with no `:`.
+        hub.alert_pass(NOW).await.expect("the pass fires");
+        let open: Vec<String> = state
+            .list(super::ALERT_PREFIX)
+            .await
+            .expect("the alerts")
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        assert_eq!(
+            open,
+            vec!["alert.members_limited.fake-auth".to_owned()],
+            "{open:?}"
+        );
+
+        // One member resets: the alert resolves and its record goes.
+        hub.store
+            .upsert("member.fake-auth.b", &limited("b", None))
+            .await
+            .expect("the reset");
+        hub.alert_pass(NOW.plus(std::time::Duration::from_secs(1)))
+            .await
+            .expect("the pass resolves");
+        let left: Vec<String> = state
+            .list(super::ALERT_PREFIX)
+            .await
+            .expect("the alerts")
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 }
