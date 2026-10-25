@@ -7,6 +7,24 @@ NETWORK="${PROJECT}_default"
 
 dc() { docker compose -f "$COMPOSE" "$@"; }
 
+# Removes the containers that the fake provisioner of the elastic scenario
+# started: `compose down` does not know them, because the plugin starts them
+# by hand with the label borant.managed=e2e.
+cleanup_e2e_containers() {
+  local ids
+  ids=$(docker ps --all --quiet --filter label=borant.managed=e2e 2>/dev/null)
+  # Word splitting is the point: one id per argument of `docker rm`.
+  [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1
+  return 0
+}
+
+# Stops the swarm and the containers of the fake provisioner.
+down() {
+  cleanup_e2e_containers
+  dc --profile move down -v --remove-orphans
+}
+
+
 # Runs a command in a service container.
 on() {
   local svc=$1
