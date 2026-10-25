@@ -259,9 +259,19 @@ scenario_elastic() {
   [ -n "$host" ] || { echo "  $agent holds no lease on a host" >&2; return 1; }
   id=$(docker ps --quiet --filter "name=^${host}$")
   [ -n "$id" ] || { echo "  no container is named $host" >&2; return 1; }
-  borant_on host-control send "$agent" "WRITE killed.txt during-a-turn" >/dev/null
+  # The hub takes over an expired lease only for an agent with work, so the
+  # agent claims a task before its container is killed: a message that it
+  # already got is no reason to start it again.
+  borant_on host-control send boss "CREATE e2e killed-worker" >/dev/null
+  wait_for "a task for the killed agent" log_has host-control boss "CREATED .* killed-worker" \
+    || return 1
+  local task
+  task=$(task_id host-control boss killed-worker)
+  [ -n "$task" ] || { echo "  no task id in the boss log" >&2; return 1; }
+  borant_on host-control send "$agent" "CLAIM e2e $task" >/dev/null
+  wait_for "the claim of the killed agent" agent_claimed "$id" "$agent" "$task" || return 1
   docker kill "$id" >/dev/null || return 1
-  echo "  killed $host ($id)"
+  echo "  killed $host ($id), its claim of $task waits"
   # The pool name of a host can repeat after a delete, so the takeover is
   # the agent on a pool host again once the killed container is gone.
   WAIT=300 wait_for "the killed host is deleted" container_gone "$id" || return 1
@@ -314,6 +324,12 @@ in_pool() {
 }
 
 three_in_pool() { in_pool 3; }
+
+# The log of a fake agent on a container that the provisioner started.
+pool_log() { docker exec "$1" cat "/root/.borant/fake/$2.log" 2>/dev/null; }
+
+# The agent on that container claimed the task.
+agent_claimed() { pool_log "$1" "$2" | grep -q -- "CLAIM $3 ok"; }
 
 # The agent holds a lease on a host of the pool.
 agent_on_pool() {
