@@ -24,6 +24,7 @@ fn exec_cfg() -> ExecConfig {
         env: BTreeMap::new(),
         credential: None,
         timeout: Duration::from_secs(10),
+        log_stderr: false,
     }
 }
 

@@ -120,6 +120,8 @@ fn exec_config(
         env: env.clone(),
         credential,
         timeout: Duration::from_secs(timeout_secs),
+        // A secrets plugin can print a value on stderr.
+        log_stderr: false,
     })
 }
 
