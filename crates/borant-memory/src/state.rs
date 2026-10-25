@@ -12,6 +12,17 @@ use crate::Availability;
 
 type Map = BTreeMap<String, (Bytes, u64)>;
 
+/// The keys that the real KV refuses, refused here too, so a test sees what
+/// production sees.
+fn check_key(key: &str) -> PortResult<()> {
+    if borant_core::keys::valid_key(key) {
+        return Ok(());
+    }
+    Err(PortError::other(format!(
+        "key cannot be empty or start/end with \".\": {key:?}"
+    )))
+}
+
 #[derive(Debug, Clone)]
 pub struct MemoryState {
     inner: Arc<Inner>,
@@ -45,6 +56,23 @@ impl MemoryState {
         self.inner.available.set(on);
     }
 
+    /// Writes a key without the check, for a test that needs a record the
+    /// store refuses today, as an old version left it in the real KV.
+    pub fn seed(&self, key: &str, value: Bytes) -> u64 {
+        let entry = self.with(|rev, map| {
+            *rev += 1;
+            map.insert(key.to_owned(), (value.clone(), *rev));
+            Entry {
+                key: key.to_owned(),
+                value,
+                revision: *rev,
+            }
+        });
+        let revision = entry.revision;
+        let _ = self.inner.tx.send(Change::Put(entry));
+        revision
+    }
+
     fn with<R>(&self, f: impl FnOnce(&mut u64, &mut BTreeMap<String, (Bytes, u64)>) -> R) -> R {
         let mut g = self.inner.map.lock().unwrap_or_else(|e| e.into_inner());
         let (rev, map) = &mut *g;
@@ -56,6 +84,7 @@ impl MemoryState {
 impl StateStore for MemoryState {
     async fn get(&self, key: &str) -> PortResult<Option<Entry>> {
         self.inner.available.check()?;
+        check_key(key)?;
         Ok(self.with(|_, map| {
             map.get(key).map(|(v, r)| Entry {
                 key: key.to_owned(),
@@ -67,6 +96,7 @@ impl StateStore for MemoryState {
 
     async fn create(&self, key: &str, value: Bytes) -> PortResult<u64> {
         self.inner.available.check()?;
+        check_key(key)?;
         let entry = self.with(|rev, map| {
             if map.contains_key(key) {
                 return Err(PortError::conflict(format!("key {key} exists")));
@@ -86,6 +116,7 @@ impl StateStore for MemoryState {
 
     async fn update(&self, key: &str, value: Bytes, expected: u64) -> PortResult<u64> {
         self.inner.available.check()?;
+        check_key(key)?;
         let entry = self.with(|rev, map| {
             let current = map.get(key).map(|(_, r)| *r);
             if current != Some(expected) {
@@ -108,6 +139,7 @@ impl StateStore for MemoryState {
 
     async fn delete(&self, key: &str, expected: Option<u64>) -> PortResult<()> {
         self.inner.available.check()?;
+        check_key(key)?;
         let removed = self.with(|_, map| {
             let current = map.get(key).map(|(_, r)| *r);
             if let Some(e) = expected

@@ -55,14 +55,7 @@ impl Hub {
 
     async fn alert_pass(&self, now: Timestamp) -> Result<(), ApiError> {
         let (view, tasks) = self.alert_view(now).await?;
-        let open: BTreeSet<String> = self
-            .store
-            .0
-            .list(ALERT_PREFIX)
-            .await?
-            .into_iter()
-            .map(|e| e.key.trim_start_matches(ALERT_PREFIX).to_owned())
-            .collect();
+        let open = self.open_alerts().await?;
 
         for action in alerts::evaluate(&view, &open, &self.cfg.alerts, now) {
             match action {
@@ -77,9 +70,16 @@ impl Hub {
                     }
                     let rule = rule_of(&key);
                     let subject = subject_of(&key);
+                    let Some(stored) = Self::alert_kv(&key) else {
+                        tracing::debug!(
+                            alert = %key,
+                            "skipping an alert key that the store refuses"
+                        );
+                        continue;
+                    };
                     self.store
                         .upsert(
-                            &format!("{ALERT_PREFIX}{key}"),
+                            &stored,
                             &json!({
                                 "rule": rule,
                                 "subject": subject,
@@ -102,7 +102,14 @@ impl Hub {
                     }
                 }
                 AlertAction::Resolve { key } => {
-                    self.store.delete(&format!("{ALERT_PREFIX}{key}")).await?;
+                    let Some(stored) = Self::alert_kv(&key) else {
+                        tracing::debug!(
+                            alert = %key,
+                            "skipping an alert key that the store refuses"
+                        );
+                        continue;
+                    };
+                    self.store.delete(&stored).await?;
                     let event = self.event(
                         now,
                         Severity::Info,
@@ -116,6 +123,35 @@ impl Hub {
             }
         }
         Ok(())
+    }
+
+    /// The open alerts, by alert key. A key that the store refuses, for
+    /// example one left by an old version or a stress test, is skipped with a
+    /// debug line instead of failing the pass, so one bad record cannot stop
+    /// every alert.
+    async fn open_alerts(&self) -> Result<BTreeSet<String>, ApiError> {
+        let mut open = BTreeSet::new();
+        for entry in self.store.0.list(ALERT_PREFIX).await? {
+            let Some(key) = entry.key.strip_prefix(ALERT_PREFIX) else {
+                continue;
+            };
+            if Self::alert_kv(key).is_none() {
+                tracing::debug!(key = %entry.key, "skipping an alert key that the store refuses");
+                continue;
+            }
+            open.insert(key.to_owned());
+        }
+        Ok(open)
+    }
+
+    /// The KV key of one alert, or `None` when the store would refuse it: an
+    /// empty key, or a key that would start or end with `.`.
+    fn alert_kv(key: &str) -> Option<String> {
+        let full = format!("{ALERT_PREFIX}{key}");
+        if key.is_empty() || !keys::valid_key(&full) {
+            return None;
+        }
+        Some(full)
     }
 
     /// The rules' inputs: the live view plus what only the hub keeps. The
@@ -232,4 +268,78 @@ fn subject_of(key: &str) -> &str {
     key.split_once(':')
         .map(|(_, subject)| subject)
         .unwrap_or(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use borant_core::ManualClock;
+    use borant_core::model::{Harness, HostInfo};
+    use borant_core::ports::StateStore;
+    use borant_memory::{MemoryBus, MemorySession, MemoryState};
+
+    use crate::HubConfig;
+
+    const NOW: Timestamp = Timestamp(1_000_000_000);
+
+    /// Rule: one stored key that the KV refuses, such as an `alert.` left by
+    /// an old version or a stress test, cannot fail the whole pass: the other
+    /// alerts still fire and are stored.
+    #[tokio::test]
+    async fn alerts_survive_a_stored_key_the_store_refuses() {
+        let clock = Arc::new(ManualClock::new(NOW));
+        let state = Arc::new(MemoryState::new());
+        let hub = Hub::new(
+            state.clone(),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            clock.clone(),
+            HubConfig::default(),
+        );
+        // The two shapes that broke the pass on borant-1, written the way an
+        // old version left them in the real KV.
+        for key in ["alert.", "alert..broken"] {
+            state.seed(key, bytes::Bytes::from_static(b"{}"));
+        }
+        // An always-on host with no heartbeat, so host_offline is true.
+        let info = HostInfo {
+            name: "vps-1".parse().unwrap(),
+            harnesses: vec![Harness::Fake],
+            launcher: "tmux".into(),
+            max_agents: 4,
+            always_on: true,
+            draining: false,
+            ssh: None,
+            members: Default::default(),
+            pool: None,
+            tags: Vec::new(),
+            bundles: Vec::new(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
+        };
+        state
+            .create(
+                &keys::host(&info.name),
+                serde_json::to_vec(&info).expect("a host").into(),
+            )
+            .await
+            .expect("seed a host");
+
+        hub.alert_pass(NOW)
+            .await
+            .expect("the pass survives the keys it cannot read");
+
+        let stored: Vec<String> = state
+            .list(ALERT_PREFIX)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        assert!(
+            stored.iter().any(|k| k == "alert.host_offline:vps-1"),
+            "the other alerts still fire: {stored:?}"
+        );
+    }
 }
