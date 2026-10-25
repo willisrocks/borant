@@ -5,7 +5,7 @@ use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
     TaskPatch, TaskStatus,
 };
-use borant_core::proto::ApiError;
+use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::{schema, tasks as rules};
 use borant_core::{AgentId, ChannelName, CoreError, MessageId, TaskId, keys, subjects};
 use serde_json::{Map, Value};
@@ -54,6 +54,7 @@ impl Hub {
         _by: &Sender,
         channel: &ChannelName,
         new: NewTask,
+        key: Option<String>,
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         if new.title.trim().is_empty() {
@@ -61,6 +62,19 @@ impl Hub {
         }
         schema::validate(&ch.value.schema, &new.properties)?;
         let all = self.tasks(channel).await?;
+        // A retried create with the same key returns the first task; another
+        // title under the same key is a conflict.
+        if let Some(key) = &key
+            && let Some(had) = all.iter().find(|t| t.create_key.as_ref() == Some(key))
+        {
+            if had.title == new.title {
+                return Ok(had.clone());
+            }
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("task key {key} was used for another title"),
+            ));
+        }
         let id = TaskId::new();
         rules::check_edges(&all, id, &new.blocked_by)?;
         if let Some(p) = new.parent
@@ -83,7 +97,7 @@ impl Hub {
             properties: new.properties,
             created: now,
             updated: now,
-            create_key: None,
+            create_key: key,
         };
         self.store
             .put(&keys::task(channel, &id), &task, None)
@@ -187,6 +201,11 @@ impl Hub {
         )
         .await?;
         self.task_status_event(mem, channel, &before, &doc.value);
+        // A worker bound to this task with `stop_on_close` retires when the
+        // update closes the task, not on any other field.
+        if doc.value.status == TaskStatus::Closed {
+            self.retire_for_task(mem, channel, id).await?;
+        }
         Ok(doc.value)
     }
 
@@ -273,6 +292,17 @@ impl Hub {
         let all = self.tasks(channel).await?;
         let mut doc = self.task(channel, id).await?;
         let before = doc.value.clone();
+        // A retried close is idempotent: the same reason returns the task.
+        match rules::close_repeat(&doc.value, reason) {
+            rules::CloseOutcome::Close => {}
+            rules::CloseOutcome::Repeat => return Ok(doc.value),
+            rules::CloseOutcome::Conflict(had) => {
+                return Err(ApiError::new(
+                    ApiErrorCode::Conflict,
+                    format!("task {} is already closed as {had:?}", doc.value.id),
+                ));
+            }
+        }
         rules::check_close(&all, &doc.value)?;
         doc.value.status = TaskStatus::Closed;
         doc.value.close_reason = Some(reason);
@@ -291,6 +321,8 @@ impl Hub {
         )
         .await?;
         self.task_status_event(mem, channel, &before, &doc.value);
+        // A worker bound to this task with `stop_on_close` retires now.
+        self.retire_for_task(mem, channel, id).await?;
         Ok(doc.value)
     }
 
