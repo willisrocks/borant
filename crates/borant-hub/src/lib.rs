@@ -31,8 +31,7 @@ use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{
     AgentId, BundleName, Clock, CollectionName, FencingToken, HostName, MemberName, PoolName,
-    RoleName, SessionId,
-    Timestamp, keys, subjects,
+    RoleName, SessionId, Timestamp, keys, subjects,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;

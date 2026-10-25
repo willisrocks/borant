@@ -38,9 +38,7 @@ fn check_allowed(
     if allowed(mine, record) {
         Ok(())
     } else {
-        Err(ApiError::denied(format!(
-            "{what} is in another collection"
-        )))
+        Err(ApiError::denied(format!("{what} is in another collection")))
     }
 }
 
@@ -279,9 +277,11 @@ impl Hub {
                         .await?,
                 )
             }
-            ToolCall::SchemaGet { channel } => {
-                Ok(self.channel_for(mine.as_ref(), &channel).await?.value.schema)
-            }
+            ToolCall::SchemaGet { channel } => Ok(self
+                .channel_for(mine.as_ref(), &channel)
+                .await?
+                .value
+                .schema),
             ToolCall::SchemaExtend {
                 channel,
                 properties,
@@ -403,7 +403,10 @@ impl Hub {
     }
 
     /// The collection of the caller: its own, or `None` for a person.
-    async fn collection_of(&self, me: &Option<AgentId>) -> Result<Option<CollectionName>, ApiError> {
+    async fn collection_of(
+        &self,
+        me: &Option<AgentId>,
+    ) -> Result<Option<CollectionName>, ApiError> {
         match me {
             Some(id) => Ok(self.agent(id).await?.value.collection),
             None => Ok(None),
@@ -448,11 +451,7 @@ impl Hub {
         let (collection, branch) = match &project {
             Some(p) => {
                 let project = self.project(p).await?;
-                check_allowed(
-                    mine,
-                    project.collection.as_ref(),
-                    &format!("project {p}"),
-                )?;
+                check_allowed(mine, project.collection.as_ref(), &format!("project {p}"))?;
                 (
                     project.collection.clone(),
                     Some(branch.unwrap_or_else(|| project.default_branch.clone())),

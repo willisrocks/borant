@@ -2,10 +2,19 @@
 
 mod common;
 
-use borant_core::model::{Channel, CloseReason, Harness, NewTask, Project, TaskPatch};
-use borant_core::proto::{ApiError, ApiErrorCode, Registered, ToolCall};
-use borant_core::{ChannelName, CollectionName, ProjectName, TaskId};
-use common::Fx;
+use std::collections::BTreeMap;
+
+use borant_core::model::{
+    Agent, Channel, CloseReason, GitAuthor, Harness, HostInfo, NewTask, Project, Target, TaskPatch,
+};
+use borant_core::ports::{MessageBus, StateStore};
+use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
+use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::{
+    AgentId, ChannelName, CollectionName, ProjectName, RoleName, TaskId, keys, subjects, testing,
+};
+use borant_hub::HubConfig;
+use common::{Fx, next_cmd};
 use serde_json::json;
 
 fn col(s: &str) -> CollectionName {
@@ -123,6 +132,118 @@ async fn swarm() -> (Fx, Registered, Registered, Registered) {
     (fx, w, p, free)
 }
 
+/// A host that has both bundles of the launch, so placement can choose it.
+async fn host_with_bundles(fx: &Fx, n: &str) {
+    fx.req(CtlRequest::RegisterHost {
+        info: HostInfo {
+            name: n.parse().unwrap(),
+            harnesses: vec![Harness::Fake],
+            launcher: "process".into(),
+            max_agents: 4,
+            always_on: false,
+            draining: false,
+            ssh: None,
+            members: Default::default(),
+            pool: None,
+            tags: Vec::new(),
+            bundles: ["github-work", "lunaroute"]
+                .iter()
+                .map(|b| b.parse().unwrap())
+                .collect(),
+        },
+    })
+    .await
+    .unwrap();
+}
+
+/// Sets the role of a registered agent.
+async fn set_role(fx: &Fx, agent: &AgentId, role: &RoleName) {
+    let key = keys::agent(agent);
+    let e = fx.state.get(&key).await.unwrap().expect("the agent exists");
+    let mut a: Agent = serde_json::from_slice(&e.value).unwrap();
+    a.role = Some(role.clone());
+    let bytes = serde_json::to_vec(&a).unwrap();
+    fx.state
+        .update(&key, bytes.into(), e.revision)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn collections_launch_order_gets_the_bundles_and_git_author() {
+    let author = GitAuthor {
+        name: "Chris Fenton".into(),
+        email: "you@work.example".into(),
+    };
+    let collections = BTreeMap::from([(
+        col("work"),
+        CollectionConfig {
+            bundles: vec!["github-work".parse().unwrap()],
+            git_author: Some(author.clone()),
+        },
+    )]);
+    let worker: RoleName = "worker".parse().unwrap();
+    let roles = BTreeMap::from([(
+        worker.clone(),
+        RoleConfig {
+            bundles: vec!["lunaroute".parse().unwrap()],
+            ..Default::default()
+        },
+    )]);
+    let fx = Fx::with(HubConfig {
+        collections,
+        roles,
+        ..Default::default()
+    });
+    host_with_bundles(&fx, "h1").await;
+    host_with_bundles(&fx, "h2").await;
+    let owner = fx.register("h1", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: chan("api"),
+            schema: None,
+            project: None,
+            branch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let w = fx
+        .register_in("h1", Some("w"), Some("api"), Some("work"))
+        .await;
+    set_role(&fx, &w.agent, &worker).await;
+
+    // A message wakes the agent, and the hub places it again once its lease
+    // expires. The launch order is built there.
+    let mut h1 = fx.commands("h1").await;
+    let mut h2 = fx.commands("h2").await;
+    let env = testing::envelope(Target::Agent(w.agent.clone()), "wake up");
+    fx.bus
+        .publish(&subjects::agent(&w.agent), &env)
+        .await
+        .unwrap();
+    for _ in 0..30 {
+        fx.advance(10);
+        fx.heartbeat("h1", &[&owner]).await;
+        fx.hub.tick().await.unwrap();
+    }
+    let order = tokio::select! {
+        Some(HostCommand::Launch(o)) = next_cmd(&mut h1) => o,
+        Some(HostCommand::Launch(o)) = next_cmd(&mut h2) => o,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+            panic!("no launch happened")
+        }
+    };
+    assert_eq!(order.agent, w.agent);
+    assert_eq!(
+        order.bundles,
+        ["github-work".parse().unwrap(), "lunaroute".parse().unwrap()],
+        "the collection bundles come first, then the role's"
+    );
+    assert_eq!(order.git_author, Some(author));
+}
+
 #[tokio::test]
 async fn collections_channel_create_needs_the_prefix() {
     let fx = Fx::new();
@@ -133,7 +254,11 @@ async fn collections_channel_create_needs_the_prefix() {
 
     let ch = create_channel(&fx, &p, "personal-api", None).await.unwrap();
     assert_eq!(ch.collection, Some(col("personal")));
-    assert_eq!(ch.name, chan("personal-api"), "the hub never rewrites a name");
+    assert_eq!(
+        ch.name,
+        chan("personal-api"),
+        "the hub never rewrites a name"
+    );
 
     let err = create_channel(&fx, &p, "api", None).await.unwrap_err();
     assert_eq!(err.code, ApiErrorCode::Invalid, "{}", err.message);
@@ -204,12 +329,9 @@ async fn collections_join_and_registration_refuse_another_collection() {
     )
     .await
     .unwrap();
-    fx.call(
-        Some(&p),
-        ToolCall::ChannelJoin { name: chan("open") },
-    )
-    .await
-    .unwrap();
+    fx.call(Some(&p), ToolCall::ChannelJoin { name: chan("open") })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -293,10 +415,7 @@ async fn collections_lists_show_only_the_own_collection() {
     add_project(&fx, "notes", Some("personal")).await;
     add_project(&fx, "plain", None).await;
 
-    assert_eq!(
-        channel_names(&fx, Some(&p)).await,
-        ["open", "personal-api"]
-    );
+    assert_eq!(channel_names(&fx, Some(&p)).await, ["open", "personal-api"]);
     assert_eq!(agent_names(&fx, Some(&p)).await, ["free", "pi"]);
     assert_eq!(project_names(&fx, Some(&p)).await, ["notes", "plain"]);
 

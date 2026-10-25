@@ -311,6 +311,13 @@ impl Hub {
             }
             (None, _) => None,
         };
+        // The collection and the role of the agent decide the bundles of the
+        // launch (the collection first, then the role) and the git author.
+        let collection = agent
+            .collection
+            .as_ref()
+            .and_then(|c| self.cfg.collections.get(c));
+        let role = agent.role.as_ref().and_then(|r| self.cfg.roles.get(r));
         let order = LaunchOrder {
             agent: agent.id.clone(),
             harness,
@@ -325,8 +332,8 @@ impl Hub {
             project,
             reserve_secs: Some(self.cfg.lease.reserve.as_secs()),
             members,
-            bundles: Vec::new(),
-            git_author: None,
+            bundles: roles::launch_bundles(collection, role),
+            git_author: roles::git_author(collection),
         };
         let move_event = SessionEvent {
             id: EventId::new(),
