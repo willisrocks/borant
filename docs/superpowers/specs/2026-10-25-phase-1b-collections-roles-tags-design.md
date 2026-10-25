@@ -23,10 +23,14 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
 
 ## Cuts
 
-- A cross-collection check on `send`. A direct message does not go through
-  the hub, and the host daemon has no state store to look up the target.
-  Joins are guarded, so broadcasts and task events stay inside a
-  collection. Chris asked for no stronger isolation now.
+- A cross-collection check on `send`. The host publishes direct messages and
+  broadcasts straight to NATS with no membership check
+  (`crates/borant-host/src/delivery.rs`), and it has no state store to look
+  up the target. Guarded joins limit who receives a channel, not who
+  publishes to it. So a direct message or a broadcast across collections
+  stays possible in phase 1b. Chris asked for no stronger isolation now.
+- Task-bound workers (a worker that stops when its task closes). This needs
+  `stop_on_close` from roadmap phase 3.
 - Profiles as a separate concept. Roles replace the profiles of the
   orchestration doc.
 - Reject reasons in `borant ps`, and resources in the heartbeat (roadmap
@@ -43,7 +47,14 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
   collection. `laptop`, `vps`, `chief`, and `worker` exist only in `hub.toml`
   and `host.toml`.
 - Records with no collection or no role (everything that exists today) keep
-  today's behavior. A spawn from an agent with no role may spawn any role.
+  today's behavior. The two are separate exceptions:
+  - An agent with no role has no spawn limit: it may spawn any role, or none.
+    This is a compatibility exception to "only a chief spawns orchestrators".
+  - An agent with no collection has no collection checks. An agent with a
+    collection gets them, whether or not it has a role.
+  - An agent with a role must name a `role` in each spawn, and it must be in
+    `spawns` of its role. A spawn without a role from such an agent fails with
+    `denied`.
 - All new fields are `#[serde(default)]`. New protocol variants need a
   release on every host before the hub sends them.
 - Channel names allow `[a-z0-9_-]`, at most 63 characters (`ids.rs`).
@@ -54,7 +65,9 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
 
 - `RoleName` and `CollectionName`: new `name_type!` names in `ids.rs`. `Tag`
   exists (phase 4).
-- `Agent.role: Option<RoleName>`, `Agent.collection: Option<CollectionName>`.
+- `Agent.role: Option<RoleName>`, `Agent.collection: Option<CollectionName>`,
+  and `Agent.parent: Option<AgentId>` (the agent that spawned it, for a helper
+  that runs on its parent's host after a move).
 - `Project.collection: Option<CollectionName>`.
 - `Channel.collection: Option<CollectionName>`: from its project, else from
   the agent that created it.
@@ -109,7 +122,7 @@ on_parent_host = true
 spawns = []
 ```
 
-`RoleConfig { harness, model, require, prefer, avoid, pinned, one_per, spawns, skill, on_parent_host, bundles }`
+`RoleConfig { harness, model, require, prefer, avoid, pinned, one_per, spawns, tools_deny, skill, on_parent_host, bundles }`
 and `CollectionConfig { bundles, git_author }` live in
 `borant-core::rules::roles`, with `Deserialize`. All fields are optional
 except `spawns`, which defaults to empty.
@@ -120,9 +133,12 @@ except `spawns`, which defaults to empty.
   the role of the child (the `role` of the call), its harness and model
   (explicit call values win over the role), its placement rule, its
   collection (the parent's), and whether it is pinned.
-- `pub fn may_spawn(parent_role: Option<&RoleName>, child: &RoleName, roles: ...) -> bool`:
-  true when the parent has no role, or when the child is in `spawns` of the
-  parent role.
+- `pub fn may_spawn(parent_role: Option<&RoleName>, child: Option<&RoleName>, roles: ...) -> bool`:
+  true when the parent has no role; else true only when the child has a role
+  that is in `spawns` of the parent role.
+- `pub fn may_call(role: Option<&RoleName>, tool: &str, roles: ...) -> bool`:
+  false when the role lists the tool in `tools_deny`. For example a worker
+  role can deny `spawn`, `move`, `drain`, and `project_add`.
 - `pub fn brief(prompt: &str, skill: Option<&str>) -> String`: puts the line
   "First load the <skill> skill." before the prompt when the role names a
   skill.
@@ -139,6 +155,12 @@ except `spawns`, which defaults to empty.
 3. A helper (`on_parent_host`) gets `host = parent's host`.
 
 `avoid` is a soft rule, and `require` a hard one (see the decision records).
+A host with both `vps` and `laptop` tags still qualifies for a worker, so a
+host that must never get workers must not carry the `vps` tag.
+
+The placement rule comes from `Agent.role` at every launch: spawn, move,
+retry, and takeover, and the move preflight in `crates/borant-hub/src/moves.rs`.
+A helper uses the current host of `Agent.parent`.
 
 ## Collections
 
@@ -147,8 +169,11 @@ The hub keeps each agent inside its collection:
 1. Spawn: the child gets the parent's collection. The channel of the spawn
    must be in the same collection, or have none.
 2. Channel create: in a collection, the name must start with
-   `<collection>-`. The hub refuses another name with `invalid`. A channel of
-   a project gets the project's collection, which must match the creator's.
+   `<collection>-`, and the full name must stay valid (63 characters at
+   most). The hub refuses another name with `invalid`, and never rewrites a
+   name. A channel of a project gets the project's collection, which must
+   match the creator's. `Channel.collection` is the authority, not the
+   prefix, because a collection name can hold a hyphen.
 3. Join and the auto-join at registration: the channel must be in the
    agent's collection, or have none.
 4. Task calls, `members`, `schema_*`, and `channel_transfer`: the channel must
@@ -163,12 +188,20 @@ The hub keeps each agent inside its collection:
 
 ## Roles
 
-1. `one_per = "collection"` or `"project"`: a spawn of that role fails with
-   `conflict` while another agent of the role holds a lease, or is pinned,
-   in the same collection or project.
-2. `pinned = true` sets `Agent.pinned` (the phase 0 pinned-agents feature).
-3. The hub refuses a spawn when `may_spawn` is false, with `denied`.
-4. A role names its skill in the brief with `brief`.
+1. `one_per = "collection"` or `"project"`: a spawn of that role, and a
+   registration of a session with that role, fail with `conflict` while
+   another agent of the role in the same collection or project exists with a
+   held or reserved lease, a pending spawn, or a pin.
+2. A registration keeps the stored role and collection of an agent when the
+   session sends none, and refuses a change with `conflict` before it takes
+   the lease or writes a membership.
+3. `pinned = true` sets `Agent.pinned`, the phase 0 pinned-agents feature
+   (task "Pinned agents keep their tools when the hub is down" in
+   `roadmap-p0`). Its guards on registration, moves, pending launches,
+   takeovers, and claims do the work. Phase 1b only sets the flag.
+4. The hub refuses a spawn when `may_spawn` is false, and any call when
+   `may_call` is false, with `denied`.
+5. A role names its skill in the brief with `brief`.
 
 ## The chief of staff
 
@@ -185,7 +218,7 @@ worker spawn uses `role: "worker"`, and the role sets the harness and model.
 |---|---|---|---|
 | Core interfaces for roles and collections | worker | none | `crates/borant-core` (ids, model, proto, `rules/roles.rs` types and signatures) |
 | Placement with tags | worker | Core interfaces | `crates/borant-core/src/rules/schedule.rs`, `crates/borant-hub/src/moves.rs` (`host_views`, the call) |
-| Roles in the hub | worker | Core interfaces | `rules/roles.rs` bodies, `crates/borant/src/config.rs` (`HubFile.roles`), `crates/borant-hub/src/{moves.rs,calls.rs,leases.rs}` (spawn, authorize, register) |
+| Roles in the hub | worker | Core interfaces, phase 0 pinned agents | `rules/roles.rs` bodies, `crates/borant/src/config.rs` (`HubFile.roles`), `crates/borant-hub/src/{moves.rs,calls.rs,leases.rs}` (spawn, authorize, register, placement inputs on moves and takeovers) |
 | Collection guards in the hub | worker | Core interfaces | `crates/borant-hub/src/calls.rs` (create, join, task calls, lists), `config.rs` (`HubFile.collections`), CLI `--collection` |
 | Host side of collections and roles | worker | Core interfaces | `crates/borant-host/src/commands.rs` (git author, bundle order), `crates/borant/src/hook.rs`, `integrations/pi/borant.ts` |
 | Chief of staff skill | worker | none | `integrations/claude-code/skills/` |
@@ -215,3 +248,13 @@ Decision: records with no collection or role keep today's behavior.
 Evidence: every agent, channel, and project today has none, and the swarm
 must keep working during the rollout. Reversible: yes. Friend: see below.
 Blocker: none.
+
+Codex (gpt-6.1-sol, effort high) reviewed the four material choices and
+accepted them with corrections, which are in the sections above: `avoid`
+soft with the double-tag case stated; the send cut with the honest reason;
+the no-role and no-collection exceptions kept separate, with a required
+child role from a roled parent; the prefix validated, never rewritten, and the
+collection record as the authority. It also found five gaps, now covered:
+the pinned-agents dependency, singleton checks on registrations and pending
+spawns, registration that keeps stored fields, placement on moves and
+takeovers with a stored parent for helpers, and a tool deny list for roles.
