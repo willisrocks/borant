@@ -1,5 +1,17 @@
 # Phase 12: fresh GitHub tokens for agents, from the `borant-swarm` GitHub App
 
+## Decision, 2026-10-25 18:30 UTC: not built
+
+Chris chose a smaller infra-only version instead of this design. A systemd
+timer in `borant-infra` (`borant-gh-app-token`, every 30 minutes and at boot)
+mints an installation token for the `borant-swarm` App and writes it into
+the `gh` login of the box user with `gh auth login --with-token`, then runs
+`gh auth setup-git`. There is no change in this repository. The token
+reaches all repositories of the installation: the mint request names no
+`repositories`, by Chris's choice. This design stays the later option if
+sandboxed agents ever need GitHub, or if a token per agent or per
+repository becomes a need.
+
 Chris's decision of 2026-10-25 17:10 UTC: GitHub refuses a personal access
 token for this work, so agents authenticate as the `borant-swarm` GitHub App
 (owner `willisrocks`, created 17:40 UTC), the pattern the steve-bot sandboxes
