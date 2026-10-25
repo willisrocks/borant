@@ -77,6 +77,22 @@ attention_msg: <what you need>), send the owner one line, then wait.
 After the owner says "merged", wait for your next task. Do not start other work.
 ```
 
+## Roles and tags
+
+When the hub runs roles (phase 1b), name the role on every spawn and let the role decide
+the rest:
+
+- A worker spawn: `role: "worker"`. Leave `harness` and `model` off; the role's pair is
+  the approved one. Pass them only when the user asked for that child.
+- A helper for your own steps: `role: "helper"`. It runs on your host.
+- A spawn from a roled agent must name a role that its own role allows; the hub refuses
+  the rest with `denied`.
+- The role also sets the placement tags and the skill line in the brief. In a
+  collection, a channel name starts with `<collection>-`.
+
+`chief`, `orchestrator`, `worker`, `helper`, `laptop`, and `vps` are examples from
+`hub.toml` and `host.toml`, not code.
+
 ## Event loop
 
 - **Worker says ready:** read the diff and the checks yourself. Merge only in scope
