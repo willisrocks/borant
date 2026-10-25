@@ -47,10 +47,10 @@ pub struct Args {
 impl Args {
     /// The query of `GET /v1/events`, without the leading `?`.
     ///
-    /// The host route reads `since` in Unix milliseconds, `follow=1`, a
-    /// comma-separated `kinds` (repeated `kinds=` works too), one each of
-    /// `agent`, `channel`, and `host`, and `min_severity`. It writes one JSON
-    /// event per `data:` line and closes the stream when `follow` is absent.
+    /// The host route reads `since` in Unix milliseconds, `follow=1`,
+    /// `kinds` as one comma-separated value, one each of `agent`, `channel`,
+    /// and `host`, and `min_severity`. It writes one JSON event per `data:`
+    /// line and closes the stream when `follow` is absent.
     pub fn query(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if let Some(since) = self.since {
@@ -230,6 +230,7 @@ fn detail(event: &SwarmEvent) -> String {
             reason,
         } => format!("session {session} {} ({reason})", word(harness)),
         B::SessionPaused { why } | B::SessionFenced { why } => why.clone(),
+        B::SessionResumed {} => String::new(),
         B::AgentSpawned { by, harness } => format!("by {by} {}", word(harness)),
         B::AgentPruned { by, idle_days } => match by {
             Some(by) => format!("idle {idle_days}d by {by}"),
@@ -772,6 +773,9 @@ mod tests {
             render(&e),
             "12:00:00 warn  host.draining          -              2 agents"
         );
+        // A kind with no fields of its own still names its subject.
+        let resumed = event(SwarmEventBody::SessionResumed {}).about_agent("w1".parse().unwrap());
+        assert_eq!(render(&resumed), "12:00:00 info  session.resumed        w1");
     }
 
     #[test]
