@@ -315,7 +315,11 @@ If `BORANT_CHANNEL` is set, the session also joins that channel. Otherwise,
 the agent joins later with the `channel_join` tool. (Decided)
 
 At session end, the adapter tells the daemon, and the daemon releases the
-lease. A crash or a sleep sends nothing, so the lease ends by its TTL.
+lease. A crash or a sleep sends nothing, so the lease ends by its TTL. An end
+that is not a park and leaves an `in_progress` claim on the agent (a shutdown,
+a crash that the daemon reports, a kill) is not the agent's own exit after its
+work: the hub places the agent again through the takeover path, and when no
+host takes it, the claim goes to its owner as `stuck` with the reason.
 
 ### Working directory
 
