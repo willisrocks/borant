@@ -1,11 +1,23 @@
+use std::time::Duration;
+
 use async_nats::jetstream;
-use async_nats::jetstream::stream::{self, DirectGetErrorKind};
+use async_nats::jetstream::consumer::{self, pull};
+use async_nats::jetstream::stream;
 use borant_core::AgentId;
 use borant_core::model::SessionEvent;
 use borant_core::ports::{PortError, PortResult, SessionStore};
+use futures::StreamExt;
 use tokio::sync::OnceCell;
 
 use crate::{SESSION_STREAM, unavailable};
+
+/// How many session events one fetch asks for.
+const BATCH: usize = 1000;
+/// The cap on a fetch that finds fewer events than it counted, which only
+/// happens when a trim runs between the count and the fetch.
+const FETCH_WAIT: Duration = Duration::from_secs(2);
+/// How long the read consumer of an agent stays after its last read.
+const READER_IDLE: Duration = Duration::from_secs(60);
 
 fn subject(agent: &AgentId) -> String {
     format!("borant.session.{agent}")
@@ -64,24 +76,51 @@ impl SessionStore for NatsSession {
     async fn read(&self, agent: &AgentId) -> PortResult<Vec<(u64, SessionEvent)>> {
         let stream = self.stream().await?;
         let subject = subject(agent);
+        // A pull consumer reads the whole log in batches: one direct get per
+        // event costs a round trip each, which stalls a restore on a slow link.
+        let mut consumer = stream
+            .create_consumer(pull::Config {
+                filter_subject: subject.clone(),
+                deliver_policy: consumer::DeliverPolicy::All,
+                ack_policy: consumer::AckPolicy::None,
+                inactive_threshold: READER_IDLE,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| unavailable("create the session reader", e))?;
         let mut out = Vec::new();
-        let mut seq = 1;
         loop {
-            match stream
-                .direct_get_next_for_subject(subject.clone(), Some(seq))
+            // The pending count makes every fetch a whole batch, so the read
+            // does not wait for a timeout once the log is drained.
+            let pending = consumer
+                .info()
                 .await
-            {
-                Ok(msg) => {
-                    seq = msg.sequence + 1;
-                    match serde_json::from_slice::<SessionEvent>(&msg.payload) {
-                        Ok(ev) => out.push((msg.sequence, ev)),
-                        Err(e) => {
-                            tracing::warn!(%agent, seq = msg.sequence, "skip bad session event: {e}")
-                        }
-                    }
+                .map_err(|e| unavailable("count the session log", e))?
+                .num_pending;
+            if pending == 0 {
+                break;
+            }
+            let want = usize::try_from(pending).unwrap_or(BATCH).min(BATCH);
+            let mut batch = consumer
+                .fetch()
+                .max_messages(want)
+                .expires(FETCH_WAIT)
+                .messages()
+                .await
+                .map_err(|e| unavailable("read the session log", e))?;
+            let mut received = 0;
+            while let Some(message) = batch.next().await {
+                let message = message.map_err(|e| unavailable("read the session log", e))?;
+                received += 1;
+                let seq = message.info().map(|info| info.stream_sequence).unwrap_or(0);
+                match serde_json::from_slice::<SessionEvent>(&message.payload) {
+                    Ok(ev) => out.push((seq, ev)),
+                    Err(e) => tracing::warn!(%agent, seq, "skip bad session event: {e}"),
                 }
-                Err(e) if matches!(e.kind(), DirectGetErrorKind::NotFound) => break,
-                Err(e) => return Err(unavailable("read session log", e)),
+            }
+            // A trim between the count and the fetch ends the batch early.
+            if received == 0 {
+                break;
             }
         }
         Ok(out)
