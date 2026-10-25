@@ -109,7 +109,7 @@ async fn restore_reproduces_files_on_new_root() {
         .unwrap();
     let facts = checkpoint::detect(&work, None).await.unwrap();
     let root = d.path().join("other-host");
-    let dir = checkpoint::restore(&root, &facts.info, &agent(), r, Some(&sha), None)
+    let dir = checkpoint::restore(&root, &facts.info, &agent(), r, Some(&sha), None, None)
         .await
         .unwrap();
     assert_eq!(

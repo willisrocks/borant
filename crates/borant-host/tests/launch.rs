@@ -106,6 +106,15 @@ async fn setup_runs_once_in_a_new_clone() {
     // The clone keeps the checkpoint remote of the project.
     let facts = checkpoint::detect(&clone, None).await.unwrap();
     assert_eq!(facts.checkpoint_remote.as_deref(), Some("/srv/ckpt.git"));
+    // The new clone borrows the objects of the mirror of the project.
+    let mirror = fx.dir.path().join("projects/web.git");
+    assert!(mirror.join("HEAD").is_file(), "no mirror at {mirror:?}");
+    let alternates = std::fs::read_to_string(clone.join(".git/objects/info/alternates"))
+        .expect("a project clone has an alternates file");
+    assert!(
+        alternates.contains(&mirror.join("objects").to_string_lossy().into_owned()),
+        "alternates {alternates:?} do not name the mirror {mirror:?}"
+    );
 }
 
 #[tokio::test]
