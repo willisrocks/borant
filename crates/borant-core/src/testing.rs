@@ -11,6 +11,7 @@ use crate::model::{
     Envelope, EnvelopeKind, Harness, Sender, SessionEvent, SessionEventBody, Target, TaskEvent,
     TaskEventKind, TaskStatus,
 };
+use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
 use crate::ports::secrets::{SecretRef, SecretStore};
 use crate::ports::{Change, MessageBus, PortErrorKind, SessionStore, StateStore};
 use crate::time::Timestamp;
@@ -261,6 +262,149 @@ pub async fn session_store_contract(store: &dyn SessionStore) {
     assert!(store.agents().await.expect("agents").contains(&agent));
     store.delete(&agent).await.expect("delete");
     assert!(store.read(&agent).await.expect("read").is_empty());
+}
+
+/// The provisioner contract: the six points of the elastic doc ("Tests") as
+/// phase 4 keeps them.
+///
+/// `foreign` is a host of another pool that the backend holds and that `p`
+/// did not create, like a server without the ownership label. The adapter
+/// plants it before the call, so a delete of it must be `Denied` and not
+/// `Ok`; the id of a host that does not exist at all is `Ok`.
+pub async fn provisioner_contract(
+    p: &dyn Provisioner,
+    pool: &PoolName,
+    spec: HostSpec,
+    foreign: ProviderHostId,
+) {
+    assert_eq!(&spec.pool, pool, "the spec belongs to the pool under test");
+    let caps = p.describe().await.expect("describe");
+
+    // Point 1: a create returns the pool, the name, and the spec labels, and
+    // a second create with the same name returns the same host.
+    let first = p.create(&spec).await.expect("create");
+    assert_eq!(&first.pool, pool, "create returns the pool");
+    assert_eq!(first.name, spec.name, "create returns the name");
+    assert_eq!(
+        first.provider_labels, spec.provider_labels,
+        "create returns the spec labels"
+    );
+    let again = p.create(&spec).await.expect("a second create");
+    assert_eq!(
+        again.id, first.id,
+        "a create is idempotent by pool and name"
+    );
+
+    // Point 2: list shows the hosts of that pool only.
+    let other_pool: PoolName = unique("p").parse().expect("a pool name");
+    let other_spec = HostSpec {
+        pool: other_pool.clone(),
+        name: unique("h").parse().expect("a host name"),
+        ..spec.clone()
+    };
+    let elsewhere = p
+        .create(&other_spec)
+        .await
+        .expect("a create in another pool");
+    let ours = p.list(pool).await.expect("list");
+    let ids: Vec<&ProviderHostId> = ours.iter().map(|r| &r.id).collect();
+    assert!(
+        ids.contains(&&first.id),
+        "list shows the host of that pool: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&&elsewhere.id),
+        "list hides a host of another pool: {ids:?}"
+    );
+    let theirs = p.list(&other_pool).await.expect("list of the other pool");
+    assert!(
+        theirs.iter().any(|r| r.id == elsewhere.id),
+        "list of the other pool shows its own host"
+    );
+    assert!(
+        !theirs.iter().any(|r| r.id == first.id),
+        "list of the other pool hides the first pool's host"
+    );
+
+    // Point 3: a delete of a host that does not exist is Ok.
+    let missing = ProviderHostId(unique("missing"));
+    p.delete(&missing)
+        .await
+        .expect("a delete of a missing host is Ok");
+
+    // Point 4: a delete of a host of another pool that this provisioner did
+    // not create is Denied.
+    let err = p
+        .delete(&foreign)
+        .await
+        .expect_err("a delete of a foreign host must fail");
+    assert_eq!(
+        err.kind,
+        PortErrorKind::Denied,
+        "a delete of a foreign host is Denied: {err}"
+    );
+
+    // Point 5: a failed create returns an error and leaves no host. An
+    // unlisted size is the failure that every backend can give.
+    let mut unlisted = unique("size");
+    while caps.sizes.iter().any(|s| s.id == unlisted) {
+        unlisted = unique("size");
+    }
+    let bad_name: crate::ids::HostName = unique("h").parse().expect("a host name");
+    let bad = HostSpec {
+        name: bad_name.clone(),
+        size: unlisted,
+        ..spec.clone()
+    };
+    let err = p
+        .create(&bad)
+        .await
+        .expect_err("a create with an unlisted size must fail");
+    assert_eq!(
+        err.kind,
+        PortErrorKind::Invalid,
+        "an unlisted size is Invalid: {err}"
+    );
+    let after = p.list(pool).await.expect("list");
+    assert!(
+        !after.iter().any(|r| r.name == bad_name),
+        "a failed create leaves no host: {after:?}"
+    );
+
+    // Point 6: stop and start return Invalid, because delete is the only
+    // mode that every backend offers.
+    if caps.stop_modes.is_empty() {
+        let err = p
+            .stop(&first.id, StopMode::Stop)
+            .await
+            .expect_err("stop must fail by default");
+        assert_eq!(
+            err.kind,
+            PortErrorKind::Invalid,
+            "stop is Invalid by default: {err}"
+        );
+        let err = p
+            .start(&first.id)
+            .await
+            .expect_err("start must fail by default");
+        assert_eq!(
+            err.kind,
+            PortErrorKind::Invalid,
+            "start is Invalid by default: {err}"
+        );
+    }
+
+    // A repeat delete of an own host is Ok, and the host is gone.
+    p.delete(&first.id).await.expect("delete");
+    p.delete(&first.id).await.expect("a repeat delete is Ok");
+    let left = p.list(pool).await.expect("list");
+    assert!(
+        !left.iter().any(|r| r.id == first.id),
+        "delete removes the host: {left:?}"
+    );
+    p.delete(&elsewhere.id)
+        .await
+        .expect("delete the other pool host");
 }
 
 /// Rules 1 to 4 of the secrets doc, section 2.3. `known` must not be empty.
