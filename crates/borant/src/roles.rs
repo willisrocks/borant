@@ -105,6 +105,9 @@ pub async fn run_hub() -> anyhow::Result<()> {
 pub async fn run_host() -> anyhow::Result<()> {
     let file = config::host_file()?;
     let mut cfg = config::host_config(&file).await?;
+    // The start check of `[sandbox]`: a host that cannot sandbox still runs
+    // its agents, but offers no sandbox to the hub.
+    borant_host::sandbox::probe(&mut cfg).await;
     // The desktop notifier stays the default on a laptop; [alerts].notifier
     // replaces it, for example with the phone plugin. A bad name fails the
     // start, before the daemon takes a socket.

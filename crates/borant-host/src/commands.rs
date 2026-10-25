@@ -203,6 +203,16 @@ impl Host {
                 .insert(o.agent.clone(), issued.redactor.clone());
             st.launched.insert(o.agent.clone(), issued.clone());
         }
+        // The sandbox wraps the shim, not the other way round: the shim and
+        // the harness then run inside the same namespace.
+        if let Some(plan) = self.inner.cfg.sandbox_plan(
+            &o,
+            &cwd,
+            issued.as_ref().map(|issued| issued.dir.as_path()),
+        ) {
+            tracing::info!(agent = %o.agent, program = %plan.program, "the launch runs in a sandbox");
+            program = borant_launch::sandbox::wrap(&plan, program);
+        }
         // A session of this agent that is still around is stale: the hub
         // relaunches an agent only after its session ended or did not
         // register. tmux refuses a second session of the same name, so the

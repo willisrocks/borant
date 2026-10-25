@@ -533,6 +533,24 @@ pub struct HostFile {
     /// `[herdr]`: the herdr launcher of this host, when `launcher = "herdr"`.
     #[serde(default)]
     pub herdr: HerdrFile,
+    /// `[sandbox]`: the bubblewrap sandbox of this host.
+    #[serde(default)]
+    pub sandbox: SandboxFile,
+}
+
+/// `[sandbox]` of `host.toml`: whether the host offers a namespace sandbox,
+/// the program that builds it, and extra binds.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxFile {
+    /// Run the start check at host start and offer `SandboxKind::Namespace`.
+    pub enabled: Option<bool>,
+    /// The program on PATH, `bwrap` when absent.
+    pub program: Option<String>,
+    /// Extra read-only binds, for example `["~/.config/gh"]`.
+    pub ro: Option<Vec<PathBuf>>,
+    /// Extra writable binds.
+    pub rw: Option<Vec<PathBuf>>,
 }
 
 /// `[herdr]` of `host.toml`: one herdr session per host, and the program that
@@ -818,6 +836,19 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
         cfg.launch_timeout = v;
     }
     cfg.commands = file.commands.clone();
+    // `[sandbox]`: the host offers the namespace sandbox only if it says so.
+    // The start check in the daemon drops it again when the program fails.
+    if file.sandbox.enabled.unwrap_or(false) {
+        cfg.sandbox = Some(borant_host::SandboxConfig {
+            program: file
+                .sandbox
+                .program
+                .clone()
+                .unwrap_or_else(|| "bwrap".to_owned()),
+            ro: file.sandbox.ro.clone().unwrap_or_default(),
+            rw: file.sandbox.rw.clone().unwrap_or_default(),
+        });
+    }
     if let Some(section) = &file.secrets {
         let (opened, harnesses) = section.config().open(&cfg.harnesses).await;
         tracing::info!(
@@ -918,6 +949,43 @@ mod tests {
         // Names are lower case only.
         assert!(split_list::<Tag>("VPS").is_err());
         assert!(split_list::<PoolName>("").is_err());
+    }
+
+    #[tokio::test]
+    async fn the_sandbox_section_reaches_the_host_config() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "box-1"
+            [sandbox]
+            enabled = true
+            program = "/nix/store/x-bwrap/bin/bwrap"
+            ro = ["~/.config/gh"]
+            rw = ["/var/cache/borant"]
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        let sandbox = cfg.sandbox.as_ref().expect("a sandbox");
+        assert_eq!(sandbox.program, "/nix/store/x-bwrap/bin/bwrap");
+        assert_eq!(sandbox.ro, [PathBuf::from("~/.config/gh")]);
+        assert_eq!(sandbox.rw, [PathBuf::from("/var/cache/borant")]);
+        assert_eq!(
+            cfg.info().sandboxes,
+            [borant_core::model::SandboxKind::Namespace]
+        );
+
+        // `bwrap` is the default program, and no section means no sandbox.
+        let file: HostFile =
+            toml::from_str("[host]\nname = \"box-2\"\n[sandbox]\nenabled = true\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.sandbox.unwrap().program, "bwrap");
+
+        let file: HostFile =
+            toml::from_str("[host]\nname = \"box-3\"\n[sandbox]\nenabled = false\n").unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert!(cfg.sandbox.is_none());
+        assert!(cfg.info().sandboxes.is_empty());
     }
 
     #[tokio::test]

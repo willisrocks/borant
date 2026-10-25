@@ -60,6 +60,16 @@ harnesses = ["claude-code", "pi", "omp"]
 [herdr]
 session = "borant"
 program = "herdr"
+
+# Only when agents of a role with `sandbox = "namespace"` run here: the host
+# offers a bubblewrap file-system sandbox. At start it runs
+# `<program> --ro-bind / / true`; if that fails it logs a warn and offers no
+# sandbox. `ro` and `rw` are extra binds; `~` is the home folder.
+[sandbox]
+enabled = true
+program = "bwrap"
+ro = ["~/.config/gh"]
+rw = []
 ```
 
 Then run `borant host`. Every key is optional. Without `harnesses`, the
