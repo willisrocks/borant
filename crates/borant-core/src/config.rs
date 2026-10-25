@@ -1,10 +1,14 @@
 //! Config records shared with the daemons: `[alerts]`, `[notifiers.<name>]`,
-//! `[channels.<name>]`, and `[changes]` of `hub.toml` and `host.toml` (phase 2
-//! spec, "Records and protocol"; phase 6 spec, "Interfaces").
+//! `[channels.<name>]`, `[changes]`, and `[schedules.<name>]` of `hub.toml`
+//! and `host.toml` (phase 2 spec, "Records and protocol"; phase 6 spec,
+//! "Interfaces"; phase 9 spec, "Schedules").
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+
+use crate::ids::{AgentId, ChannelName};
+use crate::rules::schedules::Overlap;
 
 fn five_minutes() -> u64 {
     5
@@ -126,4 +130,46 @@ impl Default for ChangesConfig {
             every_secs: sixty_secs(),
         }
     }
+}
+
+/// One `[schedules.<name>]` entry of `hub.toml`: a cron rule in a time zone
+/// that the hub fires, making a task or sending a message.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleConfig {
+    /// Five cron fields: minute, hour, day of month, month, weekday.
+    pub cron: String,
+    /// An IANA time zone name, for example `America/Los_Angeles`.
+    pub time_zone: String,
+    /// What to do while the task of the previous fire is still open.
+    #[serde(default)]
+    pub overlap: Overlap,
+    /// The task target. Exactly one of `task` and `message` is set.
+    #[serde(default)]
+    pub task: Option<ScheduleTaskConfig>,
+    /// The message target. Exactly one of `task` and `message` is set.
+    #[serde(default)]
+    pub message: Option<ScheduleMessageConfig>,
+}
+
+/// `[schedules.<name>.task]`: the task that a fire makes, from templates.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleTaskConfig {
+    /// The channel that holds the task.
+    pub channel: ChannelName,
+    /// The title, where `{date}` is the fire date in the schedule's zone.
+    pub title: String,
+    /// The body, where `{date}` is the fire date in the schedule's zone.
+    pub body: String,
+}
+
+/// `[schedules.<name>.message]`: the message that a fire sends, once.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleMessageConfig {
+    /// The agent that receives the message.
+    pub to: AgentId,
+    /// The text, where `{date}` is the fire date in the schedule's zone.
+    pub text: String,
 }
