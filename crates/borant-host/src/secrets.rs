@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt;
 use std::fs::OpenOptions;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -41,9 +42,16 @@ pub(crate) struct LaunchSecrets {
 
 /// The exact values of one agent. It removes them first, longest first, and
 /// then runs the patterns of `borant_core::rules::redact`.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Redactor {
     values: Vec<String>,
+}
+
+/// The count only: the vector holds values.
+impl fmt::Debug for Redactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Redactor {{ {} values }}", self.values.len())
+    }
 }
 
 impl Redactor {
@@ -93,13 +101,12 @@ impl Host {
         let planned = plan(secrets, &bundles, &o.members)?;
         let values = resolve(secrets, &planned.by_store).await?;
         let dir = self.secret_dir(&o.agent);
-        write_dir(&dir, &planned, &values)?;
-        let redactor = Arc::new(Redactor::new(
-            values
-                .values()
-                .map(|s| s.expose().to_owned())
-                .collect::<Vec<String>>(),
-        ));
+        // A failure after the `env` file is written must not leave values on
+        // disk: the caller cannot clean up what it does not see.
+        if let Err(e) = write_dir(&dir, &planned, &values) {
+            remove_dir(&dir).await;
+            return Err(e.into());
+        }
         tracing::debug!(
             agent = %o.agent,
             bundles = ?bundles,
@@ -110,35 +117,95 @@ impl Host {
             dir,
             bundles,
             members: planned.members,
-            redactor,
+            redactor: redactor_of(&values),
         })))
     }
 
+    /// Rebuilds the redactor of a session that a restart restored, from its
+    /// saved bundles and members: the values of a live session must still
+    /// leave the session log. A failure logs a warn and keeps the session,
+    /// which then gets the patterns only.
+    pub(crate) async fn restore_redactor(
+        &self,
+        agent: &AgentId,
+        bundles: &[BundleName],
+        members: &BTreeMap<BundleName, MemberName>,
+    ) {
+        let Some(secrets) = &self.inner.cfg.secrets else {
+            return;
+        };
+        let resolved = match plan(secrets, bundles, members) {
+            Ok(planned) => resolve(secrets, &planned.by_store).await,
+            Err(e) => Err(e),
+        };
+        match resolved {
+            Ok(values) => {
+                self.state()
+                    .redactors
+                    .insert(agent.clone(), redactor_of(&values));
+            }
+            Err(e) => tracing::warn!(
+                %agent,
+                "cannot rebuild the redactor of a restored session: {e}"
+            ),
+        }
+    }
+
+    /// Deletes the directory of a launch that ended without a registration,
+    /// when the reservation of the launch passes. The values would otherwise
+    /// stay on disk for the life of the daemon.
+    pub(crate) async fn expire_launch_secrets(&self, agent: &AgentId, dir: &Path) {
+        {
+            let mut st = self.state();
+            if st
+                .sessions
+                .values()
+                .any(|s| s.secrets_dir.as_deref() == Some(dir))
+            {
+                return;
+            }
+            if st
+                .launched
+                .get(agent)
+                .is_some_and(|issued| issued.dir == dir)
+            {
+                st.launched.remove(agent);
+            }
+            if !st
+                .sessions
+                .values()
+                .any(|s| s.agent().as_ref() == Some(agent))
+            {
+                st.redactors.remove(agent);
+            }
+        }
+        tracing::warn!(
+            %agent,
+            "a launch did not register before its reservation ended"
+        );
+        remove_dir(dir).await;
+    }
+
     /// The folder of the secret directories of this host.
-    pub(crate) fn secrets_root(&self) -> Option<PathBuf> {
-        self.inner.cfg.secrets.as_ref()?;
-        Some(
-            self.inner
-                .cfg
-                .secrets_root
-                .clone()
-                .unwrap_or_else(default_secrets_root),
-        )
+    pub(crate) fn secrets_root(&self) -> PathBuf {
+        self.inner
+            .cfg
+            .secrets_root
+            .clone()
+            .unwrap_or_else(default_secrets_root)
     }
 
     /// The secret directory of one agent.
     pub(crate) fn secret_dir(&self, agent: &AgentId) -> PathBuf {
-        let root = self.secrets_root().unwrap_or_else(default_secrets_root);
-        root.join(agent.as_str())
+        self.secrets_root().join(agent.as_str())
     }
 
     /// Deletes every secret directory that no live session of this host uses,
-    /// for example one whose session ended while the daemon was down. Public
-    /// for tests.
+    /// for example one whose session ended while the daemon was down, or one
+    /// of a `[secrets]` section that `host.toml` no longer has. Public for
+    /// tests.
     pub async fn remove_stale_secret_dirs(&self) {
-        let Some(root) = self.secrets_root() else {
-            return;
-        };
+        let root = self.secrets_root();
         let live: HashSet<AgentId> = {
             let st = self.state();
             let mut live: HashSet<AgentId> = st.launched.keys().cloned().collect();
@@ -196,13 +263,7 @@ impl Host {
             if live.contains(&dir) {
                 continue;
             }
-            match tokio::fs::remove_dir_all(&dir).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(%agent, "cannot delete {:?}: {e}", dir.display());
-                }
-            }
+            remove_dir(&dir).await;
         }
     }
 
@@ -233,6 +294,25 @@ impl Host {
             Some(redactor) => redactor.redact(text),
             None => redact(text),
         }
+    }
+}
+
+/// The redactor of one resolve: every value it returned.
+fn redactor_of(values: &BTreeMap<SecretRef, Secret>) -> Arc<Redactor> {
+    Arc::new(Redactor::new(
+        values
+            .values()
+            .map(|s| s.expose().to_owned())
+            .collect::<Vec<String>>(),
+    ))
+}
+
+/// Deletes a secret directory, and ignores one that is already gone.
+pub(crate) async fn remove_dir(dir: &Path) {
+    match tokio::fs::remove_dir_all(dir).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("cannot delete {:?}: {e}", dir.display()),
     }
 }
 
@@ -496,6 +576,22 @@ mod tests {
         let got = r.redact("gh-value-123456 and sk-ABCDEFGHIJKLMNOPQRSTUV");
         assert!(!got.contains("gh-value-123456"), "{got}");
         assert!(!got.contains("sk-ABCDEF"), "{got}");
+    }
+
+    #[test]
+    fn the_debug_outputs_print_no_value() {
+        let r = Redactor::new(["gh-value-123456".to_owned()]);
+        let printed = format!("{r:?}");
+        assert!(!printed.contains("gh-value-123456"), "{printed}");
+        assert!(printed.contains("1 values"), "{printed}");
+        let issued = super::LaunchSecrets {
+            dir: "/run/borant/agents/w1".into(),
+            bundles: Vec::new(),
+            members: std::collections::BTreeMap::new(),
+            redactor: std::sync::Arc::new(r),
+        };
+        let printed = format!("{issued:?}");
+        assert!(!printed.contains("gh-value-123456"), "{printed}");
     }
 
     #[test]

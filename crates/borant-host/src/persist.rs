@@ -120,6 +120,8 @@ impl Host {
                 checkpoint::detect(&s.cwd, self.inner.cfg.checkpoint_remote.as_deref()).await;
             let cancel = CancellationToken::new();
             let agent = s.reg.as_ref().map(|r| r.agent.clone());
+            let bundles = s.bundles.clone();
+            let members = s.members.clone();
             self.state().sessions.insert(
                 s.id,
                 LocalSess {
@@ -157,6 +159,14 @@ impl Host {
                     secrets_dir: s.secrets_dir,
                 },
             );
+            // The values of a live session are still in its directory, so a
+            // restart resolves them again: the session log must keep redacting
+            // them, not only the patterns.
+            if let Some(agent) = &agent
+                && !bundles.is_empty()
+            {
+                self.restore_redactor(agent, &bundles, &members).await;
+            }
             match agent {
                 Some(agent) => {
                     self.load_log(&agent, s.id).await;

@@ -13,6 +13,7 @@ use borant_launch::harness;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::secrets::remove_dir;
 use crate::{Host, checkpoint};
 
 impl Host {
@@ -186,7 +187,13 @@ impl Host {
         // only its path reaches the launch. The shim hands them to the harness.
         let issued = self.issue_secrets(&o).await?;
         if let Some(issued) = &issued {
-            program = self.shim_program(&issued.dir, program)?;
+            program = match self.shim_program(&issued.dir, program) {
+                Ok(program) => program,
+                Err(e) => {
+                    remove_dir(&issued.dir).await;
+                    return Err(e.into());
+                }
+            };
             env.push((
                 "BORANT_SECRETS_DIR".to_owned(),
                 issued.dir.to_string_lossy().into_owned(),
@@ -212,7 +219,19 @@ impl Host {
             }
         };
         tracing::info!(agent = %o.agent, harness = %o.harness, cwd = %cwd.display(), ?o.reason, "launched");
-        self.state().pending_launch.insert(o.agent, handle);
+        self.state().pending_launch.insert(o.agent.clone(), handle);
+        if let Some(issued) = &issued {
+            // A launch that never registers must not keep its values until the
+            // daemon stops: they go when the reservation of the launch ends.
+            let host = self.clone();
+            let agent = o.agent;
+            let dir = issued.dir.clone();
+            let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
+            tokio::spawn(async move {
+                tokio::time::sleep(reserve).await;
+                host.expire_launch_secrets(&agent, &dir).await;
+            });
+        }
         Ok(())
     }
 

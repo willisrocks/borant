@@ -23,7 +23,7 @@ use borant_host::{Host, HostConfig, HostSecrets};
 use borant_hub::{Hub, HubConfig};
 use borant_memory::{MemoryBus, MemorySession, MemoryState};
 use borant_secrets::EnvStore;
-use common::serve_hub;
+use common::{eventually, serve_hub};
 use tokio_util::sync::CancellationToken;
 
 /// The values of the store of these tests. Each is at least eight characters,
@@ -95,12 +95,23 @@ fn secrets() -> HostSecrets {
         pre: Vec::new(),
         members: BTreeMap::new(),
     };
+    // A bundle whose `files` key is not a file name: the directory write
+    // fails after the env file, and the launch must leave nothing on disk.
+    let broken = Bundle {
+        name: bundle_name("broken"),
+        store: "env".into(),
+        vars: refs(&[("BROKEN_TOKEN", "extra-token")]),
+        files: refs(&[("../escape", "gh-file")]),
+        pre: Vec::new(),
+        members: BTreeMap::new(),
+    };
     HostSecrets {
         stores: BTreeMap::from([("env".to_owned(), Arc::new(store) as _)]),
         bundles: BTreeMap::from([
             (bundle_name("github"), github),
             (bundle_name("claude_auth"), claude_auth),
             (bundle_name("extra"), extra),
+            (bundle_name("broken"), broken),
         ]),
         harness: BTreeMap::from([
             ("*".to_owned(), vec![bundle_name("github")]),
@@ -463,17 +474,15 @@ async fn resolver_removes_the_directories_of_no_live_session() {
     assert!(!rig.root.join("w1").exists());
 }
 
-#[tokio::test]
-async fn resolver_restores_the_names_and_the_directory_of_a_session() {
-    let rig = rig(Some(secrets())).await;
-    let dir = rig.root.join("w1");
-    std::fs::create_dir_all(&dir).unwrap();
-    let cwd = rig.dir.path().join("work/w1");
-    std::fs::create_dir_all(&cwd).unwrap();
-    let id = SessionId::new();
-    // A table as the daemon writes it: this process is alive, so the restore
-    // keeps the session.
-    let table = serde_json::json!([{
+/// A session table row as the daemon writes it: this process is alive, so a
+/// restore keeps the session.
+fn table_row(
+    id: SessionId,
+    cwd: &Path,
+    dir: &Path,
+    reg: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
         "id": id,
         "harness": "fake",
         "harness_session_id": null,
@@ -482,14 +491,25 @@ async fn resolver_restores_the_names_and_the_directory_of_a_session() {
         "agent_hint": "w1",
         "channel_hint": null,
         "shared_dir": false,
-        "reg": null,
+        "reg": reg,
         "fenced": null,
         "turn": 0,
         "launch": null,
         "bundles": ["github", "claude_auth"],
         "members": {"claude_auth": "a"},
         "secrets_dir": dir.display().to_string()
-    }]);
+    })
+}
+
+#[tokio::test]
+async fn resolver_restores_the_names_and_the_directory_of_a_session() {
+    let rig = rig(Some(secrets())).await;
+    let dir = rig.root.join("w1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cwd = rig.dir.path().join("work/w1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let id = SessionId::new();
+    let table = serde_json::json!([table_row(id, &cwd, &dir, None)]);
     std::fs::write(
         rig.dir.path().join("sessions.json"),
         serde_json::to_vec(&table).unwrap(),
@@ -514,4 +534,94 @@ async fn resolver_restores_the_names_and_the_directory_of_a_session() {
     // The restored session still owns its directory.
     rig.host.end_session(id, "test").await;
     assert!(!dir.exists(), "the restored directory survived");
+}
+
+#[tokio::test]
+async fn resolver_rebuilds_the_redactor_of_a_restored_session() {
+    let rig = rig(Some(secrets())).await;
+    let dir = rig.root.join("w1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cwd = rig.dir.path().join("work/w1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let id = SessionId::new();
+    let reg = serde_json::json!({
+        "agent": "w1",
+        "session": id,
+        "token": 1,
+        "movable": true,
+        "channels": []
+    });
+    let table = serde_json::json!([table_row(id, &cwd, &dir, Some(reg))]);
+    std::fs::write(
+        rig.dir.path().join("sessions.json"),
+        serde_json::to_vec(&table).unwrap(),
+    )
+    .unwrap();
+    rig.host.restore().await;
+
+    // The store still holds the values, so the restored session resolves them
+    // again and its log redacts them.
+    rig.host
+        .event(
+            id,
+            LocalEvent::UserPrompt {
+                text: format!("the token is {GITHUB}"),
+            },
+        )
+        .await
+        .unwrap();
+    let events = rig.sessions.read(&agent("w1")).await.unwrap();
+    let logged = format!("{events:?}");
+    assert!(
+        !logged.contains(GITHUB),
+        "a restored session logged a value: {logged}"
+    );
+    assert!(logged.contains("[redacted]"), "{logged}");
+}
+
+#[tokio::test]
+async fn resolver_deletes_the_directory_of_a_failed_write() {
+    let rig = rig(Some(secrets())).await;
+    let mut o = order("w1", member_order());
+    o.bundles = vec![bundle_name("broken")];
+    let err = rig.host.launch(o).await.unwrap_err();
+    let port = err.downcast_ref::<PortError>().expect("a port error");
+    assert_eq!(port.kind, PortErrorKind::Invalid, "{port}");
+    assert!(port.message.contains("not a file name"), "{port}");
+    assert!(
+        !rig.root.join("w1").exists(),
+        "a failed write left values on disk"
+    );
+    assert!(rig.rec.specs.lock().unwrap().is_empty(), "the harness ran");
+}
+
+#[tokio::test]
+async fn resolver_deletes_the_directory_of_a_launch_that_never_registers() {
+    let rig = rig(Some(secrets())).await;
+    let mut o = order("w1", member_order());
+    o.reserve_secs = Some(1);
+    rig.host.launch(o).await.unwrap();
+    let dir = rig.root.join("w1");
+    assert!(dir.exists(), "the launch wrote no directory");
+    eventually(
+        || {
+            let dir = dir.clone();
+            async move { !dir.exists() }
+        },
+        "the reservation of the launch to pass",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn resolver_sweeps_without_a_secrets_section() {
+    // A host whose `host.toml` lost `[secrets]` still clears the old
+    // directories of its root.
+    let rig = rig(None).await;
+    std::fs::create_dir_all(rig.root.join("w-gone")).unwrap();
+    rig.host.remove_stale_secret_dirs().await;
+    assert!(
+        !rig.root.join("w-gone").exists(),
+        "a host without [secrets] kept an old directory"
+    );
 }
