@@ -112,6 +112,7 @@ impl Fx {
                 token: w.token,
                 idle_since: idle,
                 last_event_at: None,
+                pinned: false,
             }],
             stats: None,
         })

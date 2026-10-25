@@ -132,6 +132,7 @@ impl Fx {
                 token: reg.token,
                 idle_since: None,
                 last_event_at: Some(last),
+                pinned: false,
             }],
             stats: Some(HostStats {
                 version: "test".into(),

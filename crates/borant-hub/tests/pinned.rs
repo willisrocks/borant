@@ -333,3 +333,114 @@ async fn pinned_claims_survive_the_claim_timeout() {
     );
     assert_eq!(task.status, TaskStatus::InProgress);
 }
+
+/// Reads the agent record.
+async fn agent_doc(fx: &Fx, id: &AgentId) -> Agent {
+    let e = fx
+        .state
+        .get(&keys::agent(id))
+        .await
+        .unwrap()
+        .expect("the agent");
+    serde_json::from_slice(&e.value).unwrap()
+}
+
+/// Rewrites the agent record with `pinned` set as given.
+async fn set_stored_pin(fx: &Fx, id: &AgentId, pinned: bool) {
+    let key = keys::agent(id);
+    let e = fx.state.get(&key).await.unwrap().expect("the agent");
+    let mut a: Agent = serde_json::from_slice(&e.value).unwrap();
+    a.pinned = pinned;
+    let bytes = serde_json::to_vec(&a).unwrap();
+    fx.state
+        .update(&key, bytes.into(), e.revision)
+        .await
+        .unwrap();
+}
+
+/// A full `RegisterSession` for `who` over the host of the fixture.
+fn session_req(who: &borant_core::proto::Registered, role: Option<&str>) -> RegisterSession {
+    RegisterSession {
+        session: who.session,
+        host: host(),
+        harness: Harness::Fake,
+        harness_session_id: None,
+        pid: Some(1),
+        cwd: "/work".into(),
+        repo: None,
+        agent: Some(who.agent.clone()),
+        channel: None,
+        shared_dir: false,
+        role: role.map(|r| r.parse().unwrap()),
+        collection: None,
+    }
+}
+
+#[tokio::test]
+async fn pinned_survives_a_registration_with_an_unpinned_role() {
+    let roles = std::collections::BTreeMap::from([(
+        "orchestrator".parse().unwrap(),
+        borant_core::rules::roles::RoleConfig::default(),
+    )]);
+    let fx = Fx::with(borant_hub::HubConfig {
+        roles,
+        ..Default::default()
+    });
+    let who = pinned_agent(&fx).await;
+    // The old session ends, and a new one registers with an unpinned role,
+    // as a host that lost its table re-registers an agent.
+    fx.req(CtlRequest::EndSession {
+        session: who.session,
+        agent: who.agent.clone(),
+        token: who.token,
+        reason: "restart".into(),
+    })
+    .await
+    .unwrap();
+
+    let v = fx
+        .req(CtlRequest::RegisterSession({
+            let mut r = session_req(&who, Some("orchestrator"));
+            r.session = SessionId::new();
+            r
+        }))
+        .await
+        .unwrap();
+    let reg: borant_core::proto::Registered = serde_json::from_value(v).unwrap();
+
+    assert!(reg.pinned, "the pin must survive the registration");
+    assert!(
+        agent_doc(&fx, &who.agent).await.pinned,
+        "an unpinned role must not clear a person's pin"
+    );
+}
+
+#[tokio::test]
+async fn pinned_heartbeat_restores_a_lost_pin() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    // The hub record lost the pin, for example with the state of a restart.
+    set_stored_pin(&fx, &who.agent, false).await;
+    assert!(!agent_doc(&fx, &who.agent).await.pinned);
+
+    // The host remembered the pin and reports it on the heartbeat.
+    fx.req(CtlRequest::HostHeartbeat {
+        host: host(),
+        sessions: vec![borant_core::proto::SessionLeaseRef {
+            session: who.session,
+            agent: who.agent.clone(),
+            token: who.token,
+            idle_since: None,
+            last_event_at: None,
+            pinned: true,
+        }],
+        stats: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        agent_doc(&fx, &who.agent).await.pinned,
+        "a pinned agent stays pinned"
+    );
+}
