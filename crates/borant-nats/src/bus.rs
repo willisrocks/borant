@@ -81,13 +81,13 @@ impl NatsBus {
     }
 }
 
-/// Reads one pull request to its end and keeps the envelopes.
+/// Reads one pull request to its end and keeps the envelopes. An error ends
+/// the request: the caller hands back the messages that it took.
 async fn take(agent: &AgentId, mut batch: pull::Batch, out: &mut Vec<Delivery>) -> PortResult<()> {
     while let Some(m) = batch.next().await {
         let m = match m {
             Ok(m) => m,
-            Err(e) if out.is_empty() => return Err(unavailable("pull message", e)),
-            Err(_) => break,
+            Err(e) => return Err(unavailable("pull message", e)),
         };
         match serde_json::from_slice::<Envelope>(&m.payload) {
             Ok(envelope) => out.push(Delivery {
@@ -105,6 +105,15 @@ async fn take(agent: &AgentId, mut batch: pull::Batch, out: &mut Vec<Delivery>) 
     Ok(())
 }
 
+/// Hands the messages of a request that failed after it took them back to the
+/// inbox. A nak makes it deliver them again at once, not after the ack wait.
+async fn hand_back(agent: &AgentId, msg: Delivery) {
+    let Delivery { envelope, acker } = msg;
+    if let Err(e) = acker.nak().await {
+        tracing::warn!(%agent, id = %envelope.id, "nak failed, the message waits for its ack wait: {e}");
+    }
+}
+
 struct NatsAck(jetstream::Message);
 
 #[async_trait::async_trait]
@@ -114,6 +123,13 @@ impl Acker for NatsAck {
             .ack_with(AckKind::Ack)
             .await
             .map_err(|e| unavailable("ack", e))
+    }
+
+    async fn nak(self: Box<Self>) -> PortResult<()> {
+        self.0
+            .ack_with(AckKind::Nak(None))
+            .await
+            .map_err(|e| unavailable("nak", e))
     }
 }
 
@@ -233,15 +249,21 @@ impl MessageBus for NatsBus {
             .await
             .map_err(|e| unavailable("pull", e))?;
         let mut out = Vec::new();
-        take(agent, first, &mut out).await?;
-        if !out.is_empty() && max > 1 {
-            let rest = consumer
-                .fetch()
-                .max_messages(max - 1)
-                .messages()
-                .await
-                .map_err(|e| unavailable("pull", e))?;
-            take(agent, rest, &mut out).await?;
+        let mut failed = take(agent, first, &mut out).await.err();
+        if failed.is_none() && !out.is_empty() && max > 1 {
+            match consumer.fetch().max_messages(max - 1).messages().await {
+                Ok(rest) => failed = take(agent, rest, &mut out).await.err(),
+                Err(e) => failed = Some(unavailable("pull", e)),
+            }
+        }
+        if let Some(e) = failed {
+            // A request that fails after it took messages loses them with its
+            // reply inbox. Hand them back now, so the inbox delivers them
+            // again at once instead of after the ack wait.
+            for msg in std::mem::take(&mut out) {
+                hand_back(agent, msg).await;
+            }
+            return Err(e);
         }
         Ok(out)
     }
