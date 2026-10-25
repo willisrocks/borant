@@ -245,6 +245,18 @@ impl Hub {
                 Ok(json!({ "draining": host, "moving": moved }))
             }
             ToolCall::ListAgents => self.list_agents().await,
+            ToolCall::Pin { agent, on } => {
+                if actor.is_some() {
+                    return Err(ApiError::invalid("only a human can pin an agent"));
+                }
+                let mut doc = self.agent(&agent).await?;
+                doc.value.pinned = on;
+                self.store
+                    .put(&doc.key, &doc.value, Some(doc.revision))
+                    .await?;
+                tracing::info!(agent = %agent, pinned = on, "agent pin changed");
+                Ok(json!({ "agent": agent, "pinned": on }))
+            }
             ToolCall::PruneAgents { older_than_secs } => {
                 crate::prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
             }

@@ -98,6 +98,10 @@ pub struct Agent {
     /// `claude_auth -> a`. Names only.
     #[serde(default)]
     pub members: BTreeMap<BundleName, MemberName>,
+    /// A pinned agent is never replaced while its session may still run: the
+    /// hub starts no second session, and a paused host keeps its tools.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
