@@ -87,12 +87,14 @@ async fn every_provisioner_request_carries_the_config_and_the_wire_names() {
     );
     let pool: PoolName = testing::unique("p").parse().expect("a pool name");
     let spec = spec(&pool);
-    // The echo plugin replies `null`, which is not a host record.
+    // The echo plugin replies `null`, which is not a host record. A reply of
+    // the wrong shape is a fault of the plugin that a retry can pass, so it is
+    // `Other` and not `Invalid`, which disables the plugin.
     let err = p
         .create(&spec)
         .await
         .expect_err("create needs a host record");
-    assert_eq!(err.kind, PortErrorKind::Invalid, "{err}");
+    assert_eq!(err.kind, PortErrorKind::Other, "{err}");
     assert!(
         !err.message.contains("one-time-value"),
         "no boot value in an error: {err}"
@@ -111,7 +113,8 @@ async fn every_provisioner_request_carries_the_config_and_the_wire_names() {
     assert!(sent["spec"].get("tags").is_none(), "{sent}");
 
     // The next request writes over the file, so each op is read at once.
-    p.describe().await.expect_err("describe needs capabilities");
+    let err = p.describe().await.expect_err("describe needs capabilities");
+    assert_eq!(err.kind, PortErrorKind::Other, "{err}");
     let sent: Value =
         serde_json::from_slice(&std::fs::read(&seen).expect("the request")).expect("the request");
     assert_eq!(sent["op"], "describe");

@@ -140,10 +140,13 @@ fn default_timeout(op: &str) -> Duration {
 }
 
 /// Reads the value of a reply into the type of the op. The message holds
-/// nothing of the reply, which can hold values that never go into a log.
+/// nothing of the reply, which can hold values that never go into a log. A
+/// reply of the wrong shape is `Other`, not `Invalid`: `invalid` is for a bad
+/// request and disables the plugin, while a bad reply is a fault of the
+/// plugin that a retry can pass.
 fn reply<T: DeserializeOwned>(op: &str, value: Value) -> PortResult<T> {
     serde_json::from_value(value).map_err(|_| {
-        PortError::invalid(format!(
+        PortError::other(format!(
             "the {op} reply of the provisioner does not match the protocol"
         ))
     })
@@ -223,8 +226,10 @@ struct WireHost {
 
 impl WireHost {
     fn into_record(self) -> PortResult<HostRecord> {
+        // A reply that reached this far is well formed, so a bad `created` is
+        // a fault of the plugin: `Other` lets the hub retry it.
         let created = parse_created(&self.created).ok_or_else(|| {
-            PortError::invalid("the created time of a host is not an RFC 3339 UTC time")
+            PortError::other("the created time of a host is not an RFC 3339 UTC time")
         })?;
         Ok(HostRecord {
             id: ProviderHostId(self.id),
