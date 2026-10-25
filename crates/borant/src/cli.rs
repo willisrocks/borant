@@ -102,6 +102,14 @@ pub enum Command {
     Mcp,
     /// Handle one Claude Code hook event (Claude Code runs this).
     Hook { event: String },
+    /// Run a program with the secrets that the host wrote into a directory.
+    SecretExec {
+        /// The secret directory.
+        dir: PathBuf,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -392,6 +400,9 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
+        }
+        Command::SecretExec { .. } => {
+            unreachable!("the secret-exec shim runs in main before tracing")
         }
     }
     Ok(())
