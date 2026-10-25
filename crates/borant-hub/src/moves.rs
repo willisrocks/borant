@@ -716,6 +716,56 @@ impl Hub {
         Ok(true)
     }
 
+    /// Deletes the record of a host that is offline and runs no agent, so
+    /// that `borant hosts`, the view, `/metrics`, and placement stop naming a
+    /// box that is gone. Only a human may ask for it. `mem` loses the seen
+    /// time and the stats of the host.
+    pub(crate) async fn remove_host(
+        &self,
+        mem: &mut Memory,
+        host: &HostName,
+    ) -> Result<HostName, ApiError> {
+        let key = keys::host(host);
+        let doc = self
+            .store
+            .get::<HostInfo>(&key)
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("no host {host}")))?;
+        let now = self.now();
+        let seen = mem.hosts_seen.get(host).copied();
+        if seen.is_some_and(|at| now.since(at) <= self.cfg.lease.lease) {
+            return Err(ApiError::invalid(format!(
+                "host {host} is online; drain it and stop its daemon first"
+            )));
+        }
+        let held: Vec<AgentId> = self
+            .store
+            .list::<Lease>(keys::LEASE_AGENT_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|d| {
+                matches!(
+                    &d.value.state,
+                    LeaseState::Held { host: h, .. } | LeaseState::Reserved { host: h, .. }
+                        if h == host
+                )
+            })
+            .map(|d| d.value.agent)
+            .collect();
+        if !held.is_empty() {
+            let agents: Vec<String> = held.iter().map(ToString::to_string).collect();
+            return Err(ApiError::invalid(format!(
+                "host {host} still holds agents {}; move them first",
+                agents.join(", ")
+            )));
+        }
+        self.store.delete(&key).await?;
+        mem.hosts_seen.remove(host);
+        mem.host_stats.remove(host);
+        tracing::info!(host = %host, "host record removed");
+        Ok(doc.value.name)
+    }
+
     pub(crate) async fn move_ready(
         &self,
         mem: &mut Memory,

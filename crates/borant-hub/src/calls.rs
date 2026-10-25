@@ -414,6 +414,13 @@ impl Hub {
                 let changed = self.undrain(&host).await?;
                 Ok(json!({ "host": host, "draining": false, "changed": changed }))
             }
+            ToolCall::RemoveHost { host } => {
+                if actor.is_some() {
+                    return Err(ApiError::invalid("only a human can remove a host"));
+                }
+                let host = self.remove_host(mem, &host).await?;
+                Ok(json!({ "host": host }))
+            }
             ToolCall::ListAgents => self.list_agents(mine.as_ref()).await,
             ToolCall::Pin { agent, on } => {
                 if actor.is_some() {
