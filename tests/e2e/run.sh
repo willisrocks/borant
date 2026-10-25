@@ -266,12 +266,10 @@ scenario_sandbox() {
   borant_on host-a send boss "CHANNEL demo demo" >/dev/null
   wait_for "the channel with its project" log_has host-a boss "CHANNEL demo ok" || return 1
 
-  on host-a sh -c 'printf "look around\n" > /tmp/prompt' || return 1
-  # The spawn is not placed: the placement refusal names the one host and
-  # why it cannot take the agent. (The spawn queue is not built yet, so the
-  # event is the record.)
-  borant_on host-a spawn --channel demo --role sandboxed --name boxed \
-    --prompt-file /tmp/prompt >/dev/null 2>&1 || true
+  # A spawn needs a session, so the boss asks for the sandboxed agent. Only
+  # host-a is up, and it offers no sandbox: the spawn waits, and the hub says
+  # why.
+  borant_on host-a send boss "SPAWNROLE demo sandboxed look around" >/dev/null
   wait_for "the spawn refused for no sandbox" refused_no_sandbox || return 1
 
   # The one host that offers the sandbox comes up. When the container refuses
@@ -289,8 +287,11 @@ scenario_sandbox() {
     return 0
   fi
 
-  wait_for "the queued spawn on the sandbox host" is_at boxed "$target" || return 1
-  wait_for "the clone of the sandboxed agent" cloned boxed || return 1
+  wait_for "the spawn on the sandbox host" boxed_on_sandbox || return 1
+  local boxed
+  boxed=$(boxed_id)
+  echo "  $boxed runs on $target"
+  wait_for "the clone of the sandboxed agent" cloned "$boxed" || return 1
 
   # A marker outside the clone, and a sibling agent with a clone of its own on
   # the same host.
@@ -300,22 +301,41 @@ scenario_sandbox() {
   borant_on host-a send sib "WRITE notes.txt sibling-secret" >/dev/null
   wait_for "the sibling clone" log_has "$target" sib "WROTE notes.txt" || return 1
 
-  borant_on host-a send boxed "WRITE own.txt mine
+  borant_on host-a send "$boxed" "WRITE own.txt mine
 READ own.txt
 READ /root/.ssh/marker
 READ /work/sib/notes.txt" >/dev/null
-  wait_for "the sandboxed reads" sandbox_reads || return 1
+  wait_for "the sandboxed reads" sandbox_reads "$boxed" || return 1
   echo "  the agent read only its own clone:"
-  on "$target" cat "/root/.borant/work/boxed/demo/reads.log" || return 1
+  on "$target" cat "/root/.borant/work/$boxed/demo/reads.log" || return 1
 }
 
-# The pending spawn names the refusal of the only host: it offers no sandbox.
+# The agent that the boss spawned, from the log line `SPAWNED <agent>`.
+boxed_id() { log_of host-a boss | awk '$1=="SPAWNED" {id=$2} END {print id}'; }
+
+# The pending spawn names why no host takes it: its role asks for the sandbox
+# and the only host has none. Before the spawn queue lands the placement event
+# holds it; with the queue it is in the record that `borant ps --queued` prints.
 refused_no_sandbox() {
-  local events
-  events=$(borant_on host-a events --json --kind placement.refused 2>/dev/null) || return 1
-  printf '%s\n' "$events" |
-    jq -e 'select(.kind == "placement.refused" and .agent == "boxed"
-                  and (.rejected | any(.why == "no sandbox")))' >/dev/null
+  local boxed events queue
+  boxed=$(boxed_id)
+  [ -n "$boxed" ] || return 1
+  events=$(borant_on host-a events --json --kind placement.refused 2>/dev/null)
+  if printf '%s\n' "$events" |
+    jq -e --arg a "$boxed" 'select(.kind == "placement.refused" and .agent == $a
+                  and (.rejected | any(.why == "no sandbox")))' >/dev/null 2>&1; then
+    return 0
+  fi
+  queue=$(borant_on host-a ps --queued 2>/dev/null) || return 1
+  printf '%s\n' "$queue" | grep -q "$boxed" &&
+    printf '%s\n' "$queue" | grep -q "no sandbox"
+}
+
+# The spawned agent holds a lease on the sandbox host.
+boxed_on_sandbox() {
+  local id
+  id=$(boxed_id)
+  [ -n "$id" ] && [ "$(where "$id")" = "host-sandbox" ]
 }
 
 # The host advertises the namespace sandbox once its start check passed.
@@ -332,7 +352,7 @@ cloned() { on host-sandbox test -d "/root/.borant/work/$1/demo/.git"; }
 # there, and the host marker and the sibling's clone are not.
 sandbox_reads() {
   local logged
-  logged=$(on host-sandbox cat /root/.borant/work/boxed/demo/reads.log 2>/dev/null) || return 1
+  logged=$(on host-sandbox cat "/root/.borant/work/$1/demo/reads.log" 2>/dev/null) || return 1
   printf '%s\n' "$logged" | grep -q '^READ own.txt ok' &&
     printf '%s\n' "$logged" | grep -q '^READ /root/.ssh/marker failed' &&
     printf '%s\n' "$logged" | grep -q '^READ /work/sib/notes.txt failed'

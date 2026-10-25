@@ -13,6 +13,7 @@
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
 //! - `SEND <agent|#channel> <text>`
 //! - `SPAWN <channel> <prompt>`: spawn an agent, and log `SPAWNED <agent>`
+//! - `SPAWNROLE <channel> <role> <prompt>`: the same with a role of `hub.toml`
 //! - `HISTORY`: read the session history
 //! - `EXIT`: end the session and exit
 //!
@@ -191,12 +192,21 @@ impl Fake {
                 let v = self
                     .call(json!({"tool": "spawn", "channel": a, "prompt": b}))
                     .await?;
-                // The hub replies {"agent": {"agent": <id>, "placed": <bool>}}.
-                let agent = v["agent"]["agent"]
-                    .as_str()
-                    .or_else(|| v["agent"].as_str())
-                    .with_context(|| format!("the spawn reply holds no agent id: {v}"))?;
-                self.line(&format!("SPAWNED {agent}"));
+                self.line(&format!("SPAWNED {}", spawned_agent(&v)?));
+            }
+            "SPAWNROLE" => {
+                // `role` then the prompt; a spawn needs a session, so a test
+                // drives the sandboxed spawn through an agent.
+                let (role, prompt) = b.split_once(' ').unwrap_or((b.as_str(), ""));
+                let v = self
+                    .call(json!({
+                        "tool": "spawn",
+                        "channel": a,
+                        "prompt": prompt,
+                        "role": role,
+                    }))
+                    .await?;
+                self.line(&format!("SPAWNED {}", spawned_agent(&v)?));
             }
             "HISTORY" => self.history().await?,
             "EXIT" => {
@@ -252,6 +262,14 @@ impl Fake {
         self.event(LocalEvent::TurnEnd).await?;
         Ok(go_on)
     }
+}
+
+/// The agent id of a spawn reply: `{"agent": {"agent": <id>, "placed": <bool>}}`.
+fn spawned_agent(v: &Value) -> anyhow::Result<&str> {
+    v["agent"]["agent"]
+        .as_str()
+        .or_else(|| v["agent"].as_str())
+        .with_context(|| format!("the spawn reply holds no agent id: {v}"))
 }
 
 /// Appends one `READ` result to `reads.log` in the working directory. A
