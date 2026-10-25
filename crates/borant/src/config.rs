@@ -14,6 +14,7 @@ use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
 use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
+use borant_core::rules::members::MemberRules;
 use borant_core::rules::pool::PoolConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{BundleName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag};
@@ -260,6 +261,19 @@ pub struct HubFile {
     /// `[notifiers.<name>]`, the programs that tell a person.
     #[serde(default)]
     pub notifiers: BTreeMap<String, NotifierFile>,
+    /// `[secrets]`, the rules of a bundle member at a usage limit.
+    #[serde(default)]
+    pub secrets: HubSecretsFile,
+}
+
+/// `[secrets]` of `hub.toml`. Phase 1 holds the member rules only.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubSecretsFile {
+    /// `[secrets.members]`: the reset time to assume when a limit gives none,
+    /// and how often one agent may restart on a new member in an hour.
+    #[serde(default)]
+    pub members: MemberRules,
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
@@ -1340,6 +1354,26 @@ price_hour_usd = 0.1
         assert_eq!(pool.agents_per_host, 2);
         assert_eq!(pool.max_hosts, 2);
         assert_eq!(pool.idle_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn config_reads_the_member_rules() {
+        let file: HubFile = toml::from_str(
+            "[secrets.members]\nunknown_reset_mins = 60\nmax_restarts_per_hour = 3\n",
+        )
+        .unwrap();
+        assert_eq!(file.secrets.members.unknown_reset_mins, 60);
+        assert_eq!(file.secrets.members.max_restarts_per_hour, 3);
+        // A missing key takes its default, and a missing section takes both.
+        let file: HubFile = toml::from_str("[secrets.members]\nunknown_reset_mins = 30\n").unwrap();
+        assert_eq!(file.secrets.members.unknown_reset_mins, 30);
+        assert_eq!(file.secrets.members.max_restarts_per_hour, 3);
+        let file: HubFile = toml::from_str("").unwrap();
+        assert_eq!(file.secrets.members, MemberRules::default());
+        assert!(
+            toml::from_str::<HubFile>("[secrets.members]\nnope = 1\n").is_err(),
+            "deny_unknown_fields stays"
+        );
     }
 
     #[test]

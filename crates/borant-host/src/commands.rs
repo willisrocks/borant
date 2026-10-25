@@ -182,7 +182,13 @@ impl Host {
         if o.harness == Harness::Fake {
             env.push(("BORANT_PROMPT".to_owned(), o.prompt.clone()));
         }
-        let mut program = harness::command(o.harness, &o.prompt, o.model.as_deref(), &cfg.commands);
+        let mut program = harness::command(
+            o.harness,
+            &o.prompt,
+            o.model.as_deref(),
+            &cfg.commands,
+            !o.members.is_empty(),
+        );
         // Resolver mode: the values go into the agent's secret directory, and
         // only its path reaches the launch. The shim hands them to the harness.
         let issued = self.issue_secrets(&o).await?;

@@ -31,6 +31,7 @@ use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
+use borant_core::rules::members::MemberRules;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{
     AgentId, BundleName, Clock, CollectionName, FencingToken, HostName, MemberName, PoolName,
@@ -57,6 +58,8 @@ pub struct HubConfig {
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
     /// `[alerts]` of `hub.toml`: which rules run and their timeouts.
     pub alerts: AlertsConfig,
+    /// `[secrets.members]`: the reset time to assume and the restart limit.
+    pub member_rules: MemberRules,
 }
 
 impl Default for HubConfig {
@@ -68,6 +71,7 @@ impl Default for HubConfig {
             roles: BTreeMap::new(),
             collections: BTreeMap::new(),
             alerts: AlertsConfig::default(),
+            member_rules: MemberRules::default(),
         }
     }
 }
@@ -117,6 +121,9 @@ pub(crate) struct Memory {
     pub reports: HashMap<(BundleName, MemberName), Report>,
     /// Bundles whose limited members were already logged once.
     pub limit_warned: HashSet<BundleName>,
+    /// The times of the limit restarts of each agent in the last hour, for the
+    /// loop guard of the limit restart.
+    pub limit_restarts: HashMap<AgentId, Vec<Timestamp>>,
     /// The latest stats of each host, from its last heartbeat.
     pub host_stats: HashMap<HostName, HostStats>,
     /// When the elastic rules last ran.
@@ -271,6 +278,8 @@ impl Hub {
         }
         let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
         self.tick_leases(leases).await?;
+        // The agents that wait for a member of their bundle to reset.
+        self.wake_limited_members().await?;
         // The elastic pools park with the idle timeout of each pool; a hub
         // with no pool keeps the one timeout for its hosts.
         let parked = match &self.cfg.elastic {

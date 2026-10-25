@@ -4,15 +4,22 @@
 //! `member.<bundle>.<member>`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::{Agent, Harness, HostInfo, MemberState, UsageWindow};
-use borant_core::proto::ApiError;
+use borant_core::model::{
+    Agent, Envelope, EnvelopeKind, Harness, HostInfo, Lease, LeaseState, MemberState, MoveReason,
+    Sender, Target, UsageWindow,
+};
+use borant_core::proto::{ApiError, HostCommand, MoveTarget};
 use borant_core::rules::members::{Pick, REPORT_FRESH_FOR, pick};
-use borant_core::{BundleName, MemberName, Timestamp, keys};
+use borant_core::{
+    AgentId, BundleName, FencingToken, HostName, MemberName, MessageId, SessionId, Timestamp, keys,
+    subjects,
+};
 use serde_json::{Value, json};
 
-use crate::{Hub, Memory};
+use crate::{Hub, Memory, PendingMove};
 
 /// A usage report that a human sent, with the time it arrived.
 #[derive(Debug, Clone)]
@@ -278,5 +285,244 @@ impl Hub {
             }
         }
         Ok(limited)
+    }
+}
+
+/// The window of the loop guard: the limit restarts of one agent in one hour.
+pub(crate) const LIMIT_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// What a session gets when the member of its bundle resets.
+pub const WAKE_TEXT: &str = "Your account limit reset. Continue your task.";
+
+impl Hub {
+    /// A session stopped at the usage limit of one bundle member (spec "Limit
+    /// restart"). The member is limited until its reset, and the agent then
+    /// either restarts on the same host with the next free member or waits for
+    /// the earliest reset.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn member_limited(
+        &self,
+        mem: &mut Memory,
+        agent: AgentId,
+        session: SessionId,
+        token: FencingToken,
+        bundle: BundleName,
+        member: MemberName,
+        resets_at: Option<Timestamp>,
+    ) -> Result<Value, ApiError> {
+        // A late hook must not mark a member of a session that already moved.
+        let Some((host, info)) = self.held_host(&agent, session, token).await? else {
+            return Err(borant_core::CoreError::StaleToken.into());
+        };
+        let now = self.now();
+        let until = resets_at.unwrap_or_else(|| {
+            now.plus(Duration::from_secs(
+                self.cfg.member_rules.unknown_reset_mins.saturating_mul(60),
+            ))
+        });
+        self.set_member_limited(&bundle, &member, until, None)
+            .await?;
+        let event = self
+            .event(
+                now,
+                Severity::Warn,
+                SwarmEventBody::MemberLimited {
+                    bundle: bundle.clone(),
+                    member: member.clone(),
+                    until: Some(until),
+                },
+            )
+            .about_agent(agent.clone())
+            .about_host(host.clone());
+        Self::queue(mem, event);
+        tracing::info!(%agent, %bundle, %member, until = %until, "the session hit the usage limit of its member");
+
+        // A bundle that the host defines with several members is the only one
+        // that can move the agent to another account.
+        let Some(known) = info.as_ref().and_then(|i| i.members.get(&bundle)) else {
+            return Ok(json!({ "restart": false, "waiting": false }));
+        };
+        // The states hold the limit that this call just wrote.
+        let states = self.member_states(&bundle).await?;
+        let reports = self.fresh_reports(mem, &bundle, now);
+        let next = match pick(&known.members, Some(&member), &states, &reports, now) {
+            Pick::Member(m) if m != member => Some(m),
+            _ => None,
+        };
+        // The loop guard counts the restarts of one agent in one hour.
+        let allowed = {
+            let restarts = mem.limit_restarts.entry(agent.clone()).or_default();
+            restarts.retain(|t| now.since(*t) < LIMIT_WINDOW);
+            (restarts.len() as u32) < self.cfg.member_rules.max_restarts_per_hour
+        };
+        if allowed && let Some(next) = &next {
+            mem.limit_restarts
+                .entry(agent.clone())
+                .or_default()
+                .push(now);
+            // The old session ends through the planned move path first: a
+            // placement refuses a held lease. The move stays on the same host.
+            mem.pending_moves.insert(
+                agent.clone(),
+                PendingMove {
+                    target: MoveTarget {
+                        host: Some(host.clone()),
+                        harness: None,
+                    },
+                    reason: MoveReason::Limit,
+                    prompt: None,
+                },
+            );
+            let cmd = HostCommand::PrepareMove {
+                agent: agent.clone(),
+                session,
+            };
+            let payload =
+                serde_json::to_vec(&cmd).map_err(|e| ApiError::internal(e.to_string()))?;
+            self.bus
+                .send(&subjects::host_cmd(&host), payload.into())
+                .await?;
+            let requested = self
+                .event(
+                    now,
+                    Severity::Info,
+                    SwarmEventBody::MoveRequested {
+                        from_host: Some(host.clone()),
+                        to_host: host.clone(),
+                        reason: MoveReason::Limit,
+                    },
+                )
+                .about_agent(agent.clone());
+            Self::queue(mem, requested);
+            tracing::info!(%agent, %bundle, %member, %next, "limit restart on the same host");
+            return Ok(json!({ "restart": true, "member": next }));
+        }
+        // No free member, or the guard holds the agent: it waits for the
+        // earliest reset and its session stays idle.
+        let earliest = states
+            .iter()
+            .filter_map(|s| s.limited_until)
+            .min()
+            .unwrap_or(until);
+        let current = self.agent(&agent).await?;
+        self.wait_for_member(mem, &current.value, &bundle, &states, earliest)
+            .await?;
+        if next.is_some() {
+            tracing::warn!(
+                %agent,
+                "the limit restart guard holds the agent until {earliest}"
+            );
+        }
+        Ok(json!({ "restart": false, "waiting": earliest }))
+    }
+
+    /// The host of a held lease and its `HostInfo`, when `session` and `token`
+    /// still hold it.
+    async fn held_host(
+        &self,
+        agent: &AgentId,
+        session: SessionId,
+        token: FencingToken,
+    ) -> Result<Option<(HostName, Option<HostInfo>)>, ApiError> {
+        let Some(doc) = self.store.get::<Lease>(&keys::lease_agent(agent)).await? else {
+            return Ok(None);
+        };
+        let LeaseState::Held {
+            session: s, host, ..
+        } = &doc.value.state
+        else {
+            return Ok(None);
+        };
+        if *s != session || doc.value.token != token {
+            return Ok(None);
+        }
+        let info = self
+            .store
+            .get::<HostInfo>(&keys::host(host))
+            .await?
+            .map(|d| d.value);
+        Ok(Some((host.clone(), info)))
+    }
+
+    /// Marks one member limited until `until`, and keeps its waiting agents
+    /// unless `waiting` replaces them.
+    async fn set_member_limited(
+        &self,
+        bundle: &BundleName,
+        member: &MemberName,
+        until: Timestamp,
+        waiting: Option<Vec<AgentId>>,
+    ) -> Result<(), ApiError> {
+        let key = key(bundle, member);
+        let doc = self.store.get::<MemberState>(&key).await?;
+        let mut state = doc
+            .as_ref()
+            .map(|d| d.value.clone())
+            .unwrap_or(MemberState {
+                bundle: bundle.clone(),
+                member: member.clone(),
+                limited_until: None,
+                waiting: Vec::new(),
+            });
+        state.limited_until = Some(until);
+        if let Some(waiting) = waiting {
+            state.waiting = waiting;
+        }
+        self.store
+            .put(&key, &state, doc.as_ref().map(|d| d.revision))
+            .await?;
+        Ok(())
+    }
+
+    /// Wakes the agents that wait for a member that reset, and clears its
+    /// limit. The hub tick calls it (rule 6 of the spec).
+    pub(crate) async fn wake_limited_members(&self) -> Result<(), ApiError> {
+        let now = self.now();
+        for doc in self.store.list::<MemberState>("member.").await? {
+            let state = doc.value;
+            let Some(until) = state.limited_until else {
+                continue;
+            };
+            if until > now {
+                continue;
+            }
+            for agent in &state.waiting {
+                let env = Envelope {
+                    id: MessageId::new(),
+                    from: Sender::Human,
+                    to: Target::Agent(agent.clone()),
+                    kind: EnvelopeKind::Direct,
+                    text: WAKE_TEXT.to_owned(),
+                    urgent: false,
+                    event: None,
+                    sent: now,
+                };
+                if let Err(e) = self.bus.publish(&subjects::agent(agent), &env).await {
+                    tracing::warn!(%agent, "cannot wake the agent after its limit reset: {e}");
+                }
+            }
+            if !state.waiting.is_empty() {
+                tracing::info!(
+                    bundle = %state.bundle,
+                    member = %state.member,
+                    agents = state.waiting.len(),
+                    "the member reset: its waiting agents are woken"
+                );
+            }
+            let cleared = MemberState {
+                bundle: state.bundle.clone(),
+                member: state.member.clone(),
+                limited_until: None,
+                waiting: Vec::new(),
+            };
+            self.store
+                .put(
+                    &key(&state.bundle, &state.member),
+                    &cleared,
+                    Some(doc.revision),
+                )
+                .await?;
+        }
+        Ok(())
     }
 }

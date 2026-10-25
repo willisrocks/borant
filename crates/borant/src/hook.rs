@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use borant_core::SessionId;
 use borant_core::model::{Envelope, Harness};
 use borant_core::proto::{EventReply, LocalEvent, LocalRegister, LocalSession, format_delivery};
+use borant_core::{Clock, SystemClock, Timestamp};
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
 use serde_json::{Value, json};
@@ -87,6 +88,235 @@ pub fn tool_events(input: &Value) -> (LocalEvent, LocalEvent) {
             is_error,
         },
     )
+}
+
+/// The reset time of a `StopFailure` input, in unix milliseconds.
+///
+/// The hook input of Claude Code at a usage limit is not proven yet, so this
+/// accepts the shapes that a reset time can take and gives `None` when it names
+/// none: the hub then assumes `unknown_reset_mins`.
+pub fn reset_at(input: &Value, now: Timestamp) -> Option<Timestamp> {
+    // A field that holds the time: unix milliseconds, or an ISO-8601 UTC
+    // string such as `2026-10-25T18:00:00Z`.
+    for key in ["resets_at", "reset_at", "reset_time"] {
+        let Some(value) = input.get(key) else {
+            continue;
+        };
+        if let Some(ms) = value.as_i64() {
+            return Some(Timestamp(ms));
+        }
+        if let Some(ms) = value.as_str().and_then(iso8601_ms) {
+            return Some(Timestamp(ms));
+        }
+    }
+    // A relative time in the text of the failure: "in 2 hours", "resets in 30
+    // minutes". The text is a plain field or a message inside the error.
+    let mut texts: Vec<&str> = Vec::new();
+    for key in [
+        "error",
+        "reason",
+        "message",
+        "stop_reason",
+        "last_assistant_message",
+    ] {
+        let Some(value) = input.get(key) else {
+            continue;
+        };
+        if let Some(text) = value.as_str() {
+            texts.push(text);
+        }
+        for inner in ["message", "detail", "text", "description"] {
+            if let Some(text) = value.get(inner).and_then(Value::as_str) {
+                texts.push(text);
+            }
+        }
+    }
+    texts.into_iter().find_map(|text| {
+        // A clock time is the form of the token pools spec; a duration is the
+        // fallback.
+        clock_reset_ms(text, now)
+            .map(Timestamp)
+            .or_else(|| relative_ms(text).map(|ms| now.plus(Duration::from_millis(ms))))
+    })
+}
+
+/// A clock time in the text, in the host time zone: `resets 3:45pm` or
+/// `resets Mon 12:00am`. A time that is already past today means tomorrow, and
+/// a named weekday that is today with a past time means the next one.
+fn clock_reset_ms(text: &str, now: Timestamp) -> Option<i64> {
+    use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone};
+
+    let words: Vec<String> = text
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+                .to_owned()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    let now_local = Local.timestamp_millis_opt(now.0).single()?;
+    for (i, word) in words.iter().enumerate() {
+        if !matches!(word.as_str(), "resets" | "reset") {
+            continue;
+        }
+        let mut j = i + 1;
+        if words.get(j).map(String::as_str) == Some("at") {
+            j += 1;
+        }
+        let weekday = match words.get(j).and_then(|w| weekday_of(w)) {
+            Some(w) => {
+                j += 1;
+                Some(w)
+            }
+            None => None,
+        };
+        let Some((hour, minute)) = words.get(j).and_then(|w| clock_of(w)) else {
+            continue;
+        };
+        let today = now_local.date_naive();
+        let days = match weekday {
+            None => 0,
+            Some(w) => (0..7).find(|d| (today + ChronoDuration::days(*d)).weekday() == w)?,
+        };
+        let at = |date: NaiveDate| -> Option<i64> {
+            let naive = date.and_hms_opt(hour, minute, 0)?;
+            let local = Local.from_local_datetime(&naive).earliest()?;
+            Some(local.timestamp_millis())
+        };
+        let mut date = today + ChronoDuration::days(days);
+        let mut when = at(date)?;
+        if when <= now.0 {
+            // The host's clock has passed it: the next such day.
+            date += ChronoDuration::days(if weekday.is_some() { 7 } else { 1 });
+            when = at(date)?;
+        }
+        return Some(when);
+    }
+    None
+}
+
+/// A weekday name or its short form.
+fn weekday_of(word: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday::*;
+    match word {
+        "mon" | "monday" => Some(Mon),
+        "tue" | "tues" | "tuesday" => Some(Tue),
+        "wed" | "weds" | "wednesday" => Some(Wed),
+        "thu" | "thur" | "thurs" | "thursday" => Some(Thu),
+        "fri" | "friday" => Some(Fri),
+        "sat" | "saturday" => Some(Sat),
+        "sun" | "sunday" => Some(Sun),
+        _ => None,
+    }
+}
+
+/// A clock time of the text: `3:45pm`, `3pm`, `12:00am`, as hour and minute.
+fn clock_of(word: &str) -> Option<(u32, u32)> {
+    let (body, pm) = if let Some(body) = word.strip_suffix("pm") {
+        (body, true)
+    } else if let Some(body) = word.strip_suffix("am") {
+        (body, false)
+    } else {
+        return None;
+    };
+    let (hour, minute) = body.split_once(':').unwrap_or((body, "0"));
+    let hour: u32 = hour.parse().ok()?;
+    let minute: u32 = minute.parse().ok()?;
+    if hour == 0 || hour > 12 || minute > 59 {
+        return None;
+    }
+    let hour = match (pm, hour) {
+        (true, 12) => 12,
+        (true, h) => h + 12,
+        (false, 12) => 0,
+        (false, h) => h,
+    };
+    Some((hour, minute))
+}
+
+/// The longest relative reset time that text may name: 30 days.
+const MAX_RELATIVE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// A relative time in free text, in milliseconds: "in 45 minutes", "resets in 2
+/// hours". `None` when the text names none.
+fn relative_ms(text: &str) -> Option<u64> {
+    let words: Vec<String> = text
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for (i, word) in words.iter().enumerate() {
+        if !matches!(word.as_str(), "in" | "after") {
+            continue;
+        }
+        let (Some(count), Some(unit)) = (words.get(i + 1), words.get(i + 2)) else {
+            continue;
+        };
+        let Ok(count) = count.parse::<u64>() else {
+            continue;
+        };
+        let minutes = match unit.as_str() {
+            "m" | "min" | "mins" | "minute" | "minutes" => count,
+            "h" | "hr" | "hrs" | "hour" | "hours" => count.saturating_mul(60),
+            _ => continue,
+        };
+        let ms = minutes.saturating_mul(60_000);
+        if (1..=MAX_RELATIVE_MS).contains(&ms) {
+            return Some(ms);
+        }
+    }
+    None
+}
+
+/// The unix milliseconds of a UTC ISO-8601 time: `YYYY-MM-DDTHH:MM[:SS]Z`.
+fn iso8601_ms(text: &str) -> Option<i64> {
+    let text = text.trim().strip_suffix('Z').unwrap_or(text.trim());
+    let (date, time) = text.split_once(['T', ' '])?;
+    let mut d = date.split('-');
+    let year: i64 = d.next()?.parse().ok()?;
+    let month: u32 = d.next()?.parse().ok()?;
+    let day: u32 = d.next()?.parse().ok()?;
+    if d.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let mut t = time.split(':');
+    let hour: i64 = t.next()?.parse().ok()?;
+    let minute: i64 = t.next()?.parse().ok()?;
+    let (second, millis): (i64, i64) = match t.next() {
+        Some(s) => {
+            let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+            let second: i64 = whole.parse().ok()?;
+            let millis = if frac.is_empty() {
+                0
+            } else {
+                let mut frac = frac.to_owned();
+                while frac.len() < 3 {
+                    frac.push('0');
+                }
+                frac[..3].parse().ok()?
+            };
+            (second, millis)
+        }
+        None => (0, 0),
+    };
+    if t.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000 + millis)
+}
+
+/// The days since 1970-01-01 of a civil date, by Howard Hinnant's algorithm.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (i64::from(month) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 fn claude_pid() -> u32 {
@@ -222,6 +452,24 @@ pub async fn run(event: &str) -> i32 {
                 .await;
             }
             ctx.event(id, &LocalEvent::TurnEnd).await;
+            0
+        }
+        // Claude Code stopped at the usage limit of the account of the
+        // session. The host adds the bundle and the member and tells the hub,
+        // which decides about a restart on another member.
+        "stop-failure" => {
+            let Some(id) = ctx.session().await else {
+                return 0;
+            };
+            let resets_at = reset_at(&ctx.input, SystemClock.now());
+            ctx.event(
+                id,
+                &LocalEvent::MemberLimited {
+                    bundle: None,
+                    resets_at,
+                },
+            )
+            .await;
             0
         }
         "stop-wait" => stop_wait(&ctx).await,
@@ -457,6 +705,145 @@ mod tests {
             pause_denial(&s),
             Some(deny_output(s.fenced.as_deref().unwrap()))
         );
+    }
+
+    #[test]
+    fn stop_failure_reads_an_explicit_reset_time() {
+        let input = json!({ "resets_at": 1_792_951_200_000_i64 });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_000))
+        );
+        let input = json!({ "reset_time": "2026-10-25T18:00:00Z" });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_000))
+        );
+        let input = json!({ "error": "limit", "resets_at": "2026-10-25T18:00:00.500Z" });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_500))
+        );
+    }
+
+    #[test]
+    fn stop_failure_reads_a_relative_reset_time() {
+        let now = Timestamp(1_000_000);
+        let input = json!({ "message": "Usage limit reached. It resets in 2 hours." });
+        assert_eq!(
+            reset_at(&input, now),
+            Some(Timestamp(1_000_000 + 7_200_000))
+        );
+        let input = json!({ "error": "try again after 45 minutes" });
+        assert_eq!(
+            reset_at(&input, now),
+            Some(Timestamp(1_000_000 + 2_700_000))
+        );
+    }
+
+    #[test]
+    fn stop_failure_accepts_a_missing_reset_time() {
+        assert_eq!(
+            reset_at(
+                &json!({ "kind": "rate_limit", "error": "limit reached" }),
+                Timestamp(1)
+            ),
+            None
+        );
+        assert_eq!(reset_at(&Value::Null, Timestamp(1)), None);
+        // A time that names no duration is not a guess.
+        assert_eq!(
+            reset_at(&json!({ "error": "in 2 elephants" }), Timestamp(1)),
+            None
+        );
+        assert_eq!(
+            reset_at(&json!({ "error": "limit at 18:00" }), Timestamp(1)),
+            None
+        );
+        // An absurd relative time is refused.
+        assert_eq!(
+            reset_at(&json!({ "error": "in 999999 hours" }), Timestamp(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn iso8601_parses_utc_times() {
+        assert_eq!(iso8601_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso8601_ms("1970-01-02T00:00:00Z"), Some(86_400_000));
+        assert_eq!(iso8601_ms("2026-01-01T00:00:00Z"), Some(1_767_225_600_000));
+        assert_eq!(iso8601_ms("2026-10-25T18:00:00Z"), Some(1_792_951_200_000));
+        assert_eq!(iso8601_ms("2026-10-25T18:00Z"), Some(1_792_951_200_000));
+        assert_eq!(iso8601_ms("not a time"), None);
+        assert_eq!(iso8601_ms("2026-13-01T00:00:00Z"), None);
+        assert_eq!(iso8601_ms("2026-10-25T25:00:00Z"), None);
+    }
+
+    /// A local time, for the clock-time forms: 2026-10-25 is a Sunday.
+    fn local_at(hour: u32, minute: u32) -> Timestamp {
+        use chrono::{Local, TimeZone};
+        Timestamp(
+            Local
+                .with_ymd_and_hms(2026, 10, 25, hour, minute, 0)
+                .earliest()
+                .unwrap()
+                .timestamp_millis(),
+        )
+    }
+
+    /// The local time of `day` October 2026 at `hour`:`minute`.
+    fn local_ymd(month: u32, day: u32, hour: u32, minute: u32) -> Timestamp {
+        use chrono::{Local, TimeZone};
+        Timestamp(
+            Local
+                .with_ymd_and_hms(2026, month, day, hour, minute, 0)
+                .earliest()
+                .unwrap()
+                .timestamp_millis(),
+        )
+    }
+
+    #[test]
+    fn stop_failure_reads_a_clock_time_from_the_message() {
+        // Sunday 10:00: a time later today is today.
+        let now = local_at(10, 0);
+        let input = json!({ "last_assistant_message": "Claude AI usage limit reached. Your limit resets 3:45pm." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(10, 25, 15, 45)));
+        // A time earlier today is tomorrow.
+        let input = json!({ "last_assistant_message": "Your limit resets 9:00am." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(10, 26, 9, 0)));
+    }
+
+    #[test]
+    fn stop_failure_reads_a_weekday_clock_time() {
+        let now = local_at(10, 0);
+        // The next Monday, and midnight is 12:00am.
+        let input = json!({ "last_assistant_message": "Your limit resets Mon 12:00am." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(10, 26, 0, 0)));
+        // Sunday later today is today.
+        let input = json!({ "last_assistant_message": "Your limit resets Sun 3:45pm." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(10, 25, 15, 45)));
+        // Sunday already past today is the next Sunday.
+        let input = json!({ "last_assistant_message": "Your limit resets Sunday 9:00am." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(11, 1, 9, 0)));
+        // Wednesday is two days on.
+        let input = json!({ "last_assistant_message": "Your limit resets Wed 1pm." });
+        assert_eq!(reset_at(&input, now), Some(local_ymd(10, 28, 13, 0)));
+    }
+
+    #[test]
+    fn a_clock_time_needs_the_resets_word() {
+        let now = local_at(10, 0);
+        // A time in another sentence is not the reset of the session.
+        let input = json!({ "last_assistant_message": "Session started at 3:45pm." });
+        assert_eq!(reset_at(&input, now), None);
+        assert_eq!(clock_of("3:45pm"), Some((15, 45)));
+        assert_eq!(clock_of("12:00am"), Some((0, 0)));
+        assert_eq!(clock_of("12pm"), Some((12, 0)));
+        assert_eq!(clock_of("3pm"), Some((15, 0)));
+        assert_eq!(clock_of("0:30pm"), None);
+        assert_eq!(clock_of("3:75pm"), None);
+        assert_eq!(clock_of("15:00"), None);
     }
 
     #[test]

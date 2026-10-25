@@ -15,6 +15,7 @@ pub const REPORT_FRESH_FOR: Duration = Duration::from_secs(15 * 60);
 
 /// The rules for bundle members, from `[secrets.members]` in `hub.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct MemberRules {
     /// The reset time to assume when a limit report gives none.
     pub unknown_reset_mins: u64,

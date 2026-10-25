@@ -13,7 +13,7 @@ use borant_core::proto::{
     RegisterSession, Registered, RenewedLease, SessionLeaseRef,
 };
 use borant_core::rules::session_log;
-use borant_core::{AgentId, SessionId};
+use borant_core::{AgentId, BundleName, FencingToken, MemberName, SessionId, Timestamp};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -375,6 +375,11 @@ impl Host {
     /// Handles one event from a harness adapter.
     pub async fn event(&self, id: SessionId, ev: LocalEvent) -> Result<EventReply, ApiError> {
         let now = self.inner.clock.now();
+        // The hub marks the member and decides about a restart; this event does
+        // not reach the session log.
+        if let LocalEvent::MemberLimited { bundle, resets_at } = &ev {
+            self.member_limited(id, bundle.clone(), *resets_at).await;
+        }
         let (agent, start_turn) = {
             let mut st = self.state();
             let restored = st.restored;
@@ -464,6 +469,69 @@ impl Host {
             messages,
             fenced: self.fence_reason(id),
         })
+    }
+
+    /// Tells the hub that the session stopped at the usage limit of a bundle
+    /// member. The host adds the bundle and the member of the session, which
+    /// the hub picked at the launch.
+    async fn member_limited(
+        &self,
+        id: SessionId,
+        bundle: Option<BundleName>,
+        resets_at: Option<Timestamp>,
+    ) {
+        let Some((agent, token, bundle, member)) = self.member_of(id, bundle) else {
+            return;
+        };
+        let req = CtlRequest::MemberLimited {
+            agent: agent.clone(),
+            session: id,
+            token,
+            bundle: bundle.clone(),
+            member: member.clone(),
+            resets_at,
+        };
+        if let Err(e) = self.hub(&req).await {
+            tracing::warn!(
+                %agent,
+                %bundle,
+                %member,
+                "cannot report the member limit: {}",
+                e.message
+            );
+        }
+    }
+
+    /// The agent, token, bundle, and member of a limit report of one session.
+    /// `None` when the session has no lease or no member bundle.
+    fn member_of(
+        &self,
+        id: SessionId,
+        bundle: Option<BundleName>,
+    ) -> Option<(AgentId, FencingToken, BundleName, MemberName)> {
+        let st = self.state();
+        let s = st.sessions.get(&id)?;
+        let reg = s.reg.as_ref()?;
+        let bundle = match bundle {
+            Some(b) if s.members.contains_key(&b) => b,
+            Some(b) => {
+                tracing::warn!(session = %id, %b, "the session has no member of that bundle");
+                return None;
+            }
+            None => {
+                let first = s.members.keys().next()?.clone();
+                if s.members.len() > 1 {
+                    tracing::warn!(
+                        session = %id,
+                        bundle = %first,
+                        "the session has several member bundles: reporting the first"
+                    );
+                }
+                first
+            }
+        };
+        let member = s.members.get(&bundle)?.clone();
+        Some((reg.agent.clone(), reg.token, bundle, member))
     }
 
     pub(crate) fn fence_reason(&self, id: SessionId) -> Option<String> {

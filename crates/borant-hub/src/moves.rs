@@ -782,7 +782,7 @@ impl Hub {
             .place_agent(
                 mem,
                 &a.value,
-                MoveReason::Planned,
+                pending.reason,
                 pending.target.clone(),
                 pending.prompt.clone(),
             )
