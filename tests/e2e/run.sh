@@ -1471,8 +1471,7 @@ CREATE continue limit" >/dev/null
     *) echo "  cont-a: $out" >&2; return 1 ;;
   esac
   wait_for "cont-a claimed waits" log_has host-r cont-a "CLAIM $task_a ok" || return 1
-  wait_for "cont-a got its first continue" \
-    log_has host-r cont-a "Continue with task continue/$task_a" || return 1
+  wait_log_fast host-r cont-a "Continue with task continue/$task_a" || return 1
   borant_on host-r send cont-a "WAITTASK continue $task_a" >/dev/null
   wait_for "cont-a stored its wait" log_has host-r cont-a "WAITTASK $task_a ok" || return 1
   # The count is written before the send, and the stored wait stops the next
@@ -1545,6 +1544,18 @@ CREATE continue limit" >/dev/null
 # The continues that an agent got: the hub's direct message is one line per
 # continue in the fake log of the agent.
 continue_count() { log_of "$1" "$2" | grep -c "Continue with task continue/"; }
+
+# Waits up to WAIT seconds for a log line, polling every 100 ms: the wait that
+# stops the next continue must land before the next heartbeat of the host.
+wait_log_fast() {
+  local n=${WAIT:-60}
+  for _ in $(seq 1 $((n * 10))); do
+    log_has "$1" "$2" "$3" && return 0
+    sleep 0.1
+  done
+  echo "  timed out after ${n}s: $3" >&2
+  return 1
+}
 
 # The continue state of an agent in the hub record, as `<used> <exhausted>`.
 # The snapshot lands in the hub container; after the hub move scenario that is
