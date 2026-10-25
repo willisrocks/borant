@@ -93,6 +93,12 @@ pub mod subjects {
     /// All task events, for host notifiers.
     pub const ALL_TASKS: &str = "borant.chan.*.tasks";
 
+    /// The swarm event stream, one subject for each kind, for example
+    /// `borant.events.lease.expired`.
+    pub fn events(kind: &str) -> String {
+        format!("borant.events.{kind}")
+    }
+
     /// Commands from the hub to one host daemon. Not durable.
     pub fn host_cmd(host: &HostName) -> String {
         format!("borant.host.{host}.cmd")

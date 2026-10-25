@@ -12,8 +12,8 @@ use crate::ids::{
     ProjectName, RoleName, SessionId, TaskId,
 };
 use crate::model::{
-    CloseReason, Envelope, GitAuthor, Harness, HostInfo, MoveReason, NewTask, Project, RepoInfo,
-    Target, TaskPatch, UsageWindow,
+    CloseReason, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason, NewTask, Project,
+    RepoInfo, Target, TaskPatch, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -145,6 +145,9 @@ pub struct SessionLeaseRef {
     /// turn. The hub parks agents that stay idle past the pool timeout.
     #[serde(default)]
     pub idle_since: Option<Timestamp>,
+    /// When the session wrote its last event, for the stall alert.
+    #[serde(default)]
+    pub last_event_at: Option<Timestamp>,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -157,6 +160,7 @@ impl Default for SessionLeaseRef {
             agent: "test-agent".parse().expect("a valid agent ID"),
             token: FencingToken(0),
             idle_since: None,
+            last_event_at: None,
         }
     }
 }
@@ -368,6 +372,8 @@ pub enum ToolCall {
         name: ProjectName,
     },
     ProjectList,
+    /// The live view of the swarm, for `borant top` and `borant status --json`.
+    View,
     /// The latest usage report of one bundle member, from a human.
     UsageReport {
         bundle: BundleName,
@@ -412,6 +418,9 @@ pub enum CtlRequest {
     HostHeartbeat {
         host: HostName,
         sessions: Vec<SessionLeaseRef>,
+        /// The load and counters of the host, for the live view.
+        #[serde(default)]
+        stats: Option<HostStats>,
     },
     RegisterSession(RegisterSession),
     EndSession {

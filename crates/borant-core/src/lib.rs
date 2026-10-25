@@ -1,6 +1,8 @@
 //! Borant domain model, rules, and ports. This crate does no I/O.
 
+pub mod config;
 pub mod error;
+pub mod events;
 pub mod ids;
 pub mod keys;
 pub mod model;

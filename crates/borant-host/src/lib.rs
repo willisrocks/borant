@@ -451,6 +451,8 @@ impl Host {
         let req = CtlRequest::HostHeartbeat {
             host: self.inner.cfg.name.clone(),
             sessions: refs,
+            // The stats task fills them.
+            stats: None,
         };
         match self.hub(&req).await {
             Ok(v) => {

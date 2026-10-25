@@ -3,9 +3,22 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::stream::BoxStream;
 
-use super::PortResult;
+use serde::{Deserialize, Serialize};
+
+use super::{PortError, PortErrorKind, PortResult};
 use crate::ids::AgentId;
 use crate::model::Envelope;
+
+/// What the inbox of one agent holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxStats {
+    /// Messages that the inbox has not delivered yet.
+    pub pending: u64,
+    /// Messages that it delivered and that the agent did not ack.
+    pub ack_pending: u64,
+    /// Messages that it delivered more than once.
+    pub redelivered: u64,
+}
 
 #[async_trait::async_trait]
 pub trait Acker: Send + Sync {
@@ -61,6 +74,15 @@ pub trait MessageBus: Send + Sync + std::fmt::Debug {
     async fn pull(&self, agent: &AgentId, max: usize, wait: Duration) -> PortResult<Vec<Delivery>>;
     /// The number of messages that the inbox did not deliver yet.
     async fn inbox_pending(&self, agent: &AgentId) -> PortResult<u64>;
+    /// The counts of the inbox of one agent. A bus that cannot report them
+    /// fails with `Invalid`, so a caller shows no numbers instead of zeros.
+    async fn inbox_stats(&self, agent: &AgentId) -> PortResult<InboxStats> {
+        let _ = agent;
+        Err(PortError::new(
+            PortErrorKind::Invalid,
+            "this bus does not report inbox stats",
+        ))
+    }
     /// All messages in the inbox that are not acked, for an export.
     async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>>;
     async fn delete_inbox(&self, agent: &AgentId) -> PortResult<()>;

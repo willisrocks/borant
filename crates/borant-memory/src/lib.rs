@@ -2,11 +2,13 @@
 //! `set_available(false)` to act as an unreachable backend.
 
 mod bus;
+mod events;
 mod provision;
 mod session;
 mod state;
 
 pub use bus::MemoryBus;
+pub use events::MemoryEventLog;
 pub use provision::{Call, MemoryProvisioner};
 pub use session::MemorySession;
 pub use state::MemoryState;
