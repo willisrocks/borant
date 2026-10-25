@@ -78,6 +78,14 @@ pub fn tasks_prefix(channel: &ChannelName) -> String {
     format!("chan.{channel}.task.")
 }
 
+/// One stored wait of an agent on a task state, by the id that the agent
+/// got back. The hub deletes it when it wakes the agent.
+pub fn wait(agent: &AgentId, id: &str) -> String {
+    format!("wait.{agent}.{id}")
+}
+
+pub const WAIT_PREFIX: &str = "wait.";
+
 /// Bus subjects.
 pub mod subjects {
     use super::{AgentId, ChannelName, HostName};

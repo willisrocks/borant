@@ -328,7 +328,15 @@ impl Hub {
                 Ok(json!({ "agent": id }))
             }
             ToolCall::Cancel { .. } => Err(ApiError::invalid("cancel is not built yet")),
-            ToolCall::Wait { .. } => Err(ApiError::invalid("wait is not built yet")),
+            ToolCall::Wait {
+                channel,
+                task,
+                until,
+                timeout_secs,
+            } => {
+                let me = me.ok_or_else(|| ApiError::invalid("a wait needs an agent session"))?;
+                self.wait(&me, &channel, &task, until, timeout_secs).await
+            }
             ToolCall::Inbox => Err(ApiError::invalid("inbox is not built yet")),
             ToolCall::Answer { .. } => Err(ApiError::invalid("answer is not built yet")),
             ToolCall::Stop { .. } => Err(ApiError::invalid("stop is not built yet")),
