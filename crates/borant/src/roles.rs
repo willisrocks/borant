@@ -37,6 +37,7 @@ async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)>
     let nats = borant_nats::connect(&file.nats.to_config(name)).await?;
     let mut cfg = HubConfig {
         lease: file.timing.lease_config()?,
+        elastic: file.elastic_config()?,
         ..HubConfig::default()
     };
     if let Some(i) = file.instance {
