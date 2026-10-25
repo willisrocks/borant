@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use borant_core::config::AlertsConfig;
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
@@ -560,6 +561,20 @@ impl AlertsFile {
             self.hub_down_minutes.unwrap_or(2),
             flag(self.watch_hub, false),
         )
+    }
+
+    /// The rules as the hub holds them: this file's values over the defaults
+    /// of [`AlertsConfig`]. The hub alert pass reads the concrete numbers.
+    pub fn to_config(&self) -> AlertsConfig {
+        let d = AlertsConfig::default();
+        AlertsConfig {
+            notifier: self.notifier.clone(),
+            watch_hub: self.watch_hub.unwrap_or(d.watch_hub),
+            needs_human: self.needs_human.unwrap_or(d.needs_human),
+            stall_minutes: self.stall_minutes.unwrap_or(d.stall_minutes),
+            host_offline_minutes: self.host_offline_minutes.unwrap_or(d.host_offline_minutes),
+            hub_down_minutes: self.hub_down_minutes.unwrap_or(d.hub_down_minutes),
+        }
     }
 }
 

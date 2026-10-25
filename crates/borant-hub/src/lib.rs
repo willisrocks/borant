@@ -5,6 +5,7 @@
 //! takes the same mutex for one lease at a time, never for a whole pass, so a
 //! restart on a large store still answers requests.
 
+mod alerts;
 mod calls;
 pub mod elastic;
 mod events;
@@ -24,9 +25,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use borant_core::config::AlertsConfig;
 use borant_core::model::{HostStats, HubLease, Lease, MoveReason};
 use borant_core::ports::provision::ProvisionerCapabilities;
-use borant_core::ports::{EventLog, MessageBus, SessionStore, StateStore};
+use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
@@ -53,6 +55,8 @@ pub struct HubConfig {
     pub roles: BTreeMap<RoleName, RoleConfig>,
     /// `[collections.<name>]` from `hub.toml`.
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
+    /// `[alerts]` of `hub.toml`: which rules run and their timeouts.
+    pub alerts: AlertsConfig,
 }
 
 impl Default for HubConfig {
@@ -63,6 +67,7 @@ impl Default for HubConfig {
             elastic: None,
             roles: BTreeMap::new(),
             collections: BTreeMap::new(),
+            alerts: AlertsConfig::default(),
         }
     }
 }
@@ -116,6 +121,10 @@ pub(crate) struct Memory {
     pub host_stats: HashMap<HostName, HostStats>,
     /// When the elastic rules last ran.
     pub last_elastic: Option<Timestamp>,
+    /// When the alert pass last ran.
+    pub last_alerts: Option<Timestamp>,
+    /// The provisioner refusals that the alerts report, per pool.
+    pub elastic_refused: BTreeMap<PoolName, borant_core::rules::alerts::Refusal>,
     /// When a failed create lets the pool create again.
     pub elastic_backoff: BTreeMap<PoolName, Timestamp>,
     /// The capabilities of each provisioner, read once at the first pass.
@@ -135,6 +144,8 @@ pub struct Hub {
     pub(crate) cfg: HubConfig,
     /// The swarm event stream. `None` writes no events, as before phase 2.
     pub(crate) events: Option<Arc<dyn EventLog>>,
+    /// The notifier of the hub alerts. `None` keeps the alerts in KV only.
+    pub(crate) notifier: Option<Arc<dyn Notifier>>,
     pub(crate) mem: Mutex<Memory>,
 }
 
@@ -153,6 +164,7 @@ impl Hub {
             clock,
             cfg,
             events: None,
+            notifier: None,
             mem: Mutex::new(Memory::default()),
         }
     }
@@ -261,13 +273,16 @@ impl Hub {
         self.tick_leases(leases).await?;
         // The elastic pools park with the idle timeout of each pool; a hub
         // with no pool keeps the one timeout for its hosts.
-        match &self.cfg.elastic {
+        let parked = match &self.cfg.elastic {
             Some(elastic) if !elastic.pools.is_empty() => self.tick_elastic().await,
             _ => self
                 .park_idle(None, park::DEFAULT_IDLE_TIMEOUT)
                 .await
                 .map(|_| ()),
-        }
+        };
+        parked?;
+        // The alerts see what this tick changed, so they run last.
+        self.tick_alerts().await
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then
