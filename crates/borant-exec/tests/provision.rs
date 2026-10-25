@@ -34,6 +34,7 @@ fn exec(command: Vec<String>) -> ExecConfig {
         env: BTreeMap::new(),
         credential: None,
         timeout: Duration::from_secs(60),
+        log_stderr: true,
     }
 }
 

@@ -63,6 +63,8 @@ impl ExecProvisioner {
         let _one = self.lock.lock().await;
         let exec = ExecConfig {
             timeout: self.timeout_of(op),
+            // The stderr of a provisioner plugin is logs, not values.
+            log_stderr: true,
             ..self.exec.clone()
         };
         call(&exec, op, args).await
