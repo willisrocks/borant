@@ -614,6 +614,57 @@ async fn resolver_deletes_the_directory_of_a_launch_that_never_registers() {
 }
 
 #[tokio::test]
+async fn resolver_keeps_the_values_of_a_newer_launch() {
+    let rig = rig(Some(secrets())).await;
+    let dir = rig.root.join("w1");
+    // The first launch: member `a`, and a reservation that ends right away.
+    let mut first = order("w1", member_order());
+    first.reserve_secs = Some(1);
+    rig.host.launch(first).await.unwrap();
+    assert!(
+        std::fs::read_to_string(dir.join("env"))
+            .unwrap()
+            .contains(CLAUDE_A)
+    );
+
+    // The hub retries, as it does for a launch that did not register: member
+    // `b`, and a reservation that outlives this test.
+    let mut second = order(
+        "w1",
+        BTreeMap::from([(bundle_name("claude_auth"), member("b"))]),
+    );
+    second.reserve_secs = Some(30);
+    rig.host.launch(second).await.unwrap();
+    let env = std::fs::read_to_string(dir.join("env")).unwrap();
+    assert!(env.contains(CLAUDE_B), "{env}");
+
+    // The timer of the first launch passes, and must leave the second launch
+    // alone: its shim may not have read `env` yet.
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    let env = std::fs::read_to_string(dir.join("env"))
+        .expect("the timer of the first launch deleted the second directory");
+    assert!(env.contains(CLAUDE_B), "{env}");
+
+    // And the redactor of the second launch still holds its values.
+    let session = register(&rig, "w1").await;
+    rig.host
+        .event(
+            session.session,
+            LocalEvent::UserPrompt {
+                text: format!("the token is {CLAUDE_B}"),
+            },
+        )
+        .await
+        .unwrap();
+    let events = rig.sessions.read(&agent("w1")).await.unwrap();
+    let logged = format!("{events:?}");
+    assert!(
+        !logged.contains(CLAUDE_B),
+        "the redactor of the second launch is gone: {logged}"
+    );
+}
+
+#[tokio::test]
 async fn resolver_sweeps_without_a_secrets_section() {
     // A host whose `host.toml` lost `[secrets]` still clears the old
     // directories of its root.

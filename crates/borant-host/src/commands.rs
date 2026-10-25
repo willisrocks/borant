@@ -225,11 +225,11 @@ impl Host {
             // daemon stops: they go when the reservation of the launch ends.
             let host = self.clone();
             let agent = o.agent;
-            let dir = issued.dir.clone();
+            let issued = issued.clone();
             let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
             tokio::spawn(async move {
                 tokio::time::sleep(reserve).await;
-                host.expire_launch_secrets(&agent, &dir).await;
+                host.expire_launch_secrets(&agent, &issued).await;
             });
         }
         Ok(())

@@ -163,25 +163,34 @@ impl Host {
     }
 
     /// Deletes the directory of a launch that ended without a registration,
-    /// when the reservation of the launch passes. The values would otherwise
-    /// stay on disk for the life of the daemon.
-    pub(crate) async fn expire_launch_secrets(&self, agent: &AgentId, dir: &Path) {
+    /// when the reservation of that launch passes. The check names the launch,
+    /// not only the path: the hub retries a launch that did not register, the
+    /// retry writes the same directory, and this timer must not delete values
+    /// that a newer launch wrote and whose shim has not read `env` yet.
+    pub(crate) async fn expire_launch_secrets(&self, agent: &AgentId, issued: &Arc<LaunchSecrets>) {
         {
             let mut st = self.state();
-            if st
-                .sessions
-                .values()
-                .any(|s| s.secrets_dir.as_deref() == Some(dir))
+            // A launch of this agent runs now: its own timer decides.
+            if st.launching.contains(agent) {
+                return;
+            }
+            // A newer launch replaced this one.
+            if !st
+                .launched
+                .get(agent)
+                .is_some_and(|current| Arc::ptr_eq(current, issued))
             {
                 return;
             }
+            // A session took these values.
             if st
-                .launched
-                .get(agent)
-                .is_some_and(|issued| issued.dir == dir)
+                .sessions
+                .values()
+                .any(|s| s.secrets_dir.as_deref() == Some(issued.dir.as_path()))
             {
-                st.launched.remove(agent);
+                return;
             }
+            st.launched.remove(agent);
             if !st
                 .sessions
                 .values()
@@ -194,7 +203,7 @@ impl Host {
             %agent,
             "a launch did not register before its reservation ended"
         );
-        remove_dir(dir).await;
+        remove_dir(&issued.dir).await;
     }
 
     /// The folder of the secret directories of this host.
