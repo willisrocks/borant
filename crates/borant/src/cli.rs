@@ -722,13 +722,37 @@ fn render_queue(v: &Value, queued_only: bool) -> String {
             .map(|at| crate::events::utc_time(Timestamp(at)))
             .unwrap_or_else(|| "-".to_owned());
         let channel = rec["spec"]["channel"].as_str().unwrap_or("-");
-        let reject = rec["last_reject"].as_str().unwrap_or("-");
+        let reject = render_reject(&rec["last_reject"]);
         let _ = writeln!(
             out,
             "{agent:<24} {state:<10} {priority:<9} {queued:<10} {channel:<9} {reject}"
         );
     }
     out
+}
+
+/// The refused hosts of a queued spawn: `borant-1: full (6/6), borant-2: low
+/// memory (700 MB free, 1024 reserved)`. A v0.7.0 record holds one string.
+fn render_reject(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    let Some(list) = value.as_array() else {
+        return "-".to_owned();
+    };
+    let reasons: Vec<String> = list
+        .iter()
+        .filter_map(|pair| {
+            let host = pair.get(0)?.as_str()?;
+            let why = pair.get(1)?.as_str()?;
+            Some(format!("{host}: {why}"))
+        })
+        .collect();
+    if reasons.is_empty() {
+        "-".to_owned()
+    } else {
+        reasons.join(", ")
+    }
 }
 
 /// Prints the newest page of the session log of an agent, and then the events
@@ -1511,6 +1535,23 @@ mod tests {
         // that the queue is empty.
         let error = json!({"error": {"code": "invalid", "message": "not built"}});
         assert!(render_queue(&error, false).contains("not built"));
+    }
+
+    /// A queued spawn prints the refused hosts, one reason each, as `place`
+    /// wrote them.
+    #[test]
+    fn cli_render_queue_prints_one_reason_per_host() {
+        let v = json!([
+            {"agent": "w1", "state": "queued", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"},
+             "last_reject": [["borant-1", "full (6/6)"],
+                             ["borant-2", "low memory (700 MB free, 1024 reserved)"]]},
+        ]);
+        let out = render_queue(&v, true);
+        assert!(
+            out.contains("borant-1: full (6/6), borant-2: low memory (700 MB free, 1024 reserved)"),
+            "{out}"
+        );
     }
 
     #[test]

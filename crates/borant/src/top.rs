@@ -89,6 +89,12 @@ fn draw_hosts(frame: &mut Frame, area: Rect, view: &SwarmView) {
                         .map(|ms| format!("{ms}ms"))
                         .unwrap_or_else(|| "-".into()),
                 ),
+                Cell::from(
+                    stats
+                        .and_then(|s| s.mem_avail_mb)
+                        .map(|mb| mb.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                ),
                 Cell::from(format!(
                     "{}/{}",
                     host.info.max_agents,
@@ -103,7 +109,7 @@ fn draw_hosts(frame: &mut Frame, area: Rect, view: &SwarmView) {
         })
         .collect();
     let header = Row::new(vec![
-        "HOST", "ONLINE", "LOAD", "CPUS", "RTT", "MAX/HARN", "OUTBOX",
+        "HOST", "ONLINE", "LOAD", "CPUS", "RTT", "MEM MB", "MAX/HARN", "OUTBOX",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
     let table = Table::new(
@@ -113,6 +119,7 @@ fn draw_hosts(frame: &mut Frame, area: Rect, view: &SwarmView) {
             Constraint::Length(7),
             Constraint::Length(6),
             Constraint::Length(5),
+            Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(9),
             Constraint::Length(7),
@@ -337,6 +344,23 @@ mod tests {
             "pending/ack_pending/redelivered:\n{text}"
         );
         assert!(text.contains("q quit"), "{text}");
+    }
+
+    /// The hosts table shows the free memory that phase 5 places on.
+    #[test]
+    fn top_shows_the_free_memory_of_a_host() {
+        let mut view = view();
+        view.hosts[0].stats = Some(borant_core::model::HostStats {
+            version: "test".into(),
+            mem_avail_mb: Some(700),
+            ..Default::default()
+        });
+        let backend = TestBackend::new(110, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &view, None)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("MEM MB"), "{text}");
+        assert!(text.contains("700"), "the free memory:\n{text}");
     }
 
     /// A read error is on the screen, and an agent without an inbox shows a
