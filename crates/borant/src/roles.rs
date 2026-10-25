@@ -46,12 +46,16 @@ async fn hub_parts(
         "the alert rules of this hub"
     );
     let nats = borant_nats::connect(&file.nats.to_config(name)).await?;
+    // The PR watch of `[changes]`: None names no adapter, or a program that is
+    // not a change-request plugin (a warn, not a failed start).
+    let changes = file.changes_watch().await?;
     let mut cfg = HubConfig {
         lease: file.timing.lease_config()?,
         elastic: file.elastic_config()?,
         roles: file.roles,
         collections: file.collections,
         alerts: file.alerts.to_config(),
+        changes,
         member_rules: file.secrets.members,
         ..HubConfig::default()
     };

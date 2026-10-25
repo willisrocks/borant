@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use borant_core::ports::PortErrorKind;
-use borant_core::ports::changes::{ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState};
+use borant_core::ports::changes::{
+    ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState,
+};
 use borant_core::testing;
 use borant_exec::ExecConfig;
 use borant_exec::changes::{ExecChangeRequests, KIND};
@@ -91,7 +93,7 @@ fn seed(file: &Path, url: &str, status: &ChangeStatus) {
 }
 
 #[tokio::test]
-async fn the_file_plugin_passes_the_change_requests_contract() {
+async fn changes_the_file_plugin_passes_the_contract() {
     let dir = tempfile::tempdir().expect("a temp dir");
     for (i, expected) in statuses().into_iter().enumerate() {
         let file = dir.path().join(format!("changes-{i}.json"));
@@ -108,7 +110,7 @@ async fn the_file_plugin_passes_the_change_requests_contract() {
 }
 
 #[tokio::test]
-async fn a_program_that_is_not_a_change_plugin_is_invalid() {
+async fn changes_a_program_of_another_kind_is_invalid() {
     // The notifier fixture reports another kind, so the watch stays off.
     let err = ExecChangeRequests::open(
         exec(vec![fixture("describe_notifier.sh").display().to_string()]),
@@ -120,7 +122,7 @@ async fn a_program_that_is_not_a_change_plugin_is_invalid() {
 }
 
 #[tokio::test]
-async fn the_status_request_carries_the_config_and_the_url() {
+async fn changes_the_status_request_carries_the_config_and_the_url() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let seen = dir.path().join("request.json");
     let changes = ExecChangeRequests::new(
