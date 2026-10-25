@@ -32,6 +32,7 @@ use borant_core::{
     AgentId, ChannelName, Clock, CollectionName, HostName, MessageId, PoolName, RoleName,
     SessionId, Tag, Timestamp, subjects,
 };
+use borant_launch::harness;
 use borant_launch::harness::HarnessCommands;
 use borant_secrets::{StoreConfig, open_store};
 use tokio::sync::Notify;
@@ -136,21 +137,30 @@ impl HostConfig {
             .unwrap_or_else(|| self.home.join("host.sock"))
     }
 
+    /// The record of this host with its declared `harnesses`. The daemon
+    /// announces what it can run, not what `host.toml` names: [`Host::offered_info`]
+    /// drops the harnesses whose program is missing.
     pub fn info(&self) -> HostInfo {
+        self.info_with(self.harnesses.clone())
+    }
+
+    /// The record of this host with `harnesses` instead of the declared ones.
+    pub fn info_with(&self, harnesses: Vec<Harness>) -> HostInfo {
+        let members = self
+            .secrets
+            .as_ref()
+            .map(|s| s.members(&harnesses))
+            .unwrap_or_default();
         HostInfo {
             name: self.name.clone(),
-            harnesses: self.harnesses.clone(),
+            harnesses,
             launcher: self.launcher.clone(),
             max_agents: self.max_agents,
             always_on: self.always_on,
             draining: false,
             ssh: self.ssh.clone(),
             tmux_socket: self.tmux_socket.clone(),
-            members: self
-                .secrets
-                .as_ref()
-                .map(|s| s.members(&self.harnesses))
-                .unwrap_or_default(),
+            members,
             pool: self.pool.clone(),
             tags: self.tags.clone(),
             bundles: self
@@ -383,6 +393,12 @@ pub(crate) struct State {
     pub seen: HashMap<AgentId, HashSet<MessageId>>,
     pub turns_since_trim: HashMap<AgentId, usize>,
     pub host_registered: bool,
+    /// The harnesses of the last registration, so a program that appears or
+    /// goes away registers the host again on the next heartbeat.
+    pub registered_harnesses: Option<Vec<Harness>>,
+    /// The harnesses whose program was missing at the last check, so one
+    /// warning covers a whole absence.
+    pub missing_programs: HashSet<Harness>,
     /// Start of the current run of successful heartbeats.
     pub up_since: Option<Instant>,
     /// True when the hub was reachable for a lease, so a pause is a new
@@ -490,6 +506,8 @@ impl Host {
                     seen: HashMap::new(),
                     turns_since_trim: HashMap::new(),
                     host_registered: false,
+                    registered_harnesses: None,
+                    missing_programs: HashSet::new(),
                     up_since: None,
                     outage_over: true,
                     hub_down,
@@ -509,6 +527,48 @@ impl Host {
 
     pub fn config(&self) -> &HostConfig {
         &self.inner.cfg
+    }
+
+    /// The harnesses that this host can run: the declared ones whose program
+    /// it finds, on the `PATH` of the daemon or in an install dir of a launch.
+    /// The check runs again on every call, so a program that a person installs
+    /// while the daemon runs is offered from the next heartbeat on. One
+    /// warning covers an absence: it comes again only after the program was
+    /// found in between.
+    pub fn offered_harnesses(&self) -> Vec<Harness> {
+        let cfg = &self.inner.cfg;
+        let dirs = harness::search_dirs();
+        let mut offered = Vec::with_capacity(cfg.harnesses.len());
+        let mut missing = Vec::new();
+        for h in cfg.harnesses.iter().copied() {
+            let program = harness::program(h, &cfg.commands);
+            if harness::find_program(&dirs, &program).is_some() {
+                offered.push(h);
+            } else {
+                missing.push((h, program));
+            }
+        }
+        let now_missing: HashSet<Harness> = missing.iter().map(|(h, _)| *h).collect();
+        {
+            let mut st = self.state();
+            for (h, program) in &missing {
+                if st.missing_programs.insert(*h) {
+                    tracing::warn!(
+                        harness = %h,
+                        program = %program,
+                        "the program of the harness is not installed, so the host does not offer the harness"
+                    );
+                }
+            }
+            st.missing_programs.retain(|h| now_missing.contains(h));
+        }
+        offered
+    }
+
+    /// The registration record of this host: what it can run now, not what
+    /// `host.toml` declares.
+    pub fn offered_info(&self) -> HostInfo {
+        self.inner.cfg.info_with(self.offered_harnesses())
     }
 
     pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -633,12 +693,20 @@ impl Host {
 
     /// One heartbeat. Public for tests.
     pub async fn heartbeat_once(&self) {
-        if !self.state().host_registered {
-            let req = CtlRequest::RegisterHost {
-                info: self.inner.cfg.info(),
-            };
+        // The offered harnesses come from the disk on every beat, so a program
+        // that a person installs or removes while the daemon runs changes what
+        // the hub places here: the registration below follows the change.
+        let info = self.offered_info();
+        let changed = self.state().registered_harnesses.as_ref() != Some(&info.harnesses);
+        if !self.state().host_registered || changed {
+            let harnesses = info.harnesses.clone();
+            let req = CtlRequest::RegisterHost { info };
             match self.hub(&req).await {
-                Ok(_) => self.state().host_registered = true,
+                Ok(_) => {
+                    let mut st = self.state();
+                    st.host_registered = true;
+                    st.registered_harnesses = Some(harnesses);
+                }
                 Err(e) => self.heartbeat_failure("cannot register the host", &e),
             }
         }
