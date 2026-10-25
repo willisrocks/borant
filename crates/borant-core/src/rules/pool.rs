@@ -532,6 +532,7 @@ mod tests {
             recently_failed: false,
             pool: Some("workers".parse().unwrap()),
             mem_avail_mb: None,
+            disk_used_pct: None,
         }
     }
 

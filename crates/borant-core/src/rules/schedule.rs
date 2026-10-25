@@ -10,7 +10,11 @@ use crate::model::{Harness, HostInfo, SandboxKind};
 /// reserve of a v0.7.0 host that reports none.
 pub const DEFAULT_RESERVE_MEM_MB: u32 = 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The disk percentage at which a host takes no new agent, when the request
+/// does not set its own.
+pub const DEFAULT_DISK_STOP_PCT: u8 = 95;
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HostView {
     pub info: HostInfo,
     pub online: bool,
@@ -26,6 +30,9 @@ pub struct HostView {
     /// The memory available on the host, from its last heartbeat. `None` for a
     /// host that reports no stats, which passes the memory rule.
     pub mem_avail_mb: Option<u64>,
+    /// How full the disk of the host is, from its last heartbeat. `None` for a
+    /// host that reports no stats, which passes the disk rule.
+    pub disk_used_pct: Option<f64>,
 }
 
 /// Why a host did not take an agent. The first failed rule of a host is its
@@ -34,12 +41,22 @@ pub struct HostView {
 pub enum Reject {
     Offline,
     Draining,
-    Full { active: u32, max: u32 },
+    Full {
+        active: u32,
+        max: u32,
+    },
     NoRepo,
     NoHarness,
     MissingTag(Tag),
     MissingBundle(BundleName),
-    LowMemory { avail_mb: u64, reserve_mb: u32 },
+    LowMemory {
+        avail_mb: u64,
+        reserve_mb: u32,
+    },
+    /// The disk of the host is at or above the stop point, a whole percent.
+    LowDisk {
+        used_pct: u8,
+    },
     NoSandbox,
     RecentlyFailed,
 }
@@ -58,6 +75,7 @@ impl fmt::Display for Reject {
                 avail_mb,
                 reserve_mb,
             } => write!(f, "low memory ({avail_mb} MB free, {reserve_mb} reserved)"),
+            Self::LowDisk { used_pct } => write!(f, "disk full ({used_pct}%)"),
             Self::NoSandbox => f.write_str("no sandbox"),
             Self::RecentlyFailed => f.write_str("failed recently"),
         }
@@ -79,6 +97,9 @@ pub struct PlacementReq {
     pub avoid: Vec<Tag>,
     /// The sandbox that the launch needs. `None` needs none.
     pub sandbox: Option<SandboxKind>,
+    /// The disk percentage at which a host takes no new agent. `None` uses
+    /// [`DEFAULT_DISK_STOP_PCT`].
+    pub disk_stop_pct: Option<u8>,
 }
 
 /// How many of `tags` the host carries.
@@ -183,6 +204,14 @@ fn reject(
             });
         }
     }
+    // A host that reports no disk passes, as with the memory rule.
+    if let Some(used) = h.disk_used_pct {
+        let stop = req.disk_stop_pct.unwrap_or(DEFAULT_DISK_STOP_PCT);
+        if used >= f64::from(stop) {
+            let used_pct = used.round().clamp(0.0, 100.0) as u8;
+            return Some(Reject::LowDisk { used_pct });
+        }
+    }
     if let Some(kind) = req.sandbox
         && !h.info.sandboxes.contains(&kind)
     {
@@ -195,7 +224,8 @@ fn reject(
 /// fails, that is: it is online, not draining, below its limit, can reach the
 /// repository, was not recently failed, has the forced harness, every
 /// `require` tag of `req`, every bundle of the launch, enough free memory for
-/// its reserve, and the sandbox of the request. The score is `order`.
+/// its reserve, enough free disk, and the sandbox of the request. The score is
+/// `order`.
 ///
 /// The error lists every host that was asked, with its first failed rule, so
 /// that a refused placement can name them all.
@@ -248,6 +278,7 @@ mod tests {
             recently_failed: false,
             pool: None,
             mem_avail_mb: None,
+            disk_used_pct: None,
         }
     }
 
@@ -588,6 +619,11 @@ mod tests {
             h.mem_avail_mb = Some(700);
             h
         };
+        let full_disk = {
+            let mut h = ready("full-disk");
+            h.disk_used_pct = Some(96.0);
+            h
+        };
         let no_sandbox = {
             let mut h = ready("no-sandbox");
             h.info.sandboxes = Vec::new();
@@ -595,7 +631,7 @@ mod tests {
         };
         let hosts = [
             offline, draining, full, no_repo, failed, no_harness, no_tag, no_bundle, low_memory,
-            no_sandbox,
+            full_disk, no_sandbox,
         ];
         let err = super::place(
             Harness::Omp,
@@ -618,6 +654,7 @@ mod tests {
                 "no-tag: missing tag vps",
                 "no-bundle: missing bundle github-work",
                 "low-memory: low memory (700 MB free, 1024 reserved)",
+                "full-disk: disk full (96%)",
                 "no-sandbox: no sandbox",
             ]
         );
@@ -665,6 +702,45 @@ mod tests {
         );
     }
 
+    /// Rule: a host at or above the disk stop point takes no new agent, and a
+    /// host with no stats passes.
+    #[test]
+    fn low_disk_needs_stats() {
+        let place_one = |h: HostView, req: &PlacementReq| {
+            super::place(
+                Harness::Omp,
+                Some(Harness::Omp),
+                req,
+                &ready_bundles(),
+                &[h],
+            )
+        };
+        // 96% is over the default stop point of 95%.
+        let mut full = ready("full");
+        full.disk_used_pct = Some(96.0);
+        let err = place_one(full, &ready_req()).expect_err("96% is full");
+        assert_eq!(err[0].1.to_string(), "disk full (96%)");
+
+        // 94% still takes the agent.
+        let mut nearly = ready("nearly");
+        nearly.disk_used_pct = Some(94.0);
+        assert!(place_one(nearly, &ready_req()).is_ok(), "94% is not full");
+
+        // No stats: the disk rule passes.
+        let old = ready("old");
+        assert!(place_one(old, &ready_req()).is_ok(), "unknown disk passes");
+
+        // A request can set its own stop point.
+        let mut high = ready("high");
+        high.disk_used_pct = Some(92.0);
+        let strict = PlacementReq {
+            disk_stop_pct: Some(90),
+            ..ready_req()
+        };
+        let err = place_one(high, &strict).expect_err("92% is over a 90% stop");
+        assert_eq!(err[0].1, Reject::LowDisk { used_pct: 92 });
+    }
+
     /// Rule: a launch that asks for a sandbox needs a host that offers it.
     #[test]
     fn a_sandbox_must_be_offered() {
@@ -709,6 +785,7 @@ mod tests {
         .expect("a v0.7.0 heartbeat");
         assert_eq!(stats.mem_avail_mb, None);
         assert_eq!(stats.disk_avail_mb, None);
+        assert_eq!(stats.disk_used_pct, None);
 
         let info: HostInfo = serde_json::from_value(serde_json::json!({
             "name": "h1",
