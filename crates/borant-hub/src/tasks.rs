@@ -214,7 +214,7 @@ impl Hub {
 
     /// Queues `task.status` when the status or the claim changed. A title, a
     /// body, or a property update publishes nothing.
-    fn task_status_event(
+    pub(crate) fn task_status_event(
         &self,
         mem: &mut Memory,
         channel: &ChannelName,
@@ -437,7 +437,7 @@ impl Hub {
         Ok(false)
     }
 
-    async fn task_event(
+    pub(crate) async fn task_event(
         &self,
         channel: &ChannelName,
         owner: &AgentId,
