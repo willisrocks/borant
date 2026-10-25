@@ -227,3 +227,34 @@ async fn second_daemon_on_same_socket_is_refused() {
     let health: Value = ok(c.get("/v1/health", Duration::from_secs(2)).await);
     assert_eq!(health["host"], "h1");
 }
+
+/// The daemon of a newer release replies with a kind that this client
+/// predates, and the refusal still reaches the caller with kind and message.
+#[tokio::test]
+async fn a_kind_that_this_client_does_not_know_keeps_its_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("newer.sock");
+    let app = axum::Router::new().route(
+        "/v1/whoami",
+        axum::routing::get(|| async {
+            (
+                axum::http::StatusCode::FORBIDDEN,
+                r#"{"error":{"code":"rate_limited","message":"slow down, agent"}}"#,
+            )
+        }),
+    );
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let c = LocalClient::new(socket);
+    let err = match c.get::<Value>("/v1/whoami", Duration::from_secs(2)).await {
+        Outcome::Reply(Err(e)) => e,
+        other => panic!("the reply was {other:?}"),
+    };
+    assert_eq!(
+        err.code,
+        borant_core::proto::ApiErrorCode::Other("rate_limited".into())
+    );
+    assert_eq!(err.message, "slow down, agent");
+    assert_eq!(err.to_string(), "rate_limited: slow down, agent");
+    server.abort();
+}
