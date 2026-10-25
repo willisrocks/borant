@@ -89,14 +89,14 @@ case "${1:-}" in
 esac
 
 SCENARIOS=${*:-$ALL}
-# The elastic, members, and pause scenarios bring their own swarm (a hub with
-# no worker hosts, one host with a bundle, and one host with a turn cap), so
-# each runs alone. The sandbox scenario has its own swarm as well, and it can
-# share a run with the default set: the default scenarios run first in a child,
-# then this script continues with the sandbox swarm.
+# The elastic and members scenarios bring their own swarm (a hub with no
+# worker hosts, and one host with a bundle), so each runs alone. The sandbox
+# and pause scenarios bring their own swarms as well, and they can share a run
+# with the default set: the other scenarios run first in a child, then this
+# script continues with the swarm of the scenario that runs alone.
 for s in $SCENARIOS; do
   case "$s" in
-    elastic|members|pause) SCENARIOS=$s ;;
+    elastic|members) SCENARIOS=$s ;;
   esac
 done
 case " $SCENARIOS " in
@@ -108,6 +108,17 @@ case " $SCENARIOS " in
       "$0" $others || exit 1
     fi
     SCENARIOS=sandbox
+    ;;
+esac
+case " $SCENARIOS " in
+  *" pause "*)
+    others=$(printf '%s\n' $SCENARIOS | grep -vx pause | tr '\n' ' ')
+    if [ -n "$others" ]; then
+      # The word splitting is the point: one argument per scenario.
+      # shellcheck disable=SC2086
+      "$0" $others || exit 1
+    fi
+    SCENARIOS=pause
     ;;
 esac
 
