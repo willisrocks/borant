@@ -33,7 +33,9 @@ fn shutdown_on_signal() -> CancellationToken {
     token
 }
 
-async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)> {
+async fn hub_parts(
+    name: &str,
+) -> anyhow::Result<(borant_nats::Nats, HubConfig, Option<Box<dyn Notifier>>)> {
     let file = config::hub_file()?;
     // A name in [alerts] that [notifiers] does not define fails the start,
     // not the first notice. The alert pass takes the notifier this builds.
@@ -49,31 +51,40 @@ async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)>
         elastic: file.elastic_config()?,
         roles: file.roles,
         collections: file.collections,
+        alerts: file.alerts.to_config(),
         ..HubConfig::default()
     };
     if let Some(i) = file.instance {
         cfg.instance = i;
     }
-    Ok((nats, cfg))
+    Ok((nats, cfg, notifier))
 }
 
-fn hub_from(nats: &borant_nats::Nats, cfg: HubConfig) -> Arc<Hub> {
-    Arc::new(
-        Hub::new(
-            Arc::new(nats.state()),
-            Arc::new(nats.bus()),
-            Arc::new(nats.session()),
-            Arc::new(SystemClock),
-            cfg,
-        )
-        // Every hub write publishes its swarm event to the durable log.
-        .with_events(Arc::new(nats.events())),
+fn hub_from(
+    nats: &borant_nats::Nats,
+    cfg: HubConfig,
+    notifier: Option<Box<dyn Notifier>>,
+) -> Arc<Hub> {
+    let hub = Hub::new(
+        Arc::new(nats.state()),
+        Arc::new(nats.bus()),
+        Arc::new(nats.session()),
+        Arc::new(SystemClock),
+        cfg,
     )
+    // Every hub write publishes its swarm event to the durable log.
+    .with_events(Arc::new(nats.events()));
+    // Without a [notifiers] entry the alerts stay in KV and publish events;
+    // they only skip the notice.
+    Arc::new(match notifier {
+        Some(n) => hub.with_notifier(Arc::from(n)),
+        None => hub,
+    })
 }
 
 pub async fn run_hub() -> anyhow::Result<()> {
-    let (nats, cfg) = hub_parts("borant-hub").await?;
-    let hub = hub_from(&nats, cfg);
+    let (nats, cfg, notifier) = hub_parts("borant-hub").await?;
+    let hub = hub_from(&nats, cfg, notifier);
     // Retry until NATS is up, so the hub can start before the broker.
     let shutdown = shutdown_on_signal();
     loop {
@@ -160,7 +171,7 @@ pub async fn export(out: &Path, snapshot: bool) -> anyhow::Result<()> {
     if snapshot {
         return export_snapshot(out).await;
     }
-    let (nats, cfg) = hub_parts("borant-export").await?;
+    let (nats, cfg, notifier) = hub_parts("borant-export").await?;
     let bus = nats.bus();
     let on = serde_json::to_vec(&CtlRequest::Maintenance { on: true })?;
     match borant_core::ports::MessageBus::request(
@@ -174,7 +185,7 @@ pub async fn export(out: &Path, snapshot: bool) -> anyhow::Result<()> {
         Ok(_) => eprintln!("The running hub is now in maintenance mode."),
         Err(e) => eprintln!("No running hub answered ({e}). Exporting the stores as they are."),
     }
-    let hub = hub_from(&nats, cfg);
+    let hub = hub_from(&nats, cfg, notifier);
     let file = std::fs::File::create(out).with_context(|| format!("create {}", out.display()))?;
     let mut w = BufWriter::new(file);
     borant_hub::export::export(&hub, &mut w).await?;
@@ -193,7 +204,7 @@ async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
     if !out.is_absolute() {
         anyhow::bail!("--out must be an absolute path on the hub box");
     }
-    let (nats, _) = hub_parts("borant-export").await?;
+    let (nats, _, _) = hub_parts("borant-export").await?;
     let bus = nats.bus();
     let payload = serde_json::to_vec(&CtlRequest::Snapshot {
         out: out.to_path_buf(),
@@ -223,7 +234,7 @@ async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
 }
 
 pub async fn import(input: &Path) -> anyhow::Result<()> {
-    let (nats, _) = hub_parts("borant-import").await?;
+    let (nats, _, _) = hub_parts("borant-import").await?;
     let file = std::fs::File::open(input).with_context(|| format!("open {}", input.display()))?;
     let mut r = BufReader::new(file);
     let report =

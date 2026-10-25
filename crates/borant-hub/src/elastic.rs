@@ -15,7 +15,9 @@ use borant_core::model::{Agent, HostInfo, Lease, LeaseState};
 use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
 };
+use borant_core::ports::{PortError, PortErrorKind};
 use borant_core::proto::ApiError;
+use borant_core::rules::alerts::Refusal;
 use borant_core::rules::pool::{
     self, Action, ElasticHost, Phase, PlacementNeed, PoolConfig, Spend,
 };
@@ -376,9 +378,11 @@ impl Hub {
                     };
                     if let Err(e) = provisioner.delete(&id).await {
                         // The key stays, so the next tick tries again.
+                        self.note_refusal(&pool.name, "delete", &e).await;
                         tracing::warn!(%host, "delete failed: {e}");
                         return Ok(());
                     }
+                    self.clear_refusal(&pool.name).await;
                 }
                 if let Some(config) = pass
                     .hosts
@@ -464,6 +468,7 @@ impl Hub {
                     ..requested
                 };
                 self.store.upsert(&key, &booting).await?;
+                self.clear_refusal(pool).await;
                 tracing::info!(pool = %pool, %name, "pool host ordered");
                 let event = self
                     .event(
@@ -483,6 +488,7 @@ impl Hub {
                     .await
                     .elastic_backoff
                     .insert(pool.clone(), now.plus(elastic.create_backoff));
+                self.note_refusal(pool, "create", &e).await;
                 tracing::warn!(pool = %pool, "create failed: {e}");
             }
         }
@@ -505,6 +511,59 @@ impl Hub {
     async fn write_spend(&self, spend: &Spend, now: Timestamp) -> Result<(), ApiError> {
         self.store.upsert(&keys::spend(&month(now)), spend).await?;
         Ok(())
+    }
+
+    /// The pools that an agent waits for and whose budget holds the host
+    /// back, for the alert pass. The demand is a pending move; the spend key
+    /// is the month. A pool with no budget never blocks.
+    pub(crate) async fn budget_blocked(&self) -> Result<Vec<PoolName>, ApiError> {
+        let Some(elastic) = &self.cfg.elastic else {
+            return Ok(Vec::new());
+        };
+        if elastic.pools.is_empty() || self.mem.lock().await.pending_moves.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = self.now();
+        let spend = self
+            .store
+            .get::<Spend>(&keys::spend(&month(now)))
+            .await?
+            .map(|d| d.value)
+            .unwrap_or_default();
+        let total = spend.total();
+        Ok(elastic
+            .pools
+            .iter()
+            .filter(|pool| {
+                elastic
+                    .monthly_budget_usd
+                    .is_some_and(|budget| total >= budget)
+                    || pool
+                        .monthly_budget_usd
+                        .is_some_and(|budget| total >= budget)
+            })
+            .map(|pool| pool.name.clone())
+            .collect())
+    }
+
+    /// Notes a provisioner refusal that the alerts report. Only `denied` and
+    /// `invalid` are alerts; a retry handles the other errors.
+    pub(crate) async fn note_refusal(&self, pool: &PoolName, op: &str, e: &PortError) {
+        if matches!(e.kind, PortErrorKind::Denied | PortErrorKind::Invalid) {
+            self.mem.lock().await.elastic_refused.insert(
+                pool.clone(),
+                Refusal {
+                    pool: pool.clone(),
+                    op: op.to_owned(),
+                    message: e.message.clone(),
+                },
+            );
+        }
+    }
+
+    /// Clears the refusal of a pool after a call that succeeded.
+    pub(crate) async fn clear_refusal(&self, pool: &PoolName) {
+        self.mem.lock().await.elastic_refused.remove(pool);
     }
 }
 

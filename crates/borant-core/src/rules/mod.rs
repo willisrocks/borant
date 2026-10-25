@@ -1,5 +1,6 @@
 //! Pure domain rules. Services call these, and tests cover them without I/O.
 
+pub mod alerts;
 pub mod lease;
 pub mod members;
 pub mod pool;

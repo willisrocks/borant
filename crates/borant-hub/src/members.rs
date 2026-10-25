@@ -3,7 +3,7 @@
 //! report of each member in memory, and keeps the state of each member in KV at
 //! `member.<bundle>.<member>`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{Agent, Harness, HostInfo, MemberState, UsageWindow};
@@ -234,5 +234,49 @@ impl Hub {
         );
         tracing::info!(%bundle, %member, windows = count, "usage report");
         Ok(json!({ "bundle": bundle, "member": member, "at": at, "windows": windows }))
+    }
+}
+
+impl Hub {
+    /// The bundles whose every member is limited now, for the alert pass. The
+    /// members come from the hosts that define the bundle; a member with no
+    /// state, or one whose limit has passed, keeps the bundle out.
+    pub(crate) async fn limited_bundles(
+        &self,
+        now: Timestamp,
+    ) -> Result<Vec<BundleName>, ApiError> {
+        let mut members: BTreeMap<BundleName, BTreeSet<MemberName>> = BTreeMap::new();
+        for doc in self.store.list::<HostInfo>(keys::HOST_PREFIX).await? {
+            for (bundle, known) in doc.value.members {
+                members.entry(bundle).or_default().extend(known.members);
+            }
+        }
+        if members.is_empty() {
+            return Ok(Vec::new());
+        }
+        let states: Vec<MemberState> = self
+            .store
+            .list::<MemberState>("member.")
+            .await?
+            .into_iter()
+            .map(|d| d.value)
+            .collect();
+        let mut limited = Vec::new();
+        for (bundle, known) in members {
+            if known.is_empty() {
+                continue;
+            }
+            let every = known.iter().all(|member| {
+                states.iter().any(|state| {
+                    state.bundle == bundle
+                        && &state.member == member
+                        && state.limited_until.is_some_and(|until| until > now)
+                })
+            });
+            if every {
+                limited.push(bundle);
+            }
+        }
+        Ok(limited)
     }
 }
