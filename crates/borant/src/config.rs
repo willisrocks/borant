@@ -533,10 +533,21 @@ impl HubFile {
             .program
             .clone()
             .context("changes: an exec adapter needs a program")?;
+        // The plugin reads its token from a file of the hub unit's credentials
+        // directory, as the provisioner plugins do.
+        let credential = match &self.changes.credential {
+            None => None,
+            Some(c) => Some((
+                env("CREDENTIALS_DIRECTORY")
+                    .map(PathBuf::from)
+                    .context("changes names a credential")?,
+                c.clone(),
+            )),
+        };
         let exec = ExecConfig {
             command: vec![program],
             env: BTreeMap::new(),
-            credential: None,
+            credential,
             timeout: STATUS_TIMEOUT,
             // The status of a change request is not a secret, but the runner
             // does not know what the plugin prints, so its stderr stays out of
@@ -1647,6 +1658,24 @@ mod changes_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// A credential names a file in the directory that systemd provides, as
+    /// the provisioner and the notifier plugins read theirs: without the
+    /// directory the watch fails the start, not the first poll.
+    #[tokio::test]
+    async fn changes_a_credential_needs_the_directory_of_the_unit() {
+        let f = file(&format!(
+            "[changes]\nadapter = \"exec\"\nprogram = \"{}\"\ncredential = \"changes-token\"\n",
+            plugin().display()
+        ));
+        assert_eq!(f.changes.credential.as_deref(), Some("changes-token"));
+        if env("CREDENTIALS_DIRECTORY").is_none() {
+            assert!(
+                f.changes_watch().await.is_err(),
+                "a credential without its directory is a configuration error"
+            );
+        }
     }
 
     /// A program of another kind, or none at all, leaves the watch off (a
