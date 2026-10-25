@@ -64,7 +64,10 @@ async fn the_file_plugin_passes_the_provisioner_contract() {
     let foreign = ProviderHostId(testing::unique("foreign"));
     let state = json!({ "next": 1, "hosts": [], "foreign": [&foreign.0] });
     std::fs::write(&file, serde_json::to_vec(&state).expect("the state")).expect("seed the state");
-    let p = ExecProvisioner::new(exec(vec![plugin().display().to_string()]), file_config(&file));
+    let p = ExecProvisioner::new(
+        exec(vec![plugin().display().to_string()]),
+        file_config(&file),
+    );
     let pool: PoolName = testing::unique("p").parse().expect("a pool name");
     testing::provisioner_contract(&p, &pool, spec(&pool), foreign).await;
 }
@@ -85,7 +88,10 @@ async fn every_provisioner_request_carries_the_config_and_the_wire_names() {
     let pool: PoolName = testing::unique("p").parse().expect("a pool name");
     let spec = spec(&pool);
     // The echo plugin replies `null`, which is not a host record.
-    let err = p.create(&spec).await.expect_err("create needs a host record");
+    let err = p
+        .create(&spec)
+        .await
+        .expect_err("create needs a host record");
     assert_eq!(err.kind, PortErrorKind::Invalid, "{err}");
     assert!(
         !err.message.contains("one-time-value"),
@@ -126,8 +132,10 @@ async fn one_provisioner_op_runs_at_a_time() {
     );
     // The plugin answers `internal` if the two run at once. Both get Ok only
     // if the adapter runs one op at a time for this instance.
-    let first = p.delete(&ProviderHostId("first".to_owned()));
-    let second = p.delete(&ProviderHostId("second".to_owned()));
+    let first_id = ProviderHostId("first".to_owned());
+    let second_id = ProviderHostId("second".to_owned());
+    let first = p.delete(&first_id);
+    let second = p.delete(&second_id);
     let (first, second) = tokio::join!(first, second);
     first.expect("the first delete");
     second.expect("the second delete");
@@ -135,8 +143,11 @@ async fn one_provisioner_op_runs_at_a_time() {
 
 #[tokio::test]
 async fn a_provisioner_op_times_out() {
-    let p = ExecProvisioner::new(exec(vec![fixture("slow.sh").display().to_string()]), BTreeMap::new())
-        .with_timeout(Some(Duration::from_millis(200)));
+    let p = ExecProvisioner::new(
+        exec(vec![fixture("slow.sh").display().to_string()]),
+        BTreeMap::new(),
+    )
+    .with_timeout(Some(Duration::from_millis(200)));
     let started = Instant::now();
     let err = p
         .delete(&ProviderHostId("any".to_owned()))
@@ -156,7 +167,10 @@ async fn a_provisioner_op_times_out() {
 async fn a_provisioner_record_reads_the_wire_names() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let file = dir.path().join("hosts.json");
-    let p = ExecProvisioner::new(exec(vec![plugin().display().to_string()]), file_config(&file));
+    let p = ExecProvisioner::new(
+        exec(vec![plugin().display().to_string()]),
+        file_config(&file),
+    );
     let pool: PoolName = testing::unique("p").parse().expect("a pool name");
     let spec = spec(&pool);
     let record: HostRecord = p.create(&spec).await.expect("create");
