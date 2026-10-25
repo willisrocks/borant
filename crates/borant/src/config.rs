@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::model::Harness;
+use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
 use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
@@ -16,6 +17,7 @@ use borant_core::rules::pool::PoolConfig;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{BundleName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag};
 use borant_exec::ExecConfig;
+use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
 use borant_hub::ElasticConfig;
@@ -249,6 +251,12 @@ pub struct HubFile {
     /// The collections, by name, for example `personal` and `work`.
     #[serde(default)]
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
+    /// `[alerts]`: the notifier of the hub and its alert rules.
+    #[serde(default)]
+    pub alerts: AlertsFile,
+    /// `[notifiers.<name>]`, the programs that tell a person.
+    #[serde(default)]
+    pub notifiers: BTreeMap<String, NotifierFile>,
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
@@ -434,6 +442,53 @@ fn open_provisioners(
     Ok(out)
 }
 
+/// Opens the notifier of `[alerts].notifier`, if it names one. The desktop
+/// notifier is the default of a host, so `None` leaves that choice to the
+/// caller.
+pub fn open_notifier(
+    files: &BTreeMap<String, NotifierFile>,
+    name: Option<&str>,
+) -> anyhow::Result<Option<Box<dyn Notifier>>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let file = files.get(name).with_context(|| {
+        format!("[alerts] names the notifier {name:?}, which [notifiers] does not define")
+    })?;
+    anyhow::ensure!(
+        file.adapter == "exec",
+        "notifier {name}: unknown adapter {:?}, only \"exec\" exists",
+        file.adapter
+    );
+    anyhow::ensure!(!file.command.is_empty(), "notifier {name} has no command");
+    let credential = match &file.credential {
+        None => None,
+        Some(c) => Some((
+            env("CREDENTIALS_DIRECTORY")
+                .map(PathBuf::from)
+                .context("the notifier names a credential")?,
+            c.clone(),
+        )),
+    };
+    let exec = ExecConfig {
+        command: file.command.clone(),
+        env: BTreeMap::new(),
+        credential,
+        timeout: Duration::from_secs(file.timeout_secs.unwrap_or(30)),
+        // A notice is not a secret, but the runner does not know what the
+        // plugin prints, so its stderr stays out of the log.
+        log_stderr: false,
+    };
+    Ok(Some(Box::new(ExecNotifier::new(exec))))
+}
+
+impl HubFile {
+    /// The notifier of `[alerts]`, if this file names one.
+    pub fn notifier(&self) -> anyhow::Result<Option<Box<dyn Notifier>>> {
+        open_notifier(&self.notifiers, self.alerts.notifier.as_deref())
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostSection {
@@ -463,6 +518,72 @@ pub struct HostFile {
     #[serde(default)]
     pub commands: HarnessCommands,
     pub secrets: Option<SecretsFile>,
+    /// `[alerts]`: the notifier and the alert rules of this host.
+    #[serde(default)]
+    pub alerts: AlertsFile,
+    /// `[notifiers.<name>]`, the programs that tell a person.
+    #[serde(default)]
+    pub notifiers: BTreeMap<String, NotifierFile>,
+}
+
+/// `[alerts]` of `hub.toml` and `host.toml`: which notifier gets a notice,
+/// and the rules that fire one.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertsFile {
+    /// The name of a `[notifiers.<name>]` entry. `None` keeps the default of
+    /// the daemon: the desktop notifier on a host, none in the hub.
+    pub notifier: Option<String>,
+    /// The laptop sets true: it sends `hub.unreachable` when the hub goes.
+    pub watch_hub: Option<bool>,
+    /// Send a notice when an agent asks for a human.
+    pub needs_human: Option<bool>,
+    /// Minutes without an event before an agent counts as stalled.
+    pub stall_minutes: Option<u64>,
+    /// Minutes without a heartbeat before a host counts as offline.
+    pub host_offline_minutes: Option<u64>,
+    /// Minutes without a heartbeat before the hub counts as down.
+    pub hub_down_minutes: Option<u64>,
+}
+
+impl AlertsFile {
+    /// One line for the start log of a daemon: which rules are on, and with
+    /// which limits. The alert pass reads the values themselves.
+    pub fn summary(&self) -> String {
+        let flag = |v: Option<bool>, default: bool| if v.unwrap_or(default) { "on" } else { "off" };
+        format!(
+            "notifier={} needs_human={} stall_minutes={} host_offline_minutes={} hub_down_minutes={} watch_hub={}",
+            self.notifier.as_deref().unwrap_or("desktop"),
+            flag(self.needs_human, true),
+            self.stall_minutes.unwrap_or(30),
+            self.host_offline_minutes.unwrap_or(5),
+            self.hub_down_minutes.unwrap_or(2),
+            flag(self.watch_hub, false),
+        )
+    }
+}
+
+/// One `[notifiers.<name>]` entry. The table key is the name, so the file does
+/// not repeat it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifierFile {
+    /// The kind of adapter, `"exec"`.
+    pub adapter: String,
+    /// The program of an `exec` adapter, argv.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// The name of the systemd credential that the program reads.
+    pub credential: Option<String>,
+    /// The limit for one notice, `30` seconds by default.
+    pub timeout_secs: Option<u64>,
+}
+
+impl HostFile {
+    /// The notifier of `[alerts]`, if this file names one.
+    pub fn notifier(&self) -> anyhow::Result<Option<Box<dyn Notifier>>> {
+        open_notifier(&self.notifiers, self.alerts.notifier.as_deref())
+    }
 }
 
 /// `[secrets]` of `host.toml`. Every key is optional, so a host without
@@ -625,6 +746,10 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     };
     cfg.checkpoint_remote = env("BORANT_CHECKPOINT_REMOTE").or(h.checkpoint_remote.clone());
     cfg.notify = h.notify.unwrap_or(cfg!(target_os = "macos"));
+    // A host that names a notifier means to be told.
+    if file.alerts.notifier.is_some() {
+        cfg.notify = true;
+    }
     if let Some(v) = h.wakes_per_hour {
         cfg.wakes_per_hour = v;
     }
@@ -790,6 +915,82 @@ mod tests {
     #[test]
     fn default_host_name_is_valid() {
         assert!(default_host_name().parse::<HostName>().is_ok());
+    }
+
+    /// The `[alerts]` and `[notifiers.phone]` tables of the phase 2 spec.
+    const ALERTS: &str = r#"
+        [alerts]
+        notifier = "phone"
+        watch_hub = false
+        needs_human = true
+        stall_minutes = 30
+        host_offline_minutes = 5
+        hub_down_minutes = 2
+
+        [notifiers.phone]
+        adapter = "exec"
+        command = ["borant-notify-ntfy"]
+        credential = "notify-token"
+    "#;
+
+    #[test]
+    fn parses_the_alerts_and_a_notifier() {
+        for file in [
+            toml::from_str::<HubFile>(ALERTS).map(|f| (f.alerts, f.notifiers)),
+            toml::from_str::<HostFile>(ALERTS).map(|f| (f.alerts, f.notifiers)),
+        ] {
+            let (alerts, notifiers) = file.unwrap();
+            assert_eq!(alerts.notifier.as_deref(), Some("phone"));
+            assert_eq!(alerts.watch_hub, Some(false));
+            assert_eq!(alerts.stall_minutes, Some(30));
+            assert_eq!(alerts.hub_down_minutes, Some(2));
+            let phone = notifiers.get("phone").expect("the phone notifier");
+            assert_eq!(phone.adapter, "exec");
+            assert_eq!(phone.command, vec!["borant-notify-ntfy"]);
+            assert_eq!(phone.credential.as_deref(), Some("notify-token"));
+        }
+    }
+
+    #[test]
+    fn a_notifier_needs_a_definition_and_the_exec_adapter() {
+        // A plugin without a credential opens.
+        let plain = ALERTS.replace("credential = \"notify-token\"", "");
+        let file: HubFile = toml::from_str(&plain).unwrap();
+        assert!(file.notifier().unwrap().is_some(), "the phone plugin opens");
+        // No [alerts].notifier keeps the default of the daemon.
+        let none: HubFile = toml::from_str("[alerts]\nneeds_human = true\n").unwrap();
+        assert!(none.notifier().unwrap().is_none());
+        // A name without an entry is an error, not a silent desktop notice.
+        let missing: HubFile = toml::from_str("[alerts]\nnotifier = \"phone\"\n").unwrap();
+        assert!(missing.notifier().is_err());
+        let other = plain.replace("adapter = \"exec\"", "adapter = \"carrier-pigeon\"");
+        let unknown: HubFile = toml::from_str(&other).unwrap();
+        assert!(unknown.notifier().is_err());
+        // A credential names a file in the directory that systemd provides.
+        if env("CREDENTIALS_DIRECTORY").is_none() {
+            let with_credential: HubFile = toml::from_str(ALERTS).unwrap();
+            assert!(with_credential.notifier().is_err());
+        }
+    }
+
+    #[test]
+    fn the_alerts_of_a_host_parse_and_default_to_none() {
+        let host: HostFile = toml::from_str(ALERTS).unwrap();
+        assert_eq!(host.alerts.notifier.as_deref(), Some("phone"));
+        assert_eq!(host.notifiers.len(), 1);
+        assert_eq!(
+            host.alerts.summary(),
+            "notifier=phone needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
+        );
+        let plain: HostFile = toml::from_str("[host]\nname = \"laptop\"\n").unwrap();
+        assert_eq!(plain.alerts.notifier, None);
+        assert!(plain.notifiers.is_empty());
+        assert!(plain.notifier().unwrap().is_none());
+        // The defaults of a daemon that says nothing about alerts.
+        assert_eq!(
+            plain.alerts.summary(),
+            "notifier=desktop needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
+        );
     }
 }
 

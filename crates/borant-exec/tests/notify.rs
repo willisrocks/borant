@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use borant_core::ports::PortErrorKind;
 use borant_core::ports::{Notice, Notifier, Priority};
-use borant_exec::notify::ExecNotifier;
 use borant_exec::ExecConfig;
+use borant_exec::notify::ExecNotifier;
 use serde_json::{Value, json};
 
 /// The path of a fixture plugin.
