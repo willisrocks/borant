@@ -1326,6 +1326,7 @@ omp = ["lunaroute"]
             [roles.worker]
             harness = "omp"
             tools_deny = ["spawn", "move"]
+            sandbox = "namespace"
             spawns = []
             "#,
         )
@@ -1342,6 +1343,11 @@ omp = ["lunaroute"]
         assert_eq!(chief.skill.as_deref(), Some("borant:chief-of-staff"));
         let worker = f.roles.get(&"worker".parse().unwrap()).unwrap();
         assert_eq!(worker.tools_deny, vec!["spawn", "move"]);
+        assert_eq!(
+            worker.sandbox,
+            Some(borant_core::model::SandboxKind::Namespace),
+            "a role names the sandbox of its launches"
+        );
         assert!(worker.spawns.is_empty());
     }
 

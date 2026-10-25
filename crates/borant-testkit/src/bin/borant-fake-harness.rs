@@ -5,7 +5,9 @@
 //! one per line:
 //!
 //! - `WRITE <path> <text>`: write a file, as a tool call
-//! - `CHANNEL <name>` and `JOIN <name>`: create or join a channel
+//! - `READ <path>`: read a file, as a tool call, and append the result to
+//!   `reads.log` in the working directory (a sandbox test reads it outside)
+//! - `CHANNEL <name> [project]` and `JOIN <name>`: create or join a channel
 //! - `CREATE <channel> <title>`: create a task
 //! - `AFTER <channel> <blocker> <title>`: create a task blocked by another
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
@@ -92,6 +94,33 @@ impl Fake {
                 }
                 self.line(&format!("WROTE {a}"));
             }
+            "READ" => {
+                let read = std::fs::read_to_string(&a);
+                let ok = read.is_ok();
+                let detail = match &read {
+                    Ok(text) => format!("{} bytes", text.len()),
+                    Err(e) => e.to_string(),
+                };
+                self.event(LocalEvent::ToolCall {
+                    name: "read".into(),
+                    input: json!({"path": a.clone()}).to_string(),
+                })
+                .await?;
+                let r = self
+                    .event(LocalEvent::ToolResult {
+                        name: "read".into(),
+                        output: format!("read {a}: {detail}"),
+                        is_error: !ok,
+                    })
+                    .await?;
+                if let Some(f) = r.fenced {
+                    self.line(&format!("FENCED {f}"));
+                }
+                self.line(&format!("READ {a} {}", if ok { "ok" } else { "failed" }));
+                // The line is visible outside a sandbox, where the fake log of
+                // the agent is not: the clone is bound, its home is not.
+                append_read(&a, ok)?;
+            }
             "CREATE" => {
                 let v = self
                     .call(json!({"tool": "task_create", "channel": a, "task": {"title": b}}))
@@ -103,9 +132,11 @@ impl Fake {
                 ));
             }
             "CHANNEL" => {
-                let r = self
-                    .call(json!({"tool": "channel_create", "name": a}))
-                    .await;
+                let mut create = json!({"tool": "channel_create", "name": a});
+                if !b.is_empty() {
+                    create["project"] = json!(b);
+                }
+                let r = self.call(create).await;
                 self.line(&format!(
                     "CHANNEL {a} {}",
                     if r.is_ok() { "ok" } else { "failed" }
@@ -221,6 +252,18 @@ impl Fake {
         self.event(LocalEvent::TurnEnd).await?;
         Ok(go_on)
     }
+}
+
+/// Appends one `READ` result to `reads.log` in the working directory. A
+/// sandbox test reads that file from the host: the fake log in the home of the
+/// agent is inside the sandbox, and the clone is the bound directory.
+fn append_read(path: &str, ok: bool) -> anyhow::Result<()> {
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("reads.log")?;
+    writeln!(log, "READ {path} {}", if ok { "ok" } else { "failed" })?;
+    Ok(())
 }
 
 async fn register(client: &LocalClient) -> anyhow::Result<LocalSession> {
