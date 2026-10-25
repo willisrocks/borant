@@ -60,7 +60,7 @@ pub fn command(
 }
 
 /// The `[commands]` override of `harness`, when `host.toml` has one.
-fn custom_argv<'a>(harness: Harness, cfg: &'a HarnessCommands) -> &'a Option<Vec<String>> {
+fn custom_argv(harness: Harness, cfg: &HarnessCommands) -> &Option<Vec<String>> {
     match harness {
         Harness::ClaudeCode => &cfg.claude,
         Harness::Pi => &cfg.pi,

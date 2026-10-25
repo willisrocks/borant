@@ -79,7 +79,16 @@ rw = []
 ```
 
 Then run `borant host`. Every key is optional. Without `harnesses`, the
-daemon uses the harness programs that it finds on `PATH`.
+daemon uses the harness programs that it finds on `PATH` and in
+`~/.local/bin`.
+
+With `harnesses`, the daemon offers only the ones whose program it finds on
+that same search path, so a box never announces a harness that it cannot start:
+a missing program logs one warning that names the harness and the program. The
+check repeats at every heartbeat, so a harness that a person installs while the
+daemon runs is offered without a restart, and one whose program goes away is
+dropped. A launch whose program is gone fails at once with the program named,
+instead of waiting for the launch timeout.
 
 Environment variables override the files: `BORANT_HOME`, `BORANT_SOCKET`,
 `BORANT_NATS_URL` (a comma-separated list), `BORANT_HOST_NAME`,
