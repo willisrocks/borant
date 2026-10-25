@@ -32,6 +32,7 @@ fn agent() -> Agent {
         model_harness: Some(Harness::Fake),
         role: Some("worker".parse().unwrap()),
         collection: Some("work".parse().unwrap()),
+        bundles: Vec::new(),
         parent: Some("chief".parse().unwrap()),
         ..Default::default()
     }

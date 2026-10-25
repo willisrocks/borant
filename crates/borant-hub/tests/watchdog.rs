@@ -181,6 +181,7 @@ impl Fx {
                 task: None,
                 stop_on_close: None,
                 priority: None,
+                bundles: Vec::new(),
             },
             resolved: Resolved::default(),
             by: Sender::Human,

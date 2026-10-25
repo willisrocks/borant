@@ -184,6 +184,7 @@ async fn pinned_pending_move_is_not_placed() {
             task: None,
             stop_on_close: None,
             priority: None,
+            bundles: Vec::new(),
             channel: api(),
             prompt: "go".into(),
             harness: Some(Harness::ClaudeCode),

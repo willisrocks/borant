@@ -203,15 +203,30 @@ pub fn brief(prompt: &str, skill: Option<&str>) -> String {
     }
 }
 
-/// The bundles of a launch: the collection's first, then the role's, so that a
-/// later bundle wins on the same variable.
+/// The bundles of a launch: the collection's first, then the role's, then the
+/// channel's, then the spawn's, without duplicates, so that a later bundle
+/// wins on the same variable. The host puts the harness defaults before all of
+/// them.
 pub fn launch_bundles(
     collection: Option<&CollectionConfig>,
     role: Option<&RoleConfig>,
+    channel: &[BundleName],
+    spawn: &[BundleName],
 ) -> Vec<BundleName> {
     let of_collection = collection.map(|c| c.bundles.as_slice()).unwrap_or_default();
     let of_role = role.map(|r| r.bundles.as_slice()).unwrap_or_default();
-    of_collection.iter().chain(of_role).cloned().collect()
+    let mut out: Vec<BundleName> = Vec::new();
+    for bundle in of_collection
+        .iter()
+        .chain(of_role)
+        .chain(channel)
+        .chain(spawn)
+    {
+        if !out.contains(bundle) {
+            out.push(bundle.clone());
+        }
+    }
+    out
 }
 
 /// The author and committer of a launch, from its collection.
@@ -397,7 +412,8 @@ mod tests {
         }
     }
 
-    /// Rule: the bundles of a launch are the collection's, then the role's.
+    /// Rule: the bundles of a launch are the collection's, then the role's,
+    /// then the channel's, then the spawn's, without duplicates.
     #[test]
     fn roles_launch_bundles_put_the_collection_before_the_role() {
         let collection = CollectionConfig {
@@ -411,15 +427,22 @@ mod tests {
             bundles: vec!["fast".parse().unwrap()],
             ..RoleConfig::default()
         };
-        let bundles = launch_bundles(Some(&collection), Some(&role));
+        let channel = ["app-stg".parse().unwrap(), "fast".parse().unwrap()];
+        let spawn = ["prod-readonly".parse().unwrap()];
+        let bundles = launch_bundles(Some(&collection), Some(&role), &channel, &spawn);
         let names: Vec<String> = bundles.iter().map(|b| b.to_string()).collect();
-        assert_eq!(names, vec!["github-work", "fast"]);
+        assert_eq!(
+            names,
+            vec!["github-work", "fast", "app-stg", "prod-readonly"],
+            "each level follows the one before it, and a repeat keeps its first place"
+        );
         assert_eq!(
             git_author(Some(&collection)).map(|a| a.email),
             Some("you@work.example".to_owned())
         );
-        // A launch without a collection or a role gets neither.
-        assert!(launch_bundles(None, None).is_empty());
+        // A launch without a collection, a role, a channel, or a spawn gets
+        // nothing.
+        assert!(launch_bundles(None, None, &[], &[]).is_empty());
         assert_eq!(git_author(None), None);
     }
 }

@@ -76,6 +76,7 @@ async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str) {
             task: None,
             stop_on_close: None,
             priority: None,
+            bundles: Vec::new(),
             channel: api(),
             prompt: "fix the build".into(),
             harness: Some(Harness::ClaudeCode),

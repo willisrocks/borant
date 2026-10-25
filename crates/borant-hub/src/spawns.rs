@@ -16,7 +16,7 @@ use borant_core::rules::lease;
 use borant_core::rules::roles::{self, OnePer, SpawnInput};
 use borant_core::rules::schedule;
 use borant_core::rules::spawn::{agent_name_from_key, spawn_key_matches};
-use borant_core::{AgentId, ChannelName, FencingToken, HostName, RoleName, keys};
+use borant_core::{AgentId, BundleName, ChannelName, FencingToken, HostName, RoleName, keys};
 use serde_json::{Value, json};
 
 use crate::{Hub, Memory};
@@ -35,6 +35,9 @@ pub(crate) struct SpawnRequest {
     pub task: Option<TaskBinding>,
     pub stop_on_close: Option<bool>,
     pub priority: Option<i32>,
+    /// The bundles of the spawn level. It is the last merge level, so a host
+    /// must define every one of them at the launch.
+    pub bundles: Vec<BundleName>,
 }
 
 /// One line of the refusal reasons, for `borant ps`; `None` when nothing
@@ -97,6 +100,18 @@ impl Hub {
                 parent.id
             )));
         }
+        // A child never gets more access than its parent: an agent names only
+        // bundles that its own next launch would carry, a person any bundle.
+        if let Some(parent) = &parent {
+            let held = self.launch_bundles(parent);
+            for bundle in &req.bundles {
+                if !held.contains(bundle) {
+                    return Err(ApiError::denied(format!(
+                        "bundle {bundle} is not yours to give"
+                    )));
+                }
+            }
+        }
         let harness = match resolved
             .harness
             .or_else(|| parent.as_ref().map(|p| p.preferred_harness))
@@ -134,6 +149,7 @@ impl Hub {
             task: None,
             stop_on_close: req.stop_on_close,
             priority: Some(priority),
+            bundles: req.bundles.clone(),
         };
 
         // A retry with a key returns the first agent, or conflicts.
@@ -238,6 +254,7 @@ impl Hub {
             pinned: resolved.pinned,
             role: resolved.role.clone(),
             collection: resolved.collection.clone(),
+            bundles: req.bundles.clone(),
             parent: parent.as_ref().map(|p| p.id.clone()),
         };
         self.store
@@ -245,6 +262,9 @@ impl Hub {
             .await
             .map_err(|e| ApiError::new(e.code, format!("agent {id}: {}", e.message)))?;
         self.join(&id, &req.channel).await?;
+        // The join added the channel, so the first placement merges the
+        // channel's bundles too.
+        let agent = self.agent(&id).await?.value;
 
         let record = SpawnRecord {
             agent: id.clone(),

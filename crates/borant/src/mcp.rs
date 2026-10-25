@@ -173,6 +173,8 @@ pub struct Spawn {
     pub role: Option<String>,
     /// An idempotency key: a retry with the same key and arguments returns the first agent.
     pub key: Option<String>,
+    /// Secret bundles for the new agent, after the collection, role, and channel bundles.
+    pub bundles: Option<Vec<String>>,
     /// Bind the worker to an existing task, as CHANNEL/ID.
     pub task: Option<String>,
     /// Bind the worker to a new task with this title, in the channel.
@@ -231,6 +233,7 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
         "model": a.model,
         "role": a.role,
         "key": a.key,
+        "bundles": a.bundles,
         "task": task,
         "stop_on_close": a.stop_on_close,
         "priority": a.priority,
@@ -577,6 +580,7 @@ mod tests {
             model: None,
             role: Some("chief".into()),
             key: Some("k1".into()),
+            bundles: None,
             task: Some("api/01M5S3PATRKMGFD9C0HB1CS4ZK".into()),
             task_title: None,
             stop_on_close: Some(false),
@@ -613,18 +617,25 @@ mod tests {
         let titled = Spawn {
             task: None,
             task_title: Some("Fix the parser".into()),
+            bundles: Some(vec!["prod-readonly".to_owned()]),
             ..a
         };
         let call: ToolCall =
             serde_json::from_value(strip_nulls(spawn_request(&titled).unwrap())).unwrap();
         match call {
-            ToolCall::Spawn { task, .. } => assert_eq!(
-                task,
-                Some(borant_core::model::TaskBinding::New {
-                    channel: "api".parse().unwrap(),
-                    title: "Fix the parser".into(),
-                })
-            ),
+            ToolCall::Spawn { task, bundles, .. } => {
+                assert_eq!(
+                    task,
+                    Some(borant_core::model::TaskBinding::New {
+                        channel: "api".parse().unwrap(),
+                        title: "Fix the parser".into(),
+                    })
+                );
+                assert_eq!(
+                    bundles.iter().map(|b| b.as_str()).collect::<Vec<_>>(),
+                    vec!["prod-readonly"]
+                );
+            }
             other => panic!("not a spawn: {other:?}"),
         }
 

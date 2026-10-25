@@ -786,6 +786,7 @@ mod tests {
             pinned: false,
             role: None,
             collection: None,
+            bundles: Vec::new(),
             parent: None,
             paused: None,
         };
@@ -844,6 +845,7 @@ mod tests {
             pinned: false,
             role: None,
             collection: None,
+            bundles: Vec::new(),
             parent: None,
             paused: None,
         };
@@ -951,6 +953,7 @@ mod tests {
             pinned: false,
             role: None,
             collection: None,
+            bundles: Vec::new(),
             parent: None,
             paused: None,
         };

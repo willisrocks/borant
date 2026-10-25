@@ -227,6 +227,7 @@ impl Fx {
                 movable: true,
                 channels: vec![channel(i % CHANNELS)],
                 created: now,
+                bundles: Vec::new(),
                 ..Default::default()
             };
             put(&self.state, &keys::agent(&id), &a).await;
