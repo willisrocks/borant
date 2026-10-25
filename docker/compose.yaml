@@ -158,6 +158,39 @@ services:
     cap_add:
       - SYS_ADMIN
 
+  # The pause scenario of phase 10 runs alone, like sandbox: its hub carries
+  # the role with the turn cap that the scenario reaches. The heartbeat of its
+  # swarm is slow (see host-pause), so the lease that keeps a host online is
+  # slow with it.
+  hub-pause:
+    <<: *image
+    command: ["borant", "hub"]
+    profiles: [pause]
+    environment:
+      <<: *timing
+      BORANT_HEARTBEAT_SECS: "20"
+      BORANT_LEASE_SECS: "90"
+    volumes:
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/pause/hub.toml:/root/.borant/hub.toml:ro
+    depends_on: [nats, git]
+
+  # The one host of the pause scenario. Its heartbeat is slow on purpose: the
+  # hub counts the turns of a session on the heartbeat, so the three turns of
+  # the capped agent land in one window of the count and the third is the turn
+  # that reaches the cap.
+  host-pause:
+    <<: *host
+    hostname: host-pause
+    profiles: [pause]
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-pause
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "3"
+      BORANT_HEARTBEAT_SECS: "20"
+      BORANT_LEASE_SECS: "90"
+
   host-b:
     <<: *host
     hostname: host-b

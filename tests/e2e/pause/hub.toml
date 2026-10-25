@@ -1,0 +1,8 @@
+# The hub of the pause e2e scenario. It sets one role with a cap of two turns
+# a day, so the third turn of an agent with that role makes the hub stop it.
+# The env of the swarm sets the NATS url and the timings
+# (docker/compose.yaml, x-timing).
+
+[roles.capped]
+harness = "fake"
+max_turns_per_day = 2
