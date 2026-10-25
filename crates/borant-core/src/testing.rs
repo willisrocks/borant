@@ -16,7 +16,10 @@ use crate::model::{
 };
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
 use crate::ports::secrets::{SecretRef, SecretStore};
-use crate::ports::{Change, EventLog, MessageBus, PortErrorKind, SessionStore, StateStore};
+use crate::ports::{
+    Change, ChangeRequests, ChangeStatus, EventLog, MessageBus, PortErrorKind, SessionStore,
+    StateStore,
+};
 use crate::time::Timestamp;
 
 /// A unique name for one test run, so tests can share a backend.
@@ -473,6 +476,23 @@ fn assert_no_value(text: &str, known: &[(SecretRef, &str)], what: &str) {
             "{what} holds the value of {r:?}: {text}"
         );
     }
+}
+
+/// The change-request contract: a known URL reports the seeded status, and an
+/// unknown URL is `NotFound`. The adapter seeds the URL before the call, so
+/// the suite needs no write path.
+pub async fn change_requests_contract(
+    changes: &dyn ChangeRequests,
+    url: &str,
+    expected: ChangeStatus,
+) {
+    let got = changes.status(url).await.expect("a known change");
+    assert_eq!(got, expected, "a known change reports its status");
+    let err = changes
+        .status("https://example.invalid/no-such-change/1")
+        .await
+        .expect_err("an unknown change is NotFound");
+    assert_eq!(err.kind, PortErrorKind::NotFound, "{err}");
 }
 
 /// The event log contract: one event per id, oldest first, filters, and follow.
