@@ -13,16 +13,16 @@ use borant_core::{AgentId, ChannelName, HostName, SessionId, Timestamp, keys, su
 
 use crate::{Hub, Memory};
 
-/// How long a retired session that the hub cannot place in a turn gets before
-/// it is stopped anyway. `idle_since` is `None` both for a session in a turn
-/// and for a session that never reported a turn end (an omp session that waits
-/// for its first prompt), so waiting for a turn end that never comes would keep
-/// the session, its lease, and its clone for ever.
-pub(crate) const TURN_END_GRACE: Duration = Duration::from_secs(30);
+/// How long a retired session that the hub has no turn state for gets before
+/// it is stopped anyway. The heartbeat's `SessionStats` carries the `busy` of
+/// each session, which `TurnStart`/`TurnEnd` set, so this safety grace covers
+/// only a session that the host reports no stats for; waiting for a turn end
+/// of such a session could keep its lease and its clone for ever.
+pub(crate) const UNKNOWN_TURN_GRACE: Duration = Duration::from_secs(600);
 
 /// A retired agent that still waits for its stop: the host that runs its
-/// session, and when the retire that asked for the stop happened, so the grace
-/// has a start.
+/// session, and when the retire that asked for the stop happened, so the
+/// safety grace has a start.
 #[derive(Debug, Clone)]
 pub(crate) struct StopWait {
     pub host: HostName,
@@ -30,6 +30,19 @@ pub(crate) struct StopWait {
 }
 
 impl Hub {
+    /// Whether the last heartbeat says that the session of an agent runs a
+    /// turn, from the `busy` of its `SessionStats`. `None` means that the host
+    /// reported no stats for the session, so the hub cannot know its turn
+    /// state at all.
+    fn session_busy(mem: &Memory, host: &HostName, agent: &AgentId) -> Option<bool> {
+        mem.host_stats
+            .get(host)?
+            .sessions
+            .iter()
+            .find(|s| &s.agent == agent)
+            .map(|s| s.busy)
+    }
+
     /// Retires every agent that the closed task bound and that stops on close.
     /// Returns the agents that were retired.
     pub(crate) async fn retire_for_task(
@@ -57,9 +70,10 @@ impl Hub {
     }
 
     /// Retires one agent: its claims go back to open, no placement or wake
-    /// takes it again, and its session stops at the next turn end, or at
-    /// [`TURN_END_GRACE`] when the hub never learns of one (see
-    /// [`Hub::stop_retired`]). Returns whether a stop order went out now.
+    /// takes it again, and its session stops at once when it is not busy, else
+    /// at its next turn end (see [`Hub::stop_retired`]). A session that the
+    /// host reports no stats for stops at [`UNKNOWN_TURN_GRACE`]. Returns
+    /// whether a stop order went out now.
     pub(crate) async fn retire(&self, mem: &mut Memory, agent: &Agent) -> Result<bool, ApiError> {
         let now = self.now();
         let released = self.unclaim_everywhere(mem, &agent.id).await?;
@@ -84,17 +98,20 @@ impl Hub {
             .or_else(|| agent.host.clone());
         let mut stopped = false;
         if let (Some(session), Some(host)) = (session, host) {
+            // `busy` comes from the last heartbeat, and `idle_since` from the
+            // last turn end; either one says that no turn runs now.
+            let quiet = report.as_ref().is_some_and(|r| r.since.is_some())
+                || Self::session_busy(mem, &host, &agent.id) == Some(false);
             if mem.stopped.contains(&session) {
                 // A repeat retire: the stop went out already.
                 stopped = true;
-            } else if report.as_ref().is_some_and(|r| r.since.is_some()) {
-                // The turn already ended, so the session stops at once.
+            } else if quiet {
                 self.stop_session(mem, &agent.id, session, &host).await?;
                 stopped = true;
             } else {
-                // Unknown turn state: the heartbeat stops the session at the
-                // turn end, and at the grace when no turn end ever comes. The
-                // first retire keeps the start of the grace.
+                // A turn runs, or the hub has no stats for the session: the
+                // heartbeat stops it at the turn end, and at the safety grace
+                // when no stats ever arrive. The first retire keeps the start.
                 mem.stop_pending
                     .entry(agent.id.clone())
                     .or_insert(StopWait { host, since: now });
@@ -109,10 +126,10 @@ impl Hub {
         Ok(stopped)
     }
 
-    /// Stops the sessions of retired agents that ended a turn, or that the hub
-    /// cannot place in one, and frees the work dir of those whose session the
-    /// host no longer reports. The heartbeat carries the end of the last turn
-    /// of each session.
+    /// Stops the sessions of retired agents that are not busy, or that the hub
+    /// has no turn state for, and frees the work dir of those whose session
+    /// the host no longer reports. The heartbeat carries the end of the last
+    /// turn of each session, and the `busy` of each session.
     pub(crate) async fn stop_retired(
         &self,
         mem: &mut Memory,
@@ -130,15 +147,18 @@ impl Hub {
             if !doc.value.retired {
                 continue;
             }
-            // `idle_since` is `None` while the session is in a turn, and for a
-            // session that never ended one (an omp session that waits for its
-            // first prompt). The grace stops the second case instead of
-            // waiting for a turn end that never comes.
+            // A session that is not in a turn stops now: `idle_since` from its
+            // last turn end, or `busy: false` from the host. A busy session
+            // stops at its turn end, and one that the host reports no stats
+            // for stops at the safety grace, so no retired session waits for a
+            // turn end that no host will ever report.
+            let busy = Self::session_busy(mem, host, &s.agent);
             let due = s.idle_since.is_some()
-                || mem
-                    .stop_pending
-                    .get(&s.agent)
-                    .is_some_and(|w| w.host == *host && now.since(w.since) >= TURN_END_GRACE);
+                || busy == Some(false)
+                || (busy.is_none()
+                    && mem.stop_pending.get(&s.agent).is_some_and(|w| {
+                        w.host == *host && now.since(w.since) >= UNKNOWN_TURN_GRACE
+                    }));
             if !due {
                 continue;
             }
