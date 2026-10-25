@@ -124,7 +124,7 @@ async fn chief(fx: &Fx) -> Registered {
     fx.call(
         Some(&boss),
         ToolCall::ChannelCreate {
-            name: "api".parse().unwrap(),
+            name: "personal-api".parse().unwrap(),
             schema: None,
             project: None,
             branch: None,
@@ -144,7 +144,7 @@ async fn spawn(
     fx.call(
         Some(who),
         ToolCall::Spawn {
-            channel: "api".parse().unwrap(),
+            channel: "personal-api".parse().unwrap(),
             prompt: "do the work".into(),
             harness: None,
             host: None,
@@ -313,7 +313,7 @@ async fn roles_calls_deny_the_tools_of_the_role() {
     fx.call(
         Some(&worker),
         ToolCall::TaskList {
-            channel: "api".parse().unwrap(),
+            channel: "personal-api".parse().unwrap(),
             ready_only: false,
         },
     )
