@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, SessionEvent,
+    Agent, Harness, HostInfo, Lease, LeaseState, MemberState, MoveReason, Project, SessionEvent,
     SessionEventBody, SpawnRecord, SpawnState,
 };
 use borant_core::proto::{
@@ -15,7 +15,8 @@ use borant_core::rules::redact;
 use borant_core::rules::roles;
 use borant_core::rules::schedule::{self, HostView, PlacementReq, Reject};
 use borant_core::{
-    AgentId, BundleName, CollectionName, EventId, FencingToken, HostName, SessionId, keys, subjects,
+    AgentId, BundleName, CollectionName, EventId, FencingToken, HostName, MemberName, SessionId,
+    keys, subjects,
 };
 use serde_json::{Value, json};
 
@@ -449,16 +450,100 @@ impl Hub {
         })
     }
 
+    /// Validates a manual member switch (`borant move <agent> --member m`) and
+    /// records the choice on the agent, so the relaunch of the planned move
+    /// carries it in `LaunchOrder.members`.
+    ///
+    /// The member must be one of a bundle that the agent already uses, on the
+    /// target host (the current host when the move names none), for the
+    /// harness of the launch. A member that is limited now is a Conflict: the
+    /// person can switch again when it resets.
+    async fn switch_member(
+        &self,
+        agent: &AgentId,
+        member: &MemberName,
+        target: &mut MoveTarget,
+    ) -> Result<(), ApiError> {
+        let record = self.agent(agent).await?.value;
+        if record.members.is_empty() {
+            return Err(ApiError::invalid(format!(
+                "agent {agent} has no member bundle to switch"
+            )));
+        }
+        let host = target
+            .host
+            .clone()
+            .or_else(|| record.host.clone())
+            .ok_or_else(|| ApiError::invalid(format!("agent {agent} is not on a host")))?;
+        let harness = target.harness.unwrap_or(record.preferred_harness);
+        let info = self
+            .store
+            .get::<HostInfo>(&keys::host(&host))
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("no host {host}")))?
+            .value;
+        let bundle = record
+            .members
+            .keys()
+            .find(|bundle| {
+                info.members.get(*bundle).is_some_and(|known| {
+                    known.members.contains(member) && known.harnesses.contains(&harness)
+                })
+            })
+            .cloned()
+            .ok_or_else(|| {
+                let known = record
+                    .members
+                    .keys()
+                    .next()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "a bundle".into());
+                ApiError::invalid(format!("no member {member} in {known} on {host}"))
+            })?;
+        let state = self
+            .store
+            .get::<MemberState>(&crate::members::key(&bundle, member))
+            .await?;
+        if let Some(until) = state
+            .as_ref()
+            .and_then(|doc| doc.value.limited_until)
+            .filter(|until| *until > self.now())
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("member {member} is limited until {until}"),
+            ));
+        }
+        if record.members.get(&bundle) != Some(member) {
+            let mut updated = record;
+            updated.members.insert(bundle, member.clone());
+            self.store.upsert(&keys::agent(agent), &updated).await?;
+        }
+        // The switch relaunches on this host unless the move named another.
+        target.host = Some(host);
+        Ok(())
+    }
+
     pub(crate) async fn move_agents(
         &self,
         mem: &mut Memory,
         selector: &MoveSelector,
         target: MoveTarget,
+        member: Option<MemberName>,
     ) -> Result<Vec<AgentId>, ApiError> {
+        if member.is_some() && !matches!(selector, MoveSelector::Agent(_)) {
+            return Err(ApiError::invalid("a member switch names one agent"));
+        }
         let mut moved = Vec::new();
         // Slots that earlier agents of this move take on their target.
         let mut planned: HashMap<HostName, u32> = HashMap::new();
         for id in self.selected(selector).await? {
+            // A member switch first validates the member and records it on the
+            // agent, so the relaunch carries it in `LaunchOrder.members`.
+            let mut target = target.clone();
+            if let Some(member) = &member {
+                self.switch_member(&id, member, &mut target).await?;
+            }
             // A retired agent is never placed again, so it does not move.
             if self.agent(&id).await?.value.retired {
                 tracing::info!(agent = %id, "move skipped: the agent is retired");
@@ -477,7 +562,10 @@ impl Hub {
             }
             match lease.map(|l| l.value.state) {
                 Some(LeaseState::Held { session, host, .. }) => {
-                    if target.host.as_ref() == Some(&host) && target.harness.is_none() {
+                    if member.is_none()
+                        && target.host.as_ref() == Some(&host)
+                        && target.harness.is_none()
+                    {
                         continue;
                     }
                     // Check the target before the session stops. A session
@@ -572,6 +660,7 @@ impl Hub {
                 mem,
                 &MoveSelector::FromHost(host.clone()),
                 MoveTarget::default(),
+                None,
             )
             .await?;
         let event = self

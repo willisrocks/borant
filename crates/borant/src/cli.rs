@@ -230,6 +230,10 @@ pub enum Command {
         /// Move to this host.
         #[arg(long)]
         here: bool,
+        /// Switch the agent to this member of its bundle, on the target host
+        /// (its current host unless --host names another).
+        #[arg(long, conflicts_with_all = ["from", "channel"])]
+        member: Option<MemberName>,
     },
     /// Move every agent away from a host and stop placing agents there.
     Drain { host: HostName },
@@ -1057,6 +1061,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             host,
             harness,
             here,
+            member,
         } => {
             let selector = match (agent, from, channel) {
                 (Some(a), None, None) => MoveSelector::Agent(a),
@@ -1075,6 +1080,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                     ToolCall::Move {
                         selector,
                         to: MoveTarget { host, harness },
+                        member,
                     },
                 )
                 .await?,
@@ -1348,6 +1354,8 @@ mod tests {
             "borant move w1 --here",
             "borant move --from laptop-a --here",
             "borant move --channel api --here",
+            "borant move w1 --member b",
+            "borant move w1 --member b --host vps-1",
             "borant drain vps-2",
             "borant attach w1",
             "borant spawn --channel api --prompt-file p.md",
@@ -1374,6 +1382,14 @@ mod tests {
             Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{line}: {e}"));
         }
         assert!(Cli::try_parse_from(["borant", "move", "w1", "--from", "h"]).is_err());
+        // A member switch names one agent.
+        assert!(
+            Cli::try_parse_from(["borant", "move", "w1", "--member", "b", "--from", "h"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["borant", "move", "w1", "--member", "b", "--channel", "api"])
+                .is_err()
+        );
         assert!(Cli::try_parse_from(["borant", "events", "--severity", "loud"]).is_err());
         assert!(
             Cli::try_parse_from([

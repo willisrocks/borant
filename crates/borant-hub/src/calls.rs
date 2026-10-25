@@ -387,8 +387,12 @@ impl Hub {
             ToolCall::AgentHistory { .. } => {
                 Err(ApiError::invalid("agent_history is not built yet"))
             }
-            ToolCall::Move { selector, to } => {
-                let moved = self.move_agents(mem, &selector, to).await?;
+            ToolCall::Move {
+                selector,
+                to,
+                member,
+            } => {
+                let moved = self.move_agents(mem, &selector, to, member).await?;
                 Ok(json!({ "moving": moved }))
             }
             ToolCall::Drain { host } => {

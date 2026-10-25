@@ -244,3 +244,163 @@ async fn members_every_member_limited_keeps_the_spawn_pending() {
         other => panic!("expected a launch after the reset, got {other:?}"),
     }
 }
+
+/// A claude-code agent of h1, launched with member `a` and registered, so it
+/// holds a lease and a switch goes through the planned move path.
+async fn running(
+    fx: &Fx,
+    owner: &borant_core::proto::Registered,
+    who: &str,
+) -> borant_core::proto::Registered {
+    spawn(fx, owner, who, Harness::ClaudeCode).await;
+    let v = fx
+        .req(CtlRequest::RegisterSession(
+            borant_core::proto::RegisterSession {
+                session: borant_core::SessionId::new(),
+                host: name("h1"),
+                harness: Harness::ClaudeCode,
+                pid: Some(1),
+                cwd: "/work".into(),
+                agent: Some(agent(who)),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("register the session of the switched agent");
+    serde_json::from_value(v).unwrap()
+}
+
+/// `MoveTarget` of a switch that stays where it is.
+fn stays() -> borant_core::proto::MoveTarget {
+    borant_core::proto::MoveTarget::default()
+}
+
+#[tokio::test]
+async fn members_switch_relaunches_with_the_named_member() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    let mut cmds = fx.commands("h1").await;
+    let w = running(&fx, &owner, "w1").await;
+    // The spawn launched it with the first member.
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.members.get(&bundle()), Some(&member("a")), "{o:?}");
+        }
+        other => panic!("expected the spawn launch, got {other:?}"),
+    }
+
+    fx.call(
+        None,
+        ToolCall::Move {
+            selector: borant_core::proto::MoveSelector::Agent(w.agent.clone()),
+            to: stays(),
+            member: Some(member("b")),
+        },
+    )
+    .await
+    .expect("switch to member b");
+
+    // The same host stops the session and relaunches it with the new member.
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::PrepareMove { agent: a, session }) => {
+            assert_eq!(a, w.agent);
+            assert_eq!(session, w.session);
+        }
+        other => panic!("expected prepare_move, got {other:?}"),
+    }
+    fx.req(CtlRequest::MoveReady {
+        agent: w.agent.clone(),
+        session: w.session,
+        token: w.token,
+    })
+    .await
+    .unwrap();
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.reason, borant_core::model::MoveReason::Planned);
+            assert_eq!(o.members.get(&bundle()), Some(&member("b")), "{o:?}");
+        }
+        other => panic!("expected the relaunch, got {other:?}"),
+    }
+    // The record keeps the member for the next launch too.
+    let doc = fx.state.get(&keys::agent(&w.agent)).await.unwrap().unwrap();
+    let saved: Agent = serde_json::from_slice(&doc.value).unwrap();
+    assert_eq!(saved.members.get(&bundle()), Some(&member("b")));
+}
+
+#[tokio::test]
+async fn members_switch_to_an_unknown_member_is_invalid() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    let mut cmds = fx.commands("h1").await;
+    let w = running(&fx, &owner, "w1").await;
+    assert!(matches!(
+        next_cmd(&mut cmds).await,
+        Some(HostCommand::Launch(_))
+    ));
+
+    let err = fx
+        .call(
+            None,
+            ToolCall::Move {
+                selector: borant_core::proto::MoveSelector::Agent(w.agent.clone()),
+                to: stays(),
+                member: Some(member("ghost")),
+            },
+        )
+        .await
+        .expect_err("ghost is not a member of claude_auth on h1");
+    assert_eq!(
+        err.code,
+        borant_core::proto::ApiErrorCode::Invalid,
+        "{err:?}"
+    );
+    assert_eq!(err.message, "no member ghost in claude_auth on h1");
+    // Nothing stopped: no prepare_move reached the host.
+    assert!(next_cmd(&mut cmds).await.is_none());
+}
+
+#[tokio::test]
+async fn members_switch_to_a_limited_member_is_a_conflict() {
+    let fx = Fx::new();
+    let owner = setup(&fx).await;
+    let mut cmds = fx.commands("h1").await;
+    let w = running(&fx, &owner, "w1").await;
+    assert!(matches!(
+        next_cmd(&mut cmds).await,
+        Some(HostCommand::Launch(_))
+    ));
+    let until = fx.clock.now().plus(Duration::from_secs(3_600));
+    let state = MemberState {
+        bundle: bundle(),
+        member: member("b"),
+        limited_until: Some(until),
+        waiting: vec![],
+    };
+    fx.state
+        .create(
+            "member.claude_auth.b",
+            serde_json::to_vec(&state).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let err = fx
+        .call(
+            None,
+            ToolCall::Move {
+                selector: borant_core::proto::MoveSelector::Agent(w.agent.clone()),
+                to: stays(),
+                member: Some(member("b")),
+            },
+        )
+        .await
+        .expect_err("member b is limited");
+    assert_eq!(
+        err.code,
+        borant_core::proto::ApiErrorCode::Conflict,
+        "{err:?}"
+    );
+    assert_eq!(err.message, format!("member b is limited until {until}"));
+    assert!(next_cmd(&mut cmds).await.is_none());
+}

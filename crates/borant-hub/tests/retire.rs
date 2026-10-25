@@ -409,6 +409,7 @@ async fn retire_never_comes_back() {
                     host: Some("h1".parse().unwrap()),
                     harness: None,
                 },
+                member: None,
             },
         )
         .await

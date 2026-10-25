@@ -183,7 +183,7 @@ to agents.
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
-| `borant move <agent> [--host H] [--harness X] [--here]` | Move one agent |
+| `borant move <agent> [--host H] [--harness X] [--here] [--member M]` | Move one agent, or switch it to another token-pool member |
 | `borant move --from <host> --here` | Move all agents of a host to this host |
 | `borant move --channel <channel> --here` | Move all members of a channel |
 | `borant drain <host>` | Move all agents away from a host |

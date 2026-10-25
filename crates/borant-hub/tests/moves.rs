@@ -263,6 +263,7 @@ async fn planned_move_waits_for_move_ready() {
                 host: Some(name("h2")),
                 harness: None,
             },
+            member: None,
         },
     )
     .await
@@ -305,6 +306,7 @@ async fn planned_move_to_a_full_host_fails_and_keeps_the_session() {
                     host: Some(name("h2")),
                     harness: None,
                 },
+                member: None,
             },
         )
         .await
@@ -403,6 +405,7 @@ async fn stale_end_session_does_not_take_the_lease() {
                 host: Some(name("h1")),
                 harness: None,
             },
+            member: None,
         },
     )
     .await
