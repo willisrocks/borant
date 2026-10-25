@@ -254,6 +254,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the schedules of hub.toml with their next and last fire.
+    Schedules {
+        /// Print the schedules as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop an agent, or every member of a channel. `#name` is a channel.
     Stop {
         /// An agent name, or `#channel`.
@@ -420,6 +426,38 @@ fn render_members(v: &Value) -> String {
                 "  {name:<12} {until:<46} {waiting} waiting   restarts (7 d): {restarts}"
             );
         }
+    }
+    out
+}
+
+/// One line per schedule: what a fire makes, when it next fires, and when it
+/// last did.
+fn render_schedules(v: &Value) -> String {
+    use std::fmt::Write as _;
+
+    let Some(list) = v.as_array() else {
+        return format!("{}\n", serde_json::to_string_pretty(v).unwrap_or_default());
+    };
+    if list.is_empty() {
+        return "no schedules in hub.toml\n".to_owned();
+    }
+    let mut out = String::new();
+    for s in list {
+        let target = match s["target"]["kind"].as_str().unwrap_or_default() {
+            "task" => format!("task #{}", s["target"]["channel"].as_str().unwrap_or("?")),
+            "message" => format!("message to {}", s["target"]["to"].as_str().unwrap_or("?")),
+            _ => "?".to_owned(),
+        };
+        let _ = writeln!(
+            out,
+            "{:<20} {:<26} next {:<21} last {:<21} {} ({})",
+            s["name"].as_str().unwrap_or("?"),
+            target,
+            s["next_fire"].as_str().unwrap_or("-"),
+            s["last_fire"].as_str().unwrap_or("-"),
+            s["cron"].as_str().unwrap_or("?"),
+            s["time_zone"].as_str().unwrap_or("?"),
+        );
     }
     out
 }
@@ -1213,6 +1251,14 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 print!("{}", render_members(&v));
             }
         }
+        Command::Schedules { json } => {
+            let v = call(&c, ToolCall::Schedules).await?;
+            if json {
+                pretty(&v);
+            } else {
+                print!("{}", render_schedules(&v));
+            }
+        }
         Command::Stop { target, grace } => pretty(
             &call(
                 &c,
@@ -1405,6 +1451,36 @@ mod tests {
         assert!(matches!(cli.command, Command::Top));
     }
 
+    /// `borant schedules` shows what the hub reply carries: the next and the
+    /// last fire of each schedule.
+    #[test]
+    fn schedules_render_the_next_and_last_fire() {
+        let v = json!([{
+            "name": "nightly-report",
+            "cron": "0 6 * * *",
+            "time_zone": "America/Los_Angeles",
+            "overlap": "skip",
+            "target": {
+                "kind": "task",
+                "channel": "reports",
+                "title": "Morning report for {date}",
+                "body": "Summarize the events of the last 24 hours.",
+            },
+            "next_fire": "2026-10-26T13:00:00Z",
+            "last_fire": "2026-10-25T13:00:00Z",
+        }]);
+        let line = render_schedules(&v);
+        for want in [
+            "nightly-report",
+            "task #reports",
+            "2026-10-26T13:00:00Z",
+            "2026-10-25T13:00:00Z",
+            "America/Los_Angeles",
+        ] {
+            assert!(line.contains(want), "{want} in {line:?}");
+        }
+    }
+
     #[test]
     fn parses_all_commands() {
         Cli::command().debug_assert();
@@ -1452,6 +1528,8 @@ mod tests {
             "borant logs w1 --follow",
             "borant inbox",
             "borant inbox --json",
+            "borant schedules",
+            "borant schedules --json",
             "borant answer api/01M5S3PATRKMGFD9C0HB1CS4ZK use postgres",
             "borant project add api git@github.com:me/api.git --branch dev --setup just",
             "borant project add api --from-cwd",
