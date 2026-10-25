@@ -1032,10 +1032,11 @@ scenario_pause() {
   sleep 30
   pause_free capped || { echo "  the hub placed the stopped agent again" >&2; return 1; }
 
-  # A person resumes it, and it holds a lease again.
+  # A person resumes it, and it holds a lease again. The resume of a
+  # cap-stopped agent starts the cap over, so the agent stays placed.
   out=$(borant_on host-pause resume capped) || return 1
   pause_placed "$out" capped || return 1
-  pause_resumed capped || return 1
+  wait_for "the resumed agent holds its lease" pause_holds capped || return 1
 
   # A person stops a second agent, which is idle, and resumes it. An idle
   # session ends at once with its lease released; a fenced turn does not
@@ -1080,20 +1081,6 @@ pause_beat() {
   local now
   now=$(pause_heartbeat) || return 1
   [ -n "$1" ] && [ -n "$now" ] && [ "$now" != "$1" ]
-}
-
-# The agent holds a lease again after a resume, read every 0.2 s. The turn
-# counter of the day of a capped agent is still at its cap, so the hub pauses
-# the agent again at its next heartbeat: its lease is short, and a waiter of
-# one second can miss it.
-pause_resumed() {
-  local i
-  for i in $(seq 1 50); do
-    pause_holds "$1" && return 0
-    sleep 0.2
-  done
-  echo "  $1 holds no lease after the resume" >&2
-  return 1
 }
 
 # The hub published `agent.paused` for the capped agent, with the cap as the
