@@ -44,6 +44,8 @@ async fn host(fx: &Fx, harnesses: &[Harness], members: &[&str]) {
                 harnesses: vec![Harness::ClaudeCode],
             },
         )]),
+        pool: None,
+        tags: Vec::new(),
     };
     fx.req(CtlRequest::RegisterHost { info })
         .await
