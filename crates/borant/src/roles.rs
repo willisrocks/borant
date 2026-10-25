@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::SystemClock;
+use borant_core::ports::Notifier;
 use borant_core::proto::CtlRequest;
 use borant_core::subjects;
 use borant_host::outbox::Outbox;
@@ -34,6 +35,14 @@ fn shutdown_on_signal() -> CancellationToken {
 
 async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)> {
     let file = config::hub_file()?;
+    // A name in [alerts] that [notifiers] does not define fails the start,
+    // not the first notice. The alert pass takes the notifier this builds.
+    let notifier = file.notifier()?;
+    tracing::info!(
+        alerts = %file.alerts.summary(),
+        notifier_built = notifier.is_some(),
+        "the alert rules of this hub"
+    );
     let nats = borant_nats::connect(&file.nats.to_config(name)).await?;
     let mut cfg = HubConfig {
         lease: file.timing.lease_config()?,
@@ -85,6 +94,13 @@ pub async fn run_hub() -> anyhow::Result<()> {
 pub async fn run_host() -> anyhow::Result<()> {
     let file = config::host_file()?;
     let mut cfg = config::host_config(&file).await?;
+    // The desktop notifier stays the default on a laptop; [alerts].notifier
+    // replaces it, for example with the phone plugin. A bad name fails the
+    // start, before the daemon takes a socket.
+    let notifier: Box<dyn Notifier> = match file.notifier()? {
+        Some(n) => n,
+        None => Box::new(DesktopNotifier),
+    };
     cfg.socket = Some(config::socket());
     if tokio::net::UnixStream::connect(cfg.socket()).await.is_ok() {
         anyhow::bail!(
@@ -100,13 +116,14 @@ pub async fn run_host() -> anyhow::Result<()> {
     let outbox = Outbox::open(&cfg.home.join("outbox.db"))?;
     let socket = config::socket();
     tracing::info!(host = %cfg.name, launcher = %cfg.launcher, harnesses = ?cfg.harnesses, "host daemon starting");
+    tracing::info!(alerts = %file.alerts.summary(), "the alert rules of this host");
     let host = Host::new(
         cfg,
         Arc::new(nats.bus()),
         Arc::new(nats.session()),
         Arc::new(SystemClock),
         launcher,
-        Some(Box::new(DesktopNotifier)),
+        Some(notifier),
         Some(Arc::new(nats.events())),
         outbox,
     );

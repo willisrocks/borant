@@ -7,6 +7,7 @@
 //! The reply of a plugin can hold secret values, so nothing from stdout goes
 //! into a log line or an error message. The caller gets the `ok` value itself.
 
+pub mod notify;
 pub mod provision;
 
 use std::collections::BTreeMap;
