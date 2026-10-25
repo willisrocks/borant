@@ -499,6 +499,9 @@ pub struct HostSection {
     pub launcher: Option<String>,
     pub max_agents: Option<u32>,
     pub always_on: Option<bool>,
+    /// The memory that the host keeps free for itself, in megabytes. 1024
+    /// when unset.
+    pub reserve_mem_mb: Option<u32>,
     pub pool: Option<PoolName>,
     pub tags: Option<Vec<Tag>>,
     pub ssh: Option<String>,
@@ -801,6 +804,9 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     if let Some(v) = h.keep_turns {
         cfg.keep_turns = v;
     }
+    if let Some(v) = h.reserve_mem_mb {
+        cfg.reserve_mem_mb = v;
+    }
     let timing = file.timing.lease_config()?;
     cfg.lease = timing.lease;
     cfg.heartbeat = timing.heartbeat;
@@ -1043,6 +1049,22 @@ mod tests {
             plain.alerts.summary(),
             "notifier=desktop needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
         );
+    }
+
+    #[tokio::test]
+    async fn reserve_mem_mb_reaches_the_host_config() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            harnesses = ["pi"]
+            reserve_mem_mb = 2048
+            "#,
+        )
+        .unwrap();
+        assert_eq!(host_config(&file).await.unwrap().reserve_mem_mb, 2048);
+        // A host that names no reserve keeps the default of 1024 MB.
+        let plain: HostFile = toml::from_str("[host]\nharnesses = [\"pi\"]\n").unwrap();
+        assert_eq!(host_config(&plain).await.unwrap().reserve_mem_mb, 1024);
     }
 
     #[tokio::test]
