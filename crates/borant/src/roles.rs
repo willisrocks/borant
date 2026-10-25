@@ -91,9 +91,21 @@ fn hub_from(
 
 pub async fn run_hub() -> anyhow::Result<()> {
     let (nats, cfg, notifier) = hub_parts("borant-hub").await?;
+    let listen = cfg.http.listen;
     let hub = hub_from(&nats, cfg, notifier);
     // Retry until NATS is up, so the hub can start before the broker.
     let shutdown = shutdown_on_signal();
+    // The read-only listener runs beside `borant.ctl`: a bind error is a log
+    // line, and the control plane keeps serving.
+    if let Some(listen) = listen {
+        let hub = hub.clone();
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            if let Err(e) = borant_hub::http::serve(hub, listen, shutdown).await {
+                tracing::error!("the hub HTTP listener failed: {e:#}");
+            }
+        });
+    }
     loop {
         match hub.clone().run(shutdown.clone()).await {
             Ok(()) => return Ok(()),

@@ -380,9 +380,9 @@ impl Hub {
         Ok(())
     }
 
-    /// Places the queued spawns, highest priority first, then the oldest. A
-    /// record that does not fit does not block the ones after it.
-    pub(crate) async fn place_queued(&self) -> Result<(), ApiError> {
+    /// The spawns that wait for a placement or a launch, in placement order:
+    /// highest priority first, then the oldest.
+    async fn pending_spawns(&self) -> Result<Vec<SpawnRecord>, ApiError> {
         let mut queued: Vec<SpawnRecord> = self
             .store
             .list::<SpawnRecord>(keys::SPAWN_PREFIX)
@@ -397,7 +397,19 @@ impl Hub {
                 .then_with(|| a.queued_at.cmp(&b.queued_at))
                 .then_with(|| a.agent.cmp(&b.agent))
         });
-        for record in queued {
+        Ok(queued)
+    }
+
+    /// How many spawns wait for a placement or a launch, for
+    /// `borant_spawn_queue_length`.
+    pub(crate) async fn spawn_queue_length(&self) -> Result<usize, ApiError> {
+        Ok(self.pending_spawns().await?.len())
+    }
+
+    /// Places the queued spawns, highest priority first, then the oldest. A
+    /// record that does not fit does not block the ones after it.
+    pub(crate) async fn place_queued(&self) -> Result<(), ApiError> {
+        for record in self.pending_spawns().await? {
             let Ok(agent) = self.agent(&record.agent).await else {
                 // The agent row and the record disagree: drop the record.
                 self.store.delete(&keys::spawn(&record.agent)).await?;

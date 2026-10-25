@@ -11,6 +11,7 @@ pub mod changes;
 pub mod elastic;
 mod events;
 pub mod export;
+pub mod http;
 mod inbox;
 mod leases;
 mod members;
@@ -219,6 +220,13 @@ impl Hub {
 
     pub fn now(&self) -> Timestamp {
         self.clock.now()
+    }
+
+    /// When this hub started serving, for `borant_hub_start_time_seconds`.
+    /// A hub that has not served yet (`Hub::run` sets it after the restart
+    /// grace) reports its clock now.
+    pub async fn serving_since(&self) -> Timestamp {
+        self.mem.lock().await.started.unwrap_or_else(|| self.now())
     }
 
     /// Handles one request. Requests run one at a time.
