@@ -480,6 +480,12 @@ impl Host {
         let ev = self.event_record(agent, session, body);
         match self.inner.store.append(agent, &ev).await {
             Ok(_) => {
+                // A session that writes an event is not stalled.
+                if let Some(id) = session
+                    && let Some(s) = self.state().sessions.get_mut(&id)
+                {
+                    s.last_event_at = Some(ev.at);
+                }
                 if is_turn {
                     let due = {
                         let mut st = self.state();
