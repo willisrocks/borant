@@ -1026,12 +1026,19 @@ scenario_pause() {
   pause_placed "$out" capped || return 1
   pause_resumed capped || return 1
 
-  # A person stops a second agent, which is idle, and resumes it. Its grace is
-  # short, so a session whose idle report the hub has not seen yet still ends
-  # within the run.
+  # A person stops a second agent, which is idle, and resumes it. An idle
+  # session ends at once with its lease released; a fenced turn does not
+  # release its lease, so the scenario waits for a heartbeat that carries the
+  # idle report of the agent before it stops it.
   start_agent host-pause helper demo
   wait_for "the helper registered" pause_holds helper || return 1
+  borant_on host-pause send helper "WRITE helper.txt ready" >/dev/null
+  wait_for "the first turn of the helper" log_has host-pause helper "WROTE helper.txt" || return 1
+  sleep 2
+  seen=$(pause_heartbeat) || return 1
+  wait_for "a heartbeat of the pause host" pause_beat "$seen" || return 1
   borant_on host-pause stop helper --grace 5 >/dev/null || return 1
+  wait_for "the stopped helper ended" log_has host-pause helper SIGTERM || return 1
   wait_for "the stopped helper holds no lease" pause_free helper || return 1
   wait_for "the inbox names the stop of the helper" pause_helper_stopped || return 1
   out=$(borant_on host-pause resume helper) || return 1
