@@ -187,7 +187,7 @@ services:
       BORANT_HOST_NAME: host-pause
       BORANT_LAUNCHER: process
       BORANT_HARNESSES: fake
-      BORANT_MAX_AGENTS: "3"
+      BORANT_MAX_AGENTS: "4"
       BORANT_HEARTBEAT_SECS: "20"
       BORANT_LEASE_SECS: "90"
 
