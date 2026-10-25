@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+axum.workspace = true
 borant-core.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -25,4 +26,6 @@ ulid.workspace = true
 [dev-dependencies]
 borant-core = { workspace = true, features = ["testing"] }
 borant-memory.workspace = true
+http-body-util.workspace = true
 tempfile.workspace = true
+tower.workspace = true
