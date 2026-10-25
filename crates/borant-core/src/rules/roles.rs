@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{BundleName, CollectionName, RoleName, Tag};
-use crate::model::{Agent, GitAuthor, Harness};
+use crate::model::{Agent, GitAuthor, Harness, SandboxKind};
 
 /// One `[roles.<name>]` entry of `hub.toml`. Every field is optional except
 /// `spawns`, which defaults to empty.
@@ -46,6 +46,8 @@ pub struct RoleConfig {
     /// Bundles that the role adds to the launch.
     #[serde(default)]
     pub bundles: Vec<BundleName>,
+    /// The sandbox that a launch of this role asks of a host.
+    pub sandbox: Option<SandboxKind>,
 }
 
 /// One `[collections.<name>]` entry of `hub.toml`.
@@ -102,6 +104,9 @@ pub struct Resolved {
     /// The bundles that the role adds to the launch.
     pub bundles: Vec<BundleName>,
     pub skill: Option<String>,
+    /// The sandbox that the role asks of a host.
+    #[serde(default)]
+    pub sandbox: Option<SandboxKind>,
 }
 
 /// A spawn that a role cannot explain.
@@ -149,6 +154,7 @@ pub fn resolve(
         one_per: config.one_per,
         bundles: config.bundles.clone(),
         skill: config.skill.clone(),
+        sandbox: config.sandbox,
     })
 }
 
@@ -291,6 +297,7 @@ mod tests {
             on_parent_host: false,
             prefer: vec![],
             bundles: vec!["github-work".parse().unwrap()],
+            sandbox: None,
         };
         let table = roles(&[("worker", worker.clone())]);
         let parent = Agent {

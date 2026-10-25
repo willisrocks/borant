@@ -15,6 +15,16 @@ use crate::ids::{
 use crate::rules::roles::Resolved;
 use crate::time::Timestamp;
 
+/// A kind of sandbox that a host can run an agent in. A kind, not a product:
+/// the adapter that builds the sandbox lives in `borant-launch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxKind {
+    /// A file-system namespace: the harness sees only its own mounts, and not
+    /// the credentials, the other agents' clones, or the tmux socket.
+    Namespace,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
@@ -251,6 +261,13 @@ pub struct HostInfo {
     /// Every bundle that the host defines, for a launch of a collection.
     #[serde(default)]
     pub bundles: Vec<BundleName>,
+    /// The memory in megabytes that the host keeps free for itself, so that
+    /// no new agent lands on a host that would be starved. 1024 when unset.
+    #[serde(default)]
+    pub reserve_mem_mb: Option<u32>,
+    /// The sandboxes that this host offers.
+    #[serde(default)]
+    pub sandboxes: Vec<SandboxKind>,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -270,6 +287,8 @@ impl Default for HostInfo {
             pool: None,
             tags: Vec::new(),
             bundles: Vec::new(),
+            reserve_mem_mb: None,
+            sandboxes: Vec::new(),
         }
     }
 }
@@ -455,9 +474,35 @@ pub struct SpawnRecord {
     pub state: SpawnState,
     #[serde(default)]
     pub attempts: u32,
-    /// The error of the last rejected placement, for `spawn_queue`.
-    #[serde(default)]
-    pub last_reject: Option<String>,
+    /// The first failed rule of each host at the last refused placement, for
+    /// `spawn_queue`. A v0.7.0 record holds one string and no host, so it
+    /// parses and is dropped: the next attempt writes the list.
+    #[serde(default, deserialize_with = "de_last_reject")]
+    pub last_reject: Vec<(HostName, String)>,
+}
+
+/// Reads `last_reject` of a queue record: the list of this version, or the
+/// one string of a v0.7.0 record.
+fn de_last_reject<'de, D>(d: D) -> Result<Vec<(HostName, String)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        List(Vec<(HostName, String)>),
+        Old(String),
+    }
+    Ok(match Option::<Wire>::deserialize(d)? {
+        Some(Wire::List(list)) => list,
+        Some(Wire::Old(text)) => {
+            // A v0.7.0 reason is one string for the whole placement, so it
+            // names no host. The next attempt writes the list.
+            drop(text);
+            Vec::new()
+        }
+        None => Vec::new(),
+    })
 }
 
 /// Where a queued spawn is.
@@ -711,6 +756,12 @@ pub struct HostStats {
     /// The used memory, as a percentage from 0 to 100.
     #[serde(default)]
     pub mem_used_pct: f64,
+    /// The memory available in megabytes, from `sysinfo`.
+    #[serde(default)]
+    pub mem_avail_mb: Option<u64>,
+    /// The free space of the disk that holds `BORANT_HOME`, in megabytes.
+    #[serde(default)]
+    pub disk_avail_mb: Option<u64>,
     #[serde(default)]
     pub outbox_depth: u64,
     /// The round trip of the previous heartbeat, in milliseconds.

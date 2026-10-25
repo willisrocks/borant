@@ -13,7 +13,7 @@ use crate::ids::{
 };
 use crate::model::{
     CloseReason, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason, NewTask, Project,
-    RepoInfo, Target, TaskBinding, TaskPatch, UsageWindow,
+    RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -556,6 +556,9 @@ pub struct LaunchOrder {
     /// The author and committer of this agent's commits, from its collection.
     #[serde(default)]
     pub git_author: Option<GitAuthor>,
+    /// The sandbox that this launch asks of its host, from its role.
+    #[serde(default)]
+    pub sandbox: Option<SandboxKind>,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -579,6 +582,7 @@ impl Default for LaunchOrder {
             members: BTreeMap::new(),
             bundles: Vec::new(),
             git_author: None,
+            sandbox: None,
         }
     }
 }
