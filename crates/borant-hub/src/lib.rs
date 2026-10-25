@@ -6,6 +6,7 @@
 //! restart on a large store still answers requests.
 
 mod calls;
+pub mod elastic;
 pub mod export;
 mod leases;
 mod members;
@@ -15,17 +16,20 @@ mod prune;
 mod store;
 mod tasks;
 
-use std::collections::{HashMap, HashSet};
+pub use elastic::ElasticConfig;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::model::{HubLease, Lease, MoveReason};
+use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::{
-    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, SessionId, Timestamp, keys,
-    subjects,
+    AgentId, BundleName, Clock, FencingToken, HostName, MemberName, PoolName, SessionId, Timestamp,
+    keys, subjects,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -39,6 +43,9 @@ pub struct HubConfig {
     pub lease: LeaseConfig,
     /// A name for this hub instance, stored in `lease.hub`.
     pub instance: String,
+    /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of
+    /// `hub.toml`. `None`, or no pool, keeps today's hub.
+    pub elastic: Option<ElasticConfig>,
 }
 
 impl Default for HubConfig {
@@ -46,6 +53,7 @@ impl Default for HubConfig {
         Self {
             lease: LeaseConfig::default(),
             instance: format!("hub-{}", ulid::Ulid::generate()),
+            elastic: None,
         }
     }
 }
@@ -93,6 +101,12 @@ pub(crate) struct Memory {
     pub reports: HashMap<(BundleName, MemberName), Report>,
     /// Bundles whose limited members were already logged once.
     pub limit_warned: HashSet<BundleName>,
+    /// When the elastic rules last ran.
+    pub last_elastic: Option<Timestamp>,
+    /// When a failed create lets the pool create again.
+    pub elastic_backoff: BTreeMap<PoolName, Timestamp>,
+    /// The capabilities of each provisioner, read once at the first pass.
+    pub elastic_caps: BTreeMap<String, ProvisionerCapabilities>,
     pub maintenance: bool,
 }
 
@@ -199,7 +213,15 @@ impl Hub {
         }
         let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
         self.tick_leases(leases).await?;
-        self.park_idle(park::DEFAULT_IDLE_TIMEOUT).await.map(|_| ())
+        // The elastic pools park with the idle timeout of each pool; a hub
+        // with no pool keeps the one timeout for its hosts.
+        match &self.cfg.elastic {
+            Some(elastic) if !elastic.pools.is_empty() => self.tick_elastic().await,
+            _ => self
+                .park_idle(None, park::DEFAULT_IDLE_TIMEOUT)
+                .await
+                .map(|_| ()),
+        }
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then

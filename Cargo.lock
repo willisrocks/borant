@@ -261,6 +261,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "borant-core",
+ "borant-exec",
  "borant-host",
  "borant-hub",
  "borant-launch",

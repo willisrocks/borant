@@ -4,14 +4,20 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::model::Harness;
+use borant_core::ports::provision::Provisioner;
 use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
+use borant_core::rules::pool::PoolConfig;
 use borant_core::{BundleName, HostName, MemberName, PoolName, Tag};
+use borant_exec::ExecConfig;
+use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
+use borant_hub::ElasticConfig;
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -58,6 +64,78 @@ where
         .split(',')
         .map(|s| s.trim().parse::<T>().map_err(anyhow::Error::from))
         .collect()
+}
+
+/// A duration of `hub.toml`: `"10s"`, `"20m"`, `"1h"`, `"1h30m"`, or a plain
+/// number of seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span(pub Duration);
+
+impl<'de> Deserialize<'de> for Span {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl serde::de::Visitor<'_> for V {
+            type Value = Span;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a duration such as \"20m\", or a number of seconds")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Span, E> {
+                parse_span(v).map(Span).map_err(E::custom)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs(v)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs(u64::try_from(v).unwrap_or(0))))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs_f64(v.max(0.0))))
+            }
+        }
+
+        d.deserialize_any(V)
+    }
+}
+
+/// Parses `"10s"`, `"20m"`, `"1h"`, `"2d"`, `"1h30m"`, or a number of seconds.
+fn parse_span(text: &str) -> anyhow::Result<Duration> {
+    let mut total = 0.0;
+    let mut number = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            number.push(c);
+            continue;
+        }
+        if c == ' ' {
+            continue;
+        }
+        let value: f64 = number
+            .parse()
+            .with_context(|| format!("{text:?} is not a duration"))?;
+        number.clear();
+        let unit = match c {
+            's' => 1.0,
+            'm' => 60.0,
+            'h' => 3600.0,
+            'd' => 86_400.0,
+            _ => anyhow::bail!("{text:?}: the unit {c:?} is not s, m, h, or d"),
+        };
+        total += value * unit;
+    }
+    if !number.is_empty() {
+        let value: f64 = number
+            .parse()
+            .with_context(|| format!("{text:?} is not a duration"))?;
+        total += value;
+    }
+    anyhow::ensure!(total > 0.0, "{text:?} is not a duration");
+    Ok(Duration::from_secs_f64(total))
 }
 
 /// Resolves the pool and the tags of a host. `BORANT_POOL` and `BORANT_TAGS`
@@ -156,6 +234,197 @@ pub struct HubFile {
     #[serde(default)]
     pub timing: Timing,
     pub instance: Option<String>,
+    #[serde(default)]
+    pub elastic: ElasticFile,
+    /// `[provisioners.<name>]`, the backend of each pool.
+    #[serde(default)]
+    pub provisioners: BTreeMap<String, ProvisionerFile>,
+    /// `[[pools]]`, the shapes of the hosts that the hub creates.
+    #[serde(default)]
+    pub pools: Vec<PoolFile>,
+}
+
+/// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
+/// `min_warm`, so `deny_unknown_fields` refuses them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElasticFile {
+    /// How often the rules run, `"10s"` by default.
+    pub tick: Option<Span>,
+    /// How long a host may go without a heartbeat, `"10m"` by default.
+    pub lost_timeout: Option<Span>,
+    /// How long a pool waits after a failed create, `"5m"` by default.
+    pub create_backoff: Option<Span>,
+    /// The cap of the month, all pools together.
+    pub monthly_budget_usd: Option<f64>,
+}
+
+/// One `[provisioners.<name>]` entry. The table key is the name, so the file
+/// does not repeat it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionerFile {
+    /// The kind of adapter, `"exec"`.
+    pub adapter: String,
+    /// The program of an `exec` adapter, argv.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// The table that every request carries, as strings.
+    #[serde(default)]
+    pub config: BTreeMap<String, String>,
+    /// The name of the systemd credential that the program reads.
+    pub credential: Option<String>,
+    /// One timeout for every op, over the default of each.
+    pub timeout_secs: Option<u64>,
+}
+
+/// One `[[pools]]` entry of `hub.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolFile {
+    pub name: PoolName,
+    /// One `[provisioners.<name>]` entry.
+    pub provisioner: String,
+    pub size: String,
+    pub region: String,
+    /// Opaque: only the backend reads it. `None` asks for its default image.
+    pub image: Option<String>,
+    /// The prefix of the host names of the pool, the pool name and a dash by
+    /// default.
+    pub name_prefix: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    pub harnesses: Vec<Harness>,
+    pub agents_per_host: u32,
+    pub max_hosts: usize,
+    /// How long a ready host with no agent stays, `"20m"` by default.
+    #[serde(default)]
+    pub idle_timeout: Option<Span>,
+    /// How long a create may take, `"10m"` by default.
+    #[serde(default)]
+    pub boot_timeout: Option<Span>,
+    pub monthly_budget_usd: Option<f64>,
+    /// The price of one host-hour, when the backend reports no price.
+    pub price_hour_usd: Option<f64>,
+}
+
+impl HubFile {
+    /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections, with one
+    /// adapter for each provisioner. `None` for a hub that names no pool,
+    /// which then behaves as before.
+    pub fn elastic_config(&self) -> anyhow::Result<Option<ElasticConfig>> {
+        if self.pools.is_empty() {
+            return Ok(None);
+        }
+        let tick = self.elastic.tick.unwrap_or(Span(Duration::from_secs(10))).0;
+        let lost_timeout = self
+            .elastic
+            .lost_timeout
+            .unwrap_or(Span(Duration::from_secs(10 * 60)))
+            .0;
+        let create_backoff = self
+            .elastic
+            .create_backoff
+            .unwrap_or(Span(Duration::from_secs(5 * 60)))
+            .0;
+        let mut pools = Vec::new();
+        for file in &self.pools {
+            anyhow::ensure!(
+                self.provisioners.contains_key(&file.provisioner),
+                "pool {} names the unknown provisioner {}",
+                file.name,
+                file.provisioner
+            );
+            anyhow::ensure!(
+                file.agents_per_host > 0,
+                "pool {} has no slot for an agent",
+                file.name
+            );
+            pools.push(PoolConfig {
+                name: file.name.clone(),
+                provisioner: file.provisioner.clone(),
+                size: file.size.clone(),
+                region: file.region.clone(),
+                image: file.image.clone(),
+                name_prefix: file
+                    .name_prefix
+                    .clone()
+                    .unwrap_or_else(|| format!("{}-", file.name)),
+                tags: file.tags.clone(),
+                harnesses: file.harnesses.clone(),
+                agents_per_host: file.agents_per_host,
+                max_hosts: file.max_hosts,
+                idle_timeout: file
+                    .idle_timeout
+                    .unwrap_or(Span(Duration::from_secs(20 * 60)))
+                    .0,
+                boot_timeout: file
+                    .boot_timeout
+                    .unwrap_or(Span(Duration::from_secs(10 * 60)))
+                    .0,
+                lost_timeout,
+                backoff_until: None,
+                monthly_budget_usd: file.monthly_budget_usd,
+                price_hour_usd: file.price_hour_usd,
+            });
+        }
+        Ok(Some(ElasticConfig {
+            tick,
+            lost_timeout,
+            create_backoff,
+            monthly_budget_usd: self.elastic.monthly_budget_usd,
+            pools,
+            provisioners: open_provisioners(&self.provisioners)?,
+        }))
+    }
+}
+
+/// Opens the adapter of each provisioner. A pool host can be created only by
+/// a backend that this binary has.
+fn open_provisioners(
+    files: &BTreeMap<String, ProvisionerFile>,
+) -> anyhow::Result<BTreeMap<String, Arc<dyn Provisioner>>> {
+    let mut out: BTreeMap<String, Arc<dyn Provisioner>> = BTreeMap::new();
+    for (name, file) in files {
+        let adapter: Arc<dyn Provisioner> = match file.adapter.as_str() {
+            "exec" => {
+                anyhow::ensure!(
+                    !file.command.is_empty(),
+                    "provisioner {name} has no command"
+                );
+                let credential = match &file.credential {
+                    None => None,
+                    Some(c) => Some((
+                        env("CREDENTIALS_DIRECTORY")
+                            .map(PathBuf::from)
+                            .context("the provisioner names a credential")?,
+                        c.clone(),
+                    )),
+                };
+                let exec = ExecConfig {
+                    command: file.command.clone(),
+                    env: BTreeMap::new(),
+                    credential,
+                    timeout: Duration::from_secs(60),
+                    // A create carries boot values, one-time join data, so a
+                    // plugin that echoes them must not put them in the log.
+                    log_stderr: false,
+                };
+                let config = file
+                    .config
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect();
+                Arc::new(
+                    ExecProvisioner::new(exec, config)
+                        .with_timeout(file.timeout_secs.map(Duration::from_secs)),
+                )
+            }
+            other => anyhow::bail!("provisioner {name}: unknown adapter {other:?}"),
+        };
+        out.insert(name.clone(), adapter);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -617,5 +886,141 @@ omp = ["lunaroute"]
             toml::from_str::<HostFile>("[secrets.bundles.x]\nstore = \"s\"\nnope = 1\n").is_err(),
             "deny_unknown_fields stays"
         );
+    }
+}
+
+#[cfg(test)]
+mod elastic_tests {
+    use super::*;
+
+    /// The phase 4 spec example of `hub.toml`, without comments and with a
+    /// neutral plugin name.
+    const SPEC_HUB: &str = r#"
+[elastic]
+tick = "10s"
+lost_timeout = "10m"
+create_backoff = "5m"
+monthly_budget_usd = 80
+
+[provisioners.cloud]
+adapter = "exec"
+command = ["borant-provision-fake"]
+config = { firewall = "locked", ssh_key = "borant" }
+
+[[pools]]
+name = "workers"
+provisioner = "cloud"
+size = "small"
+region = "r1"
+image = "worker"
+name_prefix = "borant-e"
+tags = ["vps"]
+harnesses = ["claude-code", "omp"]
+agents_per_host = 4
+max_hosts = 2
+idle_timeout = "20m"
+boot_timeout = "10m"
+monthly_budget_usd = 60
+price_hour_usd = 0.1
+"#;
+
+    #[test]
+    fn config_parses_the_spec_hub_toml() {
+        let file: HubFile = toml::from_str(SPEC_HUB).expect("the spec example");
+        let elastic = file.elastic_config().unwrap().expect("a pool");
+        assert_eq!(elastic.tick, Duration::from_secs(10));
+        assert_eq!(elastic.lost_timeout, Duration::from_secs(600));
+        assert_eq!(elastic.create_backoff, Duration::from_secs(300));
+        assert_eq!(elastic.monthly_budget_usd, Some(80.0));
+        assert_eq!(elastic.provisioners.len(), 1);
+        assert!(elastic.provisioners.contains_key("cloud"));
+
+        let pool = &elastic.pools[0];
+        assert_eq!(pool.name, "workers".parse::<PoolName>().unwrap());
+        assert_eq!(pool.provisioner, "cloud");
+        assert_eq!(pool.size, "small");
+        assert_eq!(pool.region, "r1");
+        assert_eq!(pool.image.as_deref(), Some("worker"));
+        assert_eq!(pool.name_prefix, "borant-e");
+        assert_eq!(pool.tags, vec!["vps".parse::<Tag>().unwrap()]);
+        assert_eq!(pool.harnesses, vec![Harness::ClaudeCode, Harness::Omp]);
+        assert_eq!(pool.agents_per_host, 4);
+        assert_eq!(pool.max_hosts, 2);
+        assert_eq!(pool.idle_timeout, Duration::from_secs(1200));
+        assert_eq!(pool.boot_timeout, Duration::from_secs(600));
+        assert_eq!(pool.monthly_budget_usd, Some(60.0));
+        assert_eq!(pool.price_hour_usd, Some(0.1));
+        // The rules take the lost timeout and the backoff from the pool.
+        assert_eq!(pool.lost_timeout, elastic.lost_timeout);
+        assert_eq!(pool.backoff_until, None);
+    }
+
+    #[test]
+    fn config_without_pools_has_no_elastic() {
+        let file: HubFile = toml::from_str("[elastic]\ntick = \"5s\"\n").unwrap();
+        assert!(file.elastic_config().unwrap().is_none());
+        let file: HubFile = toml::from_str("").unwrap();
+        assert!(file.elastic_config().unwrap().is_none());
+    }
+
+    #[test]
+    fn config_refuses_the_cut_and_unknown_keys() {
+        for cut in ["keep_stopped = 1", "min_warm = 1", "nope = 1"] {
+            let toml = format!(
+                "[[pools]]\nname = \"workers\"\nprovisioner = \"cloud\"\nsize = \"small\"\nregion = \"r1\"\nharnesses = [\"omp\"]\nagents_per_host = 1\nmax_hosts = 1\n{cut}\n"
+            );
+            assert!(
+                toml::from_str::<HubFile>(&toml).is_err(),
+                "{cut} is refused"
+            );
+        }
+        assert!(
+            toml::from_str::<HubFile>("[elastic]\nnope = 1\n").is_err(),
+            "deny_unknown_fields stays"
+        );
+        assert!(
+            toml::from_str::<HubFile>("[provisioners.cloud]\nadapter = \"exec\"\nnope = 1\n")
+                .is_err(),
+            "deny_unknown_fields stays"
+        );
+    }
+
+    #[test]
+    fn config_refuses_a_pool_with_an_unknown_provisioner() {
+        let toml = r#"
+[[pools]]
+name = "workers"
+provisioner = "cloud"
+size = "small"
+region = "r1"
+harnesses = ["omp"]
+agents_per_host = 1
+max_hosts = 1
+"#;
+        let file: HubFile = toml::from_str(toml).unwrap();
+        let err = file.elastic_config().unwrap_err().to_string();
+        assert!(err.contains("unknown provisioner"), "{err}");
+    }
+
+    #[test]
+    fn spans_parse_human_durations() {
+        for (text, secs) in [
+            ("10s", 10),
+            ("20m", 1200),
+            ("1h", 3600),
+            ("2d", 172_800),
+            ("1h30m", 5400),
+            ("45", 45),
+            ("1.5h", 5400),
+        ] {
+            assert_eq!(
+                parse_span(text).unwrap(),
+                Duration::from_secs(secs),
+                "{text}"
+            );
+        }
+        assert!(parse_span("").is_err());
+        assert!(parse_span("10x").is_err());
+        assert!(parse_span("m").is_err());
     }
 }
