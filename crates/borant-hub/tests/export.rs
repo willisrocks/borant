@@ -40,6 +40,7 @@ fn agent_doc(id: &AgentId, channels: Vec<ChannelName>) -> Agent {
         model_harness: None,
         project: None,
         members: Default::default(),
+        pinned: false,
     }
 }
 

@@ -224,6 +224,7 @@ impl Fx {
                 model_harness: None,
                 project: None,
                 members: Default::default(),
+                pinned: false,
             };
             put(&self.state, &keys::agent(&id), &a).await;
             let lease = Lease {

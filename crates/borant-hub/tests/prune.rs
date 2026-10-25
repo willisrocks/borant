@@ -72,6 +72,7 @@ fn agent_doc(id: &AgentId, session: Option<SessionId>) -> Agent {
         model_harness: None,
         project: None,
         members: Default::default(),
+        pinned: false,
     }
 }
 
