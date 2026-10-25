@@ -65,6 +65,16 @@ pub struct ChannelCreate {
     pub name: String,
     /// A JSON Schema object for task properties. Leave out for the default.
     pub schema: Option<Map<String, Value>>,
+    /// A project name. A spawn in the channel clones the project.
+    pub project: Option<String>,
+    /// The base branch for spawns. Defaults to the default branch of the project.
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectRef {
+    /// The project name.
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -157,6 +167,8 @@ pub struct Spawn {
     pub host: Option<String>,
     /// An agent ID for the new agent.
     pub name: Option<String>,
+    /// The model for the harness, for example 'opus'. Defaults to the harness default.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -259,7 +271,7 @@ impl BorantMcp {
         &self,
         Parameters(a): Parameters<ChannelCreate>,
     ) -> Result<String, String> {
-        self.forward(json!({"tool": "channel_create", "name": a.name, "schema": a.schema}))
+        self.forward(json!({"tool": "channel_create", "name": a.name, "schema": a.schema, "project": a.project, "branch": a.branch}))
             .await
     }
 
@@ -375,7 +387,18 @@ impl BorantMcp {
 
     #[tool(description = "Start a new worker agent in a channel on a host that Borant picks.")]
     async fn spawn(&self, Parameters(a): Parameters<Spawn>) -> Result<String, String> {
-        self.forward(json!({"tool": "spawn", "channel": a.channel, "prompt": a.prompt, "harness": a.harness, "host": a.host, "name": a.name}))
+        self.forward(json!({"tool": "spawn", "channel": a.channel, "prompt": a.prompt, "harness": a.harness, "host": a.host, "name": a.name, "model": a.model}))
+            .await
+    }
+
+    #[tool(description = "List all projects: git repositories that spawns clone.")]
+    async fn project_list(&self, Parameters(_): Parameters<NoArgs>) -> Result<String, String> {
+        self.forward(json!({"tool": "project_list"})).await
+    }
+
+    #[tool(description = "Show one project.")]
+    async fn project_get(&self, Parameters(a): Parameters<ProjectRef>) -> Result<String, String> {
+        self.forward(json!({"tool": "project_get", "name": a.name}))
             .await
     }
 
@@ -425,6 +448,8 @@ mod tests {
                 "channel_list",
                 "channel_transfer",
                 "members",
+                "project_get",
+                "project_list",
                 "schema_extend",
                 "schema_get",
                 "send",
