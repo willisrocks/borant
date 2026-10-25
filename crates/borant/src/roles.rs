@@ -47,13 +47,17 @@ async fn hub_parts(name: &str) -> anyhow::Result<(borant_nats::Nats, HubConfig)>
 }
 
 fn hub_from(nats: &borant_nats::Nats, cfg: HubConfig) -> Arc<Hub> {
-    Arc::new(Hub::new(
-        Arc::new(nats.state()),
-        Arc::new(nats.bus()),
-        Arc::new(nats.session()),
-        Arc::new(SystemClock),
-        cfg,
-    ))
+    Arc::new(
+        Hub::new(
+            Arc::new(nats.state()),
+            Arc::new(nats.bus()),
+            Arc::new(nats.session()),
+            Arc::new(SystemClock),
+            cfg,
+        )
+        // Every hub write publishes its swarm event to the durable log.
+        .with_events(Arc::new(nats.events())),
+    )
 }
 
 pub async fn run_hub() -> anyhow::Result<()> {
