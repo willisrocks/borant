@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use borant_core::model::{CloseReason, Harness, Project, Target, TaskBinding, UsageWindow};
-use borant_core::proto::{MoveSelector, MoveTarget, ToolCall};
+use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
     TaskId, Timestamp,
@@ -254,6 +254,19 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Stop an agent, or every member of a channel. `#name` is a channel.
+    Stop {
+        /// An agent name, or `#channel`.
+        target: String,
+        /// The grace before a turn that does not end is fenced.
+        #[arg(long)]
+        grace: Option<u32>,
+    },
+    /// Resume a stopped agent, or a stopped channel. `#name` is a channel.
+    Resume {
+        /// An agent name, or `#channel`.
+        target: String,
+    },
     /// Attach this terminal to the session of an agent.
     Attach { agent: AgentId },
     /// Serve the Borant MCP tools on stdio (Claude Code starts this).
@@ -479,6 +492,15 @@ fn parse_window(text: &str) -> anyhow::Result<UsageWindow> {
         name: name.to_owned(),
         used,
         resets_at: rfc3339(resets_at)?,
+    })
+}
+
+/// `#channel` is a channel; anything else is an agent. `borant stop` and
+/// `borant resume` take either.
+pub fn pause_selector(text: &str) -> anyhow::Result<PauseSelector> {
+    Ok(match text.strip_prefix('#') {
+        Some(name) => PauseSelector::Channel(name.parse()?),
+        None => PauseSelector::Agent(text.parse()?),
     })
 }
 
@@ -1191,6 +1213,25 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 print!("{}", render_members(&v));
             }
         }
+        Command::Stop { target, grace } => pretty(
+            &call(
+                &c,
+                ToolCall::Stop {
+                    selector: pause_selector(&target)?,
+                    grace_secs: grace,
+                },
+            )
+            .await?,
+        ),
+        Command::Resume { target } => pretty(
+            &call(
+                &c,
+                ToolCall::Resume {
+                    selector: pause_selector(&target)?,
+                },
+            )
+            .await?,
+        ),
         Command::Spawn {
             channel,
             prompt_file,

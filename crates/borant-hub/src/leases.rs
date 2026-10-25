@@ -167,6 +167,8 @@ impl Hub {
         }
         // A retired agent stops at the turn end that this heartbeat reports.
         self.stop_retired(mem, host, sessions).await?;
+        // A paused agent stops at the turn end that this heartbeat reports.
+        self.stop_paused(mem, host, sessions).await?;
         Ok(HeartbeatReply { lost, renewed })
     }
 
@@ -343,6 +345,14 @@ impl Hub {
                 format!("only one {role} per {scope}"),
             ));
         }
+        // A paused agent runs no session: a stop is not lifted by a retry of
+        // the harness.
+        if existing.as_ref().is_some_and(|d| d.value.paused.is_some()) {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("agent {agent_id} is paused"),
+            ));
+        }
         let new_lease = lease::acquire(
             &agent_id,
             lease_doc.as_ref().map(|d| &d.value),
@@ -442,7 +452,14 @@ impl Hub {
         mem.pending_moves.remove(&agent_id);
         mem.park_sent.remove(&agent_id);
         mem.idle.remove(&agent_id);
+        // A new session counts its turns from zero.
+        mem.turns_seen.remove(&agent_id);
         tracing::info!(agent = %agent_id, session = %r.session, token = new_lease.token.0, "session registered");
+        // The cap of `max_session_hours` counts from here, and a move starts
+        // a new session.
+        self.store
+            .upsert(&crate::pause::session_start_key(&agent_id), &now)
+            .await?;
         let host = session.host.clone();
         let event = self.lease_event(
             now,
@@ -667,7 +684,7 @@ impl Hub {
         };
         let agent = agent.value;
         // A retired agent is never placed again: no takeover and no wake.
-        if agent.retired {
+        if agent.retired || agent.paused.is_some() {
             return Ok(());
         }
 
@@ -676,6 +693,7 @@ impl Hub {
         // its claims, because the hub will not release it.
         let base = mem.expired_at.get(&agent_id).copied().unwrap_or(since);
         if !agent.pinned
+            && agent.paused.is_none()
             && now.since(base) >= cfg.claim_timeout
             && mem.claims_released.insert(agent_id.clone())
         {
@@ -756,7 +774,7 @@ impl Hub {
             let placed = self
                 .place_agent(mem, &agent, MoveReason::Takeover, Default::default(), None)
                 .await?;
-            if !placed && !agent.retired {
+            if !placed && !agent.retired && agent.paused.is_none() {
                 // No host fits now. The demand stays as a pending move, so
                 // the elastic executor can create a pool host for it and the
                 // tick places the agent when that host registers. It goes at

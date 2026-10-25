@@ -196,7 +196,7 @@ impl Hub {
     }
 
     /// Sends one stop order to the host of the session, once.
-    async fn stop_session(
+    pub(crate) async fn stop_session(
         &self,
         mem: &mut Memory,
         agent: &AgentId,

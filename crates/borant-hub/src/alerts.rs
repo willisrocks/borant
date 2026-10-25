@@ -175,6 +175,8 @@ impl Hub {
             .list::<Agent>(keys::AGENT_PREFIX)
             .await?
             .into_iter()
+            // A paused agent runs no turn, so it cannot stall.
+            .filter(|d| d.value.paused.is_none())
             .map(|d| AgentAlert {
                 agent: d.value.id,
                 pinned: d.value.pinned,

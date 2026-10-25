@@ -328,7 +328,7 @@ impl Hub {
             return Ok(None);
         };
         let agent = agent.value;
-        if agent.pinned || agent.retired {
+        if agent.pinned || agent.retired || agent.paused.is_some() {
             return Ok(None);
         }
         let harness = harness.unwrap_or(agent.preferred_harness);

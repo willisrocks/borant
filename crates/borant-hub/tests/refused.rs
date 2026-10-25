@@ -162,6 +162,7 @@ impl Fx {
             state: SpawnState::Queued,
             attempts: 0,
             last_reject: Vec::new(),
+            queue_reason: None,
         };
         let bytes = serde_json::to_vec(&record).unwrap();
         self.state
