@@ -333,6 +333,95 @@ async fn retire_an_idle_session_stops_at_once() {
     assert!(next_cmd(&mut cmds).await.is_none());
 }
 
+/// A session that never reports a turn end (an omp session that waits for its
+/// first prompt reports no `idle_since` at all) is stopped at the retire grace,
+/// so a retired agent cannot keep its lease and its session for ever.
+#[tokio::test]
+async fn retire_stops_a_session_that_never_reports_a_turn_end_at_the_grace() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    // No heartbeat at all before the close: the hub knows nothing about the
+    // turn of the session, only the session that the agent row names.
+    close(&fx, &owner, &bound).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the turn may still run"
+    );
+
+    // The host reports the session with no turn end: the grace runs.
+    fx.heartbeat("h1", &w, None).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "the grace runs");
+    fx.clock.advance(Duration::from_secs(29));
+    fx.heartbeat("h1", &w, None).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "no stop before the grace"
+    );
+
+    // Past the grace, the stop goes out even though no turn ended.
+    fx.clock.advance(Duration::from_secs(2));
+    fx.heartbeat("h1", &w, None).await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop after the grace, got {other:?}"),
+    }
+    fx.heartbeat("h1", &w, None).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the hub sends one stop for the session"
+    );
+}
+
+/// A cancel of a session that has not ended its turn says `stopped: false`
+/// and when the stop comes, so a reply never claims a stop that did not go out.
+#[tokio::test]
+async fn retire_cancel_says_stopping_when_the_turn_has_not_ended() {
+    let (fx, owner, w, _bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    fx.heartbeat("h1", &w, None).await;
+
+    let reply = fx
+        .call(
+            Some(&owner),
+            ToolCall::Cancel {
+                agent: w.agent.clone(),
+                close_task: None,
+            },
+        )
+        .await
+        .expect("cancel");
+
+    assert_eq!(reply["cancelled"], true);
+    assert_eq!(reply["stopped"], false, "no stop went out yet");
+    assert_eq!(reply["stopping"], "at the turn end");
+    assert!(fx.agent_of(&w.agent).await.retired);
+    assert!(next_cmd(&mut cmds).await.is_none(), "no stop in a turn");
+}
+
+/// The work dir of a retired agent goes also when a person stopped its session
+/// from outside: the host reports no session, so the clone goes without any
+/// stop of the hub.
+#[tokio::test]
+async fn retire_deletes_the_work_dir_of_a_session_stopped_from_outside() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    fx.heartbeat("h1", &w, None).await;
+    close(&fx, &owner, &bound).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "the session runs");
+
+    // The owner killed the session: the host no longer reports it.
+    fx.heartbeat_empty("h1").await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::DeleteWork { agent }) => assert_eq!(agent, w.agent),
+        other => panic!("expected a delete-work order, got {other:?}"),
+    }
+    fx.heartbeat_empty("h1").await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "one delete for the agent"
+    );
+}
+
 /// The work dir of a retired agent goes only after its session ended: the
 /// stop first, and the delete from a heartbeat that no longer reports it.
 #[tokio::test]
