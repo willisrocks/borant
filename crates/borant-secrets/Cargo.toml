@@ -12,7 +12,9 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 borant-core.workspace = true
+borant-exec.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

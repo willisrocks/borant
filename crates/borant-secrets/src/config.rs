@@ -4,12 +4,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use borant_core::ports::secrets::SecretStore;
-use borant_core::ports::{PortError, PortErrorKind, PortResult};
+use borant_core::ports::{PortError, PortResult};
+use borant_exec::{ExecConfig, describe};
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::{EnvStore, FileStore};
+use crate::{EnvStore, ExecStore, FileStore};
 
 /// One entry of `[secrets.stores]`, tagged by `kind`.
 #[derive(Clone, Deserialize)]
@@ -58,21 +61,66 @@ impl fmt::Debug for StoreConfig {
 }
 
 /// Builds the store of one config entry. A caller that fails a store logs the
-/// error and leaves out the harnesses whose bundles use it.
+/// error and leaves out the harnesses whose bundles use it. The `exec` arm
+/// runs the `describe` handshake, so a plugin that is not a secrets plugin
+/// with `resolve` fails here, not at the first launch.
 pub async fn open_store(
     cfg: &StoreConfig,
     credentials_dir: Option<&Path>,
 ) -> PortResult<Arc<dyn SecretStore>> {
-    // The exec store reads the directory of the credential file.
-    let _ = credentials_dir;
     match cfg {
         StoreConfig::Env {} => Ok(Arc::new(EnvStore::new())),
         StoreConfig::File { root } => Ok(Arc::new(FileStore::new(root.clone()))),
-        StoreConfig::Exec { .. } => Err(PortError::new(
-            PortErrorKind::Other,
-            "exec store not built yet",
-        )),
+        StoreConfig::Exec {
+            command,
+            env,
+            credential,
+            timeout_secs,
+        } => {
+            let exec = exec_config(
+                command,
+                env,
+                credential.as_deref(),
+                *timeout_secs,
+                credentials_dir,
+            )?;
+            let described = describe(&exec, "secrets").await?;
+            if described.get("resolve").and_then(Value::as_bool) != Some(true) {
+                return Err(PortError::invalid(
+                    "the exec plugin has no resolve: it cannot be a secrets store",
+                ));
+            }
+            Ok(Arc::new(ExecStore::new(exec)))
+        }
     }
+}
+
+/// The runner config of one store. A `credential` names a file in the
+/// credentials directory, which the runner passes to the plugin.
+fn exec_config(
+    command: &[String],
+    env: &BTreeMap<String, String>,
+    credential: Option<&str>,
+    timeout_secs: u64,
+    credentials_dir: Option<&Path>,
+) -> PortResult<ExecConfig> {
+    let credential = match credential {
+        None => None,
+        Some(name) => {
+            let dir = credentials_dir.ok_or_else(|| {
+                PortError::invalid(format!(
+                    "the store names the credential {name:?} but there is no credentials directory"
+                ))
+            })?;
+            Some((dir.to_path_buf(), name.to_owned()))
+        }
+    };
+    Ok(ExecConfig {
+        command: command.to_vec(),
+        env: env.clone(),
+        credential,
+        timeout: Duration::from_secs(timeout_secs),
+    })
 }
 
 #[cfg(test)]
@@ -164,7 +212,7 @@ OP_SERVICE_ACCOUNT_TOKEN = "must-not-be-printed"
     }
 
     #[tokio::test]
-    async fn opens_env_and_file_and_refuses_exec() {
+    async fn opens_env_and_file() {
         let env = open_store(&StoreConfig::Env {}, None).await.unwrap();
         assert_eq!(env.kind(), "env");
 
@@ -178,19 +226,21 @@ OP_SERVICE_ACCOUNT_TOKEN = "must-not-be-printed"
         .unwrap();
         assert_eq!(file.kind(), "file");
         assert!(file.capabilities().resolve);
+    }
 
+    #[tokio::test]
+    async fn an_exec_store_without_a_command_is_invalid() {
         let err = open_store(
             &StoreConfig::Exec {
-                command: vec!["plugin".into()],
+                command: Vec::new(),
                 env: Default::default(),
-                credential: Some("store-token".into()),
+                credential: None,
                 timeout_secs: 10,
             },
             None,
         )
         .await
         .unwrap_err();
-        assert_eq!(err.kind, borant_core::ports::PortErrorKind::Other);
-        assert_eq!(err.message, "exec store not built yet");
+        assert_eq!(err.kind, borant_core::ports::PortErrorKind::Invalid);
     }
 }
