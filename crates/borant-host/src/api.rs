@@ -76,9 +76,10 @@ struct EventsQuery {
     /// `1` or `true` keeps the stream open for the events published from now
     /// on. Without it the reply holds the events of the filter and closes.
     follow: Option<String>,
-    /// Kinds, comma separated or repeated. An entry may end in `.*`.
-    #[serde(default)]
-    kinds: Vec<String>,
+    /// Kinds, comma separated, for example `lease.expired,delivery.*`. An
+    /// entry may end in `.*`. A single value, because a query map cannot
+    /// deserialize into a list.
+    kinds: Option<String>,
     agent: Option<AgentId>,
     channel: Option<ChannelName>,
     host: Option<HostName>,
@@ -185,8 +186,9 @@ async fn events(
 ) -> Result<impl IntoResponse, ApiFail> {
     let kinds: Vec<String> = q
         .kinds
-        .iter()
-        .flat_map(|k| k.split(','))
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned)
@@ -265,12 +267,33 @@ mod tests {
         EventsQuery {
             since: None,
             follow: None,
-            kinds: kinds.iter().map(|k| (*k).to_owned()).collect(),
+            kinds: Some(kinds.join(",")),
             agent: Some("w1".parse().unwrap()),
             channel: None,
             host: None,
             min_severity: None,
         }
+    }
+
+    /// The query of the CLI parses, which a list field cannot do: the query
+    /// is a map, so `kinds` arrives as one string.
+    #[test]
+    fn the_events_query_parses_the_kinds_of_the_cli() {
+        let uri: axum::http::Uri = "/v1/events?since=1793000000000&follow=1&kinds=lease.*,delivery.wake_limited&agent=w1&channel=api&host=h1&min_severity=warn"
+            .parse()
+            .unwrap();
+        let Query(q) = Query::<EventsQuery>::try_from_uri(&uri).unwrap();
+        assert_eq!(q.since, Some(Timestamp(1_793_000_000_000)));
+        assert_eq!(q.follow.as_deref(), Some("1"));
+        assert_eq!(q.kinds.as_deref(), Some("lease.*,delivery.wake_limited"));
+        assert_eq!(q.agent, Some("w1".parse().unwrap()));
+        assert_eq!(q.channel, Some("api".parse().unwrap()));
+        assert_eq!(q.host, Some("h1".parse().unwrap()));
+        assert_eq!(q.min_severity, Some(Severity::Warn));
+        // No kinds means every kind.
+        let uri: axum::http::Uri = "/v1/events".parse().unwrap();
+        let Query(q) = Query::<EventsQuery>::try_from_uri(&uri).unwrap();
+        assert_eq!(q.kinds, None);
     }
 
     #[tokio::test]
