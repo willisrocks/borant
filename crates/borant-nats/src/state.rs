@@ -1,4 +1,5 @@
 use async_nats::jetstream;
+use async_nats::jetstream::consumer::{DeliverPolicy, ReplayPolicy, push};
 use async_nats::jetstream::kv::{self, CreateErrorKind, Operation, UpdateErrorKind};
 use borant_core::ports::{Change, Entry, PortError, PortResult, StateStore};
 use bytes::Bytes;
@@ -10,13 +11,15 @@ use crate::{KV_BUCKET, unavailable};
 
 #[derive(Debug, Clone)]
 pub struct NatsState {
+    client: async_nats::Client,
     js: jetstream::Context,
     store: std::sync::Arc<OnceCell<kv::Store>>,
 }
 
 impl NatsState {
-    pub(crate) fn new(js: jetstream::Context) -> Self {
+    pub(crate) fn new(client: async_nats::Client, js: jetstream::Context) -> Self {
         Self {
+            client,
             js,
             store: Default::default(),
         }
@@ -45,6 +48,35 @@ impl NatsState {
 fn is_wrong_revision(e: &impl std::fmt::Display) -> bool {
     let s = e.to_string().to_lowercase();
     s.contains("wrong last sequence") || s.contains("10071")
+}
+
+/// Turns a delivered KV message into an entry. The last message of a key can be
+/// a delete or purge marker, which holds no value.
+fn entry_from_message(
+    prefix: &str,
+    message: jetstream::Message,
+) -> PortResult<Option<Entry>> {
+    if let Some(headers) = message.headers.as_ref() {
+        let removed = headers
+            .get("KV-Operation")
+            .is_some_and(|op| matches!(op.as_str(), "DEL" | "PURGE"))
+            || headers.get("NATS-Marker-Reason").is_some();
+        if removed {
+            return Ok(None);
+        }
+    }
+    let revision = message
+        .info()
+        .map_err(|e| PortError::other(format!("KV list metadata: {e}")))?
+        .stream_sequence;
+    let Some(key) = message.subject.strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    Ok(Some(Entry {
+        key: key.to_owned(),
+        value: message.payload.clone(),
+        revision,
+    }))
 }
 
 #[async_trait::async_trait]
@@ -109,23 +141,47 @@ impl StateStore for NatsState {
 
     async fn list(&self, prefix: &str) -> PortResult<Vec<Entry>> {
         let store = self.store().await?;
-        let mut keys: Vec<String> = match store.keys().await {
-            Ok(k) => {
-                k.filter_map(|k| futures::future::ready(k.ok()))
-                    .filter(|k| futures::future::ready(k.starts_with(prefix)))
-                    .collect()
-                    .await
-            }
-            Err(e) if e.to_string().to_lowercase().contains("no keys") => Vec::new(),
-            Err(e) => return Err(unavailable("KV keys", e)),
+        // One consumer filtered to the prefix delivers the last message of each
+        // key under it, values included, so the cost is the keys under the
+        // prefix rather than every key in the bucket plus one get per key.
+        let filter = if prefix.is_empty() {
+            format!("{}>", store.prefix)
+        } else {
+            format!("{}{prefix}>", store.prefix)
         };
-        keys.sort();
-        let mut out = Vec::with_capacity(keys.len());
-        for k in keys {
-            if let Some(e) = self.get(&k).await? {
-                out.push(e);
-            }
+        let mut consumer = store
+            .stream
+            .create_consumer(push::OrderedConfig {
+                deliver_subject: self.client.new_inbox(),
+                description: Some(format!("kv list {prefix}")),
+                filter_subject: filter,
+                replay_policy: ReplayPolicy::Instant,
+                deliver_policy: DeliverPolicy::LastPerSubject,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| unavailable("KV list", e))?;
+        let pending = consumer
+            .info()
+            .await
+            .map_err(|e| unavailable("KV list", e))?
+            .num_pending;
+        let mut messages = consumer
+            .messages()
+            .await
+            .map_err(|e| unavailable("KV list", e))?;
+        let mut out = Vec::new();
+        for _ in 0..pending {
+            let Some(message) = messages.next().await else {
+                break;
+            };
+            let message = message.map_err(|e| unavailable("KV list", e))?;
+            let Some(entry) = entry_from_message(&store.prefix, message)? else {
+                continue;
+            };
+            out.push(entry);
         }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(out)
     }
 
