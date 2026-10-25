@@ -247,8 +247,13 @@ pub enum Command {
         #[command(subcommand)]
         cmd: UsageCmd,
     },
-    /// List the bundle members, their state, and their latest usage report.
-    Members,
+    /// List the bundle members, their state, their latest usage report, and
+    /// how often each member hit its limit in the last seven days.
+    Members {
+        /// Print the members as JSON, with the restart times.
+        #[arg(long)]
+        json: bool,
+    },
     /// Attach this terminal to the session of an agent.
     Attach { agent: AgentId },
     /// Serve the Borant MCP tools on stdio (Claude Code starts this).
@@ -376,6 +381,34 @@ async fn local_host(c: &LocalClient) -> anyhow::Result<HostName> {
 
 fn pretty(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+/// Prints the bundles and their members: whether the member is limited, the
+/// agents that wait for it, and its limit restarts of the last seven days.
+fn render_members(v: &Value) -> String {
+    use std::fmt::Write as _;
+
+    let Some(bundles) = v.as_object() else {
+        return format!("{}\n", serde_json::to_string_pretty(v).unwrap_or_default());
+    };
+    let mut out = String::new();
+    for (bundle, list) in bundles {
+        let _ = writeln!(out, "{bundle}");
+        for member in list.as_array().into_iter().flatten() {
+            let name = member["member"].as_str().unwrap_or("?");
+            let until = match member["limited_until"].as_i64() {
+                Some(at) => format!("limited until {}", crate::events::utc_time(Timestamp(at))),
+                None => "free".to_owned(),
+            };
+            let waiting = member["waiting"].as_array().map_or(0, Vec::len);
+            let restarts = member["restarts"].as_array().map_or(0, Vec::len);
+            let _ = writeln!(
+                out,
+                "  {name:<12} {until:<46} {waiting} waiting   restarts (7 d): {restarts}"
+            );
+        }
+    }
+    out
 }
 
 /// Prints the reply of `agents prune`: one line per candidate with the keys
@@ -1150,7 +1183,14 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 .await?,
             );
         }
-        Command::Members => pretty(&call(&c, ToolCall::ListMembers).await?),
+        Command::Members { json } => {
+            let v = call(&c, ToolCall::ListMembers).await?;
+            if json {
+                pretty(&v);
+            } else {
+                print!("{}", render_members(&v));
+            }
+        }
         Command::Spawn {
             channel,
             prompt_file,
@@ -1720,6 +1760,22 @@ mod tests {
 
     /// A queued spawn prints the refused hosts, one reason each, as `place`
     /// wrote them.
+    /// The members table shows the limit restarts of the last seven days.
+    #[test]
+    fn cli_render_members_shows_the_restarts_of_a_week() {
+        let v = json!({"claude_auth": [
+            {"member": "a", "limited_until": 1_792_929_600_000i64, "waiting": ["w1"],
+             "restarts": [1_792_929_600_000i64, 1_792_925_600_000i64, 1_792_921_600_000i64]},
+            {"member": "b", "limited_until": null, "waiting": [], "restarts": []},
+        ]});
+        let out = render_members(&v);
+        assert!(out.contains("claude_auth"), "{out}");
+        assert!(out.contains("restarts (7 d): 3"), "{out}");
+        assert!(out.contains("restarts (7 d): 0"), "{out}");
+        assert!(out.contains("1 waiting"), "{out}");
+        assert!(out.contains("free"), "{out}");
+    }
+
     #[test]
     fn cli_render_queue_prints_one_reason_per_host() {
         let v = json!([
