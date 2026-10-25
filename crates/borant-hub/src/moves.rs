@@ -698,6 +698,24 @@ impl Hub {
         Ok(moved)
     }
 
+    /// Clears `draining`, so placement offers the host again. The caller
+    /// places the queue afterward: this does not take `mem`. Returns whether
+    /// the flag changed, because an undrain of a live host is a no-op.
+    pub(crate) async fn undrain(&self, host: &HostName) -> Result<bool, ApiError> {
+        let key = keys::host(host);
+        let mut doc = self
+            .store
+            .get::<HostInfo>(&key)
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("no host {host}")))?;
+        if !doc.value.draining {
+            return Ok(false);
+        }
+        doc.value.draining = false;
+        self.store.put(&key, &doc.value, Some(doc.revision)).await?;
+        Ok(true)
+    }
+
     pub(crate) async fn move_ready(
         &self,
         mem: &mut Memory,

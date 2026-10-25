@@ -258,6 +258,8 @@ pub enum Command {
     },
     /// Move every agent away from a host and stop placing agents there.
     Drain { host: HostName },
+    /// Place agents on a drained host again, and place its queued spawns.
+    Undrain { host: HostName },
     /// Add or list projects: git repositories that spawns clone.
     Project {
         #[command(subcommand)]
@@ -1228,6 +1230,14 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             );
         }
         Command::Drain { host } => pretty(&call(&c, ToolCall::Drain { host }).await?),
+        Command::Undrain { host } => {
+            let v = call(&c, ToolCall::Undrain { host: host.clone() }).await?;
+            if v["changed"].as_bool() == Some(false) {
+                println!("{host} is not draining");
+            } else {
+                pretty(&v);
+            }
+        }
         Command::Project {
             cmd:
                 ProjectCmd::Add {
@@ -1581,6 +1591,7 @@ mod tests {
             "borant move w1 --member b",
             "borant move w1 --member b --host vps-1",
             "borant drain vps-2",
+            "borant undrain vps-2",
             "borant attach w1",
             "borant spawn --channel api --prompt-file p.md",
             "borant spawn --channel api --prompt-file p.md --harness omp --model m --role worker --host h1 --task api/01M5S3PATRKMGFD9C0HB1CS4ZK --stop-on-close --priority 5 --name w1 --key k1 --json",
