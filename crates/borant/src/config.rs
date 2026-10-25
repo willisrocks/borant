@@ -14,8 +14,8 @@ use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::pool::PoolConfig;
 use borant_core::{BundleName, HostName, MemberName, PoolName, Tag};
-use borant_exec::provision::ExecProvisioner;
 use borant_exec::ExecConfig;
+use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
 use borant_hub::ElasticConfig;
 use borant_launch::harness::HarnessCommands;
@@ -70,12 +70,6 @@ where
 /// number of seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span(pub Duration);
-
-impl Span {
-    pub fn secs(self) -> Duration {
-        self.0
-    }
-}
 
 impl<'de> Deserialize<'de> for Span {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {

@@ -15,7 +15,9 @@ use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
 };
 use borant_core::proto::ApiError;
-use borant_core::rules::pool::{self, Action, ElasticHost, Phase, PlacementNeed, PoolConfig, Spend};
+use borant_core::rules::pool::{
+    self, Action, ElasticHost, Phase, PlacementNeed, PoolConfig, Spend,
+};
 use borant_core::rules::schedule::{self, HostView};
 use borant_core::{AgentId, HostName, PoolName, Timestamp, keys};
 
@@ -281,10 +283,7 @@ impl Hub {
             if agent.pinned {
                 continue;
             }
-            let harness = move_
-                .target
-                .harness
-                .unwrap_or(agent.preferred_harness);
+            let harness = move_.target.harness.unwrap_or(agent.preferred_harness);
             if schedule::place(agent.preferred_harness, None, Some(harness), live).is_some() {
                 continue;
             }
@@ -327,9 +326,7 @@ impl Hub {
                     billing_step_end: now.plus(step(config, caps)),
                     last_seen: now,
                 };
-                self.store
-                    .upsert(&keys::elastic(&host.name), &host)
-                    .await?;
+                self.store.upsert(&keys::elastic(&host.name), &host).await?;
             }
             Action::Forget { host } => self.store.delete(&keys::elastic(&host)).await?,
             Action::MarkLost { host } => self.set_phase(&host, Phase::Lost).await?,
@@ -345,13 +342,13 @@ impl Hub {
                 self.set_phase(&host, Phase::Draining).await?;
             }
             Action::Undrain { host } => {
-                if let Some(mut info) = self.store.get::<HostInfo>(&keys::host(&host)).await? {
-                    if info.value.draining {
-                        info.value.draining = false;
-                        self.store
-                            .put(&info.key, &info.value, Some(info.revision))
-                            .await?;
-                    }
+                if let Some(mut info) = self.store.get::<HostInfo>(&keys::host(&host)).await?
+                    && info.value.draining
+                {
+                    info.value.draining = false;
+                    self.store
+                        .put(&info.key, &info.value, Some(info.revision))
+                        .await?;
                 }
                 self.set_phase(&host, Phase::Ready).await?;
             }
@@ -479,9 +476,7 @@ impl Hub {
     }
 
     async fn write_spend(&self, spend: &Spend, now: Timestamp) -> Result<(), ApiError> {
-        self.store
-            .upsert(&keys::spend(&month(now)), spend)
-            .await?;
+        self.store.upsert(&keys::spend(&month(now)), spend).await?;
         Ok(())
     }
 }
@@ -529,7 +524,11 @@ fn hourly(pool: &PoolConfig, caps: &BTreeMap<String, ProvisionerCapabilities>) -
 
 /// The bill of a host that lived `life`: whole billing steps, because a
 /// backend bills the step that it started.
-fn billed(pool: &PoolConfig, caps: &BTreeMap<String, ProvisionerCapabilities>, life: Duration) -> f64 {
+fn billed(
+    pool: &PoolConfig,
+    caps: &BTreeMap<String, ProvisionerCapabilities>,
+    life: Duration,
+) -> f64 {
     let step = step(pool, caps);
     let steps = (life.as_secs_f64() / step.as_secs_f64()).ceil().max(1.0);
     hourly(pool, caps) * steps * step.as_secs_f64() / 3600.0
@@ -556,7 +555,11 @@ fn civil_month(days: i64) -> (i64, u32) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    let year = if month <= 2 {
+        yoe + era * 400 + 1
+    } else {
+        yoe + era * 400
+    };
     (year, month as u32)
 }
 
@@ -752,11 +755,7 @@ mod tests {
         assert_eq!(host.phase, Phase::Booting);
         assert_eq!(host.provider_id.0, "workers-e1");
         // The provider holds the host.
-        let listed = fx
-            .prov
-            .list(&"workers".parse().unwrap())
-            .await
-            .unwrap();
+        let listed = fx.prov.list(&"workers".parse().unwrap()).await.unwrap();
         assert_eq!(listed.len(), 1);
     }
 
@@ -896,10 +895,7 @@ mod tests {
         fx.hub.tick_elastic().await.unwrap();
 
         assert!(
-            !fx.prov
-                .calls()
-                .iter()
-                .any(|c| matches!(c, Call::Create(_))),
+            !fx.prov.calls().iter().any(|c| matches!(c, Call::Create(_))),
             "{:?}",
             fx.prov.calls()
         );
