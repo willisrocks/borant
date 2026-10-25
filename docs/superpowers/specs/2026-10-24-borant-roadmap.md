@@ -72,12 +72,17 @@ manual work, then visibility, then cost, then new power.
 
 ### Phase 3: drive the swarm (M), orchestration phases 1 and 2
 
-1. `model` on spawn, and profiles in `hub.toml`: owners on Claude Code,
+1. Projects: a named git repository in the hub, channels that belong to a
+   project, and one bare mirror per project on each host with a worktree
+   for each agent (orchestration document, "Projects").
+2. `model` on spawn, and profiles in `hub.toml`: owners on Claude Code,
    workers on omp with DeepSeek.
-2. `borant spawn`, `wait`, `cancel`, and `logs` for humans and scripts.
-3. Idempotency keys, the persisted spawn queue, and `stop_on_close` for
+3. `borant spawn`, `wait`, `cancel`, and `logs` for humans and scripts.
+4. Idempotency keys, the persisted spawn queue, and `stop_on_close` for
    workers bound to a task.
-4. The launch watchdog.
+5. The launch watchdog.
+6. Ship the `orchestrate` skill in the Claude Code plugin, and change it as
+   each item above lands.
 
 ### Phase 4: pay for what runs (M), compute phases 0 to 3
 

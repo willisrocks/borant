@@ -173,6 +173,60 @@ the result, so a crash cannot write one without the other. The CLI and
 `borant mcp` make a key for each call and retry with it on `unavailable`.
 This removes the result rebuild that the stress-test driver script needed.
 
+### Projects
+
+Recommendation: add a project record to the hub. A project is a named git
+repository, like a project in Orca. A channel belongs to one project, and a
+spawn takes its repository from the project of its channel. Today a spawn
+copies the `RepoInfo` of the agent that calls it, and a channel has no
+repository, so a human or a script must name the repository on every spawn.
+
+The record lives at `project.{name}` in the state store. The hub is its only
+writer.
+
+```rust
+pub struct Project {
+    pub name: ProjectName,            // "api"
+    pub remote_url: String,           // "git@github.com:willisrocks/api.git"
+    pub default_branch: String,       // "main"
+    pub checkpoint_remote: Option<String>,
+    pub setup: Option<String>,        // run once in a new clone, e.g. "just bootstrap"
+    pub test: Option<String>,         // the focused test for close gates
+    pub bundles: Vec<BundleName>,     // secrets for every agent of the project
+    pub labels: Vec<String>,          // host labels that the project needs
+}
+```
+
+Commands:
+
+```sh
+borant project add api git@github.com:willisrocks/api.git   # or --from-cwd
+borant project list
+borant channel create health --project api --branch feat/health
+borant spawn --channel health --harness omp --prompt-file brief.md
+```
+
+Rules:
+
+- `channel_create` gets an optional `project` and an optional base `branch`.
+  A spawn in that channel clones the project and checks out the base
+  branch. Without a project, a spawn keeps today's rule: the repository of
+  the calling agent.
+- The host keeps one bare mirror for each project in
+  `~/.borant/projects/<name>.git` and gives each agent a `git worktree`
+  from it. A spawn then fetches only new commits, and N agents use one
+  object store, not N full clones.
+- Placement filters on the labels of the project. The per-agent list of
+  hosts that failed a clone (`has_repo_access`) becomes a list for each
+  project.
+- The Orca launcher opens the agent worktree as a workspace of the Orca
+  project with the same remote. This closes the main Orca gap in section 7.
+- The `orchestrate` skill in the Claude Code plugin uses the project of its
+  channel, so a brief needs no clone or push steps.
+
+Cut: one channel across several repositories (use one channel for each
+project), several projects inside one monorepo, and permissions per project.
+
 ## 4. Model choice and profiles
 
 Recommendation: add a `model` field to `SpawnSpec`, `Agent`, and
