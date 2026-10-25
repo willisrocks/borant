@@ -261,9 +261,12 @@ scenario_elastic() {
   [ -n "$id" ] || { echo "  no container is named $host" >&2; return 1; }
   borant_on host-control send "$agent" "WRITE killed.txt during-a-turn" >/dev/null
   docker kill "$id" >/dev/null || return 1
-  echo "  killed $host"
-  WAIT=300 wait_for "a takeover on another host" agent_moved "$agent" "$host" || return 1
-  wait_for "the killed host is deleted" container_gone "$id" || return 1
+  echo "  killed $host ($id)"
+  # The pool name of a host can repeat after a delete, so the takeover is
+  # the agent on a pool host again once the killed container is gone.
+  WAIT=300 wait_for "the killed host is deleted" container_gone "$id" || return 1
+  WAIT=300 wait_for "a takeover on a pool host" agent_on_pool "$agent" || return 1
+  echo "  the agent now runs on $(where_on host-control "$agent")"
 
   # The cleanup removes every container of the fake provisioner.
   cleanup_e2e_containers
@@ -312,10 +315,15 @@ in_pool() {
 
 three_in_pool() { in_pool 3; }
 
-agent_moved() {
-  local now
-  now=$(where_on host-control "$1")
-  [ -n "$now" ] && [ "$now" != "$2" ]
+# The agent holds a lease on a host of the pool.
+agent_on_pool() {
+  local hosts
+  hosts=$(pool_hosts)
+  [ -n "$hosts" ] && [ "$hosts" != "[]" ] || return 1
+  borant_on host-control agents 2>/dev/null |
+    jq -e --argjson h "$hosts" --arg name "$1" \
+      'any(.[]; .agent == $name and .lease.state == "held"
+            and (.lease.host as $x | ($h | index($x)) != null))' >/dev/null 2>&1
 }
 
 container_gone() { ! docker inspect "$1" >/dev/null 2>&1; }
