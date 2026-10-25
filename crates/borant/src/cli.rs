@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::model::{Harness, Project, Target, UsageWindow};
+use borant_core::model::{CloseReason, Harness, Project, Target, TaskBinding, UsageWindow};
 use borant_core::proto::{MoveSelector, MoveTarget, ToolCall};
 use borant_core::{
-    AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, Timestamp,
+    AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
+    TaskId, Timestamp,
 };
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
@@ -112,6 +113,87 @@ pub enum Command {
         /// Wake every member for a broadcast.
         #[arg(long)]
         urgent: bool,
+    },
+    /// Start an agent in a channel.
+    Spawn {
+        /// The channel that the agent works in.
+        #[arg(long)]
+        channel: ChannelName,
+        /// A file whose text is the first prompt.
+        #[arg(long = "prompt-file")]
+        prompt_file: PathBuf,
+        /// The harness to run: claude-code, pi, or omp.
+        #[arg(long)]
+        harness: Option<Harness>,
+        /// The model for the harness.
+        #[arg(long)]
+        model: Option<String>,
+        /// A role from hub.toml, for its harness, model, and placement.
+        #[arg(long)]
+        role: Option<RoleName>,
+        /// The host to place the agent on.
+        #[arg(long)]
+        host: Option<HostName>,
+        /// Bind the worker to an existing task, as CHANNEL/ID.
+        #[arg(long, conflicts_with = "task_title")]
+        task: Option<String>,
+        /// Bind the worker to a new task with this title.
+        #[arg(long = "task-title", conflicts_with = "task")]
+        task_title: Option<String>,
+        /// Stop the session when the bound task closes.
+        #[arg(long, conflicts_with = "no_stop_on_close")]
+        stop_on_close: bool,
+        /// Keep the session when the bound task closes.
+        #[arg(long = "no-stop-on-close", conflicts_with = "stop_on_close")]
+        no_stop_on_close: bool,
+        /// Higher goes first in the spawn queue.
+        #[arg(long)]
+        priority: Option<i32>,
+        /// The agent ID for the new agent. Defaults to a hash of --key.
+        #[arg(long)]
+        name: Option<AgentId>,
+        /// An idempotency key: a retry with the same key and arguments
+        /// returns the first agent.
+        #[arg(long)]
+        key: Option<String>,
+        /// Print the reply as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wait for an agent or a task to finish.
+    Wait {
+        /// The agent to wait for.
+        agent: Option<AgentId>,
+        /// The task to wait for, as CHANNEL/ID.
+        #[arg(long)]
+        task: Option<String>,
+        /// Give up after this long, for example 30m or 2h. Default 2h.
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    /// Stop an agent and cancel its queued spawn.
+    Cancel {
+        /// The agent to stop.
+        agent: AgentId,
+        /// Close the task the agent is bound to, with this reason.
+        #[arg(long, value_parser = close_reason_arg)]
+        close_task: Option<CloseReason>,
+    },
+    /// List the spawns that wait for a host.
+    Ps {
+        /// Only the spawns that are still queued.
+        #[arg(long)]
+        queued: bool,
+        /// Print the queue as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the session log of an agent.
+    Logs {
+        agent: AgentId,
+        /// Keep printing the events that arrive.
+        #[arg(long)]
+        follow: bool,
     },
     /// Move agents to another host or harness.
     Move {
@@ -385,14 +467,377 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
+/// The wait that `borant wait` uses when `--timeout` is absent.
+const WAIT_DEFAULT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// The extra time that the local client gets over the wait itself.
+const WAIT_MARGIN: Duration = Duration::from_secs(30);
+
+/// How many session events a `borant logs` page holds.
+const LOG_PAGE: usize = 100;
+
+/// How often `borant logs --follow` asks for new events.
+const LOG_POLL: Duration = Duration::from_secs(2);
+
+/// Parses `--task CHANNEL/ID`.
+fn task_ref(text: &str) -> anyhow::Result<(ChannelName, TaskId)> {
+    let shape = || anyhow!("{text} is not CHANNEL/ID");
+    let (channel, id) = text.split_once('/').ok_or_else(shape)?;
+    let channel = channel
+        .trim()
+        .parse::<ChannelName>()
+        .map_err(|e| anyhow!("{e}"))?;
+    let id = id.trim().parse::<TaskId>().map_err(|e| anyhow!("{e}"))?;
+    Ok((channel, id))
+}
+
+/// The `--close-task` value: one of the four close reasons.
+fn close_reason_arg(text: &str) -> Result<CloseReason, String> {
+    match text {
+        "done" => Ok(CloseReason::Done),
+        "wontfix" => Ok(CloseReason::Wontfix),
+        "duplicate" => Ok(CloseReason::Duplicate),
+        "superseded" => Ok(CloseReason::Superseded),
+        other => Err(format!(
+            "{other} is not done, wontfix, duplicate, or superseded"
+        )),
+    }
+}
+
+/// A span such as `30m` or `2h`, for `--timeout`.
+fn parse_span(text: &str) -> anyhow::Result<Duration> {
+    crate::events::parse_duration(text)
+        .ok_or_else(|| anyhow!("{text} is not a duration such as 30m or 2h"))
+}
+
+/// A span, for a message: seconds under a minute, then whole minutes or hours.
+fn span_desc(span: Duration) -> String {
+    let secs = span.as_secs();
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s => format!("{}h", s / 3600),
+    }
+}
+
+/// The exit code that the reply of `/v1/wait/*` asks for: 0 done, 1 a task
+/// that closed with a reason other than `done`, 2 the timeout. An outcome
+/// this build does not know counts as a failure, never as success.
+fn wait_code(reply: &Value) -> i32 {
+    match reply["outcome"].as_str() {
+        Some("done") => 0,
+        Some("timeout") => 2,
+        _ => 1,
+    }
+}
+
+/// The line that `borant wait` prints when the wait ended before its
+/// timeout.
+fn wait_line(reply: &Value) -> String {
+    match reply.get("task").filter(|task| task.is_object()) {
+        Some(task) => {
+            let id = task["id"].as_str().unwrap_or("?");
+            match task["close_reason"].as_str() {
+                Some(reason) => format!("task {id} closed: {reason}"),
+                None => format!("task {id} {}", task["status"].as_str().unwrap_or("?")),
+            }
+        }
+        None => {
+            let agent = reply["agent"].as_str().unwrap_or("?");
+            match reply["why"].as_str() {
+                Some(why) => format!("agent {agent} done: {why}"),
+                None => format!("agent {agent} done"),
+            }
+        }
+    }
+}
+
+/// Waits for an agent or a task and returns the exit code of the command.
+async fn wait(
+    c: &LocalClient,
+    agent: Option<AgentId>,
+    task: Option<String>,
+    timeout: Option<String>,
+) -> anyhow::Result<i32> {
+    let span = match timeout {
+        Some(text) => parse_span(&text)?,
+        None => WAIT_DEFAULT,
+    };
+    let ms = span.as_millis();
+    let path = match (agent, task) {
+        (Some(agent), None) => format!("/v1/wait/agent?agent={agent}&timeout_ms={ms}"),
+        (None, Some(task)) => {
+            let (channel, id) = task_ref(&task)?;
+            format!("/v1/wait/task?channel={channel}&id={id}&timeout_ms={ms}")
+        }
+        _ => bail!("name one agent, or use --task CHANNEL/ID"),
+    };
+    let reply = match c.get::<Value>(&path, span + WAIT_MARGIN).await {
+        Outcome::Reply(Ok(v)) => v,
+        Outcome::Reply(Err(e)) => bail!("{}", e.message),
+        Outcome::Down(e) => {
+            bail!("the Borant host daemon is not running ({e}). Start it with `borant host`.")
+        }
+    };
+    let code = wait_code(&reply);
+    if code == 2 {
+        eprintln!("borant: timed out after {}", span_desc(span));
+    } else {
+        println!("{}", wait_line(&reply));
+    }
+    Ok(code)
+}
+
+/// The task binding of a spawn: an existing task by CHANNEL/ID, or a new task
+/// with a title, in the channel of the spawn.
+fn task_binding(
+    task: Option<String>,
+    task_title: Option<String>,
+    channel: &ChannelName,
+) -> anyhow::Result<Option<TaskBinding>> {
+    match (task, task_title) {
+        (Some(text), None) => {
+            let (channel, id) = task_ref(&text)?;
+            Ok(Some(TaskBinding::Existing { channel, id }))
+        }
+        (None, Some(title)) => Ok(Some(TaskBinding::New {
+            channel: channel.clone(),
+            title,
+        })),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => bail!("use --task or --task-title, not both"),
+    }
+}
+
+/// `--stop-on-close` and `--no-stop-on-close`, as the call takes them: unset
+/// leaves the default of a bound worker to the hub.
+fn stop_on_close_flag(on: bool, off: bool) -> Option<bool> {
+    match (on, off) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// The arguments of `borant spawn`, after the prompt file is read.
+struct SpawnArgs {
+    channel: ChannelName,
+    prompt: String,
+    harness: Option<Harness>,
+    model: Option<String>,
+    role: Option<RoleName>,
+    host: Option<HostName>,
+    task: Option<TaskBinding>,
+    stop_on_close: Option<bool>,
+    priority: Option<i32>,
+    name: Option<AgentId>,
+    key: Option<String>,
+}
+
+/// The call that a spawn makes. Split from the command so that a test can
+/// check the mapping of the flags.
+fn spawn_call(args: SpawnArgs) -> ToolCall {
+    ToolCall::Spawn {
+        channel: args.channel,
+        prompt: args.prompt,
+        harness: args.harness,
+        host: args.host,
+        name: args.name,
+        model: args.model,
+        role: args.role,
+        key: args.key,
+        task: args.task,
+        stop_on_close: args.stop_on_close,
+        priority: args.priority,
+    }
+}
+
+/// Sends one spawn and prints the agent, and whether it is placed or waits.
+async fn spawn(c: &LocalClient, request: ToolCall, json: bool) -> anyhow::Result<()> {
+    let v = call(c, request).await?;
+    if json {
+        pretty(&v);
+    } else {
+        println!("{}", spawn_line(&v));
+    }
+    Ok(())
+}
+
+/// The text line of a spawn reply.
+///
+/// The hub nests the answer, so through the host the reply is
+/// `{"agent": {"agent": "w1", "placed": true}}`; a direct hub caller sees the
+/// same shape, and the bare `{"agent": "w1"}` of an older reply still reads.
+fn spawn_line(v: &Value) -> String {
+    let inner = if v["agent"].is_object() {
+        &v["agent"]
+    } else {
+        v
+    };
+    let agent = inner["agent"]
+        .as_str()
+        .or(inner["id"].as_str())
+        .unwrap_or("?");
+    match (
+        inner["host"].as_str(),
+        inner["placed"].as_bool(),
+        inner["queued"].as_bool(),
+    ) {
+        (Some(host), _, _) => format!("agent {agent} placed on {host}"),
+        (None, Some(true), _) => format!("agent {agent} placed"),
+        (None, Some(false), _) | (None, _, Some(true)) => format!("agent {agent} queued"),
+        _ => format!("agent {agent}"),
+    }
+}
+
+/// One row per spawn of the queue, or the reply as JSON when it is not a
+/// list. A reply of the current hub is an error, not a list.
+fn render_queue(v: &Value, queued_only: bool) -> String {
+    use std::fmt::Write as _;
+
+    let list = v
+        .as_array()
+        .cloned()
+        .or_else(|| v["spawns"].as_array().cloned())
+        .or_else(|| v["queue"].as_array().cloned());
+    let Some(list) = list else {
+        return format!("{}\n", serde_json::to_string_pretty(v).unwrap_or_default());
+    };
+    let mut out = String::from(
+        "AGENT                    STATE      PRIORITY  QUEUED     CHANNEL   LAST REJECT\n",
+    );
+    for rec in list
+        .iter()
+        .filter(|rec| !queued_only || rec["state"] == json!("queued"))
+    {
+        let agent = rec["agent"]
+            .as_str()
+            .or(rec["id"].as_str())
+            .unwrap_or("?")
+            .to_owned();
+        let state = rec["state"].as_str().unwrap_or("?");
+        let priority = rec["priority"].as_i64().unwrap_or(0);
+        let queued = rec["queued_at"]
+            .as_i64()
+            .map(|at| crate::events::utc_time(Timestamp(at)))
+            .unwrap_or_else(|| "-".to_owned());
+        let channel = rec["spec"]["channel"].as_str().unwrap_or("-");
+        let reject = rec["last_reject"].as_str().unwrap_or("-");
+        let _ = writeln!(
+            out,
+            "{agent:<24} {state:<10} {priority:<9} {queued:<10} {channel:<9} {reject}"
+        );
+    }
+    out
+}
+
+/// Prints the newest page of the session log of an agent, and then the events
+/// that arrive when `follow` is set.
+async fn logs(c: &LocalClient, agent: &AgentId, follow: bool) -> anyhow::Result<()> {
+    let mut last: Option<String> = None;
+    loop {
+        let page = call(
+            c,
+            ToolCall::AgentHistory {
+                agent: agent.clone(),
+                page: 0,
+                page_size: LOG_PAGE,
+            },
+        )
+        .await?;
+        print_new_events(&page, &mut last);
+        if !follow {
+            return Ok(());
+        }
+        tokio::time::sleep(LOG_POLL).await;
+    }
+}
+
+/// Prints the events of a page that follow the last one printed.
+fn print_new_events(page: &Value, last: &mut Option<String>) {
+    let events = page["events"].as_array().cloned().unwrap_or_default();
+    let start = match last.as_deref() {
+        Some(last) => events
+            .iter()
+            .position(|e| e["id"] == json!(last))
+            .map(|at| at + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    for e in &events[start..] {
+        println!("{}", render_event(e));
+        *last = e["id"].as_str().map(str::to_owned);
+    }
+}
+
+/// One line of the session log.
+fn render_event(e: &Value) -> String {
+    let at = Timestamp(e["at"].as_i64().unwrap_or(0));
+    let kind = e["kind"].as_str().unwrap_or("?");
+    let detail = event_detail(kind, e);
+    format!("{} {kind:<18} {detail}", crate::events::utc_time(at))
+        .trim_end()
+        .to_owned()
+}
+
+/// The part of a session event that a person reads.
+fn event_detail(kind: &str, e: &Value) -> String {
+    let text = |key: &str| e[key].as_str().unwrap_or("").to_owned();
+    match kind {
+        "user_prompt" | "assistant_message" => clip(&text("text"), 100),
+        "swarm_message" => format!("from {}", e["envelope"]["from"].as_str().unwrap_or("?")),
+        "delivered" => text("message"),
+        "tool_call" => format!("{} {}", text("name"), clip(&text("input"), 60)),
+        "tool_result" => {
+            let result = if e["is_error"] == json!(true) {
+                "failed"
+            } else {
+                "ok"
+            };
+            format!("{} {result}", text("name"))
+        }
+        "checkpoint" => text("git_ref"),
+        "session_start" => text("cwd"),
+        "session_end" => text("reason"),
+        "move" => format!(
+            "{} -> {}",
+            e["from_host"].as_str().unwrap_or("-"),
+            e["to_host"].as_str().unwrap_or("?")
+        ),
+        _ => String::new(),
+    }
+}
+
+/// The first line of `text`, cut to `max` characters.
+fn clip(text: &str, max: usize) -> String {
+    let line = text.lines().next().unwrap_or("");
+    if line.chars().count() <= max {
+        line.to_owned()
+    } else {
+        let mut out: String = line.chars().take(max).collect();
+        out.push('…');
+        out
+    }
+}
+
+pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
     let c = client();
+    // `borant wait` reports its result in the exit code, so a script can join
+    // work with `&&`.
+    let cmd = match cmd {
+        Command::Wait {
+            agent,
+            task,
+            timeout,
+        } => return wait(&c, agent, task, timeout).await,
+        cmd => cmd,
+    };
     match cmd {
         Command::Status { json } => {
             if json {
                 // The live view of the swarm, for a dashboard or a script.
                 pretty(&call(&c, ToolCall::View).await?);
-                return Ok(());
+                return Ok(0);
             }
             let host = local_host(&c).await?;
             println!("Local host: {host}");
@@ -588,16 +1033,64 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
             );
         }
         Command::Members => pretty(&call(&c, ToolCall::ListMembers).await?),
+        Command::Spawn {
+            channel,
+            prompt_file,
+            harness,
+            model,
+            role,
+            host,
+            task,
+            task_title,
+            stop_on_close,
+            no_stop_on_close,
+            priority,
+            name,
+            key,
+            json,
+        } => {
+            let prompt = std::fs::read_to_string(&prompt_file)
+                .with_context(|| format!("cannot read {}", prompt_file.display()))?;
+            let task = task_binding(task, task_title, &channel)?;
+            let stop_on_close = stop_on_close_flag(stop_on_close, no_stop_on_close);
+            let args = SpawnArgs {
+                channel,
+                prompt,
+                harness,
+                model,
+                role,
+                host,
+                task,
+                stop_on_close,
+                priority,
+                name,
+                key,
+            };
+            spawn(&c, spawn_call(args), json).await?;
+        }
+        Command::Cancel { agent, close_task } => {
+            pretty(&call(&c, ToolCall::Cancel { agent, close_task }).await?)
+        }
+        Command::Ps { queued, json } => {
+            let v = call(&c, ToolCall::SpawnQueue).await?;
+            if json {
+                pretty(&v);
+            } else {
+                print!("{}", render_queue(&v, queued));
+            }
+        }
+        Command::Logs { agent, follow } => logs(&c, &agent, follow).await?,
         Command::Attach { agent } => attach(&c, &agent).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. } | Command::Host | Command::Mcp | Command::Hook { .. } => {
             unreachable!("daemon roles run in main")
         }
+        Command::Wait { .. } => unreachable!("a wait returns from the arm above"),
         Command::SecretExec { .. } => {
             unreachable!("the secret-exec shim runs in main before tracing")
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 /// The attach command for a launcher kind.
@@ -708,6 +1201,17 @@ mod tests {
             "borant move --channel api --here",
             "borant drain vps-2",
             "borant attach w1",
+            "borant spawn --channel api --prompt-file p.md",
+            "borant spawn --channel api --prompt-file p.md --harness omp --model m --role worker --host h1 --task api/01M5S3PATRKMGFD9C0HB1CS4ZK --stop-on-close --priority 5 --name w1 --key k1 --json",
+            "borant spawn --channel api --prompt-file p.md --task-title Fix%20the%20parser --no-stop-on-close",
+            "borant wait w1 --timeout 30m",
+            "borant wait --task api/01M5S3PATRKMGFD9C0HB1CS4ZK",
+            "borant cancel w1",
+            "borant cancel w1 --close-task wontfix",
+            "borant ps",
+            "borant ps --queued --json",
+            "borant logs w1",
+            "borant logs w1 --follow",
             "borant project add api git@github.com:me/api.git --branch dev --setup just",
             "borant project add api --from-cwd",
             "borant project list",
@@ -719,6 +1223,35 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["borant", "move", "w1", "--from", "h"]).is_err());
         assert!(Cli::try_parse_from(["borant", "events", "--severity", "loud"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "borant",
+                "spawn",
+                "--channel",
+                "api",
+                "--prompt-file",
+                "p.md",
+                "--task",
+                "api/01M5S3PATRKMGFD9C0HB1CS4ZK",
+                "--task-title",
+                "t",
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["borant", "cancel", "w1", "--close-task", "maybe"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "borant",
+                "spawn",
+                "--channel",
+                "api",
+                "--prompt-file",
+                "p.md",
+                "--stop-on-close",
+                "--no-stop-on-close"
+            ])
+            .is_err()
+        );
         assert!(Cli::try_parse_from(["borant", "tasks", "Bad.Name"]).is_err());
         assert!(Cli::try_parse_from(["borant", "project", "add", "api"]).is_err());
         assert!(
@@ -755,6 +1288,366 @@ mod tests {
             ["tmux", "attach", "-t", "=borant-w1"]
         );
         assert_eq!(attach_command("orca", &a), None);
+    }
+
+    /// The ULID that the spawn and wait tests use.
+    const TASK: &str = "01M5S3PATRKMGFD9C0HB1CS4ZK";
+
+    fn cli_command(line: &str) -> Command {
+        Cli::try_parse_from(line.split(' ')).unwrap().command
+    }
+
+    #[test]
+    fn cli_spawn_flags_build_the_call() {
+        let cmd = cli_command(&format!(
+            "borant spawn --channel api --prompt-file p.md --harness omp --model deepseek \
+             --role worker --host h1 --task api/{TASK} --stop-on-close --priority 5 \
+             --name w1 --key k1"
+        ));
+        let Command::Spawn {
+            channel,
+            prompt_file,
+            harness,
+            model,
+            role,
+            host,
+            task,
+            task_title,
+            stop_on_close,
+            no_stop_on_close,
+            priority,
+            name,
+            key,
+            json,
+        } = cmd
+        else {
+            panic!("not a spawn");
+        };
+        assert_eq!(prompt_file, PathBuf::from("p.md"));
+        assert!(!json);
+        let args = SpawnArgs {
+            channel: channel.clone(),
+            prompt: "go".to_owned(),
+            harness,
+            model,
+            role,
+            host,
+            task: task_binding(task, task_title, &channel).unwrap(),
+            stop_on_close: stop_on_close_flag(stop_on_close, no_stop_on_close),
+            priority,
+            name,
+            key,
+        };
+        let v = serde_json::to_value(spawn_call(args)).unwrap();
+        assert_eq!(v["tool"], "spawn");
+        assert_eq!(v["channel"], "api");
+        assert_eq!(v["prompt"], "go");
+        assert_eq!(v["harness"], "omp");
+        assert_eq!(v["model"], "deepseek");
+        assert_eq!(v["role"], "worker");
+        assert_eq!(v["host"], "h1");
+        assert_eq!(v["task"], json!({"channel": "api", "id": TASK}));
+        assert_eq!(v["stop_on_close"], true);
+        assert_eq!(v["priority"], 5);
+        assert_eq!(v["name"], "w1");
+        assert_eq!(v["key"], "k1");
+    }
+
+    #[test]
+    fn cli_task_binding_takes_a_title_or_an_id() {
+        let channel: ChannelName = "api".parse().unwrap();
+        assert_eq!(
+            task_binding(Some(format!("api/{TASK}")), None, &channel).unwrap(),
+            Some(TaskBinding::Existing {
+                channel: channel.clone(),
+                id: TASK.parse().unwrap(),
+            })
+        );
+        assert_eq!(
+            task_binding(None, Some("Fix the parser".into()), &channel).unwrap(),
+            Some(TaskBinding::New {
+                channel: channel.clone(),
+                title: "Fix the parser".into(),
+            })
+        );
+        assert_eq!(task_binding(None, None, &channel).unwrap(), None);
+        assert!(task_binding(Some(format!("api/{TASK}")), Some("t".into()), &channel).is_err());
+        // An unbound spawn keeps the hub default; the two flags are exclusive.
+        assert_eq!(stop_on_close_flag(false, false), None);
+        assert_eq!(stop_on_close_flag(true, false), Some(true));
+        assert_eq!(stop_on_close_flag(false, true), Some(false));
+    }
+
+    #[test]
+    fn cli_task_ref_parses_channel_and_id() {
+        let (channel, id) = task_ref(&format!("api/{TASK}")).unwrap();
+        assert_eq!(channel.as_str(), "api");
+        assert_eq!(id.to_string(), TASK);
+        for bad in [
+            "api",
+            "",
+            "Bad.Name/01M5S3PATRKMGFD9C0HB1CS4ZK",
+            "api/not-a-ulid",
+        ] {
+            assert!(task_ref(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn cli_wait_parses_its_target_and_timeout() {
+        let Command::Wait {
+            agent,
+            task,
+            timeout,
+        } = cli_command("borant wait w1 --timeout 30m")
+        else {
+            panic!("not a wait");
+        };
+        assert_eq!(agent, Some("w1".parse().unwrap()));
+        assert_eq!(task, None);
+        assert_eq!(
+            parse_span(timeout.as_deref().unwrap()).unwrap().as_secs(),
+            1800
+        );
+
+        let Command::Wait { agent, task, .. } =
+            cli_command(&format!("borant wait --task api/{TASK}"))
+        else {
+            panic!("not a wait");
+        };
+        assert_eq!(agent, None);
+        assert_eq!(task, Some(format!("api/{TASK}")));
+        assert_eq!(WAIT_DEFAULT.as_secs(), 7200);
+        assert!(parse_span("soon").is_err());
+        assert_eq!(span_desc(Duration::from_secs(45)), "45s");
+        assert_eq!(span_desc(Duration::from_secs(600)), "10m");
+        assert_eq!(span_desc(Duration::from_secs(7200)), "2h");
+    }
+
+    #[test]
+    fn cli_wait_maps_outcomes_to_exit_codes() {
+        assert_eq!(wait_code(&json!({"outcome": "done"})), 0);
+        assert_eq!(
+            wait_code(&json!({"outcome": "failed", "task": {"close_reason": "wontfix"}})),
+            1
+        );
+        assert_eq!(wait_code(&json!({"outcome": "timeout"})), 2);
+        // An outcome this build does not know is a failure, never success.
+        assert_eq!(wait_code(&json!({"outcome": "moved"})), 1);
+        assert_eq!(wait_code(&json!({})), 1);
+
+        let done = json!({"outcome": "done", "task": {"id": TASK, "status": "closed", "close_reason": "done"}});
+        assert_eq!(wait_line(&done), format!("task {TASK} closed: done"));
+        let failed = json!({"outcome": "failed", "task": {"id": TASK, "status": "closed", "close_reason": "wontfix"}});
+        assert_eq!(wait_line(&failed), format!("task {TASK} closed: wontfix"));
+        let open = json!({"outcome": "timeout", "task": {"id": TASK, "status": "in_progress"}});
+        assert_eq!(wait_line(&open), format!("task {TASK} in_progress"));
+        let agent = json!({"outcome": "done", "agent": "w1", "why": "released"});
+        assert_eq!(wait_line(&agent), "agent w1 done: released");
+    }
+
+    #[test]
+    fn cli_cancel_and_ps_and_logs_parse() {
+        let Command::Cancel { agent, close_task } =
+            cli_command("borant cancel w1 --close-task wontfix")
+        else {
+            panic!("not a cancel");
+        };
+        assert_eq!(agent, "w1".parse().unwrap());
+        assert_eq!(close_task, Some(CloseReason::Wontfix));
+        assert_eq!(close_reason_arg("done"), Ok(CloseReason::Done));
+        assert_eq!(close_reason_arg("superseded"), Ok(CloseReason::Superseded));
+        assert!(close_reason_arg("closed").is_err());
+
+        let Command::Ps { queued, json } = cli_command("borant ps --queued --json") else {
+            panic!("not a ps");
+        };
+        assert!(queued && json);
+
+        let Command::Logs { agent, follow } = cli_command("borant logs w1 --follow") else {
+            panic!("not a logs");
+        };
+        assert_eq!(agent, "w1".parse().unwrap());
+        assert!(follow);
+    }
+
+    #[test]
+    fn cli_spawn_line_reads_the_nested_reply() {
+        assert_eq!(
+            spawn_line(&json!({"agent": {"agent": "w1", "placed": true}})),
+            "agent w1 placed"
+        );
+        assert_eq!(
+            spawn_line(&json!({"agent": {"agent": "w1", "placed": false}})),
+            "agent w1 queued"
+        );
+        assert_eq!(
+            spawn_line(&json!({"agent": {"agent": "w1", "placed": true, "host": "h1"}})),
+            "agent w1 placed on h1"
+        );
+        // An older reply that names the agent at the top still reads.
+        assert_eq!(spawn_line(&json!({"agent": "w1"})), "agent w1");
+    }
+
+    #[test]
+    fn cli_render_queue_lists_the_waiting_spawns() {
+        let v = json!([
+            {"agent": "w1", "state": "queued", "priority": 5, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"}, "last_reject": "no host fits"},
+            {"agent": "w2", "state": "running", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"}, "last_reject": null},
+        ]);
+        let all = render_queue(&v, false);
+        assert!(all.starts_with("AGENT"), "{all}");
+        assert!(all.contains("w1") && all.contains("w2"), "{all}");
+        assert!(
+            all.contains("12:00:00") && all.contains("no host fits"),
+            "{all}"
+        );
+        let queued = render_queue(&v, true);
+        assert!(queued.contains("w1"), "{queued}");
+        assert!(!queued.contains("w2"), "{queued}");
+        // A reply of the current hub is an error; print it rather than pretend
+        // that the queue is empty.
+        let error = json!({"error": {"code": "invalid", "message": "not built"}});
+        assert!(render_queue(&error, false).contains("not built"));
+    }
+
+    #[test]
+    fn cli_logs_render_a_session_event() {
+        let event = json!({"id": "01M5S3PATRKMGFD9C0HB1CS4ZK", "at": 1_792_929_600_000i64,
+                           "kind": "tool_call", "name": "bash", "input": "just test\nmore"});
+        assert_eq!(
+            render_event(&event),
+            "12:00:00 tool_call          bash just test"
+        );
+        let failed = json!({"id": "x", "at": 1_792_929_600_000i64, "kind": "tool_result",
+                            "name": "bash", "output": "", "is_error": true});
+        assert_eq!(
+            render_event(&failed),
+            "12:00:00 tool_result        bash failed"
+        );
+        let ended = json!({"at": 1_792_929_600_000i64, "kind": "session_end", "reason": "closed"});
+        assert_eq!(render_event(&ended), "12:00:00 session_end        closed");
+
+        // A follow prints the new events only.
+        let page = json!({"events": [
+            {"id": "a", "at": 1_792_929_600_000i64, "kind": "turn_start"},
+            {"id": "b", "at": 1_792_929_600_000i64, "kind": "session_end", "reason": "closed"},
+        ]});
+        let mut last = None;
+        print_new_events(&page, &mut last);
+        assert_eq!(last.as_deref(), Some("b"));
+        let next = json!({"events": [
+            {"id": "a", "at": 1, "kind": "turn_start"},
+            {"id": "b", "at": 2, "kind": "session_end", "reason": "closed"},
+            {"id": "c", "at": 3, "kind": "turn_start"},
+        ]});
+        print_new_events(&next, &mut last);
+        assert_eq!(last.as_deref(), Some("c"));
+    }
+
+    /// A stub host on a fresh Unix socket that answers one request per reply.
+    async fn serve_host(
+        socket: PathBuf,
+        replies: Vec<(u16, String)>,
+    ) -> tokio::task::JoinHandle<Vec<String>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let mut heads = Vec::new();
+            for (status, body) in replies {
+                let (mut conn, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while conn.read(&mut byte).await.unwrap() == 1 {
+                    head.push(byte[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                conn.write_all(reply.as_bytes()).await.unwrap();
+                conn.flush().await.unwrap();
+                conn.shutdown().await.unwrap();
+                heads.push(String::from_utf8(head).unwrap());
+            }
+            heads
+        })
+    }
+
+    #[tokio::test]
+    async fn cli_wait_returns_the_exit_code_of_the_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("host.sock");
+        let closed = |reason: &str| {
+            json!({"ok": {
+                "outcome": if reason == "done" { "done" } else { "failed" },
+                "task": {"id": TASK, "status": "closed", "close_reason": reason},
+            }})
+            .to_string()
+        };
+        let replies = vec![
+            (200, closed("done")),
+            (200, closed("wontfix")),
+            (
+                200,
+                json!({"ok": {"outcome": "timeout", "waited_ms": 10}}).to_string(),
+            ),
+            (
+                200,
+                json!({"ok": {"outcome": "done", "agent": "w1", "why": "released"}}).to_string(),
+            ),
+        ];
+        let served = serve_host(socket.clone(), replies).await;
+        let c = LocalClient::new(socket);
+        let target = Some(format!("api/{TASK}"));
+
+        let code = wait(&c, None, target.clone(), Some("10s".into()))
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+        let code = wait(&c, None, target.clone(), None).await.unwrap();
+        assert_eq!(code, 1);
+        let code = wait(&c, None, target, Some("1m".into())).await.unwrap();
+        assert_eq!(code, 2);
+        let code = wait(&c, Some("w1".parse().unwrap()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+
+        let heads = served.await.unwrap();
+        assert!(
+            heads[0].starts_with(&format!(
+                "GET /v1/wait/task?channel=api&id={TASK}&timeout_ms=10000 HTTP/1.1"
+            )),
+            "{}",
+            heads[0]
+        );
+        // The default wait is the same two hours that the route clamps to.
+        assert!(heads[1].contains("timeout_ms=7200000"), "{}", heads[1]);
+        assert!(
+            heads[3].starts_with("GET /v1/wait/agent?agent=w1&timeout_ms=7200000 HTTP/1.1"),
+            "{}",
+            heads[3]
+        );
+
+        // A wait names one target.
+        let err = wait(&c, None, None, None).await.unwrap_err();
+        assert_eq!(err.to_string(), "name one agent, or use --task CHANNEL/ID");
+        let err = wait(
+            &c,
+            Some("w1".parse().unwrap()),
+            Some(format!("api/{TASK}")),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "name one agent, or use --task CHANNEL/ID");
     }
 
     #[tokio::test]
@@ -800,7 +1693,7 @@ mod usage_tests {
         assert_eq!(w.name, "5h");
         assert_eq!(w.used, 0.72);
         // 2026-10-25T12:00:00Z in milliseconds.
-        assert_eq!(w.resets_at, Timestamp(1_792_929_600_000));
+        assert_eq!(w.resets_at, Timestamp(1_792_929_600_000i64));
         // The reset time holds colons; the share ends at the first one.
         let w = parse_window("weekly:1:2026-10-25T12:00:00.250+02:00").unwrap();
         assert_eq!(w.used, 1.0);

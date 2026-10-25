@@ -169,6 +169,18 @@ pub struct Spawn {
     pub name: Option<String>,
     /// The model for the harness, for example 'opus'. Defaults to the harness default.
     pub model: Option<String>,
+    /// A role from hub.toml: its harness, model, and placement.
+    pub role: Option<String>,
+    /// An idempotency key: a retry with the same key and arguments returns the first agent.
+    pub key: Option<String>,
+    /// Bind the worker to an existing task, as CHANNEL/ID.
+    pub task: Option<String>,
+    /// Bind the worker to a new task with this title, in the channel.
+    pub task_title: Option<String>,
+    /// Stop the session when the bound task closes. True by default for a bound worker.
+    pub stop_on_close: Option<bool>,
+    /// Higher goes first in the spawn queue.
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -183,6 +195,35 @@ fn target(to: &str) -> Value {
         Some(c) => json!({"type": "channel", "id": c}),
         None => json!({"type": "agent", "id": to}),
     }
+}
+
+/// The call that the MCP spawn tool forwards: the `TaskBinding` is untagged,
+/// so an existing task is `{channel, id}` and a new one `{channel, title}`.
+fn spawn_request(a: &Spawn) -> Result<Value, String> {
+    let task = match (a.task.as_deref(), a.task_title.as_deref()) {
+        (Some(text), _) => {
+            let (channel, id) = text
+                .split_once('/')
+                .ok_or_else(|| format!("{text} is not CHANNEL/ID"))?;
+            Some(json!({ "channel": channel, "id": id }))
+        }
+        (None, Some(title)) => Some(json!({ "channel": a.channel, "title": title })),
+        (None, None) => None,
+    };
+    Ok(json!({
+        "tool": "spawn",
+        "channel": a.channel,
+        "prompt": a.prompt,
+        "harness": a.harness,
+        "host": a.host,
+        "name": a.name,
+        "model": a.model,
+        "role": a.role,
+        "key": a.key,
+        "task": task,
+        "stop_on_close": a.stop_on_close,
+        "priority": a.priority,
+    }))
 }
 
 fn strip_nulls(v: Value) -> Value {
@@ -387,8 +428,7 @@ impl BorantMcp {
 
     #[tool(description = "Start a new worker agent in a channel on a host that Borant picks.")]
     async fn spawn(&self, Parameters(a): Parameters<Spawn>) -> Result<String, String> {
-        self.forward(json!({"tool": "spawn", "channel": a.channel, "prompt": a.prompt, "harness": a.harness, "host": a.host, "name": a.name, "model": a.model}))
-            .await
+        self.forward(spawn_request(&a)?).await
     }
 
     #[tool(description = "List all projects: git repositories that spawns clone.")]
@@ -478,5 +518,75 @@ mod tests {
             strip_nulls(json!({"status": "stuck", "attention_msg": "need creds", "title": null}));
         let call: ToolCall = serde_json::from_value(json!({"tool": "task_update", "channel": "api", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "patch": patch})).unwrap();
         assert!(matches!(call, ToolCall::TaskUpdate { .. }));
+    }
+
+    #[test]
+    fn spawn_passes_the_key_the_task_and_the_flags() {
+        let a = Spawn {
+            channel: "api".into(),
+            prompt: "go".into(),
+            harness: None,
+            host: None,
+            name: None,
+            model: None,
+            role: Some("chief".into()),
+            key: Some("k1".into()),
+            task: Some("api/01M5S3PATRKMGFD9C0HB1CS4ZK".into()),
+            task_title: None,
+            stop_on_close: Some(false),
+            priority: Some(3),
+        };
+        assert_eq!(spawn_request(&a).unwrap()["role"], "chief");
+        let call: ToolCall =
+            serde_json::from_value(strip_nulls(spawn_request(&a).unwrap())).unwrap();
+        match call {
+            ToolCall::Spawn {
+                task,
+                key,
+                role,
+                stop_on_close,
+                priority,
+                ..
+            } => {
+                assert_eq!(key.as_deref(), Some("k1"));
+                assert_eq!(role.map(|r| r.as_str().to_owned()), Some("chief".into()));
+                assert_eq!(stop_on_close, Some(false));
+                assert_eq!(priority, Some(3));
+                assert_eq!(
+                    task,
+                    Some(borant_core::model::TaskBinding::Existing {
+                        channel: "api".parse().unwrap(),
+                        id: "01M5S3PATRKMGFD9C0HB1CS4ZK".parse().unwrap(),
+                    })
+                );
+            }
+            other => panic!("not a spawn: {other:?}"),
+        }
+
+        // A title binds a new task in the channel of the spawn.
+        let titled = Spawn {
+            task: None,
+            task_title: Some("Fix the parser".into()),
+            ..a
+        };
+        let call: ToolCall =
+            serde_json::from_value(strip_nulls(spawn_request(&titled).unwrap())).unwrap();
+        match call {
+            ToolCall::Spawn { task, .. } => assert_eq!(
+                task,
+                Some(borant_core::model::TaskBinding::New {
+                    channel: "api".parse().unwrap(),
+                    title: "Fix the parser".into(),
+                })
+            ),
+            other => panic!("not a spawn: {other:?}"),
+        }
+
+        // A task without a channel is refused before the call.
+        let bad = Spawn {
+            task: Some("api".into()),
+            ..titled
+        };
+        assert_eq!(spawn_request(&bad).unwrap_err(), "api is not CHANNEL/ID");
     }
 }

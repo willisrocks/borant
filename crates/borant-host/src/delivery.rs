@@ -369,6 +369,14 @@ impl Host {
                     actor.ok_or_else(|| ApiError::invalid("session_history needs a session"))?;
                 self.history(&a.agent, page, page_size).await
             }
+            // The host keeps the session log of the agents it ran, so `borant
+            // logs` reads it here, without a hub round trip. An agent of
+            // another host has an empty log here, and the reply says so.
+            ToolCall::AgentHistory {
+                agent,
+                page,
+                page_size,
+            } => self.history(&agent, page, page_size).await,
             call => {
                 self.hub(&CtlRequest::Call {
                     actor,

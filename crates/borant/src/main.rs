@@ -65,7 +65,7 @@ fn main() -> std::process::ExitCode {
             Command::Host => roles::run_host().await.map(|_| 0),
             Command::Mcp => mcp::run().await.map(|_| 0),
             Command::Hook { event } => Ok(hook::run(&event).await),
-            other => cli::run_user_command(other).await.map(|_| 0),
+            other => cli::run_user_command(other).await,
         }
     });
     match result {

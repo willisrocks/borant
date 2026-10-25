@@ -158,6 +158,11 @@ to agents.
 | `borant status` | The local host, all hosts, and all agents |
 | `borant events [--follow] [--since 1h] [--kind lease.*] [--agent A] [--channel C] [--host H] [--severity warn] [--json]` | The swarm event stream, one line per event or JSON |
 | `borant send <agent\|#channel> <text> [--urgent]` | Send a message as a human |
+| `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--priority N] [--name N] [--key K] [--json]` | Start an agent in a channel |
+| `borant wait <agent> \| --task C/ID [--timeout 2h]` | Wait for work: exit 0 done, 1 closed otherwise, 2 at the timeout |
+| `borant cancel <agent> [--close-task REASON]` | Stop an agent and cancel its queued spawn |
+| `borant ps [--queued] [--json]` | The spawns that wait for a host |
+| `borant logs <agent> [--follow]` | The session log of an agent |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant move <agent> [--host H] [--harness X] [--here]` | Move one agent |
 | `borant move --from <host> --here` | Move all agents of a host to this host |

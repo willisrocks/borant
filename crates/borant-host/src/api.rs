@@ -12,10 +12,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use borant_core::events::{EventFilter, Severity};
 use borant_core::proto::{ApiError, ApiErrorCode, LocalEvent, LocalRegister, Reply, ToolCall};
-use borant_core::{AgentId, ChannelName, HostName, SessionId, Timestamp};
+use borant_core::{AgentId, ChannelName, HostName, SessionId, TaskId, Timestamp};
 use futures::StreamExt;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::Host;
@@ -49,6 +49,21 @@ fn session_id(s: &str) -> Result<SessionId, ApiFail> {
 
 #[derive(Deserialize)]
 struct WaitQuery {
+    timeout_ms: Option<u64>,
+}
+
+/// The query of `GET /v1/wait/agent`.
+#[derive(Deserialize)]
+struct WaitAgentQuery {
+    agent: AgentId,
+    timeout_ms: Option<u64>,
+}
+
+/// The query of `GET /v1/wait/task`.
+#[derive(Deserialize)]
+struct WaitTaskQuery {
+    channel: ChannelName,
+    id: TaskId,
     timeout_ms: Option<u64>,
 }
 
@@ -97,6 +112,8 @@ pub fn router(host: Host) -> Router {
         .route("/v1/sessions/{id}/wait", get(wait))
         .route("/v1/sessions/{id}/stream", get(stream))
         .route("/v1/events", get(events))
+        .route("/v1/wait/agent", get(wait_agent))
+        .route("/v1/wait/task", get(wait_task))
         .route("/v1/call", post(call))
         .with_state(host)
 }
@@ -214,6 +231,122 @@ async fn events(
         )
     });
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
+}
+
+/// The longest wait that `GET /v1/wait/*` accepts, so that a stray caller
+/// cannot pin a request for a day and more.
+const WAIT_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How often a wait asks the hub.
+const WAIT_POLL: Duration = Duration::from_secs(1);
+
+/// The wait of a caller that sends no `timeout_ms`, matching the CLI default
+/// of `borant wait`.
+const WAIT_DEFAULT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// The wait, clamped so a caller can neither pin a request nor get a zero
+/// poll loop.
+fn wait_limit(timeout_ms: Option<u64>) -> Duration {
+    let limit = Duration::from_millis(timeout_ms.unwrap_or(WAIT_DEFAULT.as_millis() as u64));
+    limit.clamp(Duration::from_millis(1), WAIT_MAX)
+}
+
+/// Sleeps for one poll, or until the deadline. False when the deadline has
+/// passed.
+async fn poll_sleep(deadline: tokio::time::Instant) -> bool {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return false;
+    }
+    tokio::time::sleep(WAIT_POLL.min(deadline - now)).await;
+    true
+}
+
+/// Long-polls an agent until it is done, or the wait ends. The hub gets no
+/// new request: the route asks for the agents and reads the lease.
+async fn wait_agent(
+    State(h): State<Host>,
+    Query(q): Query<WaitAgentQuery>,
+) -> Result<Json<Reply>, ApiFail> {
+    let limit = wait_limit(q.timeout_ms);
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if let Some(outcome) = agent_outcome(&h, &q.agent).await? {
+            return Ok(Json(Reply::ok(&outcome)));
+        }
+        if !poll_sleep(deadline).await {
+            return Ok(Json(Reply::ok(&json!({
+                "outcome": "timeout",
+                "agent": q.agent,
+                "waited_ms": limit.as_millis() as u64,
+            }))));
+        }
+    }
+}
+
+/// The outcome of waiting on an agent, or `None` to keep waiting.
+///
+/// An agent is done when the hub no longer lists it, when it is retired, or
+/// when its lease is released and the agent is not parked: a parked session
+/// wakes again on a message or a claim, and a queued or launching agent has
+/// no lease yet, so both keep the wait going. An expired lease keeps waiting
+/// too, because a takeover can still place the agent.
+async fn agent_outcome(h: &Host, agent: &AgentId) -> Result<Option<Value>, ApiFail> {
+    let agents = h.call(None, ToolCall::ListAgents).await?;
+    let entry = agents
+        .as_array()
+        .and_then(|all| all.iter().find(|a| a["agent"] == json!(agent)));
+    let Some(entry) = entry else {
+        return Ok(Some(json!({
+            "outcome": "done", "agent": agent, "why": "gone",
+        })));
+    };
+    if entry["retired"] == json!(true) {
+        return Ok(Some(json!({
+            "outcome": "done", "agent": agent, "why": "retired",
+        })));
+    }
+    let lease = &entry["lease"];
+    if lease["state"] == json!("released") && lease["parked"] != json!(true) {
+        return Ok(Some(json!({
+            "outcome": "done", "agent": agent, "why": "released",
+        })));
+    }
+    Ok(None)
+}
+
+/// Long-polls a task until it closes, or the wait ends.
+async fn wait_task(
+    State(h): State<Host>,
+    Query(q): Query<WaitTaskQuery>,
+) -> Result<Json<Reply>, ApiFail> {
+    let limit = wait_limit(q.timeout_ms);
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let task = h
+            .call(
+                None,
+                ToolCall::TaskGet {
+                    channel: q.channel.clone(),
+                    id: q.id,
+                },
+            )
+            .await?;
+        if task["status"] == json!("closed") {
+            let done = task["close_reason"] == json!("done");
+            return Ok(Json(Reply::ok(&json!({
+                "outcome": if done { "done" } else { "failed" },
+                "task": task,
+            }))));
+        }
+        if !poll_sleep(deadline).await {
+            return Ok(Json(Reply::ok(&json!({
+                "outcome": "timeout",
+                "task": task,
+                "waited_ms": limit.as_millis() as u64,
+            }))));
+        }
+    }
 }
 
 /// Serves the local API on `socket` until `shutdown`. Removes a stale
