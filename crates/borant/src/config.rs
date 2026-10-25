@@ -525,6 +525,20 @@ pub struct HostFile {
     /// `[notifiers.<name>]`, the programs that tell a person.
     #[serde(default)]
     pub notifiers: BTreeMap<String, NotifierFile>,
+    /// `[herdr]`: the herdr launcher of this host, when `launcher = "herdr"`.
+    #[serde(default)]
+    pub herdr: HerdrFile,
+}
+
+/// `[herdr]` of `host.toml`: one herdr session per host, and the program that
+/// runs it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HerdrFile {
+    /// The herdr session of this host. Its server outlives a host restart.
+    pub session: Option<String>,
+    /// The herdr program, for example a pinned release binary.
+    pub program: Option<String>,
 }
 
 /// `[alerts]` of `hub.toml` and `host.toml`: which notifier gets a notice,
@@ -598,6 +612,17 @@ impl HostFile {
     /// The notifier of `[alerts]`, if this file names one.
     pub fn notifier(&self) -> anyhow::Result<Option<Box<dyn Notifier>>> {
         open_notifier(&self.notifiers, self.alerts.notifier.as_deref())
+    }
+
+    /// The herdr launcher settings of `[herdr]`, with the SSH destination that
+    /// a laptop attaches through.
+    pub fn herdr_config(&self) -> borant_launch::HerdrConfig {
+        let default = borant_launch::HerdrConfig::default();
+        borant_launch::HerdrConfig {
+            session: self.herdr.session.clone().unwrap_or(default.session),
+            program: self.herdr.program.clone().unwrap_or(default.program),
+            ssh: self.host.ssh.clone(),
+        }
     }
 }
 
