@@ -12,7 +12,11 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move sandbox"
+
+# The paths of the sandbox: its two sources, its own swarm, and the shared
+# image that carries bubblewrap.
+SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|docker/compose\.yaml$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
 
 # The scenarios that a diff touches. Every scenario drives the same swarm, so
 # a change to one crate can break all of them: only the paths that no
@@ -21,6 +25,7 @@ ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move"
 #   docs/, *.md, integrations/, crates/borant-memory/, LICENSE -> none
 #   everything else, and any change under crates/borant-core,
 #   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
+#   the sandbox and its scenario -> sandbox, or all when other paths changed
 affected() {
   local base=$1 files
   files=$(git diff --name-only "$base"...HEAD) || return 1
@@ -28,11 +33,15 @@ affected() {
     echo "$ALL"
     return 0
   fi
-  # The sandbox files map to the sandbox scenario. It needs bubblewrap and its
-  # own swarm, so it is never part of ALL.
-  if printf '%s\n' "$files" |
-    grep -qE '^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs)$'; then
-    echo sandbox
+  # A diff of the sandbox or its scenario needs that scenario. When nothing
+  # else changed, it runs alone; otherwise the default set runs first and the
+  # script then runs itself for the sandbox swarm.
+  if printf '%s\n' "$files" | grep -qE "$SANDBOX_PATHS"; then
+    if printf '%s\n' "$files" | grep -qvE "$SANDBOX_PATHS"; then
+      echo "$ALL"
+    else
+      echo sandbox
+    fi
     return 0
   fi
   if printf '%s\n' "$files" |
@@ -53,12 +62,24 @@ case "${1:-}" in
 esac
 
 SCENARIOS=${*:-$ALL}
-# The elastic and sandbox scenarios swap the swarm for their own, so each runs
-# alone and neither is in the default list.
+# The elastic scenario swaps the swarm for a hub with no worker hosts, so it
+# runs alone. The sandbox scenario has its own swarm as well, and it can share
+# a run with the default set: the default scenarios run first in a child, then
+# this script continues with the sandbox swarm.
 for s in $SCENARIOS; do
   if [ "$s" = "elastic" ]; then SCENARIOS=elastic; fi
-  if [ "$s" = "sandbox" ]; then SCENARIOS=sandbox; fi
 done
+case " $SCENARIOS " in
+  *" sandbox "*)
+    others=$(printf '%s\n' $SCENARIOS | grep -vx sandbox | tr '\n' ' ')
+    if [ -n "$others" ]; then
+      # The word splitting is the point: one argument per scenario.
+      # shellcheck disable=SC2086
+      "$0" $others || exit 1
+    fi
+    SCENARIOS=sandbox
+    ;;
+esac
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
