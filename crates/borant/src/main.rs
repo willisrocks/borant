@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod events;
 mod hook;
 mod mcp;
 mod roles;

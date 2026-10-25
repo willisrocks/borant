@@ -156,6 +156,7 @@ to agents.
 | Command | Purpose |
 |---|---|
 | `borant status` | The local host, all hosts, and all agents |
+| `borant events [--follow] [--since 1h] [--kind lease.*] [--agent A] [--channel C] [--host H] [--severity warn] [--json]` | The swarm event stream, one line per event or JSON |
 | `borant send <agent\|#channel> <text> [--urgent]` | Send a message as a human |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant move <agent> [--host H] [--harness X] [--here]` | Move one agent |
