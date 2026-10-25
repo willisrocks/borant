@@ -1,4 +1,6 @@
-//! The program that starts each harness.
+//! The program that starts each harness, and where a launch finds it.
+
+use std::path::{Path, PathBuf};
 
 use borant_core::model::Harness;
 use serde::Deserialize;
@@ -30,16 +32,8 @@ pub fn command(
     cfg: &HarnessCommands,
     limit_restart: bool,
 ) -> Vec<String> {
-    let (custom, default): (&Option<Vec<String>>, &[&str]) = match harness {
-        Harness::ClaudeCode => (&cfg.claude, &["claude", "--dangerously-skip-permissions"]),
-        Harness::Pi => (&cfg.pi, &["pi"]),
-        Harness::Omp => (&cfg.omp, &["omp"]),
-        Harness::Codex => (
-            &cfg.codex,
-            &["codex", "--dangerously-bypass-approvals-and-sandbox"],
-        ),
-        Harness::Fake => (&cfg.fake, &["borant-fake-harness"]),
-    };
+    let custom = custom_argv(harness, cfg);
+    let default = default_argv(harness);
     let mut argv = match custom {
         Some(program) => program.clone(),
         None => default.iter().map(|s| (*s).to_owned()).collect(),
@@ -65,12 +59,125 @@ pub fn command(
     argv
 }
 
+/// The `[commands]` override of `harness`, when `host.toml` has one.
+fn custom_argv(harness: Harness, cfg: &HarnessCommands) -> &Option<Vec<String>> {
+    match harness {
+        Harness::ClaudeCode => &cfg.claude,
+        Harness::Pi => &cfg.pi,
+        Harness::Omp => &cfg.omp,
+        Harness::Codex => &cfg.codex,
+        Harness::Fake => &cfg.fake,
+    }
+}
+
+/// The program of `harness` and its flags, when `[commands]` has no override.
+fn default_argv(harness: Harness) -> &'static [&'static str] {
+    match harness {
+        Harness::ClaudeCode => &["claude", "--dangerously-skip-permissions"],
+        Harness::Pi => &["pi"],
+        Harness::Omp => &["omp"],
+        Harness::Codex => &["codex", "--dangerously-bypass-approvals-and-sandbox"],
+        Harness::Fake => &["borant-fake-harness"],
+    }
+}
+
+/// The program that a launch of `harness` starts: the first word of
+/// [`command`], from the `[commands]` override of the host or from its
+/// default. A host offers only the harnesses whose program it finds, and a
+/// launch of one whose program is gone fails at once.
+pub fn program(harness: Harness, cfg: &HarnessCommands) -> String {
+    if let Some(program) = custom_argv(harness, cfg)
+        .as_ref()
+        .and_then(|argv| argv.first())
+    {
+        return program.clone();
+    }
+    default_argv(harness)
+        .first()
+        .copied()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The directories that a launch searches for the program of a harness: the
+/// `PATH` of the daemon, then `~/.local/bin`, where a user install of a
+/// harness lands. The sandbox binds `~/.local` read-only for the same reason.
+pub fn search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(Path::new(&home).join(".local").join("bin"));
+    }
+    dirs
+}
+
+/// The file of `program` in `dirs`: the path itself when it has a slash, and
+/// otherwise the first directory that holds it. `None` when no directory does.
+pub fn find_program(dirs: &[PathBuf], program: &str) -> Option<PathBuf> {
+    if program.is_empty() {
+        return None;
+    }
+    if program.contains('/') {
+        let path = Path::new(program);
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    dirs.iter()
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_program_is_the_first_word_of_the_command() {
+        let cfg = HarnessCommands::default();
+        assert_eq!(program(Harness::ClaudeCode, &cfg), "claude");
+        assert_eq!(program(Harness::Pi, &cfg), "pi");
+        assert_eq!(program(Harness::Omp, &cfg), "omp");
+        assert_eq!(program(Harness::Fake, &cfg), "borant-fake-harness");
+
+        // An override replaces the program with its first word.
+        let cfg = HarnessCommands {
+            omp: Some(v(&["/opt/omp", "-v"])),
+            fake: Some(Vec::new()),
+            ..HarnessCommands::default()
+        };
+        assert_eq!(program(Harness::Omp, &cfg), "/opt/omp");
+        // An empty override names no program, and the default stays.
+        assert_eq!(program(Harness::Fake, &cfg), "borant-fake-harness");
+    }
+
+    #[test]
+    fn find_program_searches_the_dirs_or_takes_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let omp = dir.path().join("omp");
+        std::fs::write(&omp, "").unwrap();
+        // A directory with the name of a program is not one.
+        std::fs::create_dir(dir.path().join("claude")).unwrap();
+        let dirs = vec![dir.path().to_path_buf()];
+
+        assert_eq!(find_program(&dirs, "omp"), Some(omp.clone()));
+        assert_eq!(find_program(&dirs, "claude"), None);
+        assert_eq!(find_program(&dirs, "pi"), None);
+        assert_eq!(find_program(&dirs, ""), None);
+        // A program with a slash is the path itself, and `dirs` is not used.
+        assert_eq!(find_program(&[], omp.to_str().unwrap()), Some(omp));
+        assert_eq!(find_program(&dirs, "/nonexistent/omp"), None);
+    }
+
+    #[test]
+    fn the_search_dirs_hold_the_local_install_dir() {
+        // `PATH` comes first, then the install dir of a user harness.
+        let dirs = search_dirs();
+        let expected = std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/bin"));
+        assert_eq!(dirs.last().cloned(), expected);
     }
 
     #[test]

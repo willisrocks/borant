@@ -147,6 +147,9 @@ async fn fixture(timeout: Duration) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf());
     cfg.harnesses = vec![Harness::Fake];
+    // A launch checks that the program of its harness exists, and the testkit
+    // binary is not installed on the box that runs the tests.
+    cfg.commands.fake = Some(vec!["true".to_owned()]);
     cfg.hub_timeout = Duration::from_millis(500);
     cfg.launch_timeout = timeout;
     let launcher = FakeLauncher::default();

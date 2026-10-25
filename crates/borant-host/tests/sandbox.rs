@@ -69,6 +69,9 @@ async fn fixture_with(sandbox: Option<SandboxConfig>, secrets: Option<HostSecret
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().join(".borant"));
     cfg.harnesses = vec![Harness::Fake];
+    // A launch checks that the program of its harness exists, and the testkit
+    // binary is not installed on the box that runs the tests.
+    cfg.commands.fake = Some(vec!["true".to_owned()]);
     cfg.hub_timeout = Duration::from_millis(500);
     cfg.sandbox = sandbox;
     cfg.secrets = secrets;
@@ -146,7 +149,7 @@ async fn a_launch_with_a_sandbox_wraps_the_program() {
     assert!(spec.program.contains(&"--chdir".to_owned()));
     // The harness is the last program, behind the separator.
     let sep = spec.program.iter().position(|a| a == "--").unwrap();
-    assert_eq!(&spec.program[sep + 1..], ["borant-fake-harness"]);
+    assert_eq!(&spec.program[sep + 1..], ["true"]);
 }
 
 /// The same launch on a host without `[sandbox]`, and a role without one on a
@@ -157,7 +160,7 @@ async fn no_sandbox_leaves_the_program_alone() {
     rig.host.launch(order(None)).await.unwrap();
     assert_eq!(
         rig.rec.specs.lock().unwrap().last().unwrap().program,
-        ["borant-fake-harness"]
+        ["true"]
     );
 
     let plain = fixture(None).await;
@@ -168,7 +171,7 @@ async fn no_sandbox_leaves_the_program_alone() {
         .unwrap();
     assert_eq!(
         plain.rec.specs.lock().unwrap().last().unwrap().program,
-        ["borant-fake-harness"]
+        ["true"]
     );
 }
 
@@ -276,7 +279,7 @@ async fn the_shim_runs_inside_the_sandbox() {
     assert_eq!(inner[1], "secret-exec", "{inner:?}");
     let dir = PathBuf::from(&inner[2]);
     assert_eq!(inner[3], "--");
-    assert_eq!(&inner[4..], ["borant-fake-harness"]);
+    assert_eq!(&inner[4..], ["true"]);
     assert!(
         spec.program
             .windows(2)

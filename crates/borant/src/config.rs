@@ -875,12 +875,12 @@ pub fn default_host_name() -> String {
     if name.is_empty() { "host".into() } else { name }
 }
 
-/// Harnesses whose programs are on `PATH`.
+/// Harnesses whose programs are on `PATH` or in an install dir of a launch,
+/// such as `~/.local/bin`. The daemon checks the same dirs before it offers a
+/// harness, so a host never announces one that it cannot start.
 pub fn detect_harnesses() -> Vec<Harness> {
-    let on_path = |bin: &str| {
-        std::env::var_os("PATH")
-            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
-    };
+    let dirs = borant_launch::harness::search_dirs();
+    let found = |bin: &str| borant_launch::harness::find_program(&dirs, bin).is_some();
     [
         (Harness::ClaudeCode, "claude"),
         (Harness::Pi, "pi"),
@@ -888,7 +888,7 @@ pub fn detect_harnesses() -> Vec<Harness> {
         (Harness::Fake, "borant-fake-harness"),
     ]
     .into_iter()
-    .filter(|(_, b)| on_path(b))
+    .filter(|(_, b)| found(b))
     .map(|(h, _)| h)
     .collect()
 }

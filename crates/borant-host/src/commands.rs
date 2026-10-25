@@ -132,6 +132,18 @@ impl Host {
                 cfg.name
             );
         }
+        // A program that a person removed after the registration must fail
+        // here, before anything is prepared: the hub then hears why at once
+        // instead of stopping a launch that could never register.
+        let bin = harness::program(o.harness, &cfg.commands);
+        if harness::find_program(&harness::search_dirs(), &bin).is_none() {
+            anyhow::bail!(
+                "the program of harness {} is not installed on host {}: {} is not on PATH or in ~/.local/bin",
+                o.harness,
+                cfg.name,
+                bin
+            );
+        }
         let work_root = cfg.home.join("work");
         let project = o.project.as_ref();
         let cwd = match &o.repo {
