@@ -109,6 +109,111 @@ pub fn close_repeat(task: &Task, reason: CloseReason) -> CloseOutcome {
     }
 }
 
+/// How one attempt ended (phase 6 spec, "Tasks"): the claim timed out or the
+/// claimer released it, or the task went back to `open`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptEnd {
+    /// The claim timed out, or the claimer released it.
+    ClaimEnded,
+    /// The task goes back to `open` from this status.
+    Reopened(TaskStatus),
+}
+
+/// True when `transition` ends one attempt of `task`.
+///
+/// One claim counts once: a timeout counts while the claim is held, and the
+/// reopen that follows it names the status the claim already left, so it does
+/// not count again. A caller that resets `attempts` on an owner's reopen does
+/// not call this for that transition.
+pub fn attempt_ended(task: &Task, transition: AttemptEnd) -> bool {
+    match transition {
+        AttemptEnd::ClaimEnded => {
+            task.status == TaskStatus::InProgress && task.claimed_by.is_some()
+        }
+        AttemptEnd::Reopened(from) => {
+            from == task.status
+                && matches!(
+                    from,
+                    TaskStatus::InProgress | TaskStatus::Stuck | TaskStatus::NeedsHuman
+                )
+        }
+    }
+}
+
+#[cfg(test)]
+mod attempts {
+    use super::*;
+    use crate::time::Timestamp;
+
+    fn task(status: TaskStatus, claimed_by: Option<&str>) -> Task {
+        Task {
+            id: TaskId::new(),
+            title: "t".into(),
+            body: String::new(),
+            status,
+            close_reason: None,
+            close_message: None,
+            attention_msg: None,
+            claimed_by: claimed_by.map(|a| a.parse().unwrap()),
+            deadline: None,
+            attempts: 0,
+            max_attempts: None,
+            blocked_by: Vec::new(),
+            parent: None,
+            properties: Default::default(),
+            created: Timestamp(0),
+            updated: Timestamp(0),
+            create_key: None,
+        }
+    }
+
+    #[test]
+    fn a_timeout_counts_once_even_with_the_reopen_that_follows() {
+        let held = task(TaskStatus::InProgress, Some("w1"));
+        assert!(attempt_ended(&held, AttemptEnd::ClaimEnded), "a claim ends");
+        assert!(attempt_ended(&held, AttemptEnd::Reopened(TaskStatus::InProgress)));
+        // The timeout leaves the task open and unclaimed; the reopen that
+        // still names the old status is the same claim.
+        let after = task(TaskStatus::Open, None);
+        assert!(
+            !attempt_ended(&after, AttemptEnd::Reopened(TaskStatus::InProgress)),
+            "one claim counts once"
+        );
+        assert!(!attempt_ended(&after, AttemptEnd::ClaimEnded));
+    }
+
+    #[test]
+    fn a_reopen_from_a_claimed_or_blocked_status_counts() {
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::Stuck,
+            TaskStatus::NeedsHuman,
+        ] {
+            let t = task(status, None);
+            assert!(
+                attempt_ended(&t, AttemptEnd::Reopened(status)),
+                "{status:?}"
+            );
+        }
+        // A status the spec does not list, and a stale reopen, count nothing.
+        let open = task(TaskStatus::Open, None);
+        assert!(!attempt_ended(&open, AttemptEnd::Reopened(TaskStatus::Open)));
+        let closed = task(TaskStatus::Closed, None);
+        assert!(!attempt_ended(
+            &closed,
+            AttemptEnd::Reopened(TaskStatus::Closed)
+        ));
+    }
+
+    #[test]
+    fn a_release_without_a_held_claim_counts_nothing() {
+        let unclaimed = task(TaskStatus::InProgress, None);
+        assert!(!attempt_ended(&unclaimed, AttemptEnd::ClaimEnded));
+        let open = task(TaskStatus::Open, Some("w1"));
+        assert!(!attempt_ended(&open, AttemptEnd::ClaimEnded));
+    }
+}
+
 #[cfg(test)]
 mod close_tests {
     use super::*;
