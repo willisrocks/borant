@@ -1,12 +1,13 @@
 //! The local session table on disk, so a restart of the host daemon keeps
 //! its live sessions. The file is `$BORANT_HOME/sessions.json`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use borant_core::model::Harness;
 use borant_core::ports::LaunchHandle;
+use borant_core::ports::secrets::{BundleName, MemberName};
 use borant_core::proto::{ApiError, Registered};
 use borant_core::{AgentId, ChannelName, CollectionName, RoleName, SessionId};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,15 @@ struct Saved {
     fenced: Option<String>,
     turn: u64,
     launch: Option<LaunchHandle>,
+    /// The bundles that the launch resolved: names only.
+    #[serde(default)]
+    bundles: Vec<BundleName>,
+    /// The member of each member bundle that the launch used.
+    #[serde(default)]
+    members: BTreeMap<BundleName, MemberName>,
+    /// The secret directory to delete when the session ends.
+    #[serde(default)]
+    secrets_dir: Option<PathBuf>,
 }
 
 impl Host {
@@ -61,6 +71,9 @@ impl Host {
                 fenced: s.fenced.clone(),
                 turn: s.turn,
                 launch: s.launch.clone(),
+                bundles: s.bundles.clone(),
+                members: s.members.clone(),
+                secrets_dir: s.secrets_dir.clone(),
             })
             .collect();
         let path = self.table_path();
@@ -139,6 +152,9 @@ impl Host {
                     dirty: false,
                     launch: s.launch,
                     cancel: cancel.clone(),
+                    bundles: s.bundles,
+                    members: s.members,
+                    secrets_dir: s.secrets_dir,
                 },
             );
             match agent {

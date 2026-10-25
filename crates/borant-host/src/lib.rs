@@ -9,6 +9,7 @@ mod commands;
 mod delivery;
 pub mod outbox;
 mod persist;
+mod secrets;
 mod sessions;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -18,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use borant_core::model::{Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats};
-use borant_core::ports::secrets::{Bundle, BundleName, SecretStore};
+use borant_core::ports::secrets::{Bundle, BundleName, MemberName, SecretStore};
 use borant_core::ports::{EventLog, LaunchHandle, Launcher, MessageBus, Notifier, SessionStore};
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
 use borant_core::rules::wake::WakeLimiter;
@@ -33,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint::RepoFacts;
 use crate::outbox::Outbox;
+use crate::secrets::{LaunchSecrets, Redactor};
 
 pub use client::LocalClient;
 pub use commands::DesktopNotifier;
@@ -64,6 +66,9 @@ pub struct HostConfig {
     pub socket: Option<PathBuf>,
     /// The opened secret stores and bundles, from `[secrets]` in `host.toml`.
     pub secrets: Option<HostSecrets>,
+    /// Where the secret directories go: `/run/borant/agents` on Linux and
+    /// `$TMPDIR/borant/agents` on macOS. Tests set it.
+    pub secrets_root: Option<PathBuf>,
 }
 
 impl HostConfig {
@@ -88,6 +93,7 @@ impl HostConfig {
             hub_timeout: Duration::from_secs(5),
             socket: None,
             secrets: None,
+            secrets_root: None,
         }
     }
 
@@ -288,11 +294,26 @@ pub(crate) struct LocalSess {
     pub dirty: bool,
     pub launch: Option<LaunchHandle>,
     pub cancel: CancellationToken,
+    /// The bundles that the launch resolved: names only.
+    pub bundles: Vec<BundleName>,
+    /// The member of each member bundle that the launch used.
+    pub members: BTreeMap<BundleName, MemberName>,
+    /// The secret directory of the session, when it runs through the shim.
+    pub secrets_dir: Option<PathBuf>,
 }
 
 impl LocalSess {
     pub fn movable(&self) -> bool {
         self.reg.as_ref().is_some_and(|r| r.movable) && self.repo.is_some()
+    }
+
+    /// The agent of the session, from its lease or from the registration
+    /// hint.
+    pub fn agent(&self) -> Option<AgentId> {
+        self.reg
+            .as_ref()
+            .map(|r| r.agent.clone())
+            .or_else(|| self.agent_hint.clone())
     }
 }
 
@@ -318,6 +339,10 @@ pub(crate) struct State {
     /// The start of the minute and its count for each rate-limited event of
     /// an agent and kind, for the `delivery.*` events.
     pub event_limited: HashMap<(AgentId, &'static str), (Timestamp, u64)>,
+    /// What the last launch of each agent issued, until its session attaches.
+    pub launched: HashMap<AgentId, Arc<LaunchSecrets>>,
+    /// The exact values of each agent, for the redactor of the session log.
+    pub redactors: HashMap<AgentId, Arc<Redactor>>,
 }
 
 pub(crate) struct Inner {
@@ -395,6 +420,8 @@ impl Host {
                     outage_over: true,
                     restored: false,
                     event_limited: HashMap::new(),
+                    launched: HashMap::new(),
+                    redactors: HashMap::new(),
                 }),
                 last_ok: Mutex::new(Instant::now()),
                 started,
@@ -431,6 +458,9 @@ impl Host {
     /// the outbox flusher, host commands, and the notifier.
     pub async fn run(&self, shutdown: CancellationToken) {
         self.restore().await;
+        // A directory whose session ended while the daemon was down keeps
+        // values on disk: no session will ever read it.
+        self.remove_stale_secret_dirs().await;
         let mut tasks = vec![
             tokio::spawn(self.clone().heartbeat_loop(shutdown.clone())),
             tokio::spawn(self.clone().liveness_loop(shutdown.clone())),

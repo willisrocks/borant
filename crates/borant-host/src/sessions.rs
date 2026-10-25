@@ -12,7 +12,7 @@ use borant_core::proto::{
     ApiError, CtlRequest, EventReply, LocalEvent, LocalRegister, LocalSession, LocalState,
     RegisterSession, Registered, RenewedLease, SessionLeaseRef,
 };
-use borant_core::rules::{redact::redact, session_log};
+use borant_core::rules::session_log;
 use borant_core::{AgentId, SessionId};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -61,6 +61,10 @@ impl Host {
         let id = SessionId::new();
         let cwd = PathBuf::from(&req.cwd);
         let repo = checkpoint::detect(&cwd, self.inner.cfg.checkpoint_remote.as_deref()).await;
+        let issued = req
+            .agent
+            .as_ref()
+            .and_then(|a| self.state().launched.get(a).cloned());
         {
             let mut st = self.state();
             let shared_dir = st.sessions.values().any(|s| s.cwd == cwd);
@@ -94,6 +98,15 @@ impl Host {
                     dirty: false,
                     launch: None,
                     cancel: CancellationToken::new(),
+                    bundles: issued
+                        .as_ref()
+                        .map(|i| i.bundles.clone())
+                        .unwrap_or_default(),
+                    members: issued
+                        .as_ref()
+                        .map(|i| i.members.clone())
+                        .unwrap_or_default(),
+                    secrets_dir: issued.as_ref().map(|i| i.dir.clone()),
                 },
             );
         }
@@ -180,6 +193,19 @@ impl Host {
         self.save();
         self.append(&agent, Some(id), SessionEventBody::SessionStart { cwd })
             .await;
+        // The names only: values never reach the log.
+        let issued = self.state().launched.get(&agent).cloned();
+        if let Some(issued) = issued {
+            self.append(
+                &agent,
+                Some(id),
+                SessionEventBody::SecretsIssued {
+                    bundles: issued.bundles.clone(),
+                    members: issued.members.clone(),
+                },
+            )
+            .await;
+        }
         self.load_log(&agent, id).await;
         tokio::spawn(self.clone().inbox_loop(agent.clone(), id, cancel));
         tracing::info!(session = %id, %agent, "session attached");
@@ -376,7 +402,9 @@ impl Host {
                 self.append(agent, Some(id), SessionEventBody::TurnStart)
                     .await;
             }
-            let cut = |t: &str| session_log::cut(&redact(t), session_log::MAX_TOOL_BYTES);
+            let cut = |t: &str| {
+                session_log::cut(&self.redact_text(agent, t), session_log::MAX_TOOL_BYTES)
+            };
             let body = match &ev {
                 LocalEvent::UserPrompt { text } => {
                     Some(SessionEventBody::UserPrompt { text: cut(text) })
@@ -474,6 +502,9 @@ impl Host {
                     tracing::warn!(session = %id, "could not tell the hub about the end: {}", e.message);
                 }
             }
+        }
+        if let Some(agent) = s.agent() {
+            self.forget_secrets(&agent, s.secrets_dir.clone()).await;
         }
         tracing::info!(session = %id, reason, "session ended");
     }

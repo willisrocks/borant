@@ -10,7 +10,7 @@ use borant_core::model::{
 };
 use borant_core::ports::{Delivery, Notice, PortErrorKind};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
-use borant_core::rules::{redact::redact, session_log, wake};
+use borant_core::rules::{session_log, wake};
 use borant_core::{AgentId, EventId, MessageId, SessionId, subjects};
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -105,7 +105,7 @@ impl Host {
             return;
         }
         let mut logged = env.clone();
-        logged.text = redact(&logged.text).into_owned();
+        logged.text = self.redact_text(agent, &env.text).into_owned();
         let ev = self.event_record(
             agent,
             Some(id),
