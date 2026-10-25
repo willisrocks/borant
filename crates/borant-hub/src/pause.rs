@@ -37,6 +37,38 @@ pub(crate) fn session_start_key(agent: &AgentId) -> String {
     format!("session.started.{agent}")
 }
 
+/// The cap that stopped an agent, and the state that a resume starts over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cap {
+    /// `max_turns_per_day`, counted in the turn counter of the UTC day.
+    Turns,
+    /// `max_session_hours`, counted from the start of the session hours.
+    Session,
+}
+
+impl Cap {
+    /// The reason that `check_caps` writes for this cap at `limit`.
+    fn why(self, limit: u32) -> String {
+        match self {
+            Cap::Turns => format!("cap: {limit} turns today"),
+            Cap::Session => format!("cap: {limit}h session"),
+        }
+    }
+
+    /// The cap that stopped an agent, from the reason of its pause. A stop by
+    /// a person or a channel names no cap, and resets nothing.
+    fn of(paused: &PauseReason) -> Option<Self> {
+        let why = paused.why.strip_prefix("cap: ")?;
+        if why.ends_with(" turns today") {
+            Some(Cap::Turns)
+        } else if why.ends_with("h session") {
+            Some(Cap::Session)
+        } else {
+            None
+        }
+    }
+}
+
 impl Hub {
     /// Stops an agent, or each member of a channel whose channels are all
     /// paused. A person or the owner of the channel may call it.
@@ -241,7 +273,7 @@ impl Hub {
                         .await?;
                 }
                 if turns >= u64::from(cap) {
-                    let why = format!("cap: {cap} turns today");
+                    let why = Cap::Turns.why(cap);
                     self.stop_for_cap(mem, &agent, why).await?;
                     continue;
                 }
@@ -261,7 +293,7 @@ impl Hub {
                     }
                 };
                 if now.since(start) >= Duration::from_secs(u64::from(hours) * 3_600) {
-                    let why = format!("cap: {hours}h session");
+                    let why = Cap::Session.why(hours);
                     self.stop_for_cap(mem, &agent, why).await?;
                 }
             }
@@ -371,14 +403,24 @@ impl Hub {
     }
 
     /// Clears the pause of one agent and places it again with a planned move.
+    /// A person who resumes a capped agent means "let it work today", so the
+    /// cap state that stopped it starts over; a stop by a person keeps it.
     async fn resume_agent(&self, mem: &mut Memory, id: &AgentId) -> Result<bool, ApiError> {
         let mut agent = self.agent(id).await?.value;
+        let cap = agent.paused.as_ref().and_then(Cap::of);
         agent.paused = None;
         self.store.upsert(&keys::agent(id), &agent).await?;
+        let note = match cap {
+            Some(cap) => Some(self.reset_cap(id, cap).await?),
+            None => None,
+        };
         mem.pause_fences.retain(|_, (a, _, _)| a != id);
-        let event = self
+        let mut event = self
             .event(self.now(), Severity::Info, SwarmEventBody::AgentResumed)
             .about_agent(id.clone());
+        if let Some(note) = note {
+            event = event.with_note(note);
+        }
         Self::queue(mem, event);
         // The tick places it again when no host qualifies now.
         mem.pending_moves.insert(
@@ -394,6 +436,25 @@ impl Hub {
             .await?;
         tracing::info!(agent = %id, placed, "agent resumed");
         Ok(placed)
+    }
+
+    /// Starts the cap state that stopped an agent over, on a resume: today's
+    /// turn counter to zero, or the session hours from now. Returns the note
+    /// of the `agent.resumed` event.
+    async fn reset_cap(&self, id: &AgentId, cap: Cap) -> Result<String, ApiError> {
+        let now = self.now();
+        let note = match cap {
+            Cap::Turns => {
+                self.store.upsert(&turns_key(id, now), &0u64).await?;
+                "cap reset: today's turns count from zero"
+            }
+            Cap::Session => {
+                self.store.upsert(&session_start_key(id), &now).await?;
+                "cap reset: the session hours count from now"
+            }
+        };
+        tracing::info!(agent = %id, %note, "the cap of a resumed agent starts over");
+        Ok(note.to_owned())
     }
 
     /// A person, or the owner of a channel of the target, may stop or resume.

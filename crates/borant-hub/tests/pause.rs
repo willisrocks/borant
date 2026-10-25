@@ -7,11 +7,12 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use borant_core::events::EventFilter;
 use borant_core::model::{
     Agent, Harness, HostStats, Lease, LeaseState, MoveReason, NewTask, SessionStats, Task,
     TaskStatus,
 };
-use borant_core::ports::StateStore;
+use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{
     CtlRequest, HostCommand, MoveSelector, MoveTarget, PauseSelector, Registered, SessionLeaseRef,
     ToolCall,
@@ -21,6 +22,7 @@ use borant_core::rules::roles::RoleConfig;
 use borant_core::{AgentId, ChannelName, Clock, RoleName, Timestamp, keys};
 use borant_hub::HubConfig;
 use common::{Fx, name, next_cmd};
+use futures::StreamExt;
 use serde_json::json;
 
 fn api() -> ChannelName {
@@ -516,6 +518,31 @@ async fn turns_of(fx: &Fx) -> u64 {
     serde_json::from_slice(&doc.value).unwrap()
 }
 
+/// The start of the session hours of `w1`, from KV.
+async fn session_started(fx: &Fx) -> Timestamp {
+    let doc = fx
+        .state
+        .get(&format!("session.started.{}", agent("w1")))
+        .await
+        .unwrap()
+        .expect("the session start");
+    serde_json::from_slice(&doc.value).unwrap()
+}
+
+/// The note of each `agent.resumed` event, which says what the resume reset.
+async fn resumed_notes(fx: &Fx) -> Vec<Option<String>> {
+    let filter = EventFilter {
+        kinds: vec!["agent.resumed".into()],
+        ..EventFilter::default()
+    };
+    let mut stream = fx.events.read(&filter, false).await.unwrap();
+    let mut notes = Vec::new();
+    while let Some(event) = stream.next().await {
+        notes.push(event.note.clone());
+    }
+    notes
+}
+
 #[tokio::test]
 async fn pause_channel_cap_queues_the_spawn() {
     use borant_core::config::ChannelConfig;
@@ -573,4 +600,193 @@ async fn pause_channel_cap_queues_the_spawn() {
         .find(|r| r["agent"] == json!(agent("w1")))
         .expect("the queued spawn");
     assert_eq!(row["queue_reason"], json!("channel full (2/2)"), "{row}");
+}
+
+/// A person who resumes an agent that its turn cap stopped means "let it work
+/// today": the counter starts over, the heartbeats keep it running, and the
+/// cap applies again once the agent works that many turns.
+#[tokio::test]
+async fn pause_resume_of_a_capped_agent_starts_the_cap_over() {
+    let fx = Fx::with(hub(&[("worker", worker(Some(4)))]));
+    let (owner, w) = setup(&fx, &[("worker", worker(Some(4)))]).await;
+    let mut h1 = fx.commands("h1").await;
+    let mut h2 = fx.commands("h2").await;
+    fx.heartbeat_idle("h1", &[(&w, None)]).await;
+    // The fourth turn of the day reaches the cap of four.
+    stats_heartbeat(&fx, "h1", &[(&w, None)], vec![session_stats("w1", 4)]).await;
+    let paused = agent_of(&fx, "w1").await.paused.expect("the cap pauses it");
+    assert_eq!(paused.why, "cap: 4 turns today");
+    assert_eq!(turns_of(&fx).await, 4);
+    // The session stops at the turn end.
+    fx.heartbeat_idle("h1", &[(&w, Some(fx.clock.now()))]).await;
+    assert!(matches!(
+        next_cmd(&mut h1).await,
+        Some(HostCommand::Stop { .. })
+    ));
+    fx.req(CtlRequest::EndSession {
+        session: w.session,
+        agent: w.agent.clone(),
+        token: w.token,
+        reason: "capped".into(),
+    })
+    .await
+    .unwrap();
+    // The owner resumes it: today's counter starts over, and the event says so.
+    let reply = fx
+        .call(
+            Some(&owner),
+            ToolCall::Resume {
+                selector: paused_selector("w1"),
+            },
+        )
+        .await
+        .expect("the owner resumes its capped member");
+    assert_eq!(reply["paused"], false, "{reply}");
+    assert_eq!(turns_of(&fx).await, 0, "the resume resets the counter");
+    assert_eq!(
+        resumed_notes(&fx).await,
+        vec![Some("cap reset: today's turns count from zero".to_owned())]
+    );
+    // The resumed agent works again: three heartbeats stay under the cap.
+    let host = match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.reason, MoveReason::Resume);
+            "h1"
+        }
+        _ => match next_cmd(&mut h2).await {
+            Some(HostCommand::Launch(o)) => {
+                assert_eq!(o.reason, MoveReason::Resume);
+                "h2"
+            }
+            other => panic!("expected a launch, got {other:?}"),
+        },
+    };
+    let second = fx.register(host, Some("w1"), None).await;
+    for turn in 1..=3 {
+        stats_heartbeat(
+            &fx,
+            host,
+            &[(&second, None)],
+            vec![session_stats("w1", turn)],
+        )
+        .await;
+        assert!(
+            agent_of(&fx, "w1").await.paused.is_none(),
+            "still running after heartbeat {turn}"
+        );
+    }
+    assert_eq!(turns_of(&fx).await, 3, "the turns counted from zero");
+    // The cap applies again at the fourth turn of the restarted day.
+    stats_heartbeat(&fx, host, &[(&second, None)], vec![session_stats("w1", 4)]).await;
+    let paused = agent_of(&fx, "w1")
+        .await
+        .paused
+        .expect("the cap pauses it again");
+    assert_eq!(paused.why, "cap: 4 turns today");
+}
+
+/// A stop by a person is not a cap: a resume keeps the counter and the event
+/// names no reset.
+#[tokio::test]
+async fn pause_resume_of_a_stopped_agent_keeps_the_turn_counter() {
+    let fx = Fx::with(hub(&[("worker", worker(Some(4)))]));
+    let (owner, w) = setup(&fx, &[("worker", worker(Some(4)))]).await;
+    let mut h1 = fx.commands("h1").await;
+    fx.heartbeat_idle("h1", &[(&w, None)]).await;
+    stats_heartbeat(&fx, "h1", &[(&w, None)], vec![session_stats("w1", 2)]).await;
+    assert_eq!(turns_of(&fx).await, 2, "two turns counted");
+    // A person stops the agent before its cap.
+    fx.heartbeat_idle("h1", &[(&w, Some(fx.clock.now()))]).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::Stop {
+            selector: paused_selector("w1"),
+            grace_secs: Some(60),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        next_cmd(&mut h1).await,
+        Some(HostCommand::Stop { .. })
+    ));
+    fx.req(CtlRequest::EndSession {
+        session: w.session,
+        agent: w.agent.clone(),
+        token: w.token,
+        reason: "stopped".into(),
+    })
+    .await
+    .unwrap();
+    fx.call(
+        Some(&owner),
+        ToolCall::Resume {
+            selector: paused_selector("w1"),
+        },
+    )
+    .await
+    .expect("the owner resumes it");
+    assert_eq!(
+        turns_of(&fx).await,
+        2,
+        "a stop by a person keeps the counter"
+    );
+    assert_eq!(resumed_notes(&fx).await, vec![None]);
+}
+
+/// A resume of an agent that its session-hours cap stopped counts the hours
+/// from now, and the event says so.
+#[tokio::test]
+async fn pause_resume_of_a_session_hours_cap_starts_the_hours_over() {
+    let role = RoleConfig {
+        harness: Some(Harness::Fake),
+        max_session_hours: Some(1),
+        ..RoleConfig::default()
+    };
+    let fx = Fx::with(hub(&[("worker", role.clone())]));
+    let (owner, w) = setup(&fx, &[("worker", role)]).await;
+    let mut h1 = fx.commands("h1").await;
+    assert_eq!(session_started(&fx).await, fx.clock.now());
+    fx.heartbeat_idle("h1", &[(&w, None)]).await;
+    // Two hours in the session reach the cap of one.
+    fx.advance(2 * 3_600);
+    stats_heartbeat(&fx, "h1", &[(&w, None)], vec![session_stats("w1", 0)]).await;
+    let paused = agent_of(&fx, "w1")
+        .await
+        .paused
+        .expect("the hours cap stops it");
+    assert_eq!(paused.why, "cap: 1h session");
+    fx.heartbeat_idle("h1", &[(&w, Some(fx.clock.now()))]).await;
+    assert!(matches!(
+        next_cmd(&mut h1).await,
+        Some(HostCommand::Stop { .. })
+    ));
+    fx.req(CtlRequest::EndSession {
+        session: w.session,
+        agent: w.agent.clone(),
+        token: w.token,
+        reason: "capped".into(),
+    })
+    .await
+    .unwrap();
+    // The owner resumes it: the hours count from now.
+    fx.call(
+        Some(&owner),
+        ToolCall::Resume {
+            selector: paused_selector("w1"),
+        },
+    )
+    .await
+    .expect("the owner resumes its capped member");
+    assert_eq!(
+        session_started(&fx).await,
+        fx.clock.now(),
+        "the resume starts the hours over"
+    );
+    assert_eq!(
+        resumed_notes(&fx).await,
+        vec![Some(
+            "cap reset: the session hours count from now".to_owned()
+        )]
+    );
 }
