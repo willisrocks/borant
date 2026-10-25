@@ -261,8 +261,13 @@ async fn session_start(ctx: &Ctx) -> i32 {
         channel: std::env::var("BORANT_CHANNEL")
             .ok()
             .and_then(|c| c.parse().ok()),
-        role: None,
-        collection: None,
+        // A chief that a person starts reports its role and collection.
+        role: std::env::var("BORANT_ROLE")
+            .ok()
+            .and_then(|r| r.parse().ok()),
+        collection: std::env::var("BORANT_COLLECTION")
+            .ok()
+            .and_then(|c| c.parse().ok()),
     };
     let Outcome::Reply(Ok(s)) = ctx
         .client
