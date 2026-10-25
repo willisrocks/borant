@@ -5,11 +5,14 @@
 //!   `borant.chan.>`, one durable pull consumer `inbox-{agent}` for each
 //!   agent, and core NATS for requests and host commands.
 //! - Session store: stream `BORANT_SESSION`, one subject for each agent.
+//! - Event log: stream `BORANT_EVENTS` for `borant.events.>`, one subject for
+//!   each kind, with an ephemeral consumer for each reader.
 //!
 //! The adapters create the bucket and the streams on first use, so a host
 //! daemon can start while the hub is unreachable.
 
 mod bus;
+mod events;
 mod session;
 mod state;
 
@@ -20,12 +23,14 @@ use async_nats::jetstream;
 use borant_core::ports::{PortError, PortErrorKind};
 
 pub use bus::NatsBus;
+pub use events::NatsEventLog;
 pub use session::NatsSession;
 pub use state::NatsState;
 
 pub const KV_BUCKET: &str = "borant";
 pub const MSG_STREAM: &str = "BORANT_MSG";
 pub const SESSION_STREAM: &str = "BORANT_SESSION";
+pub const EVENT_STREAM: &str = "BORANT_EVENTS";
 
 #[derive(Debug, Clone, Default)]
 pub struct NatsConfig {
@@ -102,6 +107,10 @@ impl Nats {
 
     pub fn session(&self) -> NatsSession {
         NatsSession::new(self.js.clone())
+    }
+
+    pub fn events(&self) -> NatsEventLog {
+        NatsEventLog::new(self.js.clone())
     }
 
     pub fn client(&self) -> &async_nats::Client {

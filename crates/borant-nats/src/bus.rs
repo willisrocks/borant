@@ -7,7 +7,8 @@ use async_nats::{HeaderMap, RequestErrorKind};
 use borant_core::AgentId;
 use borant_core::model::Envelope;
 use borant_core::ports::{
-    Acker, Delivery, Incoming, MessageBus, PortError, PortErrorKind, PortResult, Responder,
+    Acker, Delivery, InboxStats, Incoming, MessageBus, PortError, PortErrorKind, PortResult,
+    Responder,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -229,6 +230,19 @@ impl MessageBus for NatsBus {
         let mut c = self.consumer(agent).await?;
         let info = c.info().await.map_err(|e| unavailable("inbox info", e))?;
         Ok(info.num_pending)
+    }
+
+    async fn inbox_stats(&self, agent: &AgentId) -> PortResult<InboxStats> {
+        // The counters of the durable consumer of the inbox: the messages it
+        // has not delivered, the ones it delivered and nobody acked, and the
+        // ones of those that it delivered more than once.
+        let mut c = self.consumer(agent).await?;
+        let info = c.info().await.map_err(|e| unavailable("inbox info", e))?;
+        Ok(InboxStats {
+            pending: info.num_pending,
+            ack_pending: info.num_ack_pending as u64,
+            redelivered: info.num_redelivered as u64,
+        })
     }
 
     async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>> {
