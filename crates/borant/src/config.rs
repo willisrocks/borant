@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use borant_core::config::{AlertsConfig, ChannelConfig, ChangesConfig};
+use borant_core::config::{AlertsConfig, ChangesConfig, ChannelConfig};
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
@@ -258,9 +258,11 @@ pub struct HubFile {
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
     /// `[channels.<name>]`: the caps of a channel.
     #[serde(default)]
+    #[allow(dead_code)] // The stop and spawn-caps task reads it.
     pub channels: BTreeMap<ChannelName, ChannelConfig>,
     /// `[changes]`: the PR watch. Not wired yet.
     #[serde(default)]
+    #[allow(dead_code)] // The PR watch task reads it.
     pub changes: ChangesConfig,
     /// `[alerts]`: the notifier of the hub and its alert rules.
     #[serde(default)]

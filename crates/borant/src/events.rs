@@ -825,7 +825,8 @@ mod tests {
         })
         .about_task(borant_core::TaskId::new());
         assert!(
-            render(&changed).contains("open at abc123 checks=fail: ci, lint review=changes_requested"),
+            render(&changed)
+                .contains("open at abc123 checks=fail: ci, lint review=changes_requested"),
             "{}",
             render(&changed)
         );

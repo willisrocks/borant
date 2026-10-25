@@ -171,7 +171,10 @@ mod attempts {
     fn a_timeout_counts_once_even_with_the_reopen_that_follows() {
         let held = task(TaskStatus::InProgress, Some("w1"));
         assert!(attempt_ended(&held, AttemptEnd::ClaimEnded), "a claim ends");
-        assert!(attempt_ended(&held, AttemptEnd::Reopened(TaskStatus::InProgress)));
+        assert!(attempt_ended(
+            &held,
+            AttemptEnd::Reopened(TaskStatus::InProgress)
+        ));
         // The timeout leaves the task open and unclaimed; the reopen that
         // still names the old status is the same claim.
         let after = task(TaskStatus::Open, None);
@@ -197,7 +200,10 @@ mod attempts {
         }
         // A status the spec does not list, and a stale reopen, count nothing.
         let open = task(TaskStatus::Open, None);
-        assert!(!attempt_ended(&open, AttemptEnd::Reopened(TaskStatus::Open)));
+        assert!(!attempt_ended(
+            &open,
+            AttemptEnd::Reopened(TaskStatus::Open)
+        ));
         let closed = task(TaskStatus::Closed, None);
         assert!(!attempt_ended(
             &closed,

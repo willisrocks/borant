@@ -12,9 +12,7 @@ mod session;
 mod state;
 
 pub use bus::{Acker, Delivery, InboxStats, Incoming, MessageBus, Responder, subject_matches};
-pub use changes::{
-    ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState,
-};
+pub use changes::{ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState};
 pub use events::EventLog;
 pub use launch::{LaunchHandle, LaunchSpec, Launcher};
 pub use notify::{Notice, Notifier, Priority};

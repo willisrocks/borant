@@ -432,7 +432,9 @@ pub enum ToolCall {
         grace_secs: Option<u32>,
     },
     /// Resumes a stopped agent or channel and places the agent again.
-    Resume { selector: PauseSelector },
+    Resume {
+        selector: PauseSelector,
+    },
     /// Lists the agents that a prune would remove. Writes and deletes nothing.
     PruneAgents {
         #[serde(default = "default_prune_secs")]
@@ -824,7 +826,14 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(answer, ToolCall::Answer { expect_updated: Timestamp(5), key: None, .. }),
+            matches!(
+                answer,
+                ToolCall::Answer {
+                    expect_updated: Timestamp(5),
+                    key: None,
+                    ..
+                }
+            ),
             "{answer:?}"
         );
         assert_eq!(
