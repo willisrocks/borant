@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
-use borant_core::HostName;
 use borant_core::model::Harness;
 use borant_core::rules::lease::LeaseConfig;
+use borant_core::{HostName, PoolName, Tag};
 use borant_host::HostConfig;
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
@@ -42,6 +42,38 @@ fn env_secs(key: &str) -> anyhow::Result<Option<Duration>> {
                 .with_context(|| format!("{key} must be a number of seconds"))
         })
         .transpose()
+}
+
+/// Splits a comma-separated environment value, for example
+/// `BORANT_TAGS=vps,fast`.
+fn split_list<T>(value: &str) -> anyhow::Result<Vec<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    value
+        .split(',')
+        .map(|s| s.trim().parse::<T>().map_err(anyhow::Error::from))
+        .collect()
+}
+
+/// Resolves the pool and the tags of a host. `BORANT_POOL` and `BORANT_TAGS`
+/// override `host.toml`, as the other `BORANT_*` values do.
+fn pool_and_tags(
+    pool: Option<PoolName>,
+    tags: Option<Vec<Tag>>,
+    env_pool: Option<String>,
+    env_tags: Option<String>,
+) -> anyhow::Result<(Option<PoolName>, Vec<Tag>)> {
+    let pool = match env_pool {
+        Some(v) => Some(v.trim().parse::<PoolName>().context("BORANT_POOL")?),
+        None => pool,
+    };
+    let tags = match env_tags {
+        Some(v) => split_list(&v).context("BORANT_TAGS")?,
+        None => tags.unwrap_or_default(),
+    };
+    Ok((pool, tags))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -130,6 +162,8 @@ pub struct HostSection {
     pub launcher: Option<String>,
     pub max_agents: Option<u32>,
     pub always_on: Option<bool>,
+    pub pool: Option<PoolName>,
+    pub tags: Option<Vec<Tag>>,
     pub ssh: Option<String>,
     pub harnesses: Option<Vec<Harness>>,
     pub checkpoint_remote: Option<String>,
@@ -230,6 +264,12 @@ pub fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
         cfg.always_on = v;
     }
     cfg.ssh = env("BORANT_SSH").or(h.ssh.clone());
+    (cfg.pool, cfg.tags) = pool_and_tags(
+        h.pool.clone(),
+        h.tags.clone(),
+        env("BORANT_POOL"),
+        env("BORANT_TAGS"),
+    )?;
     cfg.harnesses = match env("BORANT_HARNESSES") {
         Some(v) => v
             .split(',')
@@ -282,6 +322,89 @@ mod tests {
     #[test]
     fn rejects_unknown_keys() {
         assert!(toml::from_str::<HostFile>("[host]\nnmae = \"x\"").is_err());
+    }
+
+    #[test]
+    fn parses_host_pool_and_tags() {
+        let f: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "e-1"
+            harnesses = ["pi"]
+            pool = "workers"
+            tags = ["vps", "fast"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(f.host.pool.as_ref().map(PoolName::as_str), Some("workers"));
+        assert_eq!(
+            f.host.tags,
+            Some(vec!["vps".parse().unwrap(), "fast".parse().unwrap()])
+        );
+
+        let none: HostFile = toml::from_str("[host]\nname = \"laptop\"\n").unwrap();
+        assert_eq!(none.host.pool, None);
+        assert_eq!(none.host.tags, None);
+    }
+
+    #[test]
+    fn splits_tags_from_the_environment() {
+        let tags: Vec<Tag> = split_list("vps, fast").unwrap();
+        assert_eq!(tags, vec!["vps".parse().unwrap(), "fast".parse().unwrap()]);
+        assert_eq!(tags[0].as_str(), "vps");
+        // Names are lower case only.
+        assert!(split_list::<Tag>("VPS").is_err());
+        assert!(split_list::<PoolName>("").is_err());
+    }
+
+    #[test]
+    fn host_config_reads_pool_and_tags_from_the_file() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "e-1"
+            harnesses = ["pi"]
+            pool = "workers"
+            tags = ["vps"]
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).unwrap();
+        assert_eq!(cfg.pool.as_ref().map(PoolName::as_str), Some("workers"));
+        assert_eq!(cfg.tags.len(), 1);
+        assert_eq!(cfg.tags[0].as_str(), "vps");
+    }
+
+    #[test]
+    fn env_pool_and_tags_override_the_file() {
+        let (pool, tags) = pool_and_tags(
+            Some("workers".parse().unwrap()),
+            Some(vec!["vps".parse().unwrap()]),
+            Some("gpu".into()),
+            Some("fast, eu".into()),
+        )
+        .unwrap();
+        assert_eq!(pool.map(|p| p.to_string()).as_deref(), Some("gpu"));
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[1].as_str(), "eu");
+        // The file fills in what the environment leaves out.
+        let (pool, tags) = pool_and_tags(
+            Some("workers".parse().unwrap()),
+            Some(vec!["vps".parse().unwrap()]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(pool.map(|p| p.to_string()).as_deref(), Some("workers"));
+        assert_eq!(tags.len(), 1);
+        // A host with neither reports no pool and no tags.
+        assert_eq!(
+            pool_and_tags(None, None, None, None).unwrap(),
+            (None, Vec::new())
+        );
+        // A bad value fails the whole config.
+        assert!(pool_and_tags(None, None, Some("GPU".into()), None).is_err());
+        assert!(pool_and_tags(None, None, None, Some("vps,,x".into())).is_err());
     }
 
     #[test]
