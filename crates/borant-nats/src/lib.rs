@@ -22,7 +22,7 @@ use std::time::Duration;
 use async_nats::jetstream;
 use borant_core::ports::{PortError, PortErrorKind};
 
-pub use bus::NatsBus;
+pub use bus::{NatsBus, consumer_name};
 pub use events::NatsEventLog;
 pub use session::NatsSession;
 pub use state::NatsState;

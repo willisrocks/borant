@@ -64,6 +64,12 @@ impl Host {
                     }
                 }
                 Err(e) => {
+                    if e.is(PortErrorKind::NotFound) {
+                        // The broker lost the consumer, for example with its
+                        // data: recreate it and keep the messages that
+                        // arrived meanwhile.
+                        self.recover_inbox(&agent, id).await;
+                    }
                     if failing {
                         tracing::debug!(%agent, "inbox pull still failing: {e}");
                     } else {
@@ -675,6 +681,23 @@ impl Host {
     /// True on the first failure of a run, and marks the run as failing.
     fn outbox_failing_now(&self) -> bool {
         !self.inner.outbox_failing.swap(true, Ordering::Relaxed)
+    }
+
+    /// Recreates the inbox of a session whose consumer the broker lost, so
+    /// the messages that arrived meanwhile still come.
+    async fn recover_inbox(&self, agent: &AgentId, id: SessionId) {
+        let channels = self
+            .state()
+            .sessions
+            .get(&id)
+            .and_then(|s| s.reg.as_ref())
+            .map(|r| r.channels.clone())
+            .unwrap_or_default();
+        let inbox = subjects::inbox(agent, &channels);
+        match self.inner.bus.recover_inbox(agent, &inbox).await {
+            Ok(()) => tracing::info!(%agent, "recovered the lost inbox"),
+            Err(e) => tracing::warn!(%agent, "cannot recover the lost inbox: {e}"),
+        }
     }
 
     pub(crate) async fn notify_loop(self, shutdown: CancellationToken) {
