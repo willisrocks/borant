@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use borant_core::SessionId;
 use borant_core::model::{Envelope, Harness};
 use borant_core::proto::{EventReply, LocalEvent, LocalRegister, LocalSession, format_delivery};
+use borant_core::{Clock, SystemClock, Timestamp};
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
 use serde_json::{Value, json};
@@ -87,6 +88,137 @@ pub fn tool_events(input: &Value) -> (LocalEvent, LocalEvent) {
             is_error,
         },
     )
+}
+
+/// The reset time of a `StopFailure` input, in unix milliseconds.
+///
+/// The hook input of Claude Code at a usage limit is not proven yet, so this
+/// accepts the shapes that a reset time can take and gives `None` when it names
+/// none: the hub then assumes `unknown_reset_mins`.
+pub fn reset_at(input: &Value, now: Timestamp) -> Option<Timestamp> {
+    // A field that holds the time: unix milliseconds, or an ISO-8601 UTC
+    // string such as `2026-10-25T18:00:00Z`.
+    for key in ["resets_at", "reset_at", "reset_time"] {
+        let Some(value) = input.get(key) else {
+            continue;
+        };
+        if let Some(ms) = value.as_i64() {
+            return Some(Timestamp(ms));
+        }
+        if let Some(ms) = value.as_str().and_then(iso8601_ms) {
+            return Some(Timestamp(ms));
+        }
+    }
+    // A relative time in the text of the failure: "in 2 hours", "resets in 30
+    // minutes". The text is a plain field or a message inside the error.
+    let mut texts: Vec<&str> = Vec::new();
+    for key in [
+        "error",
+        "reason",
+        "message",
+        "stop_reason",
+        "last_assistant_message",
+    ] {
+        let Some(value) = input.get(key) else {
+            continue;
+        };
+        if let Some(text) = value.as_str() {
+            texts.push(text);
+        }
+        for inner in ["message", "detail", "text", "description"] {
+            if let Some(text) = value.get(inner).and_then(Value::as_str) {
+                texts.push(text);
+            }
+        }
+    }
+    texts
+        .into_iter()
+        .find_map(relative_ms)
+        .map(|ms| now.plus(Duration::from_millis(ms)))
+}
+
+/// The longest relative reset time that text may name: 30 days.
+const MAX_RELATIVE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// A relative time in free text, in milliseconds: "in 45 minutes", "resets in 2
+/// hours". `None` when the text names none.
+fn relative_ms(text: &str) -> Option<u64> {
+    let words: Vec<String> = text
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for (i, word) in words.iter().enumerate() {
+        if !matches!(word.as_str(), "in" | "after") {
+            continue;
+        }
+        let (Some(count), Some(unit)) = (words.get(i + 1), words.get(i + 2)) else {
+            continue;
+        };
+        let Ok(count) = count.parse::<u64>() else {
+            continue;
+        };
+        let minutes = match unit.as_str() {
+            "m" | "min" | "mins" | "minute" | "minutes" => count,
+            "h" | "hr" | "hrs" | "hour" | "hours" => count.saturating_mul(60),
+            _ => continue,
+        };
+        let ms = minutes.saturating_mul(60_000);
+        if (1..=MAX_RELATIVE_MS).contains(&ms) {
+            return Some(ms);
+        }
+    }
+    None
+}
+
+/// The unix milliseconds of a UTC ISO-8601 time: `YYYY-MM-DDTHH:MM[:SS]Z`.
+fn iso8601_ms(text: &str) -> Option<i64> {
+    let text = text.trim().strip_suffix('Z').unwrap_or(text.trim());
+    let (date, time) = text.split_once(['T', ' '])?;
+    let mut d = date.split('-');
+    let year: i64 = d.next()?.parse().ok()?;
+    let month: u32 = d.next()?.parse().ok()?;
+    let day: u32 = d.next()?.parse().ok()?;
+    if d.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let mut t = time.split(':');
+    let hour: i64 = t.next()?.parse().ok()?;
+    let minute: i64 = t.next()?.parse().ok()?;
+    let (second, millis): (i64, i64) = match t.next() {
+        Some(s) => {
+            let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+            let second: i64 = whole.parse().ok()?;
+            let millis = if frac.is_empty() {
+                0
+            } else {
+                let mut frac = frac.to_owned();
+                while frac.len() < 3 {
+                    frac.push('0');
+                }
+                frac[..3].parse().ok()?
+            };
+            (second, millis)
+        }
+        None => (0, 0),
+    };
+    if t.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000 + millis)
+}
+
+/// The days since 1970-01-01 of a civil date, by Howard Hinnant's algorithm.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (i64::from(month) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 fn claude_pid() -> u32 {
@@ -222,6 +354,24 @@ pub async fn run(event: &str) -> i32 {
                 .await;
             }
             ctx.event(id, &LocalEvent::TurnEnd).await;
+            0
+        }
+        // Claude Code stopped at the usage limit of the account of the
+        // session. The host adds the bundle and the member and tells the hub,
+        // which decides about a restart on another member.
+        "stop-failure" => {
+            let Some(id) = ctx.session().await else {
+                return 0;
+            };
+            let resets_at = reset_at(&ctx.input, SystemClock.now());
+            ctx.event(
+                id,
+                &LocalEvent::MemberLimited {
+                    bundle: None,
+                    resets_at,
+                },
+            )
+            .await;
             0
         }
         "stop-wait" => stop_wait(&ctx).await,
@@ -457,6 +607,63 @@ mod tests {
             pause_denial(&s),
             Some(deny_output(s.fenced.as_deref().unwrap()))
         );
+    }
+
+    #[test]
+    fn stop_failure_reads_an_explicit_reset_time() {
+        let input = json!({ "resets_at": 1_792_951_200_000_i64 });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_000))
+        );
+        let input = json!({ "reset_time": "2026-10-25T18:00:00Z" });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_000))
+        );
+        let input = json!({ "error": "limit", "resets_at": "2026-10-25T18:00:00.500Z" });
+        assert_eq!(
+            reset_at(&input, Timestamp(0)),
+            Some(Timestamp(1_792_951_200_500))
+        );
+    }
+
+    #[test]
+    fn stop_failure_reads_a_relative_reset_time() {
+        let now = Timestamp(1_000_000);
+        let input = json!({ "message": "Usage limit reached. It resets in 2 hours." });
+        assert_eq!(reset_at(&input, now), Some(Timestamp(1_000_000 + 7_200_000)));
+        let input = json!({ "error": "try again after 45 minutes" });
+        assert_eq!(reset_at(&input, now), Some(Timestamp(1_000_000 + 2_700_000)));
+    }
+
+    #[test]
+    fn stop_failure_accepts_a_missing_reset_time() {
+        assert_eq!(
+            reset_at(&json!({ "kind": "rate_limit", "error": "limit reached" }), Timestamp(1)),
+            None
+        );
+        assert_eq!(reset_at(&Value::Null, Timestamp(1)), None);
+        // A time that names no duration is not a guess.
+        assert_eq!(reset_at(&json!({ "error": "in 2 elephants" }), Timestamp(1)), None);
+        assert_eq!(reset_at(&json!({ "error": "limit at 18:00" }), Timestamp(1)), None);
+        // An absurd relative time is refused.
+        assert_eq!(
+            reset_at(&json!({ "error": "in 999999 hours" }), Timestamp(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn iso8601_parses_utc_times() {
+        assert_eq!(iso8601_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso8601_ms("1970-01-02T00:00:00Z"), Some(86_400_000));
+        assert_eq!(iso8601_ms("2026-01-01T00:00:00Z"), Some(1_767_225_600_000));
+        assert_eq!(iso8601_ms("2026-10-25T18:00:00Z"), Some(1_792_951_200_000));
+        assert_eq!(iso8601_ms("2026-10-25T18:00Z"), Some(1_792_951_200_000));
+        assert_eq!(iso8601_ms("not a time"), None);
+        assert_eq!(iso8601_ms("2026-13-01T00:00:00Z"), None);
+        assert_eq!(iso8601_ms("2026-10-25T25:00:00Z"), None);
     }
 
     #[test]

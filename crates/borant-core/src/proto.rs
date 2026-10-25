@@ -675,6 +675,17 @@ pub enum LocalEvent {
     End {
         reason: String,
     },
+    /// The session stopped at the usage limit of a bundle member. The host adds
+    /// the bundle and the member of the session and tells the hub.
+    MemberLimited {
+        /// The bundle, when the adapter knows it; otherwise the only member
+        /// bundle of the session.
+        #[serde(default)]
+        bundle: Option<BundleName>,
+        /// When the member resets, when the harness knows.
+        #[serde(default)]
+        resets_at: Option<Timestamp>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
