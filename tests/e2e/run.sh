@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart cancel sandbox pause"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -23,6 +23,11 @@ ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move qu
 # drives is crates/borant-host, which every scenario starts, and its host-r
 # service is the compose file above. Its own steps are in this file, which
 # already runs every scenario.
+#
+# The nats_restart scenario needs no path of its own either: the outage that it
+# drives is the inbox pull of crates/borant-nats and the outbox of
+# crates/borant-host, which every host of every scenario loads. Its own steps
+# are in this file, which already runs every scenario.
 SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
 
 # The paths of the pause scenario: its own swarm, which runs alone.
@@ -286,6 +291,131 @@ scenario_hub_restart() {
   after=$(borant_on host-a agents | jq -c '[.[] | {agent, host: .lease.host}] | sort_by(.agent)')
   [ "$before" = "$after" ] || { echo "  agents moved: $before -> $after" >&2; return 1; }
 }
+
+# The nats_restart scenario of phase 10: the broker goes down under two idle
+# sessions of two hosts. There is no boss to queue the messages, so the
+# scenario sends three direct messages to the first session through host-a,
+# which runs neither of them: the outbox of host-a holds each one until the
+# broker answers again, and the session logs every one of them exactly once
+# inside 30 s after that. A new direct message then wakes the second session
+# inside 30 s.
+#
+# The broker stops first, and `docker compose restart nats` brings it back. A
+# restart of a running broker returns in well under a second, so the three
+# sends would publish at once, the outbox would hold nothing, and the
+# scenario would pass without proving the outage. The restart of a stopped
+# container is the same restart of the same container, and JetStream keeps its
+# data in the `/data` of that container either way.
+scenario_nats_restart() {
+  start_agent host-b nr-a
+  start_agent host-c nr-b
+  wait_for "nr-a registered" is_at nr-a host-b || return 1
+  wait_for "nr-b registered" is_at nr-b host-c || return 1
+  if ! nr_idle host-b nr-a || ! nr_idle host-c nr-b; then
+    echo "  a session was not idle before the outage:" >&2
+    log_of host-b nr-a | tail -5 >&2
+    log_of host-c nr-b | tail -5 >&2
+    return 1
+  fi
+
+  # The outage: no host reaches the broker, so the three messages wait in the
+  # outbox of the host that sends them.
+  dc stop nats >/dev/null || return 1
+  local i out
+  for i in 1 2 3; do
+    if ! out=$(borant_on host-a send nr-a "nats-outage-$i" 2>&1); then
+      echo "  sending nats-outage-$i failed: $out" >&2
+      dc logs --no-color nats hub host-a 2>/dev/null | tail -20 >&2
+      return 1
+    fi
+    if ! printf '%s\n' "$out" | grep -q '"queued": true'; then
+      echo "  nats-outage-$i did not wait in the outbox: $out" >&2
+      return 1
+    fi
+  done
+
+  dc restart nats >/dev/null || return 1
+  if ! WAIT=90 wait_for "the swarm after the broker restart" nr_bus_back; then
+    echo "  the swarm does not answer after the restart:" >&2
+    borant_on host-a hosts 2>&1 | tail -3 >&2
+    echo "  the nats service:" >&2
+    dc ps nats 2>&1 | tail -3 >&2
+    dc logs --no-color nats hub host-a 2>/dev/null | tail -40 >&2
+    return 1
+  fi
+
+  # Every message of the outage arrives once, inside 30 s, and no copy comes
+  # back after the broker had the time to deliver one again.
+  if ! WAIT=30 wait_for "the three messages of the outage, once each" nr_backlog_once; then
+    echo "  the log of nr-a:" >&2
+    log_of host-b nr-a | tail -20 >&2
+    echo "  the outbox of host-a:" >&2
+    dc logs --no-color host-a 2>/dev/null | grep -i outbox | tail -5 >&2
+    return 1
+  fi
+  sleep 5
+  if ! nr_backlog_once; then
+    echo "  a message of the outage arrived a second time:" >&2
+    nr_outage_counts >&2
+    return 1
+  fi
+
+  # The session that waited through the outage wakes on a new direct message.
+  borant_on host-a send nr-b nats-after-restart >/dev/null || return 1
+  if ! WAIT=30 wait_for "nr-b wakes after the restart" log_has host-c nr-b nats-after-restart; then
+    echo "  the log of nr-b:" >&2
+    log_of host-c nr-b | tail -20 >&2
+    return 1
+  fi
+  if [ "$(nr_count host-c nr-b nats-after-restart)" != "1" ]; then
+    echo "  nr-b woke on nats-after-restart more than once:" >&2
+    log_of host-c nr-b | tail -20 >&2
+    return 1
+  fi
+  if nr_has host-c nr-b nats-outage; then
+    echo "  nr-b received a message that was for nr-a:" >&2
+    log_of host-c nr-b | grep -F -- nats-outage >&2
+    return 1
+  fi
+
+  # Both sessions end here, so the scenarios after this one start from the
+  # state they had before it.
+  borant_on host-a send nr-a EXIT >/dev/null
+  wait_for "nr-a ended" log_has host-b nr-a EXIT || return 1
+  borant_on host-a send nr-b EXIT >/dev/null
+  wait_for "nr-b ended" log_has host-c nr-b EXIT || return 1
+}
+
+# A session that waits for work: its log holds the line of its start, and no
+# message.
+nr_idle() { ! log_of "$1" "$2" | grep -qE '^(MSG|SIGTERM)'; }
+
+# How often the fake log of an agent holds a text.
+nr_count() { log_of "$1" "$2" | grep -c -F -- "$3"; }
+
+nr_has() { log_of "$1" "$2" | grep -q -F -- "$3"; }
+
+# Every message of the outage is in the log of the first session, once each.
+nr_backlog_once() {
+  local log i n
+  log=$(log_of host-b nr-a)
+  for i in 1 2 3; do
+    n=$(printf '%s\n' "$log" | grep -c -F -- "nats-outage-$i")
+    [ "$n" = "1" ] || return 1
+  done
+}
+
+# How often each message of the outage is in that log, for a failure report.
+nr_outage_counts() {
+  local log i
+  log=$(log_of host-b nr-a)
+  for i in 1 2 3; do
+    echo "  nats-outage-$i: $(printf '%s\n' "$log" | grep -c -F -- "nats-outage-$i")"
+  done
+}
+
+# The broker and the hub answer a control request again.
+nr_bus_back() { borant_on host-a hosts >/dev/null 2>&1; }
 
 scenario_hub_move() {
   borant_on host-c send boss "CREATE demo survives-move" >/dev/null
@@ -1298,6 +1428,15 @@ if [ "$FAILED" != "0" ]; then
       log_of host-pause capped 2>/dev/null | tail -30
       echo "  hub-pause and host-pause:"
       dc --profile pause logs --no-color hub-pause host-pause 2>/dev/null | tail -200
+    fi
+    if [ "$SCENARIOS" = "nats_restart" ]; then
+      echo "  the log of nr-a:"
+      log_of host-b nr-a 2>/dev/null | tail -20
+      echo "  the log of nr-b:"
+      log_of host-c nr-b 2>/dev/null | tail -20
+      echo "  agents:"
+      borant_on host-a agents 2>/dev/null |
+        jq -c '.[] | {agent, host, lease: .lease.state}' | head -10
     fi
     dc --profile elastic --profile sandbox --profile members --profile pause --profile move logs --no-color 2>/dev/null | tail -200
   fi
