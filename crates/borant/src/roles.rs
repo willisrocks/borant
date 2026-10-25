@@ -77,7 +77,7 @@ pub async fn run_hub() -> anyhow::Result<()> {
 
 pub async fn run_host() -> anyhow::Result<()> {
     let file = config::host_file()?;
-    let mut cfg = config::host_config(&file)?;
+    let mut cfg = config::host_config(&file).await?;
     cfg.socket = Some(config::socket());
     if tokio::net::UnixStream::connect(cfg.socket()).await.is_ok() {
         anyhow::bail!(

@@ -15,6 +15,7 @@ borant-core.workspace = true
 borant-host.workspace = true
 borant-hub.workspace = true
 borant-launch.workspace = true
+borant-secrets.workspace = true
 borant-nats.workspace = true
 clap.workspace = true
 dirs.workspace = true
