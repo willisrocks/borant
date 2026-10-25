@@ -281,10 +281,21 @@ one_pool_host() { [ "$(e2e_containers_count)" = "1" ]; }
 
 no_pool_hosts() { [ "$(e2e_containers_count)" = "0" ]; }
 
-# The agents that hold a lease on a pool host.
+# The names of the hosts of the pool, from their registered pool.
+pool_hosts() {
+  borant_on host-control hosts 2>/dev/null |
+    jq -c '[.[] | select(.host.pool == "e2e") | .host.name]'
+}
+
+# The agents that hold a lease on a host of the pool.
 in_pool() {
+  local hosts
+  hosts=$(pool_hosts)
+  [ -n "$hosts" ] && [ "$hosts" != "[]" ] || return 1
   borant_on host-control agents 2>/dev/null |
-    jq -e --argjson n "$1" '[.[] | select(.lease.state=="held" and (.lease.host | startswith("e2e-")))] | length >= $n' >/dev/null
+    jq -e --argjson h "$hosts" --argjson n "$1" \
+      '[.[] | select(.lease.state == "held") | .lease.host as $x
+        | select($h | index($x))] | length >= $n' >/dev/null 2>&1
 }
 
 three_in_pool() { in_pool 3; }

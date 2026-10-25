@@ -44,6 +44,7 @@ tags = ["e2e"]
 harnesses = ["fake"]
 agents_per_host = 2
 max_hosts = 2
-# The agents are idle at once, so the hosts go away quickly.
-idle_timeout = "10s"
+# The agents are idle at once, so the scenario can watch them hold their
+# leases for a while, then park and delete the hosts.
+idle_timeout = "30s"
 boot_timeout = "60s"

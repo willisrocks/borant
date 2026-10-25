@@ -1283,7 +1283,7 @@ price_hour_usd = 0.1
         assert_eq!(pool.harnesses, vec![Harness::Fake]);
         assert_eq!(pool.agents_per_host, 2);
         assert_eq!(pool.max_hosts, 2);
-        assert_eq!(pool.idle_timeout, Duration::from_secs(10));
+        assert_eq!(pool.idle_timeout, Duration::from_secs(30));
     }
 
     #[test]
