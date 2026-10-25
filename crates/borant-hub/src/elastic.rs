@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::{Agent, HostInfo, Lease, LeaseState};
+use borant_core::model::{Agent, Harness, HostInfo, Lease, LeaseState, SpawnRecord, SpawnState};
 use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
 };
@@ -278,45 +278,69 @@ impl Hub {
     ) -> Result<Vec<PlacementNeed>, ApiError> {
         let mut needs = Vec::new();
         for (id, move_) in pending {
-            // A spawn or a move that names its host stays there; a pool host
-            // would not help it.
+            // A move that names its host stays there; a pool host would not
+            // help it.
             if move_.target.host.is_some() {
                 continue;
             }
-            // A retired agent is gone, and a paused session waits for the
-            // hub: neither needs a host of its own.
-            if paused.contains(id) {
+            if let Some(need) = self.need_of(id, move_.target.harness, live, paused).await? {
+                needs.push(need);
+            }
+        }
+        // A queued spawn is demand too, before the tick places it.
+        for doc in self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await? {
+            let record = doc.value;
+            if record.state != SpawnState::Queued || record.spec.host.is_some() {
                 continue;
             }
-            let lease = self.store.get::<Lease>(&keys::lease_agent(id)).await?;
-            if lease.is_some_and(|d| {
-                matches!(
-                    d.value.state,
-                    LeaseState::Held { .. } | LeaseState::Reserved { .. }
-                )
-            }) {
-                continue;
-            }
-            let Some(agent) = self.store.get::<Agent>(&keys::agent(id)).await? else {
-                continue;
-            };
-            let agent = agent.value;
-            if agent.pinned || agent.retired {
-                continue;
-            }
-            let harness = move_.target.harness.unwrap_or(agent.preferred_harness);
-            let req = self.placement_req(&agent, None).await;
-            let bundles = self.launch_bundles(&agent);
-            if schedule::place(agent.preferred_harness, Some(harness), &req, &bundles, live).is_ok()
+            if let Some(need) = self
+                .need_of(&record.agent, record.spec.harness, live, paused)
+                .await?
             {
-                continue;
+                needs.push(need);
             }
-            needs.push(PlacementNeed {
-                agent: id.clone(),
-                harness,
-            });
         }
         Ok(needs)
+    }
+
+    /// The agent, when it waits and no existing host can take it.
+    async fn need_of(
+        &self,
+        id: &AgentId,
+        harness: Option<Harness>,
+        live: &[HostView],
+        paused: &HashSet<AgentId>,
+    ) -> Result<Option<PlacementNeed>, ApiError> {
+        // A paused session waits for the hub: it needs no host of its own.
+        if paused.contains(id) {
+            return Ok(None);
+        }
+        let lease = self.store.get::<Lease>(&keys::lease_agent(id)).await?;
+        if lease.is_some_and(|d| {
+            matches!(
+                d.value.state,
+                LeaseState::Held { .. } | LeaseState::Reserved { .. }
+            )
+        }) {
+            return Ok(None);
+        }
+        let Some(agent) = self.store.get::<Agent>(&keys::agent(id)).await? else {
+            return Ok(None);
+        };
+        let agent = agent.value;
+        if agent.pinned || agent.retired {
+            return Ok(None);
+        }
+        let harness = harness.unwrap_or(agent.preferred_harness);
+        let req = self.placement_req(&agent, None).await;
+        let bundles = self.launch_bundles(&agent);
+        if schedule::place(agent.preferred_harness, Some(harness), &req, &bundles, live).is_ok() {
+            return Ok(None);
+        }
+        Ok(Some(PlacementNeed {
+            agent: id.clone(),
+            harness,
+        }))
     }
 
     fn provisioner(&self, name: &str) -> Option<Arc<dyn Provisioner>> {

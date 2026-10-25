@@ -1,7 +1,9 @@
 //! Hosts, sessions, leases, and takeovers (spec sections 7, 11, 13).
 
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::{Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session};
+use borant_core::model::{
+    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session, SpawnRecord, SpawnState,
+};
 use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, RegisterSession, Registered, RenewedLease,
     SessionLeaseRef,
@@ -166,7 +168,6 @@ impl Hub {
     /// spawn, or a pin.
     pub(crate) async fn role_taken(
         &self,
-        mem: &Memory,
         role: &RoleName,
         one_per: OnePer,
         collection: Option<&CollectionName>,
@@ -185,7 +186,7 @@ impl Hub {
             if !same_scope {
                 continue;
             }
-            if agent.pinned || mem.pending_moves.contains_key(&agent.id) {
+            if agent.pinned || self.spawn_pending(&agent.id).await? {
                 return Ok(true);
             }
             let lease = self
@@ -306,7 +307,6 @@ impl Hub {
             && let Some(one_per) = self.cfg.roles.get(role).and_then(|c| c.one_per)
             && self
                 .role_taken(
-                    mem,
                     role,
                     one_per,
                     collection.as_ref(),
@@ -433,6 +433,19 @@ impl Hub {
             },
         );
         Self::queue(mem, event);
+        // The session of a queued spawn started: the queue is done with it.
+        if let Some(mut record) = self
+            .store
+            .get::<SpawnRecord>(&keys::spawn(&agent_id))
+            .await?
+            && record.value.state != SpawnState::Running
+        {
+            record.value.state = SpawnState::Running;
+            record.value.last_reject.clear();
+            self.store
+                .put(&record.key, &record.value, Some(record.revision))
+                .await?;
+        }
         Ok(Registered {
             agent: agent_id,
             session: r.session,

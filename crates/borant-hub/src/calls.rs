@@ -317,17 +317,43 @@ impl Hub {
                 name,
                 model,
                 role,
-                // The key, the task binding, and the priority wait on the
-                // spawn queue.
-                ..
+                key: spawn_key,
+                task,
+                stop_on_close,
+                priority,
             } => {
-                let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
-                let id = self
-                    .spawn(mem, &me, &channel, prompt, harness, host, name, model, role)
-                    .await?;
-                Ok(json!({ "agent": id }))
+                let by = match &me {
+                    Some(agent) => Sender::Agent(agent.clone()),
+                    None => Sender::Human,
+                };
+                self.spawn(
+                    mem,
+                    by,
+                    crate::spawns::SpawnRequest {
+                        channel,
+                        prompt,
+                        harness,
+                        host,
+                        name,
+                        model,
+                        role,
+                        // The call's key wins over the field of the spawn.
+                        key: key.or(spawn_key),
+                        task,
+                        stop_on_close,
+                        priority,
+                    },
+                )
+                .await
             }
-            ToolCall::Cancel { .. } => Err(ApiError::invalid("cancel is not built yet")),
+            ToolCall::SpawnQueue => self.spawn_queue().await,
+            ToolCall::Cancel { agent, close_task } => {
+                let by = match &me {
+                    Some(agent) => Sender::Agent(agent.clone()),
+                    None => Sender::Human,
+                };
+                self.cancel(mem, &by, &agent, close_task).await
+            }
             ToolCall::Wait {
                 channel,
                 task,
@@ -341,7 +367,6 @@ impl Hub {
             ToolCall::Answer { .. } => Err(ApiError::invalid("answer is not built yet")),
             ToolCall::Stop { .. } => Err(ApiError::invalid("stop is not built yet")),
             ToolCall::Resume { .. } => Err(ApiError::invalid("resume is not built yet")),
-            ToolCall::SpawnQueue => Err(ApiError::invalid("spawn_queue is not built yet")),
             ToolCall::AgentHistory { .. } => {
                 Err(ApiError::invalid("agent_history is not built yet"))
             }

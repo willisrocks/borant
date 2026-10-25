@@ -12,7 +12,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Session, Task, TaskStatus};
+use borant_core::model::{
+    Agent, Channel, Lease, LeaseState, Member, Session, SpawnRecord, SpawnState, Task, TaskStatus,
+};
 use borant_core::ports::Entry;
 use borant_core::proto::ApiError;
 use borant_core::rules::session_log;
@@ -37,21 +39,25 @@ pub(crate) async fn prune_agents(hub: &Hub, older_than: Duration) -> Result<Valu
     // A dry run needs no consistent read, so the lock copies the pending
     // moves only. `NatsState::list` does one get per key, and every
     // heartbeat waits for `mem`.
-    let pending: HashSet<AgentId> = {
+    let mut pending: HashSet<AgentId> = {
         let mem = hub.mem.lock().await;
         mem.pending_moves.keys().cloned().collect()
     };
+    // A queued spawn is pending too; the scan below finds them in the same
+    // list.
     let mut entries = Vec::new();
     for prefix in [
         keys::AGENT_PREFIX,
         keys::LEASE_AGENT_PREFIX,
         keys::CHANNEL_PREFIX,
         SESSION_PREFIX,
+        keys::SPAWN_PREFIX,
     ] {
         entries.extend(hub.store.0.list(prefix).await?);
     }
 
     let scan = Scan::read(&entries);
+    pending.extend(scan.queued.iter().cloned());
     let mut candidates = Vec::new();
     let mut kept = Vec::new();
     let mut total_keys = 0;
@@ -144,6 +150,8 @@ struct Scan {
     claimed: HashSet<AgentId>,
     member_keys: HashMap<AgentId, Vec<String>>,
     session_keys: HashMap<AgentId, Vec<String>>,
+    /// The agents whose spawn record is still `Queued`.
+    queued: HashSet<AgentId>,
     sizes: HashMap<String, usize>,
 }
 
@@ -169,6 +177,11 @@ impl Scan {
                     .entry(s.agent)
                     .or_default()
                     .push(e.key.clone());
+            } else if e.key.starts_with(keys::SPAWN_PREFIX)
+                && let Some(r) = decode::<SpawnRecord>(e)
+                && r.state == SpawnState::Queued
+            {
+                scan.queued.insert(r.agent);
             }
         }
         scan
@@ -202,9 +215,13 @@ impl Scan {
     }
 
     /// The keys that a prune of `id` removes: the agent, its lease, its
-    /// memberships, and its session records.
+    /// memberships, its session records, and its spawn record.
     fn removed(&self, id: &AgentId) -> Removed {
         let mut keys = vec![keys::agent(id), keys::lease_agent(id)];
+        // The record of a spawn, when the agent has one.
+        if self.sizes.contains_key(&keys::spawn(id)) {
+            keys.push(keys::spawn(id));
+        }
         keys.extend(self.member_keys.get(id).into_iter().flatten().cloned());
         keys.extend(self.session_keys.get(id).into_iter().flatten().cloned());
         keys.sort();

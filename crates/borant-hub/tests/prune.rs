@@ -155,7 +155,7 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
     )
     .await
     .unwrap();
-    // No host can take the agent, so the spawn stays a pending move.
+    // No host can take the agent, so its spawn stays queued.
     fx.call(
         Some(&parent),
         ToolCall::Spawn {
@@ -174,7 +174,8 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
     )
     .await
     .unwrap();
-    // The spawn leaves a fresh expiry; age it so that only the move keeps it.
+    // The spawn leaves a fresh expiry; age it so that only the queued record
+    // keeps the agent.
     let key = keys::lease_agent(&"spawned".parse().unwrap());
     let doc = fx.state.get(&key).await.unwrap().unwrap();
     let lease = lease_doc(

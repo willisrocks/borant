@@ -16,6 +16,7 @@ mod moves;
 mod park;
 mod prune;
 mod retire;
+mod spawns;
 mod store;
 mod tasks;
 mod view;
@@ -284,6 +285,11 @@ impl Hub {
         self.tick_leases(leases).await?;
         // The agents that wait for a member of their bundle to reset.
         self.wake_limited_members().await?;
+        // The queued spawns, before the elastic rules count what is still
+        // unplaced.
+        if let Err(e) = self.place_queued().await {
+            tracing::warn!("the spawn queue failed: {e}");
+        }
         // The elastic pools park with the idle timeout of each pool; a hub
         // with no pool keeps the one timeout for its hosts.
         let parked = match &self.cfg.elastic {
