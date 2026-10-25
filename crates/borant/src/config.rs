@@ -1317,6 +1317,31 @@ price_hour_usd = 0.1
         assert_eq!(pool.backoff_until, None);
     }
 
+    /// The hub of the elastic e2e scenario. CI does not run that scenario, so
+    /// this test is the check that its `hub.toml` parses.
+    #[test]
+    fn config_parses_the_elastic_e2e_hub_toml() {
+        let text = include_str!("../../../tests/e2e/elastic/hub.toml");
+        let file: HubFile = toml::from_str(text).expect("tests/e2e/elastic/hub.toml");
+        let elastic = file.elastic_config().unwrap().expect("one pool");
+        assert_eq!(elastic.tick, Duration::from_secs(2));
+        assert_eq!(elastic.lost_timeout, Duration::from_secs(8));
+        assert_eq!(elastic.create_backoff, Duration::from_secs(5));
+        assert!(elastic.provisioners.contains_key("docker"));
+        let docker = &file.provisioners["docker"];
+        assert_eq!(docker.command, vec!["/plugins/provision-docker.sh"]);
+        // The `config` table is a flat map of strings: the command is words
+        // and each env variable is one key.
+        assert_eq!(docker.config["command"], "borant host");
+        assert_eq!(docker.config["env.BORANT_MAX_AGENTS"], "2");
+        let pool = &elastic.pools[0];
+        assert_eq!(pool.name, "e2e".parse::<PoolName>().unwrap());
+        assert_eq!(pool.harnesses, vec![Harness::Fake]);
+        assert_eq!(pool.agents_per_host, 2);
+        assert_eq!(pool.max_hosts, 2);
+        assert_eq!(pool.idle_timeout, Duration::from_secs(30));
+    }
+
     #[test]
     fn config_without_pools_has_no_elastic() {
         let file: HubFile = toml::from_str("[elastic]\ntick = \"5s\"\n").unwrap();

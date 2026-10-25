@@ -5,7 +5,9 @@ COMPOSE="$ROOT/docker/compose.yaml"
 PROJECT=borant-e2e
 NETWORK="${PROJECT}_default"
 
-dc() { docker compose -f "$COMPOSE" "$@"; }
+# `E2E_ROOT` is the path of the repository for the bind mounts of the elastic
+# services, so that no relative path is resolved by the compose version.
+dc() { E2E_ROOT="$ROOT" docker compose -f "$COMPOSE" "$@"; }
 
 # Removes the containers that the fake provisioner of the elastic scenario
 # started: `compose down` does not know them, because the plugin starts them
@@ -17,6 +19,13 @@ cleanup_e2e_containers() {
   [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1
   return 0
 }
+
+# The containers that the fake provisioner of the elastic scenario started.
+e2e_containers() {
+  docker ps --all --quiet --filter label=borant.managed=e2e 2>/dev/null
+}
+
+e2e_containers_count() { e2e_containers | wc -l | tr -d ' '; }
 
 # Stops the swarm and the containers of the fake provisioner.
 down() {
@@ -52,10 +61,13 @@ log_of() { on "$1" cat "/root/.borant/fake/$2.log" 2>/dev/null; }
 
 log_has() { log_of "$1" "$2" | grep -q -- "$3"; }
 
-# The host that holds the lease of an agent, or nothing.
-where() {
-  borant_on host-a agents 2>/dev/null | jq -r --arg a "$1" '.[] | select(.agent==$a) | if .lease.state=="held" then .lease.host else empty end'
+# The host that holds the lease of an agent, asked from a service container.
+where_on() {
+  borant_on "$1" agents 2>/dev/null | jq -r --arg a "$2" '.[] | select(.agent==$a) | if .lease.state=="held" then .lease.host else empty end'
 }
+
+# The host that holds the lease of an agent, or nothing.
+where() { where_on host-a "$1"; }
 
 is_at() { [ "$(where "$1")" = "$2" ]; }
 

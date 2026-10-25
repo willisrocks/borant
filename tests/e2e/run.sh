@@ -7,6 +7,7 @@
 #   KEEP=1 tests/e2e/run.sh          leave the containers running afterward
 #   tests/e2e/run.sh --all           print the name of every scenario
 #   tests/e2e/run.sh --affected BASE the scenarios that BASE...HEAD touches
+#   tests/e2e/run.sh elastic         run the elastic scenario alone
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
@@ -44,6 +45,13 @@ case "${1:-}" in
     ;;
 esac
 
+SCENARIOS=${*:-$ALL}
+# The elastic scenario swaps the swarm for a hub with no worker hosts, so it
+# runs alone and never in the default list.
+for s in $SCENARIOS; do
+  if [ "$s" = "elastic" ]; then SCENARIOS=elastic; fi
+done
+
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
     down >/dev/null 2>&1
@@ -51,16 +59,53 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Building and starting the swarm..."
+echo "Building the image..."
 down >/dev/null 2>&1
 # CI builds the image with the Docker layer cache and passes BUILD=0, so the
 # swarm starts at once.
 if [ "${BUILD:-1}" = "1" ]; then
   dc build hub >/dev/null || { echo "FAIL build"; exit 1; }
 fi
-dc up -d nats git hub host-a host-b host-c >/dev/null || { echo "FAIL start"; exit 1; }
-hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
-wait_for "host daemons" hosts_online || exit 1
+
+if [ "$SCENARIOS" = "elastic" ]; then
+  echo "Starting the elastic swarm..."
+  dc --profile elastic up -d nats git hub-elastic host-control >/dev/null \
+    || { echo "FAIL start"; dc --profile elastic logs --no-color 2>/dev/null | tail -200; exit 1; }
+  # The `borant` CLI talks to a host daemon, so every query goes through the
+  # control host, never through the hub container.
+  hub_answers() { borant_on host-control hosts >/dev/null 2>&1; }
+  if ! wait_for "the hub" hub_answers; then
+    echo "  the control host does not reach the hub:"
+    borant_on host-control hosts 2>&1 | tail -5
+    dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
+    exit 1
+  fi
+  # The provisioner must run in the hub container with docker, jq, and the
+  # socket, and answer the two ops of the scenario.
+  provisioner_ok() {
+    on hub-elastic sh -c '
+      command -v docker >/dev/null && command -v jq >/dev/null || exit 1
+      docker ps -q >/dev/null || exit 1
+      echo "{\"v\":1,\"op\":\"describe\",\"config\":{}}" |
+        /plugins/provision-docker.sh | jq -e ".ok.kind == \"provisioner\"" >/dev/null || exit 1
+      echo "{\"v\":1,\"op\":\"list\",\"config\":{},\"pool\":\"e2e\"}" |
+        /plugins/provision-docker.sh | jq -e ".ok | type == \"array\"" >/dev/null
+    ' >/dev/null 2>&1
+  }
+  if ! wait_for "the provisioner" provisioner_ok; then
+    echo "  the provisioner of the hub does not answer:"
+    on hub-elastic sh -c 'command -v docker; command -v jq; docker ps -q >/dev/null && echo socket ok'
+    on hub-elastic sh -c 'echo "{\"v\":1,\"op\":\"describe\",\"config\":{}}" | /plugins/provision-docker.sh'
+    dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
+    exit 1
+  fi
+else
+  echo "Starting the swarm..."
+  dc up -d nats git hub host-a host-b host-c >/dev/null \
+    || { echo "FAIL start"; dc --profile elastic logs --no-color 2>/dev/null | tail -200; exit 1; }
+  hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
+  wait_for "host daemons" hosts_online || exit 1
+fi
 
 scenario_messaging() {
   start_agent host-a boss
@@ -170,15 +215,158 @@ scenario_hub_move() {
   WAIT=90 wait_for "the pending message survived the move" log_has host-c ghost "hello-ghost" || return 1
 }
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move"
-for s in ${*:-$ALL}; do
+# The elastic scenario of the elastic compute design ("Tests"): a hub with no
+# pool hosts and one pool of two hosts of two agents, which the hub starts
+# with the provision-docker plugin. It runs alone, after its own swarm.
+scenario_elastic() {
+  # The static host-control holds the boss and is full, so the spawns of the
+  # boss must go to the pool.
+  start_agent host-control boss
+  wait_for "boss on the control host" boss_on_control || return 1
+  borant_on host-control send boss "CHANNEL e2e" >/dev/null
+  wait_for "channel e2e" log_has host-control boss "CHANNEL e2e ok" || return 1
+
+  local i
+  for i in 1 2 3; do
+    borant_on host-control send boss "SPAWN e2e wait-for-work" >/dev/null
+  done
+  wait_for "three spawns" three_spawns || return 1
+  echo "  spawned: $(spawned_agents | tr '\n' ' ')"
+  if spawned_agents | grep -qx '?'; then
+    echo "  the boss got no agent id from a spawn" >&2
+    return 1
+  fi
+  # The spawns must not fit on the control host, or the pool is never asked.
+  if [ "$(on_control)" -gt 1 ]; then
+    echo "  the control host took the spawns: its max_agents is not 1" >&2
+    return 1
+  fi
+  wait_for "two pool hosts" two_pool_hosts || return 1
+  wait_for "three agents in the pool" three_in_pool || return 1
+  echo "  two containers hold three agents"
+
+  # The agents have no work, so they park and their hosts go away.
+  WAIT=300 wait_for "the idle hosts go away" no_pool_hosts || return 1
+  echo "  the agents parked and their containers are gone"
+
+  # A killed container is lost: the hub deletes it and starts another host for
+  # the agent that it held.
+  borant_on host-control send boss "SPAWN e2e killed-during-a-turn" >/dev/null
+  wait_for "the fourth spawn" four_spawns || return 1
+  wait_for "a pool host for the new agent" one_pool_host || return 1
+  local agent host id
+  agent=$(spawned_agents | tail -1)
+  wait_for "the new agent on a pool host" agent_placed "$agent" || return 1
+  host=$(where_on host-control "$agent")
+  [ -n "$host" ] || { echo "  $agent holds no lease on a host" >&2; return 1; }
+  id=$(docker ps --quiet --filter "name=^${host}$")
+  [ -n "$id" ] || { echo "  no container is named $host" >&2; return 1; }
+  # The hub takes over an expired lease only for an agent with work, so the
+  # agent claims a task before its container is killed: a message that it
+  # already got is no reason to start it again.
+  borant_on host-control send boss "CREATE e2e killed-worker" >/dev/null
+  wait_for "a task for the killed agent" log_has host-control boss "CREATED .* killed-worker" \
+    || return 1
+  local task
+  task=$(task_id host-control boss killed-worker)
+  [ -n "$task" ] || { echo "  no task id in the boss log" >&2; return 1; }
+  borant_on host-control send "$agent" "CLAIM e2e $task" >/dev/null
+  wait_for "the claim of the killed agent" agent_claimed "$id" "$agent" "$task" || return 1
+  docker kill "$id" >/dev/null || return 1
+  echo "  killed $host ($id), its claim of $task waits"
+  # The pool name of a host can repeat after a delete, so the takeover is
+  # the agent on a pool host again once the killed container is gone.
+  WAIT=300 wait_for "the killed host is deleted" container_gone "$id" || return 1
+  WAIT=300 wait_for "a takeover on a pool host" agent_on_pool "$agent" || return 1
+  echo "  the agent now runs on $(where_on host-control "$agent")"
+
+  # The cleanup removes every container of the fake provisioner.
+  cleanup_e2e_containers
+  [ "$(e2e_containers_count)" = "0" ] || { echo "  the cleanup left containers" >&2; return 1; }
+}
+
+boss_on_control() { [ "$(where_on host-control boss)" = "host-control" ]; }
+
+# The agents that hold a lease on the control host, the boss included.
+on_control() {
+  borant_on host-control agents 2>/dev/null |
+    jq '[.[] | select(.lease.host == "host-control")] | length'
+}
+
+spawned_agents() { log_of host-control boss | awk '$1=="SPAWNED" {print $2}'; }
+
+three_spawns() { [ "$(spawned_agents | wc -l)" -ge 3 ]; }
+
+four_spawns() { [ "$(spawned_agents | wc -l)" -ge 4 ]; }
+
+# The agent holds a lease on a host that the hub gave it.
+agent_placed() { [ -n "$(where_on host-control "$1")" ]; }
+
+two_pool_hosts() { [ "$(e2e_containers_count)" = "2" ]; }
+
+one_pool_host() { [ "$(e2e_containers_count)" = "1" ]; }
+
+no_pool_hosts() { [ "$(e2e_containers_count)" = "0" ]; }
+
+# The names of the hosts of the pool, from their registered pool.
+pool_hosts() {
+  borant_on host-control hosts 2>/dev/null |
+    jq -c '[.[] | select(.host.pool == "e2e") | .host.name]'
+}
+
+# The agents that hold a lease on a host of the pool.
+in_pool() {
+  local hosts
+  hosts=$(pool_hosts)
+  [ -n "$hosts" ] && [ "$hosts" != "[]" ] || return 1
+  borant_on host-control agents 2>/dev/null |
+    jq -e --argjson h "$hosts" --argjson n "$1" \
+      '[.[] | select(.lease.state == "held") | .lease.host as $x
+        | select($h | index($x))] | length >= $n' >/dev/null 2>&1
+}
+
+three_in_pool() { in_pool 3; }
+
+# The log of a fake agent on a container that the provisioner started.
+pool_log() { docker exec "$1" cat "/root/.borant/fake/$2.log" 2>/dev/null; }
+
+# The agent on that container claimed the task.
+agent_claimed() { pool_log "$1" "$2" | grep -q -- "CLAIM $3 ok"; }
+
+# The agent holds a lease on a host of the pool.
+agent_on_pool() {
+  local hosts
+  hosts=$(pool_hosts)
+  [ -n "$hosts" ] && [ "$hosts" != "[]" ] || return 1
+  borant_on host-control agents 2>/dev/null |
+    jq -e --argjson h "$hosts" --arg name "$1" \
+      'any(.[]; .agent == $name and .lease.state == "held"
+            and (.lease.host as $x | ($h | index($x)) != null))' >/dev/null 2>&1
+}
+
+container_gone() { ! docker inspect "$1" >/dev/null 2>&1; }
+
+for s in $SCENARIOS; do
   if "scenario_$s"; then pass "$s"; else fail "$s"; fi
 done
 
 if [ "$FAILED" != "0" ]; then
-  echo "Some scenarios failed. Logs: docker compose -f docker/compose.yaml logs"
+  echo "Some scenarios failed. Logs: E2E_ROOT=$ROOT docker compose -f $COMPOSE logs"
   if [ "${KEEP:-0}" != "1" ]; then
-    dc logs --no-color hub host-a host-b host-c 2>/dev/null | tail -150
+    if [ "$SCENARIOS" = "elastic" ]; then
+      echo "  agents:"
+      borant_on host-control agents 2>/dev/null |
+        jq -c '.[] | {agent, harness, host, lease: .lease.state}' | head -20
+      echo "  hosts:"
+      borant_on host-control hosts 2>/dev/null |
+        jq -c '.[] | {name: .host.name, pool: .host.pool, max_agents: .host.max_agents,
+                      harnesses: .host.harnesses, online}' | head -10
+      echo "  the boss log:"
+      log_of host-control boss 2>/dev/null | tail -20
+      echo "  hub-elastic and host-control:"
+      dc --profile elastic logs --no-color hub-elastic host-control 2>/dev/null | tail -200
+    fi
+    dc --profile elastic logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
 fi

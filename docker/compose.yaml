@@ -59,18 +59,38 @@ services:
       <<: *timing
 
   # The hub of the elastic scenario. It starts the pool hosts of the
-  # provision-docker plugin, so it needs the socket of the Docker daemon and
-  # the plugin, which the other scenarios do not give it.
+  # provision-docker plugin, so it needs the socket of the Docker daemon, the
+  # plugin, and its hub.toml. The other scenarios run `hub`, unchanged.
+  # E2E_ROOT is the path of the repository, set by tests/e2e/lib.sh: a
+  # relative source path is resolved differently by compose versions, and a
+  # source that does not exist becomes a directory.
   hub-elastic:
     <<: *image
     command: ["borant", "hub"]
     profiles: [elastic]
     environment:
       <<: *timing
+      # The elastic pass and the stderr of the provisioner plugin are debug
+      # lines: the scenario prints them when it fails.
+      BORANT_LOG: "debug,async_nats=warn"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ../tests/e2e/plugins:/plugins:ro
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/plugins:/plugins:ro
+      - ${E2E_ROOT:?set_by_tests_e2e_run_sh}/tests/e2e/elastic/hub.toml:/root/.borant/hub.toml:ro
     depends_on: [nats]
+
+  # The static host of the elastic scenario. It runs the boss, and its
+  # max_agents of 1 sends the spawns of the boss to the pool.
+  host-control:
+    <<: *host
+    hostname: host-control
+    profiles: [elastic]
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-control
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "1"
 
   host-a:
     <<: *host
