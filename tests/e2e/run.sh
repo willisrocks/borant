@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel sandbox pause"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel continue sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -33,6 +33,13 @@ SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/san
 # The paths of the pause scenario: its own swarm, which runs alone.
 PAUSE_PATHS='^tests/e2e/pause/'
 
+# The paths of the continue scenario: the hub's continue path and the pure
+# rule that it calls. The scenario has no swarm of its own (it starts host-r
+# of the default swarm), so every other path runs the default set as before;
+# the fake harness that it scripts is shared with every scenario, and the
+# sandbox branch below already names it.
+CONTINUE_PATHS='^(crates/borant-hub/src/continuation\.rs|crates/borant-core/src/rules/continuation\.rs)$'
+
 # The scenarios that a diff touches. Every scenario drives the same swarm, so
 # a change to one crate can break all of them: only the paths that no
 # scenario loads skip the run, and every other path runs the whole set.
@@ -44,6 +51,8 @@ PAUSE_PATHS='^tests/e2e/pause/'
 #   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
 #   the sandbox and its scenario -> sandbox, or all when other paths changed
 #   the pause scenario and its swarm -> pause, or all when other paths changed
+#   the continue path and its rule -> continue, or all when other paths
+#     changed
 #   the cancel path (crates/borant-hub/src/retire.rs, the cancel call in
 #   crates/borant-hub/src/spawns.rs, the delete-work order in
 #   crates/borant-host/src/commands.rs) -> all: the queue scenario cancels too,
@@ -72,6 +81,14 @@ affected() {
       echo "$ALL"
     else
       echo pause
+    fi
+    return 0
+  fi
+  if printf '%s\n' "$files" | grep -qE "$CONTINUE_PATHS"; then
+    if printf '%s\n' "$files" | grep -qvE "$CONTINUE_PATHS"; then
+      echo "$ALL"
+    else
+      echo continue
     fi
     return 0
   fi
@@ -1407,6 +1424,162 @@ scenario_cancel() {
   wait_for "busy1 stopped" log_has "$host" busy1 SIGTERM || return 1
 }
 
+# The continue scenario of phase 11 (bounded task continuation): an idle worker
+# bound to a task that it claims gets a continue, the wait that it then stores
+# stops the continues, and the limit sends the task to a person. A host daemon
+# restart and a planned move keep the count. The scenario runs on the default
+# swarm, with host-r as the host whose daemon alone can be stopped.
+scenario_continue() {
+  local out task_a task_b pid
+
+  # host-r is not part of the default swarm: the host_restart scenario starts
+  # it on demand, and this one does the same.
+  dc up -d --no-deps host-r >/dev/null || return 1
+  start_host_r 1 || return 1
+  if ! wait_for "host-r online" host_r_online; then
+    echo "  the host-r log:" >&2
+    host_r_log 1 | tail -20 >&2
+    return 1
+  fi
+
+  # The channel and the two tasks that the workers bind.
+  start_agent host-a cboss
+  wait_for "cboss registered" is_at cboss host-a || return 1
+  borant_on host-a send cboss "CHANNEL continue" >/dev/null
+  wait_for "channel continue" log_has host-a cboss "CHANNEL continue ok" || return 1
+  borant_on host-a send cboss "CREATE continue waits
+CREATE continue limit" >/dev/null
+  wait_for "the task waits" log_has host-a cboss "CREATED .* waits" || return 1
+  wait_for "the task limit" log_has host-a cboss "CREATED .* limit" || return 1
+  task_a=$(task_id host-a cboss waits)
+  task_b=$(task_id host-a cboss limit)
+  [ -n "$task_a" ] && [ -n "$task_b" ] \
+    || { echo "  the task ids of the scenario" >&2; return 1; }
+
+  # Each worker claims its bound task in the turn of the launch prompt, so the
+  # task is in progress and claimed before the session goes idle.
+  on host-a sh -c "printf 'CLAIM continue $task_a\n' > /tmp/continue-waits.md" || return 1
+  on host-a sh -c "printf 'CLAIM continue $task_b\n' > /tmp/continue-limit.md" || return 1
+
+  # A worker with two continues: the first idle gets one, then it is done and
+  # waits on its task, and the wait stops the next idle.
+  out=$(borant_on host-a spawn --channel continue --prompt-file /tmp/continue-waits.md \
+    --harness fake --host host-r --name cont-a --key continue-waits \
+    --task "continue/$task_a" --continue 2) || return 1
+  case "$out" in
+    "agent cont-a placed"*) ;;
+    *) echo "  cont-a: $out" >&2; return 1 ;;
+  esac
+  wait_for "cont-a claimed waits" log_has host-r cont-a "CLAIM $task_a ok" || return 1
+  wait_for "cont-a got its first continue" \
+    log_has host-r cont-a "Continue with task continue/$task_a" || return 1
+  borant_on host-r send cont-a "WAITTASK continue $task_a" >/dev/null
+  wait_for "cont-a stored its wait" log_has host-r cont-a "WAITTASK $task_a ok" || return 1
+  # The count is written before the send, and the stored wait stops the next
+  # idle period.
+  [ "$(continue_state cont-a)" = "1 false" ] \
+    || { echo "  cont-a after its wait: $(continue_state cont-a)" >&2; return 1; }
+  sleep 8
+  [ "$(continue_count host-r cont-a)" = "1" ] \
+    || { echo "  cont-a got another continue after its wait" >&2; return 1; }
+
+  # A worker with one continue: the next idle reaches the limit, so the hub
+  # sends no continue and sets its task needs_human.
+  out=$(borant_on host-a spawn --channel continue --prompt-file /tmp/continue-limit.md \
+    --harness fake --host host-r --name cont-b --key continue-limit \
+    --task "continue/$task_b" --continue 1) || return 1
+  case "$out" in
+    "agent cont-b placed"*) ;;
+    *) echo "  cont-b: $out" >&2; return 1 ;;
+  esac
+  wait_for "cont-b claimed limit" log_has host-r cont-b "CLAIM $task_b ok" || return 1
+  wait_for "cont-b got its one continue" \
+    log_has host-r cont-b "Continue with task continue/$task_b" || return 1
+  wait_for "the task of cont-b needs a person" \
+    continue_needs_human "$task_b" "continue limit reached (1)" || return 1
+  [ "$(continue_state cont-b)" = "1 true" ] \
+    || { echo "  cont-b at the limit: $(continue_state cont-b)" >&2; return 1; }
+
+  # A host daemon restart keeps both counts, and the wait still stops cont-a
+  # after a new turn.
+  pid=$(host_r_pid) || return 1
+  on host-r kill -9 "$pid" || return 1
+  wait_for "the old host daemon to exit" daemon_stopped "$pid" || return 1
+  start_host_r 2 || return 1
+  if ! wait_for "the restart of host-r restored both sessions" continue_restored; then
+    echo "  the host-r log:" >&2
+    host_r_log 2 | tail -20 >&2
+    return 1
+  fi
+  borant_on host-r send cont-a "WRITE after-restart.txt yes" >/dev/null
+  wait_for "cont-a took a turn after the restart" \
+    log_has host-r cont-a "WROTE after-restart.txt" || return 1
+  sleep 8
+  [ "$(continue_count host-r cont-a)" = "1" ] \
+    || { echo "  the restart sent cont-a another continue" >&2; return 1; }
+  [ "$(continue_state cont-a)" = "1 false" ] \
+    || { echo "  cont-a after the restart: $(continue_state cont-a)" >&2; return 1; }
+  [ "$(continue_state cont-b)" = "1 true" ] \
+    || { echo "  cont-b after the restart: $(continue_state cont-b)" >&2; return 1; }
+
+  # A planned move keeps the count too, and its new idle period gets no
+  # continue: the wait of the worker still covers the task.
+  borant_on host-a move cont-a --host host-a >/dev/null || return 1
+  wait_for "cont-a on host-a" is_at cont-a host-a || return 1
+  wait_for "cont-a continued on host-a" \
+    log_has host-a cont-a "You continue Borant agent cont-a" || return 1
+  sleep 8
+  [ "$(continue_count host-a cont-a)" = "0" ] \
+    || { echo "  the move sent cont-a another continue" >&2; return 1; }
+  [ "$(continue_state cont-a)" = "1 false" ] \
+    || { echo "  cont-a after the move: $(continue_state cont-a)" >&2; return 1; }
+
+  # Leave no agent or host of this scenario for a later one.
+  borant_on host-a cancel cont-a >/dev/null 2>&1
+  borant_on host-r cancel cont-b >/dev/null 2>&1
+  borant_on host-a cancel cboss >/dev/null 2>&1
+  dc stop host-r >/dev/null 2>&1
+  return 0
+}
+
+# The continues that an agent got: the hub's direct message is one line per
+# continue in the fake log of the agent.
+continue_count() { log_of "$1" "$2" | grep -c "Continue with task continue/"; }
+
+# The continue state of an agent in the hub record, as `<used> <exhausted>`.
+# The snapshot lands in the hub container; after the hub move scenario that is
+# hub2, and a run of this scenario alone still serves from hub.
+continue_state() {
+  local svc tmp=/tmp/e2e-continue-state.jsonl
+  if docker inspect --format '{{.State.Running}}' "$(container hub2)" 2>/dev/null | grep -qx true; then
+    svc=hub2
+  else
+    svc=hub
+  fi
+  borant_on host-a hub export --snapshot --out "$tmp" >/dev/null || return 1
+  on "$svc" jq -r --arg k "agent.$1" \
+    'select(.t == "state" and .key == $k)
+     | "\(.value.continues.used) \(.value.continues.exhausted)"' "$tmp" || return 1
+  on "$svc" rm -f "$tmp"
+}
+
+# The task is in `needs_human` with the message of the exhausted continues.
+continue_needs_human() {
+  borant_on host-a inbox --json 2>/dev/null |
+    jq -e --arg t "$1" --arg w "$2" \
+      'any(.tasks[]; .id == $t and .status == "needs_human" and .attention_msg == $w)' >/dev/null
+}
+
+# The restart of host-r restored both sessions of the scenario.
+continue_restored() {
+  local out
+  out=$(host_r_restored) || return 1
+  case "$out" in
+    "restored=2 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 for s in $SCENARIOS; do
   if "scenario_$s"; then pass "$s"; else fail "$s"; fi
 done
@@ -1450,6 +1623,21 @@ if [ "$FAILED" != "0" ]; then
       [ -n "$LAST_AGENT" ] && log_of host-members "$LAST_AGENT" | tail -30
     fi
     case " $SCENARIOS " in
+      *" continue "*)
+        echo "  the continue agents:"
+        borant_on host-a agents 2>/dev/null |
+          jq -c '.[] | select(.agent | startswith("cont-"))
+                | {agent, host, lease: .lease.state}' | head -10
+        echo "  inbox:"
+        borant_on host-a inbox --json 2>/dev/null | head -40
+        echo "  the continue logs:"
+        log_of host-r cont-a 2>/dev/null | tail -20
+        log_of host-a cont-a 2>/dev/null | tail -20
+        log_of host-r cont-b 2>/dev/null | tail -20
+        echo "  the daemon logs of host-r:"
+        host_r_log 1 | tail -20
+        host_r_log 2 | tail -40
+        ;;
       *" host_restart "*)
         echo "  the daemon logs of host-r:"
         host_r_log 1 | tail -20
