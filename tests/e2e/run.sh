@@ -371,11 +371,27 @@ sandbox_reads() {
 # the swarm has one slot, and it makes its own channel so that it also runs
 # alone.
 scenario_queue() {
-  dc up -d host-q >/dev/null || return 1
+  # `--no-deps` keeps compose from starting `nats` again: the move scenario
+  # leaves the swarm on nats2, and a second broker named `natshub` would take
+  # host-q away from the hub.
+  dc up -d --no-deps host-q >/dev/null || return 1
+  # Exactly one broker must answer `natshub`, or host-q joins the wrong one
+  # and never registers.
+  brokers_up() {
+    { docker inspect --format '{{.State.Running}}' "$(container nats)" 2>/dev/null
+      docker inspect --format '{{.State.Running}}' "$(container nats2)" 2>/dev/null
+    } | grep -cx true
+  }
+  [ "$(brokers_up)" = "1" ] \
+    || { echo "  $(brokers_up) brokers are up: host-q needs exactly one" >&2; return 1; }
   host_online() {
     borant_on host-a hosts | jq -e --arg h "$1" 'any(.[]; .host.name == $h and .online)'
   }
-  wait_for "host-q online" host_online host-q || return 1
+  if ! wait_for "host-q online" host_online host-q; then
+    echo "  the host-q log:" >&2
+    dc logs --no-color host-q 2>/dev/null | tail -10 >&2
+    return 1
+  fi
 
   start_agent host-a qboss
   wait_for "qboss registered" is_at qboss host-a || return 1
