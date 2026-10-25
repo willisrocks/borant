@@ -77,6 +77,10 @@ When your work is in the owner's hands, call the wait tool on your task for "clo
 (`wait(channel: "{channel}", task: "{task_id}", until: ["closed"])`), and never close
 it yourself: the owner closes after the merge.
 Never merge, close a task, or change CI, secrets, releases, or infrastructure.
+Other agents share this host and its user. Stop only a process whose PID you
+started, never by name (no pkill, no killall). Never run `tmux kill-server` or kill
+a tmux session that you did not create; a tmux test uses its own socket
+(`tmux -L test-{name} ...`).
 If you are blocked or need a decision: task_update(status: "stuck" or "needs_human",
 attention_msg: <what you need>), send the owner one line, then wait.
 After the owner says "merged", wait for your next task. Do not start other work.
