@@ -28,9 +28,12 @@ e2e_containers() {
 e2e_containers_count() { e2e_containers | wc -l | tr -d ' '; }
 
 # Stops the swarm and the containers of the fake provisioner.
+# Every profile, so that no container of a swarm that ran alone (pause,
+# sandbox, elastic, members) outlives its run and joins the next swarm.
 down() {
   cleanup_e2e_containers
-  dc --profile move down -v --remove-orphans
+  dc --profile move --profile elastic --profile members --profile sandbox \
+    --profile pause down -v --remove-orphans
 }
 
 
