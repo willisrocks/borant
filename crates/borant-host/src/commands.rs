@@ -110,6 +110,11 @@ impl Host {
                         .unwrap_or_else(|| repo.remote_url.clone()),
                 };
                 let base = project.map(|p| p.default_branch.as_str());
+                let mirrors = cfg.home.join(checkpoint::MIRRORS_DIR);
+                let mirror = project.map(|p| checkpoint::Mirror {
+                    root: mirrors.as_path(),
+                    name: &p.name,
+                });
                 let dir = checkpoint::restore(
                     &work_root,
                     repo,
@@ -117,6 +122,7 @@ impl Host {
                     &remote,
                     o.wip.as_deref(),
                     base,
+                    mirror,
                 )
                 .await?;
                 if let Some(r) = project_remote {
