@@ -89,7 +89,9 @@ scenario_tasks() {
   [ "$(borant_on host-a tasks demo --ready | jq -r '.[].title')" = "build" ] || { echo "  only build is ready" >&2; return 1; }
   borant_on host-c send w1 "CLAIM demo $build
 CLOSE demo $build" >/dev/null
-  wait_for "w1 closed build" log_has host-b w1 "CLOSE $build ok" || return 1
+  wait_for "w1 cannot close as done" log_has host-b w1 "CLOSE $build failed" || return 1
+  borant_on host-c send boss "CLOSE demo $build" >/dev/null
+  wait_for "the owner closed build" log_has host-a boss "CLOSE $build ok" || return 1
   test_ready() { borant_on host-a tasks demo --ready | jq -e '.[0].title == "test"'; }
   wait_for "test is ready" test_ready || return 1
   wait_for "the owner woke for the close" log_has host-a boss "kind=Event.*closed" || return 1

@@ -258,6 +258,27 @@ impl Hub {
             Some(other) if other != agent => return Err(CoreError::Claimed(other.clone()).into()),
             _ => {}
         }
+        // A question or a stall belongs to its claimer: another agent may not
+        // claim over it.
+        if matches!(doc.value.status, TaskStatus::NeedsHuman | TaskStatus::Stuck)
+            && doc.value.claimed_by.as_ref() != Some(agent)
+        {
+            let who = match &doc.value.claimed_by {
+                Some(other) => format!("claimed by {other}"),
+                None => "unclaimed".to_string(),
+            };
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!(
+                    "task {} is {} and {who}",
+                    doc.value.id,
+                    match doc.value.status {
+                        TaskStatus::NeedsHuman => "in needs_human",
+                        _ => "stuck",
+                    }
+                ),
+            ));
+        }
         if doc.value.status == TaskStatus::Closed {
             return Err(CoreError::TaskClosed.into());
         }
@@ -282,13 +303,20 @@ impl Hub {
     pub(crate) async fn task_close(
         &self,
         mem: &mut Memory,
-        _by: &Sender,
+        by: &Sender,
         channel: &ChannelName,
         id: &TaskId,
         reason: CloseReason,
         message: String,
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
+        // Only the owner of the channel and a person close a task as done.
+        if reason == CloseReason::Done && !is_owner(&ch.value.owner, by) {
+            return Err(ApiError::new(
+                ApiErrorCode::Denied,
+                "only the owner closes a task as done",
+            ));
+        }
         let all = self.tasks(channel).await?;
         let mut doc = self.task(channel, id).await?;
         let before = doc.value.clone();
@@ -448,5 +476,14 @@ impl Hub {
             tracing::warn!(%channel, task = %task.id, "task event lost: {e}");
         }
         Ok(())
+    }
+}
+
+/// Whether `by` may close a task as done: the owner of the channel, or a
+/// person.
+fn is_owner(owner: &AgentId, by: &Sender) -> bool {
+    match by {
+        Sender::Human => true,
+        Sender::Agent(agent) => agent == owner,
     }
 }
