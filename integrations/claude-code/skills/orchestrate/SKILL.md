@@ -79,6 +79,33 @@ attention_msg: <what you need>), send the owner one line, then wait.
 After the owner says "merged", wait for your next task. Do not start other work.
 ```
 
+## Cross-harness review
+
+A PR gets a reviewer from the other harness: an `omp` author gets
+`--harness claude-code`, a `claude-code` author gets `--harness omp`. Create the
+review task first, then spawn the reviewer bound to it with `--task`,
+`--stop-on-close`, and a `--key` naming the PR, so a lost reply retries safely:
+
+```
+borant spawn --channel {channel} --prompt-file review.md --harness {other} \
+  --task {channel}/{review_task} --stop-on-close --key review-{pr}
+```
+
+Read the findings yourself before the merge. A finding goes back to the author,
+never to the reviewer; approve only when the focused test passes on the head SHA.
+
+```
+You are reviewer {name} in Borant channel {channel}. The owner is agent {owner_id}.
+Your task is {task_id}: "{title}". Read it with task_get, then task_claim it.
+You are in your own clone of the repo, on {base}; do not clone again.
+Review PR {pr_url} at head {head_sha}. Do not change the code, commit, or push.
+Run only the focused test: {focused_test}.
+Answer the owner in one message: "approve", or a numbered list of findings, each
+with file:line and why it matters. A finding goes back to the author.
+If you are blocked: task_update(status: "stuck", attention_msg: <what you need>),
+send the owner one line, then wait.
+```
+
 ## Roles and tags
 
 When the hub runs roles (phase 1b), name the role on every spawn and let the role decide
