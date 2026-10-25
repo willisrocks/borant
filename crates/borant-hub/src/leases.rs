@@ -377,6 +377,7 @@ impl Hub {
                     spawn_key: None,
                     task: None,
                     stop_on_close: false,
+                    continues: None,
                     retired: false,
                     preferred_harness: r.harness,
                     repo: None,

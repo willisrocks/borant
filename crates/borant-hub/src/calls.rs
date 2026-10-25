@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
-use borant_core::rules::{roles, schema};
+use borant_core::rules::{continuation, roles, schema};
 use borant_core::{AgentId, ChannelName, CollectionName, ProjectName, keys, subjects};
 use serde_json::{Value, json};
 
@@ -322,9 +322,12 @@ impl Hub {
                 key: spawn_key,
                 task,
                 stop_on_close,
+                continues,
                 priority,
                 bundles,
             } => {
+                // Continues need a bound task, and a limit of at least one.
+                continuation::check_spawn(continues.as_ref(), task.as_ref())?;
                 let by = match &me {
                     Some(agent) => Sender::Agent(agent.clone()),
                     None => Sender::Human,
@@ -344,6 +347,7 @@ impl Hub {
                         key: key.or(spawn_key),
                         task,
                         stop_on_close,
+                        continues,
                         priority,
                         bundles,
                     },

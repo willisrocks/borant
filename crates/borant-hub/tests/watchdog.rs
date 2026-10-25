@@ -180,6 +180,7 @@ impl Fx {
                 role: None,
                 task: None,
                 stop_on_close: None,
+                continues: None,
                 priority: None,
                 bundles: Vec::new(),
             },

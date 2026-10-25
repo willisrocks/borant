@@ -161,6 +161,7 @@ async fn spawn(
             key: None,
             task: None,
             stop_on_close: None,
+            continues: None,
             priority: None,
             bundles: Vec::new(),
             channel: "personal-api".parse().unwrap(),

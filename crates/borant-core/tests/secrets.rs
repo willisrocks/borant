@@ -69,6 +69,7 @@ fn secrets_old_json_parses_without_the_new_fields() {
         spawn_key: None,
         task: None,
         stop_on_close: false,
+        continues: None,
         retired: false,
         preferred_harness: Harness::Fake,
         channels: vec!["api".parse::<ChannelName>().unwrap()],

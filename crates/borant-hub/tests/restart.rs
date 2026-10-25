@@ -217,6 +217,7 @@ impl Fx {
                 spawn_key: None,
                 task: None,
                 stop_on_close: false,
+                continues: None,
                 retired: false,
                 preferred_harness: Harness::Fake,
                 repo: Some(RepoInfo {

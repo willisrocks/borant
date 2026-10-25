@@ -29,6 +29,10 @@ pub enum CoreError {
     LeaseHeld { host: HostName },
     #[error("agent {0} has claimed the task")]
     Claimed(AgentId),
+    #[error("a spawn asks for continues but binds no task: name the task of the spawn")]
+    ContinuesWithoutTask,
+    #[error("continues.max is at least 1: a worker with no continue has no policy")]
+    ContinueLimit,
 }
 
 fn fmt_path(ids: &[TaskId]) -> String {

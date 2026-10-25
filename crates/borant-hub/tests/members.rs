@@ -73,6 +73,7 @@ async fn spawn(fx: &Fx, owner: &borant_core::proto::Registered, who: &str, harne
             key: None,
             task: None,
             stop_on_close: None,
+            continues: None,
             priority: None,
             bundles: Vec::new(),
             channel: api(),

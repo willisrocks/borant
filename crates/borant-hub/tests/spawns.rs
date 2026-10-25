@@ -73,6 +73,7 @@ fn spawn_call(prompt: &str, priority: i32) -> ToolCall {
         key: None,
         task: None,
         stop_on_close: None,
+        continues: None,
         priority: Some(priority),
         bundles: Vec::new(),
     }
@@ -598,6 +599,7 @@ async fn a_person_spawns_from_the_cli() {
             key: None,
             task: None,
             stop_on_close: None,
+            continues: None,
             priority: None,
             bundles: Vec::new(),
         },

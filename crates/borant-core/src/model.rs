@@ -82,6 +82,66 @@ pub struct RepoInfo {
     pub subdir: String,
 }
 
+/// The bounds of the continues of a worker bound to a task (phase 11 spec,
+/// "Interfaces").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuePolicy {
+    /// The most continues that the worker may get. At least 1.
+    #[serde(deserialize_with = "de_continue_max")]
+    pub max: u32,
+    /// The session hours after `Agent.created` at which no continue is sent.
+    #[serde(default)]
+    pub max_hours: Option<u32>,
+}
+
+/// Reads `ContinuePolicy.max`: a limit below 1 is a mistake, not a policy.
+fn de_continue_max<'de, D>(d: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let max = u32::deserialize(d)?;
+    if max == 0 {
+        return Err(serde::de::Error::custom(
+            "continues.max is at least 1: a worker with no continue has no policy",
+        ));
+    }
+    Ok(max)
+}
+
+/// The continues of one worker: the policy of its spawn and the count so far.
+/// The hub writes it, and one idle period never gets two continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinueState {
+    pub policy: ContinuePolicy,
+    /// The continues that the agent already got.
+    #[serde(default)]
+    pub used: u32,
+    /// The `idle_since` that the last continue answered.
+    #[serde(default)]
+    pub last_idle: Option<Timestamp>,
+    /// The limit or the hours ran out: the agent gets no continue again.
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
+impl ContinueState {
+    /// A bound worker that has had no continue yet.
+    pub fn new(policy: ContinuePolicy) -> Self {
+        Self {
+            policy,
+            used: 0,
+            last_idle: None,
+            exhausted: false,
+        }
+    }
+
+    /// Counts one continue, and remembers the idle period that it answered.
+    pub fn record_continue(&mut self, idle_since: Timestamp) {
+        self.used = self.used.saturating_add(1);
+        self.last_idle = Some(idle_since);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Agent {
     pub id: AgentId,
@@ -136,6 +196,10 @@ pub struct Agent {
     /// Stop the session when the bound task closes.
     #[serde(default)]
     pub stop_on_close: bool,
+    /// The continues of a worker bound to a task: the policy of its spawn and
+    /// the count so far (phase 11 spec). `None` for an agent with no policy.
+    #[serde(default)]
+    pub continues: Option<ContinueState>,
     /// A retired agent is never placed again; its session stops at the next
     /// turn end.
     #[serde(default)]
@@ -183,6 +247,7 @@ impl Default for Agent {
             spawn_key: None,
             task: None,
             stop_on_close: false,
+            continues: None,
             retired: false,
             paused: None,
         }
@@ -497,6 +562,10 @@ pub struct SpawnSpec {
     pub task: Option<TaskRef>,
     #[serde(default)]
     pub stop_on_close: Option<bool>,
+    /// The continues of a bound worker. A spawn that names another policy is
+    /// another spawn, so the key comparison sees it.
+    #[serde(default)]
+    pub continues: Option<ContinuePolicy>,
     #[serde(default)]
     pub priority: Option<i32>,
     /// The bundles of the spawn level, for the key comparison and the launch.

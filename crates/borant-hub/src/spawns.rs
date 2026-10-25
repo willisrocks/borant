@@ -8,8 +8,8 @@
 
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Harness, Lease, LeaseState, MoveReason, NewTask, RepoInfo, Sender, SpawnRecord,
-    SpawnSpec, SpawnState, TaskBinding, TaskRef,
+    Agent, ContinuePolicy, ContinueState, Harness, Lease, LeaseState, MoveReason, NewTask,
+    RepoInfo, Sender, SpawnRecord, SpawnSpec, SpawnState, TaskBinding, TaskRef,
 };
 use borant_core::proto::{ApiError, ApiErrorCode, MoveTarget};
 use borant_core::rules::lease;
@@ -34,6 +34,8 @@ pub(crate) struct SpawnRequest {
     pub key: Option<String>,
     pub task: Option<TaskBinding>,
     pub stop_on_close: Option<bool>,
+    /// The continues of a bound worker (phase 11 spec).
+    pub continues: Option<ContinuePolicy>,
     pub priority: Option<i32>,
     /// The bundles of the spawn level. It is the last merge level, so a host
     /// must define every one of them at the launch.
@@ -148,6 +150,7 @@ impl Hub {
             role: resolved.role.clone(),
             task: None,
             stop_on_close: req.stop_on_close,
+            continues: req.continues,
             priority: Some(priority),
             bundles: req.bundles.clone(),
         };
@@ -237,6 +240,7 @@ impl Hub {
             spawn_key: req.key.clone(),
             task: task.clone(),
             stop_on_close,
+            continues: req.continues.map(ContinueState::new),
             retired: false,
             paused: None,
             preferred_harness: harness,

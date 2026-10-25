@@ -78,6 +78,7 @@ fn spawn_call(name: &str, prompt: &str, role: Option<&str>, give: &[&str]) -> To
         key: None,
         task: None,
         stop_on_close: None,
+        continues: None,
         priority: None,
         bundles: bundles(give),
     }
