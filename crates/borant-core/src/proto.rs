@@ -181,6 +181,9 @@ pub struct Registered {
     pub token: FencingToken,
     pub movable: bool,
     pub channels: Vec<ChannelName>,
+    /// The agent is pinned: the host keeps its tools during a pause.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +301,11 @@ pub enum ToolCall {
     },
     ListAgents,
     ListHosts,
+    /// Pins the agent or unpins it. Only a human may call it.
+    Pin {
+        agent: AgentId,
+        on: bool,
+    },
     /// Lists the agents that a prune would remove. Writes and deletes nothing.
     PruneAgents {
         #[serde(default = "default_prune_secs")]
@@ -471,6 +479,9 @@ pub struct LocalSession {
     /// Set when the session must stop using tools.
     #[serde(default)]
     pub fenced: Option<String>,
+    /// The agent is pinned, so a pause keeps its tools.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

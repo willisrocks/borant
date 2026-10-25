@@ -215,6 +215,7 @@ impl Host {
                 LocalState::Detached
             },
             movable: s.movable(),
+            pinned: s.reg.as_ref().is_some_and(|r| r.pinned),
             channels: s
                 .reg
                 .as_ref()

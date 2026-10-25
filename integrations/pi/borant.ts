@@ -48,6 +48,8 @@ interface LocalSession {
   movable: boolean;
   channels: string[];
   fenced?: string | null;
+  /** The agent is pinned, so a pause keeps its tools. */
+  pinned?: boolean;
 }
 
 type Reply<T = unknown> = { ok: T } | { error: { code: string; message: string } };
@@ -232,6 +234,8 @@ interface Session {
   omp: boolean;
   ctx: ExtensionContext;
   fenced: string | null;
+  /** The agent is pinned: a pause keeps every tool. */
+  pinned: boolean;
   closed: boolean;
   /** False until the harness starts its first run or the grace time passes. */
   started: boolean;
@@ -551,6 +555,7 @@ export default function borant(pi: ExtensionAPI) {
       omp: Boolean(agent),
       ctx,
       fenced: null,
+      pinned: r.ok.pinned ?? false,
       closed: false,
       started: false,
       held: [],
@@ -579,11 +584,14 @@ export default function borant(pi: ExtensionAPI) {
     // Ask the daemon, so a pause that began while the agent was idle counts.
     try {
       const r = await request<LocalSession>(s.socket, "GET", `/v1/sessions/${s.id}`, undefined, 1000);
-      if ("ok" in r) s.fenced = r.ok.fenced ?? null;
+      if ("ok" in r) {
+        s.fenced = r.ok.fenced ?? null;
+        s.pinned = r.ok.pinned ?? false;
+      }
     } catch {
       // Keep the last known state.
     }
-    if (s.fenced) return { block: true, reason: s.fenced };
+    if (s.fenced && !s.pinned) return { block: true, reason: s.fenced };
   });
 
   pi.on("tool_result", (event) => {

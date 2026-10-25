@@ -51,6 +51,13 @@ pub enum Command {
     },
     /// List all hosts.
     Hosts,
+    /// Pin an agent so the hub never replaces it and its tools survive a pause.
+    Pin {
+        agent: AgentId,
+        /// Unpin the agent.
+        #[arg(long)]
+        off: bool,
+    },
     /// List the tasks of a channel.
     Tasks {
         channel: ChannelName,
@@ -390,6 +397,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<()> {
             print_prune(&v);
         }
         Command::Hosts => pretty(&call(&c, ToolCall::ListHosts).await?),
+        Command::Pin { agent, off } => pretty(&call(&c, ToolCall::Pin { agent, on: !off }).await?),
         Command::Tasks { channel, ready } => pretty(
             &call(
                 &c,
@@ -596,6 +604,8 @@ mod tests {
             "borant agents prune --dry-run",
             "borant agents prune --dry-run --older-than-hours 48",
             "borant hosts",
+            "borant pin w1",
+            "borant pin w1 --off",
             "borant tasks api --ready",
             "borant send #api ship it --urgent",
             "borant send w1 hello",

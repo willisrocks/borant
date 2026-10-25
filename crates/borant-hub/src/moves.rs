@@ -82,6 +82,20 @@ impl Hub {
         prompt: Option<String>,
     ) -> Result<bool, ApiError> {
         let now = self.now();
+        // A pinned agent is never replaced while its session may still run.
+        // Only a clean end (a released lease) lets the hub place it again.
+        if agent.pinned {
+            let key = keys::lease_agent(&agent.id);
+            let released = self
+                .store
+                .get::<Lease>(&key)
+                .await?
+                .is_some_and(|d| matches!(d.value.state, LeaseState::Released { .. }));
+            if !released {
+                tracing::info!(agent = %agent.id, "placement skipped: the agent is pinned");
+                return Ok(false);
+            }
+        }
         let views = self.host_views(mem, &agent.id).await?;
         let Some((host, harness)) = schedule::place(
             agent.preferred_harness,
@@ -244,6 +258,16 @@ impl Hub {
         let mut planned: HashMap<HostName, u32> = HashMap::new();
         for id in self.selected(selector).await? {
             let lease = self.store.get::<Lease>(&keys::lease_agent(&id)).await?;
+            // A move would start a second session. A pinned agent moves only
+            // after a clean end, like a placement.
+            if self.agent(&id).await?.value.pinned
+                && !lease
+                    .as_ref()
+                    .is_some_and(|l| matches!(l.value.state, LeaseState::Released { .. }))
+            {
+                tracing::info!(agent = %id, "move skipped: the agent is pinned");
+                continue;
+            }
             match lease.map(|l| l.value.state) {
                 Some(LeaseState::Held { session, host, .. }) => {
                     if target.host.as_ref() == Some(&host) && target.harness.is_none() {
@@ -373,6 +397,7 @@ impl Hub {
             model,
             project: ch.project,
             members: Default::default(),
+            pinned: false,
         };
         self.store
             .put(&keys::agent(&id), &agent, None)

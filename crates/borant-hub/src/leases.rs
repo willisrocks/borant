@@ -138,6 +138,20 @@ impl Hub {
         let existing = self.store.get::<Agent>(&agent_key).await?;
         let lease_key = keys::lease_agent(&agent_id);
         let lease_doc = self.store.get::<Lease>(&lease_key).await?;
+        // A pinned agent keeps its session: no other session may take it while
+        // the lease is held or the last session may still run.
+        if existing.as_ref().is_some_and(|d| d.value.pinned) {
+            let other = match lease_doc.as_ref().map(|d| &d.value.state) {
+                Some(LeaseState::Held { session, .. }) => Some(*session),
+                Some(LeaseState::Expired { last_session, .. }) => *last_session,
+                _ => None,
+            };
+            if other.is_some_and(|s| s != r.session) {
+                return Err(ApiError::invalid(format!(
+                    "agent {agent_id} is pinned; only its current session can register"
+                )));
+            }
+        }
         let new_lease = lease::acquire(
             &agent_id,
             lease_doc.as_ref().map(|d| &d.value),
@@ -171,6 +185,7 @@ impl Hub {
                     model_harness: None,
                     project: None,
                     members: Default::default(),
+                    pinned: false,
                 },
                 None,
             ),
@@ -223,6 +238,7 @@ impl Hub {
             token: new_lease.token,
             movable: agent.movable,
             channels: agent.channels,
+            pinned: agent.pinned,
         })
     }
 
@@ -353,13 +369,21 @@ impl Hub {
         let agent = agent.value;
 
         // Claims return to open when no session held the agent for the
-        // claim timeout, measured from the first expiry.
+        // claim timeout, measured from the first expiry. A pinned agent keeps
+        // its claims, because the hub will not release it.
         let base = mem.expired_at.get(&agent_id).copied().unwrap_or(since);
-        if now.since(base) >= cfg.claim_timeout && mem.claims_released.insert(agent_id.clone()) {
+        if !agent.pinned
+            && now.since(base) >= cfg.claim_timeout
+            && mem.claims_released.insert(agent_id.clone())
+        {
             let n = self.unclaim_everywhere(&agent_id).await?;
             if n > 0 {
                 tracing::warn!(agent = %agent_id, n, "claims returned to open after the claim timeout");
             }
+        }
+        // The hub never replaces a pinned agent whose session may still run.
+        if agent.pinned && !matches!(doc.value.state, LeaseState::Released { .. }) {
+            return Ok(());
         }
 
         let expired = matches!(doc.value.state, LeaseState::Expired { .. });

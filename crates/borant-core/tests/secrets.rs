@@ -78,6 +78,7 @@ fn secrets_old_json_parses_without_the_new_fields() {
         model_harness: None,
         project: None,
         members: BTreeMap::new(),
+        pinned: false,
     };
     let old = without(&agent, "members");
     let parsed: Agent = serde_json::from_value(old).expect("old agent JSON parses");
