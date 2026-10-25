@@ -146,7 +146,7 @@ async fn non_member_never_moves() {
 }
 
 #[tokio::test]
-async fn reserved_lease_expires_and_replaces() {
+async fn reserved_lease_expires_and_replaces_on_another_host() {
     let fx = Fx::new();
     let (owner, w) = setup(&fx).await;
     claim(&fx, &owner, &w).await;
@@ -156,12 +156,24 @@ async fn reserved_lease_expires_and_replaces() {
         next_cmd(&mut h2).await,
         Some(HostCommand::Launch(_))
     ));
-    // No session registers within the reservation time.
-    h1_sleeps(&fx, 330).await;
-    assert!(matches!(
-        next_cmd(&mut h2).await,
-        Some(HostCommand::Launch(_))
-    ));
+    // No session registers within the reservation time. The host is no good
+    // for this agent now, so the next placement skips it.
+    fx.host("h3", &[Harness::Fake]).await;
+    let mut h3 = fx.commands("h3").await;
+    for _ in 0..33 {
+        fx.advance(10);
+        fx.heartbeat("h2", &[]).await;
+        fx.heartbeat("h3", &[]).await;
+        fx.hub.tick().await.unwrap();
+    }
+    match next_cmd(&mut h3).await {
+        Some(HostCommand::Launch(o)) => assert_eq!(o.agent, w.agent),
+        other => panic!("expected a launch on the other host, got {other:?}"),
+    }
+    assert!(
+        next_cmd(&mut h2).await.is_none(),
+        "the host whose launch never registered is skipped"
+    );
 }
 
 #[tokio::test]

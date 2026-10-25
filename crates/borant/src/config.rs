@@ -199,6 +199,8 @@ pub struct Timing {
     pub heartbeat_secs: Option<f64>,
     pub claim_timeout_secs: Option<f64>,
     pub reserve_secs: Option<f64>,
+    /// How long a launch may take to register before the host stops it.
+    pub launch_timeout_secs: Option<f64>,
 }
 
 impl Timing {
@@ -762,6 +764,13 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     let timing = file.timing.lease_config()?;
     cfg.lease = timing.lease;
     cfg.heartbeat = timing.heartbeat;
+    // The watchdog of a launch: `launch_timeout_secs` in `[timing]`, or
+    // `BORANT_LAUNCH_TIMEOUT_SECS`.
+    if let Some(v) = env_secs("BORANT_LAUNCH_TIMEOUT_SECS")?
+        .or(file.timing.launch_timeout_secs.map(Duration::from_secs_f64))
+    {
+        cfg.launch_timeout = v;
+    }
     cfg.commands = file.commands.clone();
     if let Some(section) = &file.secrets {
         let (opened, harnesses) = section.config().open(&cfg.harnesses).await;

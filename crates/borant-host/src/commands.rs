@@ -14,7 +14,7 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::secrets::remove_dir;
-use crate::{Host, checkpoint};
+use crate::{Host, PendingLaunch, checkpoint};
 
 impl Host {
     pub(crate) async fn command_loop(self, shutdown: CancellationToken) {
@@ -87,7 +87,7 @@ impl Host {
 
     /// Prepares the working directory and starts the harness. Public for tests.
     pub async fn launch(&self, o: LaunchOrder) -> anyhow::Result<()> {
-        let started = tokio::time::Instant::now();
+        let started = std::time::Instant::now();
         let _lock = self.launch_lock(&o.agent)?;
         let cfg = &self.inner.cfg;
         if !cfg.harnesses.contains(&o.harness) {
@@ -203,6 +203,16 @@ impl Host {
                 .insert(o.agent.clone(), issued.redactor.clone());
             st.launched.insert(o.agent.clone(), issued.clone());
         }
+        // A session of this agent that is still around is stale: the hub
+        // relaunches an agent only after its session ended or did not
+        // register. tmux refuses a second session of the same name, so the
+        // old one goes first.
+        let stale = self.state().last_launch.remove(&o.agent);
+        if let Some(stale) = stale
+            && let Err(e) = self.inner.launcher.stop(&stale).await
+        {
+            tracing::debug!(agent = %o.agent, "cannot stop the stale launch: {e}");
+        }
         let spec = LaunchSpec {
             agent: o.agent.clone(),
             harness: o.harness,
@@ -219,7 +229,20 @@ impl Host {
             }
         };
         tracing::info!(agent = %o.agent, harness = %o.harness, cwd = %cwd.display(), ?o.reason, "launched");
-        self.state().pending_launch.insert(o.agent.clone(), handle);
+        {
+            let mut st = self.state();
+            st.pending_launch.insert(
+                o.agent.clone(),
+                PendingLaunch {
+                    handle: handle.clone(),
+                    // The clock of the watchdog starts with the harness, not
+                    // with the clone that prepared its directory: a large
+                    // repository must not eat the time of the launch.
+                    started: std::time::Instant::now(),
+                },
+            );
+            st.last_launch.insert(o.agent.clone(), handle);
+        }
         if let Some(issued) = &issued {
             // A launch that never registers must not keep its values until the
             // daemon stops: they go when the reservation of the launch ends.

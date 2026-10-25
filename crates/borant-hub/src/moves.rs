@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Project, RepoInfo, Sender,
-    SessionEvent, SessionEventBody,
+    SessionEvent, SessionEventBody, SpawnRecord, SpawnState,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
 };
 use borant_core::rules::lease;
+use borant_core::rules::redact;
 use borant_core::rules::roles::{self, SpawnInput};
 use borant_core::rules::schedule::{self, HostView, PlacementReq};
 use borant_core::{
@@ -21,6 +22,9 @@ use serde_json::{Value, json};
 
 use crate::members::Assign;
 use crate::{Hub, Memory, PendingMove};
+
+/// The launches of one spawn that the hub counts before it gives up.
+const MAX_LAUNCH_TRIES: u32 = 3;
 
 /// The first prompt of a session after a takeover or a planned move.
 pub fn continue_prompt(
@@ -180,6 +184,21 @@ impl Hub {
         // places it again.
         if agent.retired {
             tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
+            return Ok(false);
+        }
+        // A spawn that failed its launches, or that a person cancelled, waits
+        // for a person: the hub places it only after a new spawn record.
+        if let Some(rec) = self
+            .store
+            .get::<SpawnRecord>(&keys::spawn(&agent.id))
+            .await?
+            && matches!(rec.value.state, SpawnState::Failed | SpawnState::Cancelled)
+        {
+            tracing::debug!(
+                agent = %agent.id,
+                state = ?rec.value.state,
+                "placement skipped: the spawn is closed"
+            );
             return Ok(false);
         }
         // A pinned agent is never replaced while its session may still run.
@@ -792,7 +811,10 @@ impl Hub {
         host: &HostName,
         error: &str,
     ) -> Result<(), ApiError> {
-        tracing::warn!(%agent, %host, error, "launch failed");
+        // The end of the screen that the host captured, redacted again: a
+        // sticky prompt can hold a value that the harness printed.
+        let screen = redact::redact(error).into_owned();
+        tracing::warn!(%agent, %host, screen = %screen, "launch failed");
         mem.failed_hosts
             .entry(agent.clone())
             .or_default()
@@ -817,7 +839,51 @@ impl Hub {
             };
             self.store.put(&key, &expired, Some(d.revision)).await?;
         }
+        // The try counts against the spawn of the agent, and the record stops
+        // the hub after three of them.
+        let (attempts, failed) = self.note_launch_failure(agent).await?;
+        let severity = if failed {
+            Severity::Error
+        } else {
+            Severity::Warn
+        };
+        let event = self.event(
+            self.now(),
+            severity,
+            SwarmEventBody::LaunchStuck { screen, attempts },
+        );
+        Self::queue(mem, event);
         Ok(())
+    }
+
+    /// Counts one failed try of the spawn of `agent`, and fails the record
+    /// after three: a launch that keeps landing on the same screen waits for
+    /// a person, not for another try. Returns the count and whether the
+    /// record is `Failed` now. An agent without a spawn record is not
+    /// counted.
+    pub(crate) async fn note_launch_failure(
+        &self,
+        agent: &AgentId,
+    ) -> Result<(u32, bool), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok((0, false));
+        };
+        let mut record = doc.value;
+        record.attempts = record.attempts.saturating_add(1);
+        let failed = record.attempts >= MAX_LAUNCH_TRIES;
+        if failed && record.state != SpawnState::Failed {
+            record.state = SpawnState::Failed;
+            tracing::warn!(
+                %agent,
+                attempts = record.attempts,
+                "a spawn failed three launches, giving up"
+            );
+        }
+        self.store
+            .put(&doc.key, &record, Some(doc.revision))
+            .await?;
+        Ok((record.attempts, failed))
     }
 
     pub(crate) async fn list_agents(

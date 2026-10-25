@@ -581,13 +581,24 @@ impl Hub {
                 )),
                 _ => None,
             };
-            if matches!(doc.value.state, LeaseState::Reserved { .. }) {
-                // A launch did not register in time. Place again at once.
+            if let LeaseState::Reserved { host, .. } = &doc.value.state {
+                // A launch did not register in time. The host is no good for
+                // this agent, and the try counts against the spawn. Place
+                // again at once.
+                mem.failed_hosts
+                    .entry(agent_id.clone())
+                    .or_default()
+                    .insert(host.clone());
+                let _ = self.note_launch_failure(&agent_id).await?;
                 next.state = LeaseState::Expired {
                     since: now.minus(cfg.grace),
                     last_session: None,
                 };
-                tracing::warn!(agent = %agent_id, "launch reservation ended without a session");
+                tracing::warn!(
+                    agent = %agent_id,
+                    %host,
+                    "launch reservation ended without a session"
+                );
             }
             self.store.put(&doc.key, &next, Some(doc.revision)).await?;
             if was_held {

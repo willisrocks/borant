@@ -87,6 +87,32 @@ impl Launcher for TmuxLauncher {
             format!("={}", handle.id),
         ])
     }
+
+    /// The last `lines` lines of the session screen. This is the one tmux
+    /// call that reads a screen, so it is synchronous: `capture-pane` answers
+    /// in milliseconds, and a server that is gone gives `None`, because a
+    /// missing screen is no error.
+    fn capture(&self, handle: &LaunchHandle, lines: usize) -> Option<String> {
+        if handle.kind != KIND {
+            return None;
+        }
+        let mut args = vec![
+            "capture-pane".to_owned(),
+            "-p".to_owned(),
+            "-S".to_owned(),
+            format!("-{lines}"),
+        ];
+        args.extend(target(&handle.id));
+        let out = std::process::Command::new("tmux")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
 }
 
 #[cfg(test)]

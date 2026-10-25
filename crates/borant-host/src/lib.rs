@@ -25,6 +25,7 @@ use borant_core::ports::{
     EventLog, LaunchHandle, Launcher, MessageBus, Notice, Notifier, Priority, SessionStore,
 };
 use borant_core::proto::{ApiError, CtlRequest, Registered, Reply};
+use borant_core::rules::redact::redact;
 use borant_core::rules::wake::WakeLimiter;
 use borant_core::{
     AgentId, ChannelName, Clock, CollectionName, HostName, MessageId, PoolName, RoleName,
@@ -64,6 +65,9 @@ pub struct HostConfig {
     pub heartbeat: Duration,
     pub wakes_per_hour: u32,
     pub keep_turns: usize,
+    /// How long a launch may take to register before the watchdog stops it
+    /// and tells the hub, `launch_timeout_secs` in `host.toml`.
+    pub launch_timeout: Duration,
     pub notify: bool,
     pub hub_timeout: Duration,
     /// `[alerts] watch_hub`: send a notice when the hub stays unreachable.
@@ -97,6 +101,7 @@ impl HostConfig {
             heartbeat: Duration::from_secs(10),
             wakes_per_hour: 30,
             keep_turns: 50,
+            launch_timeout: Duration::from_secs(90),
             notify: false,
             hub_timeout: Duration::from_secs(5),
             watch_hub: false,
@@ -327,12 +332,26 @@ impl LocalSess {
     }
 }
 
+/// One launch that waits for its session to register. After
+/// `launch_timeout`, the watchdog stops it and tells the hub why, with the
+/// end of its screen.
+#[derive(Debug, Clone)]
+pub struct PendingLaunch {
+    pub handle: LaunchHandle,
+    pub started: Instant,
+}
+
 #[derive(Debug)]
 pub(crate) struct State {
     pub sessions: HashMap<SessionId, LocalSess>,
     pub limiter: WakeLimiter,
     pub limit_noticed: HashSet<AgentId>,
-    pub pending_launch: HashMap<AgentId, LaunchHandle>,
+    /// The launches that wait for their session to register, with the start
+    /// that the watchdog measures.
+    pub pending_launch: HashMap<AgentId, PendingLaunch>,
+    /// The last launch of each agent, so a relaunch kills a stale session
+    /// before it starts a second one.
+    pub last_launch: HashMap<AgentId, LaunchHandle>,
     /// Agents whose launch runs now.
     pub launching: HashSet<AgentId>,
     pub seen: HashMap<AgentId, HashSet<MessageId>>,
@@ -425,6 +444,7 @@ impl Host {
                     limiter: WakeLimiter::new(wakes),
                     limit_noticed: HashSet::new(),
                     pending_launch: HashMap::new(),
+                    last_launch: HashMap::new(),
                     launching: HashSet::new(),
                     seen: HashMap::new(),
                     turns_since_trim: HashMap::new(),
@@ -755,7 +775,8 @@ impl Host {
 }
 
 impl Host {
-    /// Ends local sessions whose harness process exited. Public for tests.
+    /// Ends local sessions whose harness process exited, and stops launches
+    /// that did not register in time. Public for tests.
     pub async fn check_liveness(&self) {
         let dead: Vec<SessionId> = self
             .state()
@@ -767,8 +788,60 @@ impl Host {
         for sid in dead {
             self.end_session(sid, "the harness process exited").await;
         }
+        self.check_launch_timeouts().await;
+    }
+
+    /// Stops every launch that has not registered within `launch_timeout`,
+    /// and tells the hub with the end of its screen. A launch that sits on a
+    /// first-run screen, such as a folder-trust prompt, never registers, and
+    /// a relaunch without this text repeats the same wait. Public for tests.
+    pub async fn check_launch_timeouts(&self) {
+        let timeout = self.inner.cfg.launch_timeout;
+        let late: Vec<(AgentId, LaunchHandle)> = self
+            .state()
+            .pending_launch
+            .iter()
+            .filter(|(_, p)| p.started.elapsed() >= timeout)
+            .map(|(agent, p)| (agent.clone(), p.handle.clone()))
+            .collect();
+        for (agent, handle) in late {
+            // The screen before the stop, redacted: a sticky prompt can hold a
+            // value that the harness printed.
+            let screen = self
+                .inner
+                .launcher
+                .capture(&handle, WATCHDOG_LINES)
+                .map(|text| redact(&text).into_owned())
+                .unwrap_or_default();
+            tracing::warn!(
+                %agent,
+                elapsed = ?timeout,
+                "a launch did not register in time, stopping it"
+            );
+            if let Err(e) = self.inner.launcher.stop(&handle).await {
+                tracing::warn!(%agent, "cannot stop a launch that did not register: {e}");
+            }
+            self.state().pending_launch.remove(&agent);
+            // Values that no session will read go with the launch.
+            self.forget_secrets(&agent, None).await;
+            let req = CtlRequest::LaunchFailed {
+                agent: agent.clone(),
+                host: self.inner.cfg.name.clone(),
+                error: screen,
+            };
+            if let Err(e) = self.hub(&req).await {
+                tracing::warn!(
+                    %agent,
+                    "cannot tell the hub about a stuck launch: {}",
+                    e.message
+                );
+            }
+        }
     }
 }
+
+/// How many lines of a stuck screen the watchdog keeps.
+const WATCHDOG_LINES: usize = 40;
 
 pub(crate) fn pid_alive(pid: u32) -> bool {
     use nix::errno::Errno;
