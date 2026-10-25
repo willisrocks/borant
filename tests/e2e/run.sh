@@ -70,12 +70,20 @@ fi
 if [ "$SCENARIOS" = "elastic" ]; then
   echo "Starting the elastic swarm..."
   dc --profile elastic up -d nats git hub-elastic host-control >/dev/null \
-    || { echo "FAIL start"; exit 1; }
-  hub_answers() { on hub-elastic borant hosts >/dev/null 2>&1; }
-  wait_for "the hub" hub_answers || exit 1
+    || { echo "FAIL start"; dc logs --no-color 2>/dev/null | tail -80; exit 1; }
+  # The `borant` CLI talks to a host daemon, so every query goes through the
+  # control host, never through the hub container.
+  hub_answers() { borant_on host-control hosts >/dev/null 2>&1; }
+  if ! wait_for "the hub" hub_answers; then
+    echo "  the control host does not reach the hub:"
+    borant_on host-control hosts 2>&1 | tail -5
+    dc logs --no-color 2>/dev/null | tail -80
+    exit 1
+  fi
 else
   echo "Starting the swarm..."
-  dc up -d nats git hub host-a host-b host-c >/dev/null || { echo "FAIL start"; exit 1; }
+  dc up -d nats git hub host-a host-b host-c >/dev/null \
+    || { echo "FAIL start"; dc logs --no-color 2>/dev/null | tail -80; exit 1; }
   hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
   wait_for "host daemons" hosts_online || exit 1
 fi
@@ -194,12 +202,12 @@ scenario_elastic() {
   # boss must go to the pool.
   start_agent host-control boss
   wait_for "boss on the control host" boss_on_control || return 1
-  on hub-elastic borant send boss "CHANNEL e2e" >/dev/null
+  borant_on host-control send boss "CHANNEL e2e" >/dev/null
   wait_for "channel e2e" log_has host-control boss "CHANNEL e2e ok" || return 1
 
   local i
   for i in 1 2 3; do
-    on hub-elastic borant send boss "SPAWN e2e wait-for-work" >/dev/null
+    borant_on host-control send boss "SPAWN e2e wait-for-work" >/dev/null
   done
   wait_for "three spawns" three_spawns || return 1
   wait_for "two pool hosts" two_pool_hosts || return 1
@@ -212,14 +220,14 @@ scenario_elastic() {
 
   # A killed container is lost: the hub deletes it and starts another host for
   # the agent that it held.
-  on hub-elastic borant send boss "SPAWN e2e killed-during-a-turn" >/dev/null
+  borant_on host-control send boss "SPAWN e2e killed-during-a-turn" >/dev/null
   wait_for "a pool host for the new agent" one_pool_host || return 1
   local agent host id
   agent=$(spawned_agents | tail -1)
-  host=$(where_on hub-elastic "$agent")
+  host=$(where_on host-control "$agent")
   id=$(docker ps --quiet --filter "name=^${host}$")
   [ -n "$id" ] || { echo "  no container is named $host" >&2; return 1; }
-  on hub-elastic borant send "$agent" "WRITE killed.txt during-a-turn" >/dev/null
+  borant_on host-control send "$agent" "WRITE killed.txt during-a-turn" >/dev/null
   docker kill "$id" >/dev/null || return 1
   echo "  killed $host"
   WAIT=300 wait_for "a takeover on another host" agent_moved "$agent" "$host" || return 1
@@ -230,7 +238,7 @@ scenario_elastic() {
   [ "$(e2e_containers_count)" = "0" ] || { echo "  the cleanup left containers" >&2; return 1; }
 }
 
-boss_on_control() { [ "$(where_on hub-elastic boss)" = "host-control" ]; }
+boss_on_control() { [ "$(where_on host-control boss)" = "host-control" ]; }
 
 spawned_agents() { log_of host-control boss | awk '$1=="SPAWNED" {print $2}'; }
 
@@ -244,7 +252,7 @@ no_pool_hosts() { [ "$(e2e_containers_count)" = "0" ]; }
 
 # The agents that hold a lease on a pool host.
 in_pool() {
-  borant_on hub-elastic agents 2>/dev/null |
+  borant_on host-control agents 2>/dev/null |
     jq -e --argjson n "$1" '[.[] | select(.lease.state=="held" and (.lease.host | startswith("e2e-")))] | length >= $n' >/dev/null
 }
 
@@ -252,7 +260,7 @@ three_in_pool() { in_pool 3; }
 
 agent_moved() {
   local now
-  now=$(where_on hub-elastic "$1")
+  now=$(where_on host-control "$1")
   [ -n "$now" ] && [ "$now" != "$2" ]
 }
 
