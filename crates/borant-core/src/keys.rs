@@ -3,6 +3,19 @@
 
 use crate::ids::{AgentId, ChannelName, HostName, ProjectName, SessionId, TaskId};
 
+/// True when a state store accepts this key. The KV of the real adapter
+/// refuses an empty key, one that starts or ends with `.`, one with an empty
+/// part (`..`), and one with whitespace, `*`, or `>`. A caller that builds a
+/// key from a stored record checks it first, so one odd record cannot fail a
+/// whole pass.
+pub fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with('.')
+        && !key.ends_with('.')
+        && !key.contains("..")
+        && !key.contains(|c: char| c.is_whitespace() || c == '*' || c == '>')
+}
+
 pub fn agent(id: &AgentId) -> String {
     format!("agent.{id}")
 }
@@ -151,5 +164,14 @@ mod tests {
                 "borant.chan.api.tasks"
             ]
         );
+    }
+
+    /// The keys that the KV refuses, which a caller must not build.
+    #[test]
+    fn valid_key_refuses_the_shapes_the_store_refuses() {
+        assert!(valid_key("alert.host_offline:vps-1"));
+        for key in ["", ".", "alert.", ".alert", "alert..x", "a b", "a*", "a>"] {
+            assert!(!valid_key(key), "{key:?} is refused");
+        }
     }
 }
