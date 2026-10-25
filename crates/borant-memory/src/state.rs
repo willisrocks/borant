@@ -85,7 +85,10 @@ impl MemoryState {
 impl StateStore for MemoryState {
     async fn get(&self, key: &str) -> PortResult<Option<Entry>> {
         self.inner.available.check()?;
-        check_key(key)?;
+        // A key the store refuses can never be there.
+        if !borant_core::keys::valid_key(key) {
+            return Ok(None);
+        }
         Ok(self.with(|_, map| {
             map.get(key).map(|(v, r)| Entry {
                 key: key.to_owned(),

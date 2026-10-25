@@ -84,6 +84,11 @@ fn entry_from_message(
 #[async_trait::async_trait]
 impl StateStore for NatsState {
     async fn get(&self, key: &str) -> PortResult<Option<Entry>> {
+        // A key the KV refuses can never be there; asking the server for it
+        // would fail the request instead of reporting it absent.
+        if !borant_core::keys::valid_key(key) {
+            return Ok(None);
+        }
         let store = self.store().await?;
         let entry = store
             .entry(key)

@@ -114,6 +114,55 @@ pub async fn state_store_contract(store: &dyn StateStore) {
         .expect("recreate");
 }
 
+/// The key rules of the real KV (spec section 6): a key it refuses cannot be
+/// written, and reading it finds nothing. A store that keeps a colon in a key
+/// in memory but loses it in production fails here.
+pub async fn state_store_key_rules(store: &dyn StateStore) {
+    // The KV takes `.`-separated tokens of letters, digits, `-`, `_`, `/`, and
+    // `=`; an empty token, `:`, a space, or a wildcard is refused.
+    let refused = ["a:b", ".a", "a.", "a..b", "a b", "", "a*", "a>"];
+    let accepted = ["agent.a1", "alert.members_limited.fake-auth", "x/y=z_-"];
+
+    for key in refused {
+        if let Ok(rev) = store.create(key, Bytes::from_static(b"refused")).await {
+            panic!("create of refused key {key:?} must fail, wrote revision {rev}");
+        }
+        assert!(
+            store
+                .get(key)
+                .await
+                .unwrap_or_else(|e| panic!("get of refused key {key:?} must not fail: {e:?}"))
+                .is_none(),
+            "refused key {key:?} must be absent"
+        );
+    }
+
+    for key in accepted {
+        // A store that shares one backend between runs finds the key of the
+        // last run; a delete of it is not an error.
+        store
+            .delete(key, None)
+            .await
+            .unwrap_or_else(|e| panic!("clear accepted key {key:?}: {e:?}"));
+        let value = Bytes::copy_from_slice(key.as_bytes());
+        let rev = store
+            .create(key, value.clone())
+            .await
+            .unwrap_or_else(|e| panic!("create of accepted key {key:?}: {e:?}"));
+        let got = store
+            .get(key)
+            .await
+            .unwrap_or_else(|e| panic!("get of accepted key {key:?}: {e:?}"))
+            .unwrap_or_else(|| panic!("accepted key {key:?} must be present"));
+        assert_eq!(got.value, value, "value of accepted key {key:?}");
+        assert_eq!(got.revision, rev, "revision of accepted key {key:?}");
+        store
+            .delete(key, Some(rev))
+            .await
+            .unwrap_or_else(|e| panic!("delete of accepted key {key:?}: {e:?}"));
+    }
+}
+
 pub async fn message_bus_contract(bus: &dyn MessageBus) {
     let agent: AgentId = unique("a").parse().expect("agent id");
     let chan: crate::ids::ChannelName = unique("c").parse().expect("channel");
