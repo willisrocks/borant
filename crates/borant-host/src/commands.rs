@@ -13,6 +13,7 @@ use borant_launch::harness;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::secrets::remove_dir;
 use crate::{Host, checkpoint};
 
 impl Host {
@@ -181,16 +182,56 @@ impl Host {
         if o.harness == Harness::Fake {
             env.push(("BORANT_PROMPT".to_owned(), o.prompt.clone()));
         }
+        let mut program = harness::command(o.harness, &o.prompt, o.model.as_deref(), &cfg.commands);
+        // Resolver mode: the values go into the agent's secret directory, and
+        // only its path reaches the launch. The shim hands them to the harness.
+        let issued = self.issue_secrets(&o).await?;
+        if let Some(issued) = &issued {
+            program = match self.shim_program(&issued.dir, program) {
+                Ok(program) => program,
+                Err(e) => {
+                    remove_dir(&issued.dir).await;
+                    return Err(e.into());
+                }
+            };
+            env.push((
+                "BORANT_SECRETS_DIR".to_owned(),
+                issued.dir.to_string_lossy().into_owned(),
+            ));
+            let mut st = self.state();
+            st.redactors
+                .insert(o.agent.clone(), issued.redactor.clone());
+            st.launched.insert(o.agent.clone(), issued.clone());
+        }
         let spec = LaunchSpec {
             agent: o.agent.clone(),
             harness: o.harness,
             cwd: cwd.clone(),
-            program: harness::command(o.harness, &o.prompt, o.model.as_deref(), &cfg.commands),
+            program,
             env,
         };
-        let handle = self.inner.launcher.launch(&spec).await?;
+        let handle = match self.inner.launcher.launch(&spec).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                // The directory holds values that no session will read.
+                self.forget_secrets(&o.agent, None).await;
+                return Err(e.into());
+            }
+        };
         tracing::info!(agent = %o.agent, harness = %o.harness, cwd = %cwd.display(), ?o.reason, "launched");
-        self.state().pending_launch.insert(o.agent, handle);
+        self.state().pending_launch.insert(o.agent.clone(), handle);
+        if let Some(issued) = &issued {
+            // A launch that never registers must not keep its values until the
+            // daemon stops: they go when the reservation of the launch ends.
+            let host = self.clone();
+            let agent = o.agent;
+            let issued = issued.clone();
+            let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
+            tokio::spawn(async move {
+                tokio::time::sleep(reserve).await;
+                host.expire_launch_secrets(&agent, &issued).await;
+            });
+        }
         Ok(())
     }
 
