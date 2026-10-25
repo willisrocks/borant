@@ -143,24 +143,30 @@ storage to a new namespace, and the hub then sees an empty store.
 | `hub` | `borant hub` on borant-1, and the backup timer | `/var/lib/borant-secrets/nats-hub.env`, root-only, loaded with `EnvironmentFile=` |
 | `host-borant-1` | `borant host` on borant-1 | `/var/lib/borant-secrets/nats-host.env`, root-only, `EnvironmentFile=` |
 | `host-borant-2` | `borant host` on borant-2 | `/var/lib/borant-secrets/nats-host.env`, root-only, `EnvironmentFile=` |
-| `host-macbook` | `borant host` on the laptop | `nats.user` and `nats.password` in `~/.borant/host.toml`, mode 0600 |
+| `host-macbook` | `borant host` on the laptop | `~/.borant/nats.env`, mode 0600, loaded by `~/.borant/run-host.sh` |
 | `legacy` | Clients with no credentials, during the rollout only | None |
 
 Each env file holds `BORANT_NATS_USER` and `BORANT_NATS_PASSWORD`. The
-passwords are 32 random bytes (`openssl rand -base64 32`). Each password lives
-in one 1Password item in the vault that `OP_AGENTS` in `borant-infra/.env`
-names, titled `borant nats <user>`. This adds four new items and changes no
-existing item. Rollback: delete the four items.
+passwords are 32 random bytes (`openssl rand -hex 32`).
 
-The NATS settings in `modules/borant.nix` hold only the bcrypt hashes
-(`nats server passwd` or `htpasswd -bnBC 11`). `validateConfig` stays on. A
-monitor port on `127.0.0.1:8222` shows the user of each connection at
-`/connz?auth=true`.
+A `just nats-credential <box> <user> <dest>` recipe in `borant-infra` makes the
+password on the laptop and writes it only to its client file: over SSH with
+`sudo install -m 0600 -o root` on a box, or with mode 0600 on the laptop. It
+stores only the bcrypt hash in `borant-infra/nats-users.json`. The password
+never goes to the command line, the terminal, the repo, or 1Password. To
+rotate a password, run the recipe again and deploy borant-1. The `legacy`
+user gets a hash of a password that nobody keeps.
 
-A new `just nats-credential <box> <role>` recipe in `borant-infra` reads the
-password with `op read` on the laptop and writes the env file on the box over
-SSH with `sudo install -m 0600 -o root`. The value never goes to the
-terminal or into a file in the repo.
+The NATS settings in `modules/borant.nix` read the hashes from
+`nats-users.json`. `validateConfig` stays on. A monitor port on
+`127.0.0.1:8222` shows the user of each connection at `/connz?auth=true`.
+
+NATS stops in lame duck mode (`KillSignal=SIGUSR2` in the NixOS module, 2 min
+by default). During that time clients cannot reconnect, and hosts pause their
+sessions after the 30 s lease. The settings set `lame_duck_duration` to 30 s,
+the minimum. For each NATS restart in the rollout, build the system first
+(`nixos-rebuild build`), then stop NATS with `sudo systemctl kill -s SIGTERM
+nats`, then run `just deploy borant-1`.
 
 ### Tailscale policy
 
@@ -197,18 +203,21 @@ session-log appends work: `borant agents` shows each host online, and a
 
 1. Deploy the stall fix to borant-1, so that the NATS restart in the next step
    does not pause the swarm. This needs v0.3.0 or a later release.
-2. Add the five users and `no_auth_user = "legacy"` to the NATS settings.
-   Deploy borant-1. NATS reloads `no_auth_user` only on a restart, so this
-   step restarts NATS and the hub. Expect a short pause.
-3. Push the `host-borant-2` env file. Deploy borant-2. Make sure that
-   `/connz?auth=true` on borant-1 shows `host-borant-2` for its connection.
-4. Do step 3 for `host-borant-1`, then for `hub` (the hub restarts, which is
-   safe after step 1).
-5. Write `nats.user` and `nats.password` into `~/.borant/host.toml` on the
-   laptop. Restart the `dev.borant.host` LaunchAgent. Make sure that
-   `/connz` shows `host-macbook`.
-6. Make sure that `/connz` shows no `legacy` connection. Remove `no_auth_user`
-   and the `legacy` user. Deploy borant-1.
+2. Make all five credentials at once with `just nats-credential`, so that the
+   NATS users change only once. Add the users and `no_auth_user = "legacy"`
+   to the NATS settings. Deploy borant-1 with the SIGTERM stop. This step
+   restarts NATS and the hub. Expect a short pause.
+3. Set `services.borant.natsEnvFile` for borant-2. Deploy borant-2. Make sure
+   that `/connz?auth=true` on borant-1 shows `host-borant-2` for its
+   connection.
+4. Do step 3 for `host-borant-1`, then set `services.borant.hub.natsEnvFile`
+   for `hub` (the hub restarts, which is safe after step 1).
+5. Make `~/.borant/run-host.sh` on the laptop load `~/.borant/nats.env`.
+   Restart the `dev.borant.host` LaunchAgent. Make sure that `/connz` shows
+   `host-macbook`.
+6. Make sure that `/connz` shows no `legacy` connection. Set
+   `services.borant.natsAnonymous = false`, which removes `no_auth_user` and
+   the `legacy` user. Deploy borant-1 with the SIGTERM stop.
 7. From the laptop, make sure that a NATS client with no password and one with a
    wrong password both fail to connect, for example
    `nats --server nats://borant-1:4222 server ping`.
@@ -460,3 +469,14 @@ inbox does not prove that no work waits (`session_log::undelivered`). Hosts
 publish outside the hub mutex, so a delete can race with a publish. Reversible:
 yes. Friend: Codex recommended the dry run only, and added rules 6 and 7.
 Blocker: none.
+
+Decision (2026-10-25): no 1Password items for the NATS passwords. Evidence:
+the service account of the agents can only read the `Agents` vault, so the
+orchestrator cannot create items, and a password that lives only in its client
+file can be made again at any time. Reversible: yes, phase 1 can move the
+passwords into the `Borant` vault. Friend: none, routine. Blocker: none.
+
+Decision (2026-10-25): a SIGTERM stop for each NATS restart. Evidence: the
+NixOS module stops NATS with SIGUSR2 (lame duck mode), and `nats-server`
+refuses a `lame_duck_duration` under 30 s. Reversible: yes. Friend: none,
+routine. Blocker: none.
