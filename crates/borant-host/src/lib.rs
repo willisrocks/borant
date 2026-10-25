@@ -122,6 +122,8 @@ pub(crate) struct LocalSess {
     pub fenced: Option<String>,
     /// Set while the hub is unreachable for longer than a lease.
     pub paused: bool,
+    /// Set when a pause must tell this session that the hub is back.
+    pub wake_pending: bool,
     pub moving: bool,
     pub last_tree: Option<String>,
     pub checkpointing: bool,
@@ -147,6 +149,11 @@ pub(crate) struct State {
     pub seen: HashMap<AgentId, HashSet<MessageId>>,
     pub turns_since_trim: HashMap<AgentId, usize>,
     pub host_registered: bool,
+    /// Start of the current run of successful heartbeats.
+    pub up_since: Option<Instant>,
+    /// True when the hub was reachable for a lease, so a pause is a new
+    /// outage and wakes its sessions.
+    pub outage_over: bool,
     /// False until the saved sessions are loaded. Until then, an unknown
     /// session can still be one that the restore brings back.
     pub restored: bool,
@@ -211,6 +218,8 @@ impl Host {
                     seen: HashMap::new(),
                     turns_since_trim: HashMap::new(),
                     host_registered: false,
+                    up_since: None,
+                    outage_over: true,
                     restored: false,
                 }),
                 last_ok: Mutex::new(Instant::now()),
@@ -290,6 +299,7 @@ impl Host {
         match self.hub(&req).await {
             Ok(v) => {
                 *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                self.mark_hub_up();
                 let reply = serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
                     .unwrap_or_default();
                 let lost = reply.lost;
@@ -312,10 +322,12 @@ impl Host {
                     let host = self.clone();
                     tokio::spawn(async move { host.stop_fenced(sid).await });
                 }
+                self.wake_unpaused().await;
                 self.heartbeat_recovered();
             }
             Err(e) => {
                 self.state().host_registered = false;
+                self.mark_hub_down();
                 let since = self
                     .inner
                     .last_ok
@@ -328,6 +340,20 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// Notes one successful heartbeat. The hub is fully recovered once it
+    /// stays reachable for a lease, so a new outage wakes its sessions again.
+    fn mark_hub_up(&self) {
+        let mut st = self.state();
+        let since = *st.up_since.get_or_insert_with(Instant::now);
+        if since.elapsed() >= self.inner.cfg.lease {
+            st.outage_over = true;
+        }
+    }
+
+    fn mark_hub_down(&self) {
+        self.state().up_since = None;
     }
 
     /// Logs the first failure of a run at `warn`, and later ones at `debug`.
