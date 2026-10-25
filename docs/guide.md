@@ -120,6 +120,13 @@ owner. Other agents join with `channel_join`, or start with
 claim ready tasks with `task_claim`, and `task_close` unblocks the tasks
 after them. `spawn` starts a new worker on a host that the hub picks.
 
+When the owner retires (a cancel, or the stop-on-close of its bound task),
+its channels pass to the agent that spawned it, if that agent is alive and
+not retired; otherwise the channel has no owner. An agent with the
+`orchestrator` or `chief` role, or a person, closes the tasks of an ownerless
+channel as done and takes the channel with `channel_transfer`. The hub
+publishes one `channel.owner` event for each channel that changes hands.
+
 `spawn` takes an optional `model`, for example `opus`. The host adds
 `--model <model>` to the Claude Code, Pi, or omp command, after the command
 in `host.toml` and before the prompt. Moves and takeovers start the agent
@@ -190,7 +197,10 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
   the spawn waits for a person.
 - `borant inbox` lists the tasks that wait for a person, and `borant answer
   <channel>/<id> <text>` answers one. Only the channel owner closes a task as
-  done.
+  done; on a channel with no owner, an orchestrator or chief may.
+
+`borant task close <channel>/<id> --reason done --message <text>` closes a
+task as a person, with the same rules as the `task_close` tool.
 
 ## Projects
 
@@ -248,6 +258,7 @@ to agents.
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
+| `borant task close <channel>/<id> --reason R --message M` | Close a task as a person |
 | `borant move <agent> [--host H] [--harness X] [--here] [--member M]` | Move one agent, or switch it to another token-pool member |
 | `borant move --from <host> --here` | Move all agents of a host to this host |
 | `borant move --channel <channel> --here` | Move all members of a channel |
