@@ -18,9 +18,9 @@ This spec builds the rest. It runs as roadmap phase 7, on fakes only.
 
 ## Goals
 
-1. A Docker e2e scenario proves the whole flow with fakes: three agents on
-   three members, a reported limit moves the agent to the next member on the
-   same host, and with every member limited the agent waits, the
+1. A Docker e2e scenario proves the whole flow with fakes: the agents fill
+   the first member (Chris's decision 2: fill-first, not a spread), a
+   reported limit moves the agent to the next member on the same host, and with every member limited the agent waits, the
    `members_limited` alert fires, and the agent wakes at the reset.
 2. A person switches the member of an agent by hand: `borant move <agent>
    --member <name>` (the token pools design, phase 1; the phase 1 spec cut
