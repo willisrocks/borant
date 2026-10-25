@@ -107,6 +107,46 @@ async fn two_agents_of_a_project_clone_through_one_mirror() {
         assert_eq!(git(dir, &["remote", "get-url", "origin"]), url);
     }
     assert_ne!(dirs[0], dirs[1]);
+    // A restore of an existing agent dir keeps its clone and fetches origin.
+    let again = checkpoint::restore(
+        &work,
+        &repo,
+        &"w1".parse().unwrap(),
+        &url,
+        None,
+        Some("main"),
+        Some(mirror),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again, dirs[0]);
+    assert_eq!(
+        std::fs::read_to_string(again.join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert!(alternates(&again).contains(&mirror_dir.to_string_lossy().into_owned()));
+}
+
+#[tokio::test]
+async fn the_mirror_fetches_new_commits_from_the_remote() {
+    let d = tempfile::tempdir().unwrap();
+    let (url, seed) = remote(d.path(), "web.git");
+    let projects = d.path().join("projects");
+    let mirror_dir = checkpoint::ensure_mirror(&projects, &project(), &url)
+        .await
+        .unwrap();
+    std::fs::write(seed.join("c.txt"), "three\n").unwrap();
+    git(&seed, &["add", "c.txt"]);
+    git(&seed, &["commit", "-q", "-m", "three"]);
+    git(&seed, &["push", "-q", &url, "main"]);
+    let head = git(&seed, &["rev-parse", "HEAD"]);
+    checkpoint::ensure_mirror(&projects, &project(), &url)
+        .await
+        .unwrap();
+    assert_eq!(
+        git(&mirror_dir, &["rev-parse", "refs/remotes/origin/main"]),
+        head
+    );
 }
 
 #[tokio::test]

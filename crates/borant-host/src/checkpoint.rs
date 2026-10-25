@@ -281,9 +281,9 @@ async fn create_mirror(dir: &Path, remote_url: &str) -> anyhow::Result<()> {
 /// branch at the parent of the WIP commit, and restores the files of the WIP
 /// commit without a new commit. Without a WIP commit, a branch that is not
 /// on the remote and not local starts from `origin/{base}`, if `base` is set.
-/// A new clone of a project borrows the objects of the bare mirror of the
-/// project, if the launch passes one; its `origin` stays the real remote.
-/// Returns the working directory.
+/// A restore of a project updates the bare mirror of the project first, then
+/// a new clone borrows its objects; the `origin` of the clone stays the real
+/// remote. Returns the working directory.
 pub async fn restore(
     work_root: &Path,
     repo: &RepoInfo,
@@ -296,14 +296,14 @@ pub async fn restore(
     let dir = work_root
         .join(agent.as_str())
         .join(repo_dir_name(&repo.remote_url));
+    let reference = match mirror {
+        Some(m) => Some(ensure_mirror(m.root, m.name, &repo.remote_url).await?),
+        None => None,
+    };
     if dir.join(".git").exists() {
         git(&dir, &["fetch", "--quiet", "origin"], None).await?;
     } else {
         tokio::fs::create_dir_all(dir.parent().unwrap_or(work_root)).await?;
-        let reference = match mirror {
-            Some(m) => Some(ensure_mirror(m.root, m.name, &repo.remote_url).await?),
-            None => None,
-        };
         let mut cmd = Command::new("git");
         cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.args(["clone", "--quiet"]);
