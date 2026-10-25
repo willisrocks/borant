@@ -305,7 +305,9 @@ dependencies = [
 name = "borant-exec"
 version = "0.5.0"
 dependencies = [
+ "async-trait",
  "borant-core",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
