@@ -318,6 +318,11 @@ impl Hub {
                 Ok(json!({ "agent": id }))
             }
             ToolCall::Cancel { .. } => Err(ApiError::invalid("cancel is not built yet")),
+            ToolCall::Wait { .. } => Err(ApiError::invalid("wait is not built yet")),
+            ToolCall::Inbox => Err(ApiError::invalid("inbox is not built yet")),
+            ToolCall::Answer { .. } => Err(ApiError::invalid("answer is not built yet")),
+            ToolCall::Stop { .. } => Err(ApiError::invalid("stop is not built yet")),
+            ToolCall::Resume { .. } => Err(ApiError::invalid("resume is not built yet")),
             ToolCall::SpawnQueue => Err(ApiError::invalid("spawn_queue is not built yet")),
             ToolCall::AgentHistory { .. } => {
                 Err(ApiError::invalid("agent_history is not built yet"))
