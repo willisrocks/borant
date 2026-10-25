@@ -276,6 +276,20 @@ impl Host {
         {
             tracing::debug!(agent = %o.agent, "cannot stop the stale launch: {e}");
         }
+        // Claude Code asks whether it trusts a directory that it does not
+        // know, and a git repository root is never covered by the trust of its
+        // parent. A launch that sits at that prompt never registers, so the
+        // directory is marked trusted first. A failure still launches: the
+        // prompt is then the visible failure.
+        if o.harness == Harness::ClaudeCode
+            && let Err(e) = borant_launch::trust::trust_launch_folder(&cwd)
+        {
+            tracing::warn!(
+                agent = %o.agent,
+                cwd = %cwd.display(),
+                "cannot mark the launch directory as trusted for Claude Code: {e}"
+            );
+        }
         let spec = LaunchSpec {
             agent: o.agent.clone(),
             harness: o.harness,

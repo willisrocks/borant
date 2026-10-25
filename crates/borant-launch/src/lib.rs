@@ -1,6 +1,7 @@
 //! Launcher adapters for the [`Launcher`] port: a detached process, tmux,
 //! zellij, Orca, and herdr. [`harness::command`] builds the program for each
-//! harness, and [`sandbox::wrap`] puts the bubblewrap sandbox in front of it.
+//! harness, [`sandbox::wrap`] puts the bubblewrap sandbox in front of it, and
+//! [`trust`] marks the launch directory as trusted for Claude Code.
 
 pub mod harness;
 pub mod herdr;
@@ -8,6 +9,7 @@ mod orca;
 mod process;
 pub mod sandbox;
 mod tmux;
+pub mod trust;
 mod zellij;
 
 use std::path::{Path, PathBuf};
