@@ -2,11 +2,47 @@
 # Runs the Docker multi-host scenarios in order. Each scenario builds on the
 # state of the one before it.
 #
-#   tests/e2e/run.sh            build, start, run all, stop
-#   KEEP=1 tests/e2e/run.sh     leave the containers running afterward
+#   tests/e2e/run.sh                 build, start, run all, stop
+#   BUILD=0 tests/e2e/run.sh ...     use the image that is already there
+#   KEEP=1 tests/e2e/run.sh          leave the containers running afterward
+#   tests/e2e/run.sh --all           print the name of every scenario
+#   tests/e2e/run.sh --affected BASE the scenarios that BASE...HEAD touches
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
+
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move"
+
+# The scenarios that a diff touches. Every scenario drives the same swarm, so
+# a change to one crate can break all of them: only the paths that no
+# scenario loads skip the run, and every other path runs the whole set.
+#
+#   docs/, *.md, integrations/, crates/borant-memory/, LICENSE -> none
+#   everything else, and any change under crates/borant-core,
+#   crates/borant-hub, crates/borant-nats, docker/, or tests/e2e/lib.sh -> all
+affected() {
+  local base=$1 files
+  files=$(git diff --name-only "$base"...HEAD) || return 1
+  if [ -z "$files" ]; then
+    echo "$ALL"
+    return 0
+  fi
+  if printf '%s\n' "$files" |
+    grep -qvE '^(docs/|integrations/|crates/borant-memory/|LICENSE|[^/]*\.md$)'; then
+    echo "$ALL"
+  fi
+}
+
+case "${1:-}" in
+  --all)
+    echo "$ALL"
+    exit 0
+    ;;
+  --affected)
+    affected "${2:?a base ref is needed, for example origin/main}"
+    exit $?
+    ;;
+esac
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
@@ -17,7 +53,11 @@ trap cleanup EXIT
 
 echo "Building and starting the swarm..."
 down >/dev/null 2>&1
-dc build hub >/dev/null || { echo "FAIL build"; exit 1; }
+# CI builds the image with the Docker layer cache and passes BUILD=0, so the
+# swarm starts at once.
+if [ "${BUILD:-1}" = "1" ]; then
+  dc build hub >/dev/null || { echo "FAIL build"; exit 1; }
+fi
 dc up -d nats git hub host-a host-b host-c >/dev/null || { echo "FAIL start"; exit 1; }
 hosts_online() { borant_on host-a hosts | jq -e 'length == 3 and all(.online)'; }
 wait_for "host daemons" hosts_online || exit 1

@@ -56,9 +56,42 @@ jobs:
       - run: bun install
       - run: bun run check
 
+  # The slowest job: it builds the e2e image and runs the Docker swarm. The
+  # image comes from the Docker layer cache, and on a pull request only the
+  # scenarios of the changed paths run. Nothing of `test` is needed here, so
+  # the two jobs run side by side.
   e2e:
     runs-on: ubuntu-latest
-    needs: [test]
     steps:
       - uses: actions/checkout@v4
-      - run: tests/e2e/run.sh
+        with:
+          # `--affected` diffs against the base branch.
+          fetch-depth: 0
+      - name: Which scenarios
+        id: scenarios
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            list=$(tests/e2e/run.sh --affected "origin/${{ github.base_ref }}")
+          else
+            list=$(tests/e2e/run.sh --all)
+          fi
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+          echo "scenarios: ${list:-none}"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.scenarios.outputs.list != ''
+      - uses: docker/build-push-action@v6
+        if: steps.scenarios.outputs.list != ''
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: borant:e2e
+          # The swarm starts from this image; run.sh never builds it.
+          load: true
+          cache-from: type=gha,scope=e2e
+          cache-to: type=gha,mode=max,scope=e2e
+      - name: Run the scenarios
+        if: steps.scenarios.outputs.list != ''
+        env:
+          BUILD: "0"
+        run: tests/e2e/run.sh ${{ steps.scenarios.outputs.list }}
