@@ -489,6 +489,12 @@ pub enum ToolCall {
     Undrain {
         host: HostName,
     },
+    /// Deletes the record of an offline host that runs no agent, so that
+    /// `borant hosts` and placement stop naming a box that is gone. Only a
+    /// human may call it.
+    RemoveHost {
+        host: HostName,
+    },
     ListAgents,
     ListHosts,
     /// Pins the agent or unpins it. Only a human may call it.
@@ -1007,5 +1013,17 @@ mod tests {
             id: TaskId::new(),
         };
         assert!(!claim.allowed_for_human(), "an agent claims a task");
+    }
+
+    #[test]
+    fn a_human_may_remove_a_host() {
+        let call = ToolCall::RemoveHost {
+            host: "borant-3".parse().unwrap(),
+        };
+        assert!(call.allowed_for_human(), "a person removes a host");
+        assert_eq!(
+            serde_json::to_value(&call).unwrap(),
+            serde_json::json!({ "tool": "remove_host", "host": "borant-3" })
+        );
     }
 }
