@@ -11,16 +11,19 @@ ENV CARGO_PROFILE_RELEASE_LTO=false \
 # `--parents` keeps the `crates/<name>/` paths of the glob, and the stub
 # `lib.rs` files give cargo the targets that the manifests expect.
 COPY --parents Cargo.toml Cargo.lock crates/*/Cargo.toml ./
+# A COPY keeps the mtime of the checkout, so the layer, and every layer after
+# it, would have a new digest on every run and never hit the cache. A fixed
+# time makes the dependency layer reproducible.
+RUN find . -exec touch -h -d '2000-01-01 00:00:00' {} +
 RUN for f in crates/*/Cargo.toml; do d=${f%/*}; mkdir -p "$d/src"; : > "$d/src/lib.rs"; done
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p borant -p borant-testkit
 
 COPY . .
-# A copied source keeps the mtime of the checkout, which is older than the
-# stub sources that built the dependencies, and cargo would keep their
-# artifacts. One touch makes every real source newer than that build.
-RUN touch Cargo.toml Cargo.lock crates/*/Cargo.toml \
- && find crates -name '*.rs' -exec touch {} +
+# The same fixed time, here in the future: every layer stays reproducible,
+# and every real source is newer than the fingerprints of the stub build, so
+# cargo compiles the local crates again.
+RUN find . -path ./target -prune -o -exec touch -h -d '2030-01-01 00:00:00' {} +
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p borant -p borant-testkit \
  && cp target/release/borant target/release/borant-fake-harness /usr/local/bin/
