@@ -54,6 +54,11 @@ impl Hub {
                 mem.maintenance = on;
                 Ok(json!({ "maintenance": on }))
             }
+            // `Hub::handle` routes a snapshot before it takes the request
+            // mutex, because the snapshot reads every key and inbox.
+            CtlRequest::Snapshot { .. } => Err(ApiError::internal(
+                "a snapshot must not run behind the hub request mutex",
+            )),
         }
     }
 
