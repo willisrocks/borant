@@ -1,10 +1,45 @@
 # Token pools design
 
-Date: 2026-10-25. Status: research for a decision, draft for review. This doc
+Date: 2026-10-25. Status: decided by Chris on 2026-10-25 (see "Decisions").
+It is built in roadmap phase 1, after the `SecretStore` port. This doc
 extends the secrets and host bootstrap design
 (`2026-10-24-secrets-and-host-bootstrap-design.md`, "the secrets doc" below).
 It uses its `SecretStore` port, bundles, resolver mode, and harness logins as
 default bundles.
+
+## Decisions
+
+Chris answered the questions of section 8 on 2026-10-25. Where a decision
+differs from the recommendation below, the decision wins.
+
+1. The pool has 3 Claude accounts. Chris keeps a 4th account in reserve,
+   outside the pool. Borant never uses it.
+2. Selection is fill first, not spread. The hub fills one account until its
+   limit. It picks the account whose limit resets soonest, so that capacity
+   which is about to reset gets used first. This replaces the pick rule of
+   section 4.2:
+   1. Keep only members that the target host defines and that are not
+      limited now.
+   2. Pick the member with the earliest next reset, from the latest usage
+      snapshot. A member with no snapshot comes last.
+   3. On a tie, pick the first name.
+3. Usage data comes from a new account-usage port in `borant-core::ports`,
+   with neutral types (an account, its usage, its next reset). The first
+   adapter is an exec plugin around Chris's tool `aiusage` (`~/Code/aiusage`,
+   `aiusage --json` and `aiusage --expiring`). `aiusage` reads the macOS
+   Keychain, so the plugin runs on the laptop host. The laptop host sends
+   usage snapshots to the hub. No core type or config key names `aiusage`.
+4. When every account is limited, the agent waits until the earliest reset,
+   and Borant sends an alert. There is no fallback to an `ANTHROPIC_API_KEY`.
+5. The loss of the failed turn and of the native context at a restart is
+   acceptable. An own AI gateway can come later.
+6. LunaRoute needs no pool.
+
+Open point for the phase 1 spec: since v2.1.234, a Claude Code session waits
+for a usage-limit reset by itself (`autoContinueAtUsageLimit`). That conflicts
+with a restart on another account. Phase 2 of section 5 sets it to `false` for
+pool sessions. The phase 1 spec must make sure that this setting reaches every
+Claude Code session that Borant launches.
 
 ## Summary
 

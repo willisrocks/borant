@@ -96,13 +96,12 @@ skill) shipped in v0.3.0.
 3. In `borant-infra`: the `borant-secrets-1password` plugin, the `Borant`
    vault and its read-only service account as secret zero, and the seed
    unit for the first-run screens only.
-4. Token pools in the `SecretStore` design: for example one Claude Code
-   token for each account (`claude setup-token`) and several LunaRoute
-   keys, which Borant can rotate or balance. A research report on how
-   (a proxy such as LunaRoute, or a restart of a session on another token
-   at its limit) comes as a separate design document in
-   `docs/superpowers/specs/`. The phase 1 spec folds it in. Nothing for
-   token pools gets built before that document exists.
+4. Token pools, after the `SecretStore` port, as the
+   [token pools design](2026-10-25-token-pools-design.md) decides: 3 Claude
+   Code accounts in one pool, fill first with the soonest reset first, a
+   new account-usage port with an exec adapter on the laptop host, and a
+   restart on another account at a limit. When every account is limited,
+   the agent waits and Borant sends an alert. LunaRoute needs no pool.
 5. Done when `just create borant-3` gives a working host with no login, and
    no secret value shows in `ps`, the session log, or NATS.
 
