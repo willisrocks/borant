@@ -169,6 +169,9 @@ impl Hub {
         self.stop_retired(mem, host, sessions).await?;
         // A paused agent stops at the turn end that this heartbeat reports.
         self.stop_paused(mem, host, sessions).await?;
+        // A bound worker that went idle gets its continue here, after the
+        // stops, so a session on its way out is not told to go on.
+        self.continue_idle(mem, sessions).await;
         Ok(HeartbeatReply { lost, renewed })
     }
 

@@ -8,6 +8,7 @@
 mod alerts;
 mod calls;
 pub mod changes;
+mod continuation;
 pub mod elastic;
 mod events;
 pub mod export;

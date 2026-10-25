@@ -73,6 +73,9 @@ Scope: only this task. Other workers build {siblings}; do not edit {their_files}
 Prove it with: {focused_test}. CI runs the full suite.
 When done: push, open a PR against {base}, then send the owner one message:
 "ready {task_id}: <PR URL> <head SHA> <test result>".
+When your work is in the owner's hands, call the wait tool on your task for "closed"
+(`wait(channel: "{channel}", task: "{task_id}", until: ["closed"])`), and never close
+it yourself: the owner closes after the merge.
 Never merge, close a task, or change CI, secrets, releases, or infrastructure.
 If you are blocked or need a decision: task_update(status: "stuck" or "needs_human",
 attention_msg: <what you need>), send the owner one line, then wait.
