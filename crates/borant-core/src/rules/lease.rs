@@ -60,7 +60,10 @@ pub fn renew(
     }
 }
 
-/// Gives the lease to a new session. Each success has a higher token.
+/// Gives the lease to a new session. Each success has a higher token. A
+/// registration that the same session repeats, because a write further down
+/// its path failed or a reply was lost, keeps its own lease and its token:
+/// the retry is the same session, not a takeover.
 pub fn acquire(
     agent: &AgentId,
     lease: Option<&Lease>,
@@ -72,6 +75,24 @@ pub fn acquire(
     let token = match lease {
         None => FencingToken(1),
         Some(l) => match &l.state {
+            // The session already holds the lease: give it a full lease time
+            // again and leave the token alone, so the harness keeps the one
+            // that its retry sends.
+            LeaseState::Held {
+                session: holder,
+                host: h,
+                ..
+            } if *holder == session && h == host => {
+                return Ok(Lease {
+                    agent: agent.clone(),
+                    token: l.token,
+                    state: LeaseState::Held {
+                        session,
+                        host: host.clone(),
+                        expires: now.plus(cfg.lease),
+                    },
+                });
+            }
             LeaseState::Held { host: h, .. } => {
                 return Err(CoreError::LeaseHeld { host: h.clone() });
             }
@@ -331,6 +352,28 @@ mod tests {
             ..other
         };
         assert_eq!(reclaim(&other, s, t, &h, now, &cfg()), None);
+    }
+
+    #[test]
+    fn a_retry_of_the_same_session_keeps_its_lease() {
+        let s = SessionId::new();
+        let h = host("h");
+        let first = acquire(&agent(), None, s, &h, Timestamp(0), &cfg()).unwrap();
+        let retry = acquire(&agent(), Some(&first), s, &h, Timestamp(10_000), &cfg()).unwrap();
+        assert_eq!(retry.token, first.token);
+        assert_eq!(
+            retry.state,
+            LeaseState::Held {
+                session: s,
+                host: h.clone(),
+                expires: Timestamp(10_000).plus(cfg().lease),
+            }
+        );
+        // The same session on another host is not a retry of its own lease.
+        assert_eq!(
+            acquire(&agent(), Some(&first), s, &host("h2"), Timestamp(1), &cfg()),
+            Err(CoreError::LeaseHeld { host: h.clone() })
+        );
     }
 
     #[test]

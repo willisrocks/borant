@@ -307,7 +307,9 @@ decides which agent the session belongs to:
 
 The session then takes the agent lease. If another live session holds it, the
 new session does not take it and runs without Borant tools, with a message to
-the user. (Call)
+the user. (Call) A retry of the registration by the session that already
+holds the lease, because a write past the lease failed or its reply was lost,
+takes its own lease back and keeps its fencing token.
 
 If `BORANT_CHANNEL` is set, the session also joins that channel. Otherwise,
 the agent joins later with the `channel_join` tool. (Decided)
