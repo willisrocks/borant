@@ -430,9 +430,8 @@ pub struct UsageWindow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub name: ChannelName,
-    /// The owner, or `None` when the last owner retired and left no heir: an
-    /// orchestrator or chief, or a person, may take it then.
-    #[serde(default)]
+    /// The owner, or `None` when the last owner retired and left no heir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<AgentId>,
     pub schema: Value,
     pub created: Timestamp,

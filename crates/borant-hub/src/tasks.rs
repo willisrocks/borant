@@ -357,8 +357,8 @@ impl Hub {
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
         // Only the owner of the channel and a person close a task as done. A
-        // channel with no owner lets an orchestrator or chief close it.
-        if reason == CloseReason::Done && !self.may_close_done(&ch.value.owner, by).await? {
+        // channel with no owner has only a person: an agent always needs one.
+        if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
             return Err(ApiError::new(
                 ApiErrorCode::Denied,
                 "only the owner closes a task as done",
@@ -399,29 +399,6 @@ impl Hub {
         // A worker bound to this task with `stop_on_close` retires now.
         self.retire_for_task(mem, channel, id).await?;
         Ok(doc.value)
-    }
-
-    /// Whether `by` may close a task as done: the owner, a person, or, when
-    /// the channel has no owner, an agent with the orchestrator or chief role.
-    async fn may_close_done(&self, owner: &Option<AgentId>, by: &Sender) -> Result<bool, ApiError> {
-        if is_owner_or_person(owner, by) {
-            return Ok(true);
-        }
-        match (owner, by) {
-            (None, Sender::Agent(agent)) => self.may_own_ownerless(agent).await,
-            _ => Ok(false),
-        }
-    }
-
-    /// Whether an agent with this role may take a channel that has no owner:
-    /// `orchestrator` and `chief` may, from the roles of `hub.toml`.
-    pub(crate) async fn may_own_ownerless(&self, agent: &AgentId) -> Result<bool, ApiError> {
-        let doc = self.agent(agent).await?;
-        Ok(doc
-            .value
-            .role
-            .as_ref()
-            .is_some_and(|role| matches!(role.as_str(), "orchestrator" | "chief")))
     }
 
     /// Clears every claim of an agent and sets the tasks to `open`.

@@ -1,14 +1,14 @@
-//! A channel whose owner retired: its spawner takes it, or it has no owner
-//! and an orchestrator or chief, or a person, may close its tasks and take it.
+//! A channel whose owner retired: its spawner takes it, or it has no owner and
+//! only a person may close its tasks and take it.
 
 mod common;
 
 use borant_core::events::{EventFilter, kind_of};
 use borant_core::model::{Channel, CloseReason, Harness, NewTask, Task};
 use borant_core::ports::{EventLog, StateStore};
-use borant_core::proto::{CtlRequest, RegisterSession, Registered, ToolCall};
-use borant_core::{AgentId, ChannelName, SessionId, keys};
-use common::{Fx, name};
+use borant_core::proto::{Registered, ToolCall};
+use borant_core::{AgentId, ChannelName, keys};
+use common::Fx;
 
 fn api() -> ChannelName {
     "api".parse().unwrap()
@@ -21,25 +21,6 @@ fn lab() -> ChannelName {
 /// Registers a host with room for four agents.
 async fn host(fx: &Fx) {
     fx.host("h1", &[Harness::Fake]).await;
-}
-
-/// Registers a session with a role, which a plain `Fx::register` cannot name.
-async fn register_role(fx: &Fx, agent: &str, role: Option<&str>) -> Registered {
-    let v = fx
-        .req(CtlRequest::RegisterSession(RegisterSession {
-            session: SessionId::new(),
-            host: name("h1"),
-            harness: Harness::Fake,
-            pid: Some(1),
-            cwd: "/work".into(),
-            repo: Some(common::repo()),
-            agent: Some(agent.parse().unwrap()),
-            role: role.map(|r| r.parse().unwrap()),
-            ..Default::default()
-        }))
-        .await
-        .expect("register the session");
-    serde_json::from_value(v).unwrap()
 }
 
 async fn create_channel(fx: &Fx, who: &Registered, name: ChannelName) {
@@ -157,7 +138,7 @@ async fn owner_events(fx: &Fx, channel: &ChannelName) -> Vec<(AgentId, Option<Ag
 async fn owner_retired_passes_the_channel_to_the_spawner() {
     let fx = Fx::new();
     host(&fx).await;
-    let boss = register_role(&fx, "boss", None).await;
+    let boss = fx.register("h1", Some("boss"), None).await;
     create_channel(&fx, &boss, api()).await;
     let worker = spawn_child(&fx, &boss, "w1").await;
     create_channel(&fx, &worker, lab()).await;
@@ -189,13 +170,13 @@ async fn owner_retired_passes_the_channel_to_the_spawner() {
     assert_eq!(closed.status, borant_core::model::TaskStatus::Closed);
 }
 
-/// The spawner of the owner is retired too: the channel has no owner, and an
-/// orchestrator closes its tasks and takes it with `channel_transfer`.
+/// The spawner of the owner is retired too: the channel has no owner, so an
+/// agent may not close its tasks or take it, and a person may.
 #[tokio::test]
 async fn owner_retired_with_a_retired_spawner_leaves_no_owner() {
     let fx = Fx::new();
     host(&fx).await;
-    let boss = register_role(&fx, "boss", None).await;
+    let boss = fx.register("h1", Some("boss"), None).await;
     create_channel(&fx, &boss, api()).await;
     let worker = spawn_child(&fx, &boss, "w1").await;
     create_channel(&fx, &worker, lab()).await;
@@ -229,43 +210,61 @@ async fn owner_retired_with_a_retired_spawner_leaves_no_owner() {
         "one event says the channel has no owner"
     );
 
-    // An orchestrator closes the task as done while the channel has no owner.
-    let orch = register_role(&fx, "orch", Some("orchestrator")).await;
-    let closed = close(&fx, Some(&orch), lab(), task.id, CloseReason::Done)
+    // An agent may not close an ownerless task, whatever its role: only a
+    // person may.
+    let w2 = fx.register("h1", Some("w2"), None).await;
+    let err = close(&fx, Some(&w2), lab(), task.id, CloseReason::Done)
         .await
-        .expect("an orchestrator closes an ownerless task");
+        .expect_err("an agent may not close an ownerless task");
+    assert_eq!(err.code, borant_core::proto::ApiErrorCode::Denied);
+    let err = fx
+        .call(
+            Some(&w2),
+            ToolCall::ChannelTransfer {
+                name: lab(),
+                to: w2.agent.clone(),
+            },
+        )
+        .await
+        .expect_err("an agent may not take an ownerless channel");
+    assert_eq!(err.code, borant_core::proto::ApiErrorCode::Invalid);
+
+    let closed = close(&fx, None, lab(), task.id, CloseReason::Done)
+        .await
+        .expect("a person closes an ownerless task");
     assert_eq!(closed.status, borant_core::model::TaskStatus::Closed);
 
-    // And it takes the channel, once it is a member.
-    fx.call(Some(&orch), ToolCall::ChannelJoin { name: lab() })
+    // A person also takes the ownerless channel, once the new owner is a
+    // member.
+    fx.call(Some(&w2), ToolCall::ChannelJoin { name: lab() })
         .await
         .expect("join #lab");
     fx.call(
-        Some(&orch),
+        None,
         ToolCall::ChannelTransfer {
             name: lab(),
-            to: orch.agent.clone(),
+            to: w2.agent.clone(),
         },
     )
     .await
-    .expect("take the ownerless channel");
-    assert_eq!(stored_channel(&fx, &lab()).await.owner, Some(orch.agent));
+    .expect("a person takes the ownerless channel");
+    assert_eq!(stored_channel(&fx, &lab()).await.owner, Some(w2.agent));
 }
 
-/// A channel with a live owner keeps today's rules: an orchestrator does not
-/// close a task as done, and a person does.
+/// A channel with a live owner keeps today's rules: an agent does not close a
+/// task as done, and a person does.
 #[tokio::test]
 async fn owner_live_keeps_the_close_rule() {
     let fx = Fx::new();
     host(&fx).await;
-    let owner = register_role(&fx, "boss", None).await;
+    let owner = fx.register("h1", Some("boss"), None).await;
     create_channel(&fx, &owner, api()).await;
     let task = create_task(&fx, &owner, api()).await;
-    let orch = register_role(&fx, "orch", Some("orchestrator")).await;
+    let w2 = fx.register("h1", Some("w2"), None).await;
 
-    let err = close(&fx, Some(&orch), api(), task.id, CloseReason::Done)
+    let err = close(&fx, Some(&w2), api(), task.id, CloseReason::Done)
         .await
-        .expect_err("an orchestrator may not close a live owner's task");
+        .expect_err("an agent may not close a live owner's task");
     assert_eq!(err.code, borant_core::proto::ApiErrorCode::Denied);
 
     let closed = close(&fx, None, api(), task.id, CloseReason::Done)

@@ -211,7 +211,6 @@ impl Hub {
                 let mut ch = self.channel_for(mine.as_ref(), &name).await?;
                 if let Some(me) = &me
                     && ch.value.owner.as_ref() != Some(me)
-                    && !(ch.value.owner.is_none() && self.may_own_ownerless(me).await?)
                 {
                     return Err(ApiError::invalid("only the owner can transfer a channel"));
                 }

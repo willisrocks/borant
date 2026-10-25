@@ -82,8 +82,8 @@ impl Hub {
         self.store.upsert(&keys::agent(&agent.id), &saved).await?;
         // A channel that this agent owned passes to the agent that spawned
         // it, when that agent is alive and not retired. With no heir the
-        // channel has no owner, so an orchestrator, a chief, or a person can
-        // take it. One event per channel says who owns it now.
+        // channel has no owner, and only a person closes its tasks or takes
+        // it. One event per channel says who owns it now.
         let heir = self.owner_heir(agent).await?;
         let owned: Vec<(String, Channel, u64)> = self
             .store
