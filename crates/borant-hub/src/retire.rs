@@ -46,6 +46,8 @@ impl Hub {
         let mut saved = agent.clone();
         saved.retired = true;
         self.store.upsert(&keys::agent(&agent.id), &saved).await?;
+        // A retired agent has no demand: no pool host is created for it.
+        mem.pending_moves.remove(&agent.id);
         tracing::info!(agent = %agent.id, claims = released, "agent retired with its bound task");
         let event = self
             .event(now, Severity::Info, SwarmEventBody::AgentRetired)

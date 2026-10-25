@@ -6,7 +6,7 @@
 //! create can take two minutes. It reads `mem` briefly at the start, drops it
 //! for the provider ops, and takes it again for the steps that need it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -159,14 +159,23 @@ impl Hub {
         caps: &BTreeMap<String, ProvisionerCapabilities>,
         now: Timestamp,
     ) -> Result<Pass, ApiError> {
-        let (pending, seen) = {
+        let (pending, seen, paused) = {
             let mem = self.mem.lock().await;
             let pending: Vec<(AgentId, PendingMove)> = mem
                 .pending_moves
                 .iter()
                 .map(|(id, move_)| (id.clone(), move_.clone()))
                 .collect();
-            (pending, mem.hosts_seen.clone())
+            // A session that the host paused during an outage is waiting,
+            // not lost: no pool host goes up for it.
+            let paused: HashSet<AgentId> = mem
+                .host_stats
+                .values()
+                .flat_map(|stats| stats.sessions.iter())
+                .filter(|s| s.paused)
+                .map(|s| s.agent.clone())
+                .collect();
+            (pending, mem.hosts_seen.clone(), paused)
         };
         let live = {
             let mem = self.mem.lock().await;
@@ -248,7 +257,7 @@ impl Hub {
             })
             .sum();
 
-        let unplaced = self.unplaced(&pending, &live).await?;
+        let unplaced = self.unplaced(&pending, &live, &paused).await?;
 
         Ok(Pass {
             pools: pools.to_vec(),
@@ -265,12 +274,18 @@ impl Hub {
         &self,
         pending: &[(AgentId, PendingMove)],
         live: &[HostView],
+        paused: &HashSet<AgentId>,
     ) -> Result<Vec<PlacementNeed>, ApiError> {
         let mut needs = Vec::new();
         for (id, move_) in pending {
             // A spawn or a move that names its host stays there; a pool host
             // would not help it.
             if move_.target.host.is_some() {
+                continue;
+            }
+            // A retired agent is gone, and a paused session waits for the
+            // hub: neither needs a host of its own.
+            if paused.contains(id) {
                 continue;
             }
             let lease = self.store.get::<Lease>(&keys::lease_agent(id)).await?;
@@ -286,7 +301,7 @@ impl Hub {
                 continue;
             };
             let agent = agent.value;
-            if agent.pinned {
+            if agent.pinned || agent.retired {
                 continue;
             }
             let harness = move_.target.harness.unwrap_or(agent.preferred_harness);
@@ -651,9 +666,11 @@ fn civil_month(days: i64) -> (i64, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use borant_core::model::{Harness, HostInfo, MoveReason};
+    use borant_core::model::{
+        Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskStatus,
+    };
     use borant_core::proto::{CtlRequest, MoveTarget};
-    use borant_core::{FencingToken, ManualClock, SessionId};
+    use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
     use crate::HubConfig;
@@ -774,6 +791,85 @@ mod tests {
     /// Registers a host of the `workers` pool and marks it seen now.
     async fn register(fx: &Fx, host: &str, max_agents: u32) {
         register_in(fx, host, "workers", max_agents).await;
+    }
+
+    /// An agent whose session ended with the host that ran it (a killed pool
+    /// host), with a claim unless `claim` is false.
+    async fn lost_agent(fx: &Fx, agent: &str, host: &str, claim: bool) {
+        let id: AgentId = agent.parse().unwrap();
+        let channel: ChannelName = "api".parse().unwrap();
+        let a = Agent {
+            id: id.clone(),
+            spawn_key: None,
+            task: None,
+            stop_on_close: false,
+            retired: false,
+            preferred_harness: Harness::ClaudeCode,
+            repo: None,
+            movable: true,
+            channels: vec![channel.clone()],
+            session: Some(SessionId::new()),
+            host: Some(name(host)),
+            harness_session_id: None,
+            created: NOW.minus(Duration::from_secs(3600)),
+            model: None,
+            model_harness: None,
+            project: None,
+            members: Default::default(),
+            pinned: false,
+            role: None,
+            collection: None,
+            parent: None,
+        };
+        fx.hub.store.upsert(&keys::agent(&id), &a).await.unwrap();
+        let lease = Lease {
+            agent: id.clone(),
+            token: FencingToken(1),
+            state: LeaseState::Expired {
+                since: NOW.minus(Duration::from_secs(200)),
+                last_session: None,
+            },
+        };
+        fx.hub
+            .store
+            .upsert(&keys::lease_agent(&id), &lease)
+            .await
+            .unwrap();
+        if claim {
+            let task = Task {
+                id: TaskId::new(),
+                title: "t".to_owned(),
+                body: String::new(),
+                status: TaskStatus::InProgress,
+                close_reason: None,
+                close_message: None,
+                attention_msg: None,
+                claimed_by: Some(id.clone()),
+                blocked_by: Vec::new(),
+                parent: None,
+                properties: Default::default(),
+                created: NOW,
+                updated: NOW,
+                create_key: None,
+            };
+            fx.hub
+                .store
+                .upsert(&keys::task(&channel, &task.id), &task)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// The hosts that the provisioner was asked to create.
+    async fn created(fx: &Fx) -> Vec<HostSpec> {
+        fx.prov
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Create(spec) => Some(spec),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Registers a host of `pool` and marks it seen now.
@@ -944,6 +1040,143 @@ mod tests {
             LeaseState::Reserved { host, .. } => assert_eq!(host, name("e1")),
             other => panic!("the agent is not placed: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn elastic_a_takeover_that_finds_no_host_creates_one() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        // The host of the agent is gone and no other pool host runs.
+        lost_agent(&fx, "w1", "gone", true).await;
+        let w: AgentId = "w1".parse().unwrap();
+
+        // The lease tick fits no host and records the demand; the elastic
+        // pass of the same tick creates a host for it.
+        fx.hub.tick().await.unwrap();
+        assert!(
+            fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "the takeover that fits no host is a demand"
+        );
+        let made = created(&fx).await;
+        assert_eq!(made.len(), 1, "one host for the takeover: {made:?}");
+        let host = made[0].name.to_string();
+
+        // The host boots and registers, and the waiting agent is placed.
+        register(&fx, &host, 2).await;
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick().await.unwrap();
+        let lease = fx
+            .hub
+            .store
+            .get::<Lease>(&keys::lease_agent(&w))
+            .await
+            .unwrap()
+            .expect("the lease");
+        match lease.value.state {
+            LeaseState::Reserved { host: placed, .. } => {
+                assert_eq!(placed, name(&host));
+            }
+            other => panic!("the agent is not placed: {other:?}"),
+        }
+        // A placed agent is no demand: the executor creates no second host.
+        let before = created(&fx).await.len();
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick().await.unwrap();
+        assert_eq!(
+            created(&fx).await.len(),
+            before,
+            "a placed agent is no demand"
+        );
+    }
+
+    #[tokio::test]
+    async fn elastic_an_idle_takeover_creates_no_host() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        // No claim, no wake, no undelivered reply: there is no work to place.
+        lost_agent(&fx, "w1", "gone", false).await;
+        let w: AgentId = "w1".parse().unwrap();
+
+        fx.hub.tick().await.unwrap();
+        assert!(
+            !fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "an idle agent is no demand"
+        );
+        fx.hub.tick_elastic().await.unwrap();
+        assert!(created(&fx).await.is_empty(), "no host for an idle agent");
+    }
+
+    #[tokio::test]
+    async fn elastic_a_retired_agent_creates_no_host() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        let doc = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w))
+            .await
+            .unwrap()
+            .expect("the agent");
+        {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub.retire(&mut mem, &doc.value).await.unwrap();
+        }
+        assert!(
+            !fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "a retired agent has no demand"
+        );
+
+        fx.hub.tick().await.unwrap();
+        assert!(created(&fx).await.is_empty(), "no host for a retired agent");
+    }
+
+    #[tokio::test]
+    async fn elastic_a_paused_session_creates_no_host() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        let mut stats = HostStats::default();
+        stats.sessions.push(SessionStats {
+            agent: w.clone(),
+            busy: false,
+            paused: true,
+            turn: 0,
+            last_event_at: None,
+            wakes: 0,
+            wake_limited: 0,
+            ack_failed: 0,
+            append_failed: 0,
+            redelivered: 0,
+            bad_envelope: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        });
+        fx.hub
+            .mem
+            .lock()
+            .await
+            .host_stats
+            .insert(name("gone"), stats);
+
+        fx.hub.tick().await.unwrap();
+        assert!(
+            created(&fx).await.is_empty(),
+            "a paused session waits for the hub, not for a host"
+        );
+
+        // The session resumes: the demand counts again.
+        if let Some(stats) = fx.hub.mem.lock().await.host_stats.get_mut(&name("gone"))
+            && let Some(s) = stats.sessions.first_mut()
+        {
+            s.paused = false;
+        }
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "a resumed demand gets a host");
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@ use borant_core::{
 use serde_json::{Value, json};
 
 use crate::store::Doc;
-use crate::{Hub, IdleReport, Memory};
+use crate::{Hub, IdleReport, Memory, PendingMove};
 
 /// How often the hub reads the pending messages of an idle expired agent.
 const WAKE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -717,8 +717,23 @@ impl Hub {
             }
         }
         if needs {
-            self.place_agent(mem, &agent, MoveReason::Takeover, Default::default(), None)
+            let placed = self
+                .place_agent(mem, &agent, MoveReason::Takeover, Default::default(), None)
                 .await?;
+            if !placed && !agent.retired {
+                // No host fits now. The demand stays as a pending move, so
+                // the elastic executor can create a pool host for it and the
+                // tick places the agent when that host registers. It goes at
+                // registration, retirement, or a pause.
+                mem.pending_moves.insert(
+                    agent_id.clone(),
+                    PendingMove {
+                        target: Default::default(),
+                        reason: MoveReason::Takeover,
+                        prompt: None,
+                    },
+                );
+            }
         }
         Ok(())
     }
