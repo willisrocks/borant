@@ -205,7 +205,7 @@ impl Hub {
         let now = self.now();
         // A retired agent is gone for good: no spawn, move, takeover, or wake
         // places it again.
-        if agent.retired {
+        if agent.retired || agent.paused.is_some() {
             tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
             return Ok(false);
         }
@@ -548,9 +548,13 @@ impl Hub {
             if let Some(member) = &member {
                 self.switch_member(&id, member, &mut target).await?;
             }
-            // A retired agent is never placed again, so it does not move.
-            if self.agent(&id).await?.value.retired {
-                tracing::info!(agent = %id, "move skipped: the agent is retired");
+            // A retired or paused agent is not placed, so it does not move.
+            let stopped = {
+                let agent = self.agent(&id).await?.value;
+                agent.retired || agent.paused.is_some()
+            };
+            if stopped {
+                tracing::info!(agent = %id, "move skipped: the agent is retired or paused");
                 continue;
             }
             let lease = self.store.get::<Lease>(&keys::lease_agent(&id)).await?;

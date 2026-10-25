@@ -205,6 +205,8 @@ pub enum MoveReason {
     Spawn,
     /// A session stopped at a usage limit and moved to another member.
     Limit,
+    /// A stopped agent or channel was resumed and is placed again.
+    Resume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +515,9 @@ pub struct SpawnRecord {
     /// parses and is dropped: the next attempt writes the list.
     #[serde(default, deserialize_with = "de_last_reject")]
     pub last_reject: Vec<(HostName, String)>,
+    /// Why the hub holds the spawn back, for example a channel at its cap.
+    #[serde(default)]
+    pub queue_reason: Option<String>,
 }
 
 /// Reads `last_reject` of a queue record: the list of this version, or the

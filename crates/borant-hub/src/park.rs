@@ -50,8 +50,8 @@ impl Hub {
         let now = self.now();
         for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
             let agent = doc.value;
-            // Parking is for agents that come back; a retired one does not.
-            if agent.retired {
+            // Parking is for agents that come back; a retired or paused one does not.
+            if agent.retired || agent.paused.is_some() {
                 continue;
             }
             let Some(host) = agent.host.clone().filter(|h| pools.contains(h)) else {

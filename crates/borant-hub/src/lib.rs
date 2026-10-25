@@ -16,6 +16,7 @@ mod leases;
 mod members;
 mod moves;
 mod park;
+mod pause;
 mod prune;
 mod retire;
 mod spawns;
@@ -31,7 +32,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use borant_core::config::AlertsConfig;
+use borant_core::config::{AlertsConfig, ChannelConfig};
 use borant_core::model::{HostStats, HubLease, Lease, MoveReason};
 use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
@@ -40,8 +41,8 @@ use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
 use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::{
-    AgentId, BundleName, Clock, CollectionName, FencingToken, HostName, MemberName, PoolName,
-    RoleName, SessionId, Timestamp, keys, subjects,
+    AgentId, BundleName, ChannelName, Clock, CollectionName, FencingToken, HostName, MemberName,
+    PoolName, RoleName, SessionId, Timestamp, keys, subjects,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -82,6 +83,8 @@ pub struct HubConfig {
     /// `[http]` of `hub.toml`: the read-only listener of the web view, off
     /// unless `listen` is set.
     pub http: HttpConfig,
+    /// `[channels.<name>]` from `hub.toml`, for example `max_agents`.
+    pub channels: BTreeMap<ChannelName, ChannelConfig>,
 }
 
 impl Default for HubConfig {
@@ -96,6 +99,7 @@ impl Default for HubConfig {
             changes: None,
             member_rules: MemberRules::default(),
             http: HttpConfig::default(),
+            channels: BTreeMap::new(),
         }
     }
 }
@@ -145,6 +149,11 @@ pub(crate) struct Memory {
     pub expired_at: HashMap<AgentId, Timestamp>,
     /// Agents whose claims the claim timeout already released.
     pub claims_released: HashSet<AgentId>,
+    /// The deadline after which a stopped session that is still in a turn is
+    /// fenced, with the agent of the session.
+    pub pause_fences: HashMap<SessionId, (AgentId, HostName, Timestamp)>,
+    /// The turns already counted for each agent, for the daily cap.
+    pub turns_seen: HashMap<AgentId, u64>,
     /// When this hub started serving, for the quiet period after a restart.
     pub started: Option<Timestamp>,
     /// The latest usage report of each bundle member, in memory only.
@@ -317,6 +326,8 @@ impl Hub {
         if let Err(e) = self.place_queued().await {
             tracing::warn!("the spawn queue failed: {e}");
         }
+        // A stopped session whose turn outlived its grace is fenced here.
+        self.fence_overdue().await?;
         // The elastic pools park with the idle timeout of each pool; a hub
         // with no pool keeps the one timeout for its hosts.
         let parked = match &self.cfg.elastic {

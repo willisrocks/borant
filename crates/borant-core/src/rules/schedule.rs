@@ -816,6 +816,7 @@ mod tests {
             state: SpawnState::Queued,
             attempts: 1,
             last_reject: vec![(name("h1"), "full (4/4)".to_owned())],
+            queue_reason: None,
         };
         let mut json = serde_json::to_value(&record).expect("a queue record");
         json["last_reject"] = serde_json::json!("no host qualifies");

@@ -57,7 +57,9 @@ impl Hub {
             } => {
                 // The live view reads the latest stats of each host.
                 if let Some(stats) = stats {
-                    mem.host_stats.insert(host.clone(), stats);
+                    mem.host_stats.insert(host.clone(), stats.clone());
+                    // The turns of the day and the session cap stop an agent.
+                    self.check_caps(mem, &stats).await?;
                 }
                 to_value(&self.heartbeat(mem, &host, &sessions).await?)
             }
@@ -382,8 +384,11 @@ impl Hub {
                 self.answer(mem, &channel, &task, text, expect_updated)
                     .await
             }
-            ToolCall::Stop { .. } => Err(ApiError::invalid("stop is not built yet")),
-            ToolCall::Resume { .. } => Err(ApiError::invalid("resume is not built yet")),
+            ToolCall::Stop {
+                selector,
+                grace_secs,
+            } => self.stop(mem, actor.as_ref(), selector, grace_secs).await,
+            ToolCall::Resume { selector } => self.resume(mem, actor.as_ref(), selector).await,
             ToolCall::AgentHistory { .. } => {
                 Err(ApiError::invalid("agent_history is not built yet"))
             }

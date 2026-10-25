@@ -62,6 +62,10 @@ impl Hub {
         req: SpawnRequest,
     ) -> Result<Value, ApiError> {
         let ch = self.channel(&req.channel).await?.value;
+        // A paused channel takes no new agent.
+        if ch.paused {
+            return Err(crate::pause::channel_paused(&req.channel));
+        }
         let parent = match &by {
             Sender::Agent(id) => Some(self.agent(id).await?.value),
             Sender::Human => None,
@@ -252,6 +256,7 @@ impl Hub {
             state: SpawnState::Queued,
             attempts: 0,
             last_reject: Vec::new(),
+            queue_reason: None,
         };
         self.store.upsert(&keys::spawn(&id), &record).await?;
         let spawned = self
@@ -293,8 +298,19 @@ impl Hub {
             self.store.upsert(&lease_key, &lease).await?;
         }
 
-        // The first placement try, before the tick.
-        let placed = self.place_record(mem, &record, &agent).await?;
+        // The first placement try, before the tick. A channel at its cap keeps
+        // the spawn queued, with the reason that `spawn_queue` shows.
+        let members = self.channel_members(&req.channel).await?;
+        let placed = match self.channel_full(&req.channel, members) {
+            Some(reason) => {
+                let mut held = record.clone();
+                held.queue_reason = Some(reason.clone());
+                self.store.upsert(&keys::spawn(&id), &held).await?;
+                tracing::info!(agent = %id, channel = %req.channel, reason, "spawn queued");
+                false
+            }
+            None => self.place_record(mem, &record, &agent).await?,
+        };
         // The reply nests the answer, as the CLI and the host read it.
         Ok(json!({ "agent": { "agent": id, "placed": placed } }))
     }
@@ -542,6 +558,7 @@ impl Hub {
                     "attempts": r.attempts,
                     // `borant ps` shows one line of why the hosts refuse it.
                     "last_reject": reject_text(&r.last_reject),
+                    "queue_reason": r.queue_reason,
                     "by": r.by,
                     "task": r.spec.task,
                     "spec": { "channel": r.spec.channel },
