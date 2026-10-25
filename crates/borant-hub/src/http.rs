@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -43,6 +43,7 @@ pub fn router(hub: Arc<Hub>, started: Timestamp) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/snapshot", get(snapshot))
         .route("/api/channels", get(channels))
+        .route("/api/channels/{channel}/graph", get(graph))
         .route("/api/events", get(events))
         .route("/metrics", get(metrics))
         .with_state(App { hub, started })
@@ -140,6 +141,35 @@ async fn channel_names(hub: &Hub) -> Result<Vec<ChannelName>, ApiError> {
     names.sort();
     names.dedup();
     Ok(names)
+}
+
+/// The task graph of one channel: every task with the stage of its
+/// `blocked_by` path, so the page draws one column per stage.
+async fn graph(
+    State(app): State<App>,
+    UrlPath(name): UrlPath<String>,
+) -> Result<Json<ChannelGraph>, Fail> {
+    let channel: ChannelName = name
+        .parse()
+        .map_err(|e: borant_core::CoreError| ApiError::invalid(e.to_string()))?;
+    let tasks = app.hub.task_list(&channel, false).await?;
+    let stages = borant_core::rules::graph::stages(&tasks);
+    let mut rows: Vec<GraphTask> = tasks
+        .into_iter()
+        .map(|task| GraphTask {
+            stage: stages.get(&task.id).copied().unwrap_or(0),
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            claimed_by: task.claimed_by,
+            blocked_by: task.blocked_by,
+        })
+        .collect();
+    rows.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| a.id.cmp(&b.id)));
+    Ok(Json(ChannelGraph {
+        channel,
+        tasks: rows,
+    }))
 }
 
 /// The query of `GET /api/events`: `since` in Unix seconds.

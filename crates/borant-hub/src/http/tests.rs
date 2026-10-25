@@ -69,6 +69,33 @@ struct Fx {
     state: MemoryState,
     log: Arc<MemoryEventLog>,
     writes: Arc<AtomicUsize>,
+    host: borant_core::HostName,
+    agent: AgentId,
+    channel: ChannelName,
+    task: TaskId,
+}
+
+/// A task of the fixture channel, with the fields that the API reads.
+fn task(id: TaskId, status: TaskStatus, blocked_by: Vec<TaskId>) -> Task {
+    Task {
+        id,
+        title: "the task".into(),
+        body: String::new(),
+        status,
+        close_reason: None,
+        close_message: None,
+        attention_msg: None,
+        claimed_by: None,
+        deadline: None,
+        attempts: 0,
+        max_attempts: None,
+        blocked_by,
+        parent: None,
+        properties: Default::default(),
+        created: NOW,
+        updated: NOW,
+        create_key: None,
+    }
 }
 
 impl Fx {
@@ -83,7 +110,7 @@ impl Fx {
         let host: borant_core::HostName = "h1".parse().unwrap();
         let agent: AgentId = "w1".parse().unwrap();
         let channel: ChannelName = "roadmap".parse().unwrap();
-        let task = TaskId::new();
+        let first = TaskId::new();
 
         let info = HostInfo {
             name: host.clone(),
@@ -108,7 +135,7 @@ impl Fx {
                 token: borant_core::FencingToken(1),
                 state: LeaseState::Held {
                     session: SessionId::new(),
-                    host,
+                    host: host.clone(),
                     expires: NOW.plus(Duration::from_secs(60)),
                 },
             }),
@@ -128,26 +155,8 @@ impl Fx {
             }),
         );
         state.seed(
-            &keys::task(&channel, &task),
-            bytes(&Task {
-                id: task,
-                title: "the task".into(),
-                body: String::new(),
-                status: TaskStatus::Open,
-                close_reason: None,
-                close_message: None,
-                attention_msg: None,
-                claimed_by: None,
-                deadline: None,
-                attempts: 0,
-                max_attempts: None,
-                blocked_by: Vec::new(),
-                parent: None,
-                properties: Default::default(),
-                created: NOW,
-                updated: NOW,
-                create_key: None,
-            }),
+            &keys::task(&channel, &first),
+            bytes(&task(first, TaskStatus::Open, Vec::new())),
         );
         state.seed(
             &keys::lease_hub(),
@@ -177,6 +186,10 @@ impl Fx {
             state,
             log,
             writes,
+            host,
+            agent,
+            channel,
+            task: first,
         }
     }
 
@@ -411,6 +424,57 @@ async fn http_snapshot_is_the_swarm_view() {
 }
 
 #[tokio::test]
+async fn http_graph_lists_the_tasks_with_the_stage_of_their_path() {
+    let fx = Fx::new();
+    let later = TaskId::new();
+    let claimed: AgentId = fx.agent.clone();
+    let mut blocked = task(later, TaskStatus::InProgress, vec![fx.task]);
+    blocked.claimed_by = Some(claimed.clone());
+    fx.state.seed(&keys::task(&fx.channel, &later), bytes(&blocked));
+
+    let (status, body) = fx.get("/api/channels/roadmap/graph").await;
+    assert_eq!(status, StatusCode::OK);
+    let graph: serde_json::Value = serde_json::from_str(&body).expect("the graph as JSON");
+    assert_eq!(graph["channel"], json!("roadmap"));
+    assert_eq!(
+        graph["tasks"],
+        json!([
+            {
+                "id": fx.task,
+                "title": "the task",
+                "status": "open",
+                "claimed_by": null,
+                "blocked_by": [],
+                "stage": 0,
+            },
+            {
+                "id": later,
+                "title": "the task",
+                "status": "in_progress",
+                "claimed_by": claimed,
+                "blocked_by": [fx.task],
+                "stage": 1,
+            },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn http_graph_of_an_unknown_channel_is_404() {
+    let fx = Fx::new();
+    let (status, body) = fx.get("/api/channels/ghost/graph").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the body:\n{body}");
+    assert!(body.contains("no channel #ghost"), "the body:\n{body}");
+}
+
+#[tokio::test]
+async fn http_graph_of_a_bad_channel_name_is_400() {
+    let fx = Fx::new();
+    let (status, _) = fx.get("/api/channels/Bad.Name/graph").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn http_channels_lists_the_channels_and_not_their_tasks() {
     let fx = Fx::new();
     let (status, body) = fx.get("/api/channels").await;
@@ -504,6 +568,7 @@ async fn http_routes_never_write_to_the_store() {
         "/healthz",
         "/api/snapshot",
         "/api/channels",
+        "/api/channels/roadmap/graph",
         "/metrics",
     ] {
         let (status, _) = fx.get(uri).await;
