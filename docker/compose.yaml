@@ -187,3 +187,19 @@ services:
       BORANT_LAUNCHER: process
       BORANT_HARNESSES: fake
       BORANT_MAX_AGENTS: "1"
+
+  # The host of the host_restart scenario, which starts it on demand as well.
+  # Its container keeps `sleep infinity` as the main process and the scenario
+  # starts `borant host` itself, so it can stop that one PID and start it
+  # again: a restart of the container would stop the harness processes of its
+  # three sessions too, and the restore would have nothing left to attach to.
+  host-r:
+    <<: *host
+    hostname: host-r
+    command: ["sleep", "infinity"]
+    environment:
+      <<: *timing
+      BORANT_HOST_NAME: host-r
+      BORANT_LAUNCHER: process
+      BORANT_HARNESSES: fake
+      BORANT_MAX_AGENTS: "3"
