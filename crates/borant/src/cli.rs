@@ -113,6 +113,11 @@ pub enum Command {
         #[arg(long)]
         ready: bool,
     },
+    /// Work with one task.
+    Task {
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
     /// Send a direct message to an agent, or a broadcast to #channel.
     Send {
         /// An agent ID, or #channel.
@@ -309,6 +314,21 @@ pub enum Command {
         /// The program and its arguments, after `--`.
         #[arg(last = true, required = true, num_args = 1..)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCmd {
+    /// Close a task as a person, with the reason that it closed.
+    Close {
+        /// The task, as CHANNEL/ID.
+        task: String,
+        /// Why it closes: done, wontfix, duplicate, or superseded.
+        #[arg(long, value_parser = close_reason_arg)]
+        reason: CloseReason,
+        /// What was done, for the channel owner.
+        #[arg(long, default_value = "")]
+        message: String,
     },
 }
 
@@ -1183,6 +1203,27 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             )
             .await?,
         ),
+        Command::Task { cmd } => match cmd {
+            TaskCmd::Close {
+                task,
+                reason,
+                message,
+            } => {
+                let (channel, id) = task_ref(&task)?;
+                pretty(
+                    &call(
+                        &c,
+                        ToolCall::TaskClose {
+                            channel,
+                            id,
+                            reason,
+                            message,
+                        },
+                    )
+                    .await?,
+                );
+            }
+        },
         Command::Send { to, text, urgent } => {
             let to: Target = to.parse()?;
             pretty(
@@ -1581,6 +1622,7 @@ mod tests {
             "borant pin w1",
             "borant pin w1 --off",
             "borant tasks api --ready",
+            "borant task close api/01M5S3PATRKMGFD9C0HB1CS4ZK --reason done --message shipped",
             "borant send #api ship it --urgent",
             "borant send w1 hello",
             "borant move w1 --host vps-1",
@@ -1704,6 +1746,31 @@ mod tests {
 
     fn cli_command(line: &str) -> Command {
         Cli::try_parse_from(line.split(' ')).unwrap().command
+    }
+
+    #[test]
+    fn task_close_parses_the_reason_and_the_message() {
+        let cmd = cli_command(&format!(
+            "borant task close api/{TASK} --reason done --message shipped"
+        ));
+        let Command::Task {
+            cmd:
+                TaskCmd::Close {
+                    task,
+                    reason,
+                    message,
+                },
+        } = cmd
+        else {
+            panic!("not a task close");
+        };
+        assert_eq!(task, format!("api/{TASK}"));
+        assert_eq!(reason, CloseReason::Done);
+        assert_eq!(message, "shipped");
+        // A reason that is not one of the four is refused.
+        assert!(
+            Cli::try_parse_from(["borant", "task", "close", "api/x", "--reason", "maybe"]).is_err()
+        );
     }
 
     #[test]

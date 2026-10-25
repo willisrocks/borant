@@ -20,7 +20,7 @@ pub fn should_wake(env: &Envelope, recipient: &AgentId) -> bool {
                 ev.status,
                 TaskStatus::Closed | TaskStatus::Stuck | TaskStatus::NeedsHuman
             );
-            attention && ev.owner == *recipient
+            attention && ev.owner.as_ref() == Some(recipient)
         }
     }
 }
@@ -107,7 +107,7 @@ mod tests {
             kind: TaskEventKind::Updated,
             status,
             attention_msg: None,
-            owner: id("boss"),
+            owner: Some(id("boss")),
         };
         let to = Target::Channel(api.clone());
         let stuck = env(

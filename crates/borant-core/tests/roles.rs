@@ -61,7 +61,7 @@ fn roles_old_json_of_every_record_parses() {
     // A channel from before collections.
     let channel = Channel {
         name: "work-api".parse().unwrap(),
-        owner: "chief".parse().unwrap(),
+        owner: Some("chief".parse().unwrap()),
         schema: serde_json::json!({}),
         created: Timestamp(1),
         closed: None,

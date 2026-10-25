@@ -356,7 +356,8 @@ impl Hub {
         message: String,
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
-        // Only the owner of the channel and a person close a task as done.
+        // Only the owner of the channel and a person close a task as done. A
+        // channel with no owner has only a person: an agent always needs one.
         if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
             return Err(ApiError::new(
                 ApiErrorCode::Denied,
@@ -537,22 +538,25 @@ impl Hub {
                 .about_task(next.id);
             self.publish(event).await;
             // The owner hears about the miss once; the stuck status keeps the
-            // next pass from sending it again.
-            let env = Envelope {
-                id: MessageId::new(),
-                from: Sender::Human,
-                to: Target::Agent(owner.clone()),
-                kind: EnvelopeKind::Direct,
-                text: format!(
-                    "task {channel}/{} ({}) passed its deadline; it is stuck",
-                    next.id, next.title
-                ),
-                urgent: false,
-                event: None,
-                sent: now,
-            };
-            if let Err(e) = self.bus.publish(&subjects::agent(&owner), &env).await {
-                tracing::warn!(task = %next.id, "deadline message to the owner failed: {e}");
+            // next pass from sending it again. A channel with no owner has
+            // nobody to tell.
+            if let Some(owner) = owner {
+                let env = Envelope {
+                    id: MessageId::new(),
+                    from: Sender::Human,
+                    to: Target::Agent(owner.clone()),
+                    kind: EnvelopeKind::Direct,
+                    text: format!(
+                        "task {channel}/{} ({}) passed its deadline; it is stuck",
+                        next.id, next.title
+                    ),
+                    urgent: false,
+                    event: None,
+                    sent: now,
+                };
+                if let Err(e) = self.bus.publish(&subjects::agent(&owner), &env).await {
+                    tracing::warn!(task = %next.id, "deadline message to the owner failed: {e}");
+                }
             }
             tracing::warn!(task = %next.id, %channel, "the deadline passed: the task is stuck");
         }
@@ -581,7 +585,7 @@ impl Hub {
     pub(crate) async fn task_event(
         &self,
         channel: &ChannelName,
-        owner: &AgentId,
+        owner: &Option<AgentId>,
         task: &Task,
         kind: TaskEventKind,
         what: &str,
@@ -624,10 +628,10 @@ impl Hub {
 }
 
 /// Whether `by` is the owner of the channel or a person.
-fn is_owner_or_person(owner: &AgentId, by: &Sender) -> bool {
+fn is_owner_or_person(owner: &Option<AgentId>, by: &Sender) -> bool {
     match by {
         Sender::Human => true,
-        Sender::Agent(agent) => agent == owner,
+        Sender::Agent(agent) => owner.as_ref() == Some(agent),
     }
 }
 

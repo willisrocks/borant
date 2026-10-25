@@ -156,7 +156,7 @@ impl Hub {
                 let mut owner_of = Vec::new();
                 for c in &agent.value.channels {
                     if let Ok(ch) = self.channel(c).await
-                        && ch.value.owner == a.agent
+                        && ch.value.owner.as_ref() == Some(&a.agent)
                     {
                         owner_of.push(c.clone());
                     }
@@ -210,7 +210,7 @@ impl Hub {
             ToolCall::ChannelTransfer { name, to } => {
                 let mut ch = self.channel_for(mine.as_ref(), &name).await?;
                 if let Some(me) = &me
-                    && ch.value.owner != *me
+                    && ch.value.owner.as_ref() != Some(me)
                 {
                     return Err(ApiError::invalid("only the owner can transfer a channel"));
                 }
@@ -224,7 +224,7 @@ impl Hub {
                         "{to} is not a member of #{name}"
                     )));
                 }
-                ch.value.owner = to;
+                ch.value.owner = Some(to);
                 self.store
                     .put(&ch.key, &ch.value, Some(ch.revision))
                     .await?;
@@ -301,7 +301,7 @@ impl Hub {
             } => {
                 let mut ch = self.channel_for(mine.as_ref(), &channel).await?;
                 if let Some(me) = &me
-                    && ch.value.owner != *me
+                    && ch.value.owner.as_ref() != Some(me)
                 {
                     return Err(ApiError::invalid("only the owner can extend the schema"));
                 }
@@ -575,7 +575,7 @@ impl Hub {
         };
         let ch = Channel {
             name: name.clone(),
-            owner: owner.clone(),
+            owner: Some(owner.clone()),
             schema,
             created: self.now(),
             closed: None,

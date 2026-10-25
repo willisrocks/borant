@@ -218,7 +218,7 @@ async fn close_publishes_event_and_unblocks() {
         .find(|ev| ev.status == TaskStatus::Closed)
         .expect("a closed event");
     assert_eq!(closed.task, a.id);
-    assert_eq!(closed.owner.as_str(), "boss");
+    assert_eq!(closed.owner.as_ref().map(|o| o.as_str()), Some("boss"));
 }
 
 #[tokio::test]

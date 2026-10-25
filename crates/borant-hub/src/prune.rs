@@ -205,8 +205,9 @@ impl Scan {
             }
         } else if e.key.matches('.').count() == 1
             && let Some(c) = decode::<Channel>(e)
+            && let Some(owner) = c.owner
         {
-            self.owners.insert(c.owner);
+            self.owners.insert(owner);
         }
     }
 

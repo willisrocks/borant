@@ -217,6 +217,14 @@ pub enum SwarmEventBody {
     /// A stopped agent, or a member of a resumed channel, is placed again.
     #[serde(rename = "agent.resumed")]
     AgentResumed,
+    /// The owner of a channel changed, for example because its owner retired.
+    #[serde(rename = "channel.owner")]
+    ChannelOwner {
+        /// The agent that had the channel.
+        previous: AgentId,
+        /// The new owner, or `None` when the channel has none.
+        owner: Option<AgentId>,
+    },
     /// The state of a task's change request changed. The task is the one of
     /// the event context.
     #[serde(rename = "change.updated")]
@@ -491,6 +499,7 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::AgentParked { .. } => "agent.parked",
         SwarmEventBody::AgentPaused { .. } => "agent.paused",
         SwarmEventBody::AgentResumed => "agent.resumed",
+        SwarmEventBody::ChannelOwner { .. } => "channel.owner",
         SwarmEventBody::ChangeUpdated { .. } => "change.updated",
         SwarmEventBody::PlacementChosen { .. } => "placement.chosen",
         SwarmEventBody::PlacementRefused { .. } => "placement.refused",

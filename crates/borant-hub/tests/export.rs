@@ -446,7 +446,7 @@ async fn export_import_sends_pending_only_to_its_agent() {
     let b: AgentId = "b1".parse().unwrap();
     let owner = Channel {
         name: channel.clone(),
-        owner: a.clone(),
+        owner: Some(a.clone()),
         schema: json!({}),
         created: Timestamp(1),
         closed: None,

@@ -430,7 +430,9 @@ pub struct UsageWindow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub name: ChannelName,
-    pub owner: AgentId,
+    /// The owner, or `None` when the last owner retired and left no heir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<AgentId>,
     pub schema: Value,
     pub created: Timestamp,
     pub closed: Option<Timestamp>,
@@ -790,8 +792,9 @@ pub struct TaskEvent {
     pub kind: TaskEventKind,
     pub status: TaskStatus,
     pub attention_msg: Option<String>,
-    /// The owner of the channel when the event happened.
-    pub owner: AgentId,
+    /// The owner of the channel when the event happened, when it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<AgentId>,
 }
 
 /// A message or an event on the bus.
@@ -1053,7 +1056,7 @@ mod tests {
 
         let channel = Channel {
             name: "api".parse().unwrap(),
-            owner: "w1".parse().unwrap(),
+            owner: Some("w1".parse().unwrap()),
             schema: Value::Null,
             created: Timestamp(1),
             closed: None,

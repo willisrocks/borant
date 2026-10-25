@@ -144,7 +144,7 @@ impl Fx {
             &keys::channel(&channel),
             bytes(&Channel {
                 name: channel.clone(),
-                owner: agent.clone(),
+                owner: Some(agent.clone()),
                 schema: json!({}),
                 created: NOW,
                 closed: None,
