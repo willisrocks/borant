@@ -23,6 +23,11 @@ pub enum PortErrorKind {
     /// The backend cannot be reached.
     Unavailable,
     Timeout,
+    /// The request is wrong: a missing argument, or a support the backend
+    /// does not have.
+    Invalid,
+    /// The backend refuses the request, for example a host that is not ours.
+    Denied,
     Other,
 }
 
@@ -51,6 +56,14 @@ impl PortError {
 
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(PortErrorKind::Unavailable, message)
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new(PortErrorKind::Invalid, message)
+    }
+
+    pub fn denied(message: impl Into<String>) -> Self {
+        Self::new(PortErrorKind::Denied, message)
     }
 
     pub fn other(message: impl Into<String>) -> Self {
