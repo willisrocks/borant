@@ -410,6 +410,10 @@ impl Hub {
                 let moved = self.drain(mem, &host).await?;
                 Ok(json!({ "draining": host, "moving": moved }))
             }
+            ToolCall::Undrain { host } => {
+                let changed = self.undrain(&host).await?;
+                Ok(json!({ "host": host, "draining": false, "changed": changed }))
+            }
             ToolCall::ListAgents => self.list_agents(mine.as_ref()).await,
             ToolCall::Pin { agent, on } => {
                 if actor.is_some() {

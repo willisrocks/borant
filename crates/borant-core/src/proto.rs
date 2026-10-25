@@ -434,6 +434,11 @@ pub enum ToolCall {
     Drain {
         host: HostName,
     },
+    /// Clears the drain flag of a host, so the hub places agents on it again.
+    /// A host that is not draining is a no-op.
+    Undrain {
+        host: HostName,
+    },
     ListAgents,
     ListHosts,
     /// Pins the agent or unpins it. Only a human may call it.

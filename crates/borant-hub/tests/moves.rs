@@ -340,6 +340,77 @@ async fn drain_moves_all_agents() {
 }
 
 #[tokio::test]
+async fn undrain_places_the_spawn_that_named_the_host() {
+    let fx = Fx::new();
+    let (owner, _w) = setup(&fx).await;
+    let mut h2 = fx.commands("h2").await;
+    fx.call(None, ToolCall::Drain { host: name("h2") })
+        .await
+        .unwrap();
+    // A spawn that names the drained host waits for it, and runs nowhere else.
+    let v = fx
+        .call(
+            Some(&owner),
+            ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                continues: None,
+                priority: None,
+                bundles: Vec::new(),
+                channel: api(),
+                prompt: "Fix the build".into(),
+                harness: None,
+                host: Some(name("h2")),
+                name: Some("helper".parse().unwrap()),
+                model: None,
+                role: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v["agent"]["placed"], false, "the drained host keeps it");
+    assert!(
+        next_cmd(&mut h2).await.is_none(),
+        "no launch reaches h2 while it drains"
+    );
+
+    // The undrain clears the flag and places the queue before it answers.
+    let v = fx
+        .call(None, ToolCall::Undrain { host: name("h2") })
+        .await
+        .unwrap();
+    assert_eq!(v["changed"], true);
+    assert_eq!(v["draining"], false);
+    match next_cmd(&mut h2).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.agent, "helper".parse().unwrap());
+            assert_eq!(o.reason, MoveReason::Spawn);
+            assert_eq!(o.prompt, "Fix the build");
+        }
+        other => panic!("expected a launch, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn undrain_of_a_live_host_is_a_no_op() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let v = fx
+        .call(None, ToolCall::Undrain { host: name("h1") })
+        .await
+        .unwrap();
+    assert_eq!(v["changed"], false, "the host was not draining");
+    assert_eq!(v["draining"], false);
+    // A host that the hub does not know is an error, not a silent clear.
+    let err = fx
+        .call(None, ToolCall::Undrain { host: name("h9") })
+        .await
+        .expect_err("no such host");
+    assert!(err.to_string().contains("no host h9"), "{err}");
+}
+
+#[tokio::test]
 async fn restart_grace_prevents_mass_takeover() {
     let fx = Fx::new();
     let (owner, w) = setup(&fx).await;

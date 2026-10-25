@@ -298,6 +298,10 @@ scenario_planned_move() {
 scenario_drain() {
   borant_on host-a drain host-b >/dev/null || return 1
   wait_for "w2 left host-b" not_at w2 host-b || return 1
+  # The drain is a flag on the host in the hub, so a scenario that leaves it
+  # set changes the swarm for every scenario after it.
+  borant_on host-a undrain host-b >/dev/null || return 1
+  wait_for "host-b takes agents again" host_takes_agents host-b || return 1
 }
 
 scenario_hub_restart() {
@@ -1535,7 +1539,7 @@ CREATE continue limit" >/dev/null || return 1
   # A planned move keeps the count too, and its new idle period gets no
   # continue: the wait of the worker still covers the task. The target is the
   # least loaded host that can take a session now, read from the swarm: the
-  # earlier scenarios drain host-b for the rest of the run, and fill host-a.
+  # earlier scenarios fill host-a, so the name is not written here.
   target=$(continue_move_target) || return 1
   [ -n "$target" ] \
     || { echo "  no host can take the planned move of cont-a" >&2; return 1; }
@@ -1569,9 +1573,9 @@ continue_hub_up() { borant_on host-a hosts >/dev/null 2>&1; }
 # The host of the planned move: the least loaded host of the swarm that is
 # online, not draining, offers the fake harness, and has a free slot. host-r is
 # left out: it runs the two sessions that the move is about. The name cannot be
-# written in the scenario, because the earlier scenarios change the set: drain
-# leaves host-b draining for the rest of the run. A lease that is held or
-# reserved is the count that the hub's own placement uses.
+# written in the scenario, because the earlier scenarios change the set: they
+# fill host-a, and host-b leaves the drain when its scenario ends. A lease that
+# is held or reserved is the count that the hub's own placement uses.
 continue_move_target() {
   local agents
   agents=$(borant_on host-a agents 2>/dev/null) || return 1

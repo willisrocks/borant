@@ -245,6 +245,15 @@ impl Hub {
         if mem.maintenance && !matches!(req, CtlRequest::Maintenance { .. }) {
             return Reply::Error(ApiError::unavailable("the hub is in maintenance mode"));
         }
+        // Whether this request is an undrain: it frees a host for the spawns
+        // that waited for it, which the queue takes after the reply.
+        let undrain = matches!(
+            &req,
+            CtlRequest::Call {
+                call: ToolCall::Undrain { .. },
+                ..
+            }
+        );
         let req = match req {
             // A prune reads every inbox and session log. `prune_agents` takes
             // `mem` itself, briefly, so the request does not hold it.
@@ -315,6 +324,19 @@ impl Hub {
         // The events of this request wait here, so no publish holds the lock.
         drop(mem);
         self.flush().await;
+        // A host that stops draining takes the spawns that waited for it at
+        // once, not at the next tick. `place_queued` takes `mem` itself, so it
+        // runs here, after the lock is dropped.
+        let cleared = matches!(
+            &result,
+            Ok(v) if v.get("changed").and_then(|c| c.as_bool()) == Some(true)
+        );
+        if undrain
+            && cleared
+            && let Err(e) = self.place_queued().await
+        {
+            tracing::warn!("the spawn queue failed after an undrain: {e}");
+        }
         if let Err(e) = &result {
             match e.code {
                 ApiErrorCode::Internal | ApiErrorCode::Unavailable => {
