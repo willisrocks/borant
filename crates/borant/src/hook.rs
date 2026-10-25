@@ -632,21 +632,36 @@ mod tests {
     fn stop_failure_reads_a_relative_reset_time() {
         let now = Timestamp(1_000_000);
         let input = json!({ "message": "Usage limit reached. It resets in 2 hours." });
-        assert_eq!(reset_at(&input, now), Some(Timestamp(1_000_000 + 7_200_000)));
+        assert_eq!(
+            reset_at(&input, now),
+            Some(Timestamp(1_000_000 + 7_200_000))
+        );
         let input = json!({ "error": "try again after 45 minutes" });
-        assert_eq!(reset_at(&input, now), Some(Timestamp(1_000_000 + 2_700_000)));
+        assert_eq!(
+            reset_at(&input, now),
+            Some(Timestamp(1_000_000 + 2_700_000))
+        );
     }
 
     #[test]
     fn stop_failure_accepts_a_missing_reset_time() {
         assert_eq!(
-            reset_at(&json!({ "kind": "rate_limit", "error": "limit reached" }), Timestamp(1)),
+            reset_at(
+                &json!({ "kind": "rate_limit", "error": "limit reached" }),
+                Timestamp(1)
+            ),
             None
         );
         assert_eq!(reset_at(&Value::Null, Timestamp(1)), None);
         // A time that names no duration is not a guess.
-        assert_eq!(reset_at(&json!({ "error": "in 2 elephants" }), Timestamp(1)), None);
-        assert_eq!(reset_at(&json!({ "error": "limit at 18:00" }), Timestamp(1)), None);
+        assert_eq!(
+            reset_at(&json!({ "error": "in 2 elephants" }), Timestamp(1)),
+            None
+        );
+        assert_eq!(
+            reset_at(&json!({ "error": "limit at 18:00" }), Timestamp(1)),
+            None
+        );
         // An absurd relative time is refused.
         assert_eq!(
             reset_at(&json!({ "error": "in 999999 hours" }), Timestamp(1)),

@@ -52,6 +52,7 @@ async fn hub_parts(
         roles: file.roles,
         collections: file.collections,
         alerts: file.alerts.to_config(),
+        member_rules: file.secrets.members,
         ..HubConfig::default()
     };
     if let Some(i) = file.instance {

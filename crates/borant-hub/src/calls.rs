@@ -95,7 +95,17 @@ impl Hub {
                 "a snapshot must not run behind the hub request mutex",
             )),
             // The limit restart task adds the handler.
-            CtlRequest::MemberLimited { .. } => Err(ApiError::invalid("not built yet")),
+            CtlRequest::MemberLimited {
+                agent,
+                session,
+                token,
+                bundle,
+                member,
+                resets_at,
+            } => {
+                self.member_limited(mem, agent, session, token, bundle, member, resets_at)
+                    .await
+            }
         }
     }
 
