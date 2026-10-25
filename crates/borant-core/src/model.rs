@@ -573,6 +573,121 @@ pub enum SessionEventBody {
     },
 }
 
+/// The load and counters of one host, sent in its heartbeat.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostStats {
+    pub version: String,
+    /// When the host daemon started.
+    #[serde(default)]
+    pub started: Option<Timestamp>,
+    /// The one-minute load average.
+    #[serde(default)]
+    pub load1: f64,
+    #[serde(default)]
+    pub cpus: u32,
+    /// The used memory, as a percentage from 0 to 100.
+    #[serde(default)]
+    pub mem_used_pct: f64,
+    #[serde(default)]
+    pub outbox_depth: u64,
+    /// The round trip of the previous heartbeat, in milliseconds.
+    #[serde(default)]
+    pub last_heartbeat_rtt_ms: Option<u64>,
+    #[serde(default)]
+    pub nats_reconnects: u64,
+    /// One entry for each session of the host.
+    #[serde(default)]
+    pub sessions: Vec<SessionStats>,
+}
+
+/// What one session of a host did since it started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionStats {
+    pub agent: AgentId,
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub turn: u64,
+    #[serde(default)]
+    pub last_event_at: Option<Timestamp>,
+    #[serde(default)]
+    pub wakes: u64,
+    #[serde(default)]
+    pub wake_limited: u64,
+    /// Delivery anomalies that the host logged, by kind.
+    #[serde(default)]
+    pub ack_failed: u64,
+    #[serde(default)]
+    pub append_failed: u64,
+    #[serde(default)]
+    pub redelivered: u64,
+    #[serde(default)]
+    pub bad_envelope: u64,
+    /// The LLM usage of the session.
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
+/// The live view of the swarm, for `borant top` and `borant status --json`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SwarmView {
+    #[serde(default)]
+    pub hosts: Vec<HostStatus>,
+    #[serde(default)]
+    pub agents: Vec<AgentStatus>,
+    #[serde(default)]
+    pub inboxes: Vec<InboxStatus>,
+    /// When the hub built the view.
+    #[serde(default)]
+    pub at: Option<Timestamp>,
+}
+
+/// One host in the live view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostStatus {
+    pub info: HostInfo,
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default)]
+    pub last_seen: Option<Timestamp>,
+    #[serde(default)]
+    pub stats: Option<HostStats>,
+}
+
+/// One agent in the live view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentStatus {
+    pub agent: AgentId,
+    #[serde(default)]
+    pub harness: Option<Harness>,
+    #[serde(default)]
+    pub host: Option<HostName>,
+    /// The state of its lease, as the store holds it.
+    #[serde(default)]
+    pub lease: Option<LeaseState>,
+    #[serde(default)]
+    pub session: Option<SessionId>,
+    #[serde(default)]
+    pub busy: bool,
+    /// The open task that it claimed.
+    #[serde(default)]
+    pub claim: Option<TaskId>,
+}
+
+/// The inbox counts of one agent in the live view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxStatus {
+    pub agent: AgentId,
+    #[serde(default)]
+    pub stats: crate::ports::InboxStats,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

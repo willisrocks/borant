@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::StreamExt;
+use futures::stream::BoxStream;
+
+use crate::events::{EventFilter, Severity, SwarmEvent, SwarmEventBody};
 
 use crate::ids::{AgentId, EventId, MessageId, TaskId};
 use crate::model::{
@@ -13,7 +16,7 @@ use crate::model::{
 };
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
 use crate::ports::secrets::{SecretRef, SecretStore};
-use crate::ports::{Change, MessageBus, PortErrorKind, SessionStore, StateStore};
+use crate::ports::{Change, EventLog, MessageBus, PortErrorKind, SessionStore, StateStore};
 use crate::time::Timestamp;
 
 /// A unique name for one test run, so tests can share a backend.
@@ -470,4 +473,172 @@ fn assert_no_value(text: &str, known: &[(SecretRef, &str)], what: &str) {
             "{what} holds the value of {r:?}: {text}"
         );
     }
+}
+
+/// The event log contract: one event per id, oldest first, filters, and follow.
+pub async fn event_log_contract(log: &dyn EventLog) {
+    let host: crate::HostName = unique("h").parse().unwrap();
+    let agent: crate::AgentId = unique("a").parse().unwrap();
+    let other: crate::AgentId = unique("b").parse().unwrap();
+    // A channel names this test's events in a backend that other tests share.
+    let channel: crate::ChannelName = unique("c").parse().unwrap();
+    let t = Timestamp(1_000);
+
+    let first = SwarmEvent::host(
+        t,
+        &host,
+        Severity::Info,
+        SwarmEventBody::HostOnline {
+            last_seen: t,
+            always_on: true,
+            agents: 1,
+        },
+    )
+    .about_agent(agent.clone())
+    .about_channel(channel.clone());
+    let second = SwarmEvent::hub(
+        Timestamp(1_010),
+        Severity::Warn,
+        SwarmEventBody::LeaseExpired {
+            session: crate::SessionId::new(),
+            token: crate::FencingToken(3),
+        },
+    )
+    .about_agent(agent.clone())
+    .about_channel(channel.clone());
+    let third = SwarmEvent::host(
+        Timestamp(1_020),
+        &host,
+        Severity::Error,
+        SwarmEventBody::DeliveryAckFailed {
+            message: crate::MessageId::new(),
+            error: "ack".into(),
+            count: 2,
+        },
+    )
+    .about_agent(other.clone())
+    .about_channel(channel.clone());
+
+    for event in [&first, &second, &third] {
+        log.publish(event).await.expect("publish");
+    }
+    // Publishing the same id again stores one event.
+    log.publish(&first).await.expect("publish twice");
+
+    let mine = EventFilter {
+        channel: Some(channel.clone()),
+        ..EventFilter::default()
+    };
+    let all: Vec<SwarmEvent> = collect(log.read(&mine, false).await.expect("read")).await;
+    assert_eq!(
+        all.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![first.id, second.id, third.id],
+        "every event once, oldest first"
+    );
+
+    // A reader that follows sees the events already there, then a new one.
+    let mut live = log.read(&mine, true).await.expect("follow");
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        seen.push(next(&mut live).await);
+    }
+    let later = SwarmEvent::hub(
+        Timestamp(1_030),
+        Severity::Info,
+        SwarmEventBody::ClaimsReleased {
+            tasks: 1,
+            after_secs: 30,
+        },
+    )
+    .about_channel(channel.clone());
+    log.publish(&later).await.expect("publish while following");
+    assert_eq!(next(&mut live).await.id, later.id);
+
+    // Filters.
+    let by_kind: Vec<SwarmEvent> = collect(
+        log.read(
+            &EventFilter {
+                channel: Some(channel.clone()),
+                kinds: vec!["lease.*".into()],
+                ..EventFilter::default()
+            },
+            false,
+        )
+        .await
+        .expect("read"),
+    )
+    .await;
+    assert_eq!(
+        by_kind.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![second.id]
+    );
+    let by_agent: Vec<SwarmEvent> = collect(
+        log.read(
+            &EventFilter {
+                channel: Some(channel.clone()),
+                agent: Some(agent.clone()),
+                ..EventFilter::default()
+            },
+            false,
+        )
+        .await
+        .expect("read"),
+    )
+    .await;
+    assert_eq!(
+        by_agent.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![first.id, second.id]
+    );
+    let warns: Vec<SwarmEvent> = collect(
+        log.read(
+            &EventFilter {
+                channel: Some(channel.clone()),
+                min_severity: Some(Severity::Warn),
+                ..EventFilter::default()
+            },
+            false,
+        )
+        .await
+        .expect("read"),
+    )
+    .await;
+    assert_eq!(
+        warns.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![second.id, third.id]
+    );
+    let recent: Vec<SwarmEvent> = collect(
+        log.read(
+            &EventFilter {
+                channel: Some(channel.clone()),
+                since: Some(Timestamp(1_015)),
+                ..EventFilter::default()
+            },
+            false,
+        )
+        .await
+        .expect("read"),
+    )
+    .await;
+    assert_eq!(
+        recent.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![third.id, later.id]
+    );
+}
+
+async fn collect(stream: BoxStream<'static, SwarmEvent>) -> Vec<SwarmEvent> {
+    use futures::StreamExt;
+    let mut stream = stream;
+    let mut out = Vec::new();
+    while let Some(event) = stream.next().await {
+        out.push(event);
+    }
+    out
+}
+
+async fn next(stream: &mut BoxStream<'static, SwarmEvent>) -> SwarmEvent {
+    use futures::StreamExt;
+    tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("an event before the timeout")
+        .expect("the stream ended")
 }

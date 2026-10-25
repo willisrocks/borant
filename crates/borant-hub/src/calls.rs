@@ -23,9 +23,12 @@ impl Hub {
     ) -> Result<Value, ApiError> {
         match req {
             CtlRequest::RegisterHost { info } => self.register_host(mem, info).await,
-            CtlRequest::HostHeartbeat { host, sessions } => {
-                to_value(&self.heartbeat(mem, &host, &sessions).await?)
-            }
+            CtlRequest::HostHeartbeat {
+                host,
+                sessions,
+                // The stats task reads them.
+                stats: _,
+            } => to_value(&self.heartbeat(mem, &host, &sessions).await?),
             CtlRequest::RegisterSession(r) => to_value(&self.register_session(mem, r).await?),
             CtlRequest::EndSession {
                 session,
@@ -294,6 +297,8 @@ impl Hub {
                 windows,
             } => self.usage_report(mem, bundle, member, windows).await,
             ToolCall::ListMembers => self.list_members(mem).await,
+            // The live view task builds it.
+            ToolCall::View => Err(ApiError::invalid("not built yet")),
         }
     }
 

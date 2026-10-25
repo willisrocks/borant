@@ -159,12 +159,14 @@ impl Fx {
                 agent: r.agent.clone(),
                 token: r.token,
                 idle_since: *idle_since,
+                last_event_at: None,
             })
             .collect();
         let v = self
             .req(CtlRequest::HostHeartbeat {
                 host: name(host),
                 sessions,
+                stats: None,
             })
             .await
             .unwrap();

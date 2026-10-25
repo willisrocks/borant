@@ -7,7 +7,7 @@ use std::time::Duration;
 use borant_core::model::{
     Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskStatus,
 };
-use borant_core::ports::{Delivery, PortErrorKind};
+use borant_core::ports::{Delivery, Notice, PortErrorKind};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::{redact::redact, session_log, wake};
 use borant_core::{AgentId, EventId, MessageId, SessionId, subjects};
@@ -603,8 +603,11 @@ impl Host {
                     continue;
                 }
                 if let Some(n) = &self.inner.notifier {
-                    let title = format!("Borant #{}: task needs attention", ev.channel);
-                    let _ = n.notify(&title, &env.text).await;
+                    let notice = Notice::new(
+                        format!("Borant #{}: task needs attention", ev.channel),
+                        env.text.clone(),
+                    );
+                    let _ = n.notify(&notice).await;
                 }
             }
         }

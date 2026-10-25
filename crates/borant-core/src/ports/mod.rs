@@ -2,6 +2,7 @@
 //! bytes, and strings, so a new backend needs no change in the core.
 
 mod bus;
+mod events;
 mod launch;
 mod notify;
 pub mod provision;
@@ -9,9 +10,10 @@ pub mod secrets;
 mod session;
 mod state;
 
-pub use bus::{Acker, Delivery, Incoming, MessageBus, Responder, subject_matches};
+pub use bus::{Acker, Delivery, InboxStats, Incoming, MessageBus, Responder, subject_matches};
+pub use events::EventLog;
 pub use launch::{LaunchHandle, LaunchSpec, Launcher};
-pub use notify::Notifier;
+pub use notify::{Notice, Notifier, Priority};
 pub use provision::{
     HostRecord, HostSpec, ProviderHostId, ProviderState, Provisioner, ProvisionerCapabilities,
     SizeInfo, StopMode,

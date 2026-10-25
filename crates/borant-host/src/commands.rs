@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::model::Harness;
-use borant_core::ports::{LaunchSpec, Notifier, PortError, PortResult};
+use borant_core::ports::{LaunchSpec, Notice, Notifier, PortError, PortResult};
 use borant_core::proto::{CtlRequest, HostCommand, LaunchOrder};
 use borant_core::{AgentId, BundleName, SessionId, subjects};
 use borant_launch::harness;
@@ -313,7 +313,9 @@ pub struct DesktopNotifier;
 
 #[async_trait::async_trait]
 impl Notifier for DesktopNotifier {
-    async fn notify(&self, title: &str, body: &str) -> PortResult<()> {
+    async fn notify(&self, notice: &Notice) -> PortResult<()> {
+        let title = &notice.title;
+        let body = &notice.body;
         let status = if cfg!(target_os = "macos") {
             let script = format!(
                 "display notification {} with title {}",

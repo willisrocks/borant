@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use borant_core::model::Envelope;
 use borant_core::ports::{
-    Acker, Delivery, Incoming, MessageBus, PortError, PortErrorKind, PortResult, Responder,
-    subject_matches,
+    Acker, Delivery, InboxStats, Incoming, MessageBus, PortError, PortErrorKind, PortResult,
+    Responder, subject_matches,
 };
 use borant_core::{AgentId, MessageId};
 use bytes::Bytes;
@@ -230,6 +230,32 @@ impl MessageBus for MemoryBus {
             .iter()
             .filter(|(s, subj, _)| *s > inbox.cursor && inbox.wants(subj))
             .count() as u64)
+    }
+
+    async fn inbox_stats(&self, agent: &AgentId) -> PortResult<InboxStats> {
+        self.inner.available.check()?;
+        let log = self.log();
+        let inbox = log
+            .inboxes
+            .get(agent)
+            .ok_or_else(|| PortError::not_found(format!("no inbox for agent {agent}")))?;
+        let pending = log
+            .msgs
+            .iter()
+            .filter(|(s, subj, _)| *s > inbox.cursor && inbox.wants(subj))
+            .count() as u64;
+        let now = Instant::now();
+        // A message that is inflight past the redeliver time comes back.
+        let redelivered = inbox
+            .inflight
+            .values()
+            .filter(|at| now.duration_since(**at) >= REDELIVER_AFTER)
+            .count() as u64;
+        Ok(InboxStats {
+            pending,
+            ack_pending: inbox.inflight.len() as u64,
+            redelivered,
+        })
     }
 
     async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>> {
