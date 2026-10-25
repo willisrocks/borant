@@ -25,7 +25,7 @@ use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
-use borant_hub::{ChangeWatch, ElasticConfig};
+use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -275,6 +275,10 @@ pub struct HubFile {
     /// `[secrets]`, the rules of a bundle member at a usage limit.
     #[serde(default)]
     pub secrets: HubSecretsFile,
+    /// `[http]`: the read-only listener of the web view, off unless `listen`
+    /// is set.
+    #[serde(default)]
+    pub http: HttpConfig,
 }
 
 /// `[secrets]` of `hub.toml`. Phase 1 holds the member rules only.
@@ -1698,5 +1702,32 @@ mod changes_tests {
         );
         let f = file("[changes]\nadapter = \"github\"\nprogram = \"x\"\n");
         assert!(f.changes_watch().await.is_err(), "only exec exists");
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+
+    /// The phase 8 spec example: any socket address, unset keeps it off.
+    #[test]
+    fn config_parses_http_listen() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [http]
+            listen = "100.101.102.103:7420"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(f.http.listen, Some("100.101.102.103:7420".parse().unwrap()));
+    }
+
+    #[test]
+    fn config_without_http_has_no_listener() {
+        for toml in ["", "[http]"] {
+            let f: HubFile = toml::from_str(toml).unwrap();
+            assert_eq!(f.http, HttpConfig::default());
+            assert!(f.http.listen.is_none());
+        }
     }
 }
