@@ -5,6 +5,7 @@ mod config;
 mod hook;
 mod mcp;
 mod roles;
+mod secret_exec;
 
 use clap::Parser;
 
@@ -23,6 +24,17 @@ fn init_tracing(to_stderr: bool) {
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    // The shim replaces this process and must print nothing but its own
+    // errors, so it runs before tracing and the runtime start.
+    if let Command::SecretExec { dir, command } = &cli.command {
+        return match secret_exec::run(dir, command) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("borant: {e:#}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     // Hooks and the MCP server must stay silent unless asked.
     let quiet = matches!(cli.command, Command::Hook { .. } | Command::Mcp);
     init_tracing(!quiet || std::env::var_os("BORANT_LOG").is_some());
