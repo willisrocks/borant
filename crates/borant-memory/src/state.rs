@@ -13,13 +13,14 @@ use crate::Availability;
 type Map = BTreeMap<String, (Bytes, u64)>;
 
 /// The keys that the real KV refuses, refused here too, so a test sees what
-/// production sees.
+/// production sees. Each `.`-separated part holds letters, digits, `-`, `_`,
+/// `/`, and `=`; `:` is refused like everything else.
 fn check_key(key: &str) -> PortResult<()> {
     if borant_core::keys::valid_key(key) {
         return Ok(());
     }
     Err(PortError::other(format!(
-        "key cannot be empty or start/end with \".\": {key:?}"
+        "invalid key {key:?}: each part takes only letters, digits, - _ / ="
     )))
 }
 

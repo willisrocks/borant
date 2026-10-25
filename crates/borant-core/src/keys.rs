@@ -3,17 +3,42 @@
 
 use crate::ids::{AgentId, ChannelName, HostName, ProjectName, SessionId, TaskId};
 
-/// True when a state store accepts this key. The KV of the real adapter
-/// refuses an empty key, one that starts or ends with `.`, one with an empty
-/// part (`..`), and one with whitespace, `*`, or `>`. A caller that builds a
-/// key from a stored record checks it first, so one odd record cannot fail a
-/// whole pass.
+/// True when a state store accepts this key. The KV of the real adapter takes
+/// tokens separated by `.`, each of letters, digits, `-`, `_`, `/`, and `=`;
+/// everything else, `:` included, is refused. A caller that builds a key from
+/// a record checks it first, so one odd record cannot fail a whole pass.
 pub fn valid_key(key: &str) -> bool {
     !key.is_empty()
-        && !key.starts_with('.')
-        && !key.ends_with('.')
-        && !key.contains("..")
-        && !key.contains(|c: char| c.is_whitespace() || c == '*' || c == '>')
+        && key.split('.').all(|token| {
+            !token.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '='))
+        })
+}
+
+/// One part of a KV key, escaped into the characters the KV takes: every other
+/// byte becomes `=` and two hex digits, so `:` is `=3a` and `.` is `=2e`.
+/// A reader takes the alert back from its stored rule and subject, so it never
+/// decodes this.
+pub fn escape_part(part: &str) -> String {
+    let mut out = String::with_capacity(part.len());
+    for byte in part.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'/') {
+            out.push(char::from(byte));
+        } else {
+            out.push('=');
+            out.push_str(&format!("{byte:02x}"));
+        }
+    }
+    out
+}
+
+/// The KV key of one alert. The alert key of the rules stays
+/// `<rule>:<subject>`, in memory and in the stored value; only this KV key is
+/// escaped, because the KV refuses `:`.
+pub fn alert(rule: &str, subject: &str) -> String {
+    format!("alert.{}.{}", escape_part(rule), escape_part(subject))
 }
 
 pub fn agent(id: &AgentId) -> String {
@@ -169,9 +194,36 @@ mod tests {
     /// The keys that the KV refuses, which a caller must not build.
     #[test]
     fn valid_key_refuses_the_shapes_the_store_refuses() {
-        assert!(valid_key("alert.host_offline:vps-1"));
-        for key in ["", ".", "alert.", ".alert", "alert..x", "a b", "a*", "a>"] {
+        assert!(valid_key("agent.a1"));
+        assert!(valid_key("alert.members_limited.fake-auth"));
+        // `:` is the one no one saw: every alert key had one, and the KV
+        // refuses it.
+        for key in [
+            "",
+            ".",
+            "alert.",
+            ".alert",
+            "alert..x",
+            "alert.members_limited:fake-auth",
+            "a b",
+            "a*",
+            "a>",
+            "a#",
+        ] {
             assert!(!valid_key(key), "{key:?} is refused");
         }
+    }
+
+    /// Rule: an alert's KV key holds no `:`, and the escape is unambiguous.
+    #[test]
+    fn alert_keys_escape_what_the_kv_refuses() {
+        let key = alert("members_limited", "fake-auth");
+        assert_eq!(key, "alert.members_limited.fake-auth");
+        assert!(valid_key(&key));
+        // A subject with a `:` or a `.` is escaped, never split.
+        let key = alert("agent_stalled", "a:b.c");
+        assert_eq!(key, "alert.agent_stalled.a=3ab=2ec");
+        assert!(valid_key(&key));
+        assert_eq!(escape_part("="), "=3d");
     }
 }
