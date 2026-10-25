@@ -165,6 +165,7 @@ impl Hub {
                     has_repo_access: true,
                     recently_failed: failed.is_some_and(|f| f.contains(&name)),
                     mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
+                    disk_used_pct: mem.host_stats.get(&name).and_then(|s| s.disk_used_pct),
                     pool: d.value.pool.clone(),
                     info: d.value,
                 }
