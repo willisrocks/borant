@@ -247,6 +247,7 @@ async fn pinned_move_is_skipped() {
                     host: Some(host()),
                     harness: None,
                 },
+                member: None,
             },
         )
         .await

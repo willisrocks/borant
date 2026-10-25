@@ -417,6 +417,10 @@ pub enum ToolCall {
         selector: MoveSelector,
         #[serde(default)]
         to: MoveTarget,
+        /// Switch the agent to this member of its bundle, on the target host
+        /// (the current host when `to.host` is absent).
+        #[serde(default)]
+        member: Option<MemberName>,
     },
     Drain {
         host: HostName,
