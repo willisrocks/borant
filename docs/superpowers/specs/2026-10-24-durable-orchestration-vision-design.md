@@ -158,7 +158,7 @@ state store, so a hub restart or a hub restore keeps them.
 | Stall detection | A worker that is alive but makes no progress gets noticed. | Host heartbeats add the time of the last session-log event for each session. The hub sets `stuck` after `stall_after` (default 20 minutes) with no event. | S | None | Do next |
 | Retry count | A task that fails three times goes to a human, not to a fourth worker. | `attempt` and `max_attempts` on a task. A claim timeout or a reopen adds one. At the limit, the hub sets `needs_human`. | S | None | Do next |
 | Agent waits | An agent can stop and wake later on an event or a time, at no token cost. Example: "wake me when task X closes or in 2 hours". | A new tool `wait` with a match (task event, PR event, message from an agent) and a required timeout. The hub stores `wait.{agent}.{id}`. On a match or a timeout, it sends a direct message, which wakes the agent. The inbox belongs to the agent, so a wait survives a move. | S to M | Idempotency keys | Do next |
-| Schedules (recurring work) | Nightly or hourly work with no human: a morning report, a dependency update, a review of nightly test results. | `sched.{name}` holds a cron rule, a time zone, an overlap policy (`skip` or `buffer_one`, from Temporal), and a target: a task from a template in a channel, or a message to an agent. The hub tick fires it. The idempotency key is the name plus the fire time, so a hub restart never fires twice. | M | Idempotency keys, deadlines, track 3 for spawns | Later. First item after the roadmap. See question 2. |
+| Schedules (recurring work) | Nightly or hourly work with no human: a morning report, a dependency update, a review of nightly test results. | `sched.{name}` holds a cron rule, a time zone, an overlap policy (`skip` or `buffer_one`, from Temporal), and a target: a task from a template in a channel, or a message to an agent. The hub tick fires it. The idempotency key is the name plus the fire time, so a hub restart never fires twice. | M | Idempotency keys, deadlines, track 3 for spawns | Later. First item after the roadmap. Borant is the scheduler (question 2, answered 2026-10-25). |
 | Run until done | A goal keeps going across turns, harnesses, and moves until a test passes or a cap is hit. | Per agent: `until` (a close gate or "all claimed tasks closed") and `max_continues`. When the agent goes idle and `until` is false, the host daemon sends "continue". This is the Ralph loop for every harness, with a real test. | S | Close gates, governors | Later. It is unsafe before governors exist. |
 | Pause and resume of a channel | Stop a whole swarm without losing its state, for example over the weekend. | See governors in section 7. A pause ends each session with a final checkpoint and keeps claims and inboxes. A resume starts the agents again from their history. | S | None | Do next, as part of governors |
 | Checkpoints of a plan | Go back to an earlier task graph. | The graph is already durable in KV, and the export can write one channel. | S | None | Skip. No use case beyond the export. |
@@ -338,9 +338,9 @@ suite.
 1. Hub risk. Is a hub outage of about 15 minutes with a manual restore
    acceptable for now? If not, the NATS cluster moves into the roadmap and
    needs a third VPS.
-2. Schedules. The steve bot already runs schedules. Do you want recurring
-   work in Borant too, or does steve stay the scheduler and send messages
-   to Borant agents?
+2. Schedules. The steve bot already runs schedules. Answered 2026-10-25:
+   Borant schedules recurring work; steve is not the scheduler for it. The
+   first version is configured in `hub.toml` (phase 9 design).
 3. Spend. Do the Claude Code sessions run on a flat subscription? If yes,
    dollar caps matter only for DeepSeek through LunaRoute, and caps on
    turns and hours are enough for Claude.

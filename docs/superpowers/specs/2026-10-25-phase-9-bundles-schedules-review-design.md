@@ -8,8 +8,9 @@ Three items from the roadmap's "Later" list, kept small:
 2. Schedules from the
    [durable orchestration vision](2026-10-24-durable-orchestration-vision-design.md)
    (its table of later items, "Schedules"). Chris's open question 2 there
-   (Borant or the steve bot as the scheduler) is still open; the supervisor
-   asked for a small first version now, configured only in `hub.toml`.
+   (Borant or the steve bot as the scheduler) is closed: on 2026-10-25 he
+   decided that Borant schedules recurring work. This is the small first
+   version, configured only in `hub.toml`.
 3. Cross-harness review as a recipe in the orchestrate skill, with no hub
    code.
 
@@ -101,10 +102,10 @@ stores and the fake exec plugin of the tests.
 
 Decision: schedules come from `hub.toml`; there are no calls to create or
 delete one.
-Evidence: Chris has not decided whether Borant or the steve bot schedules
-recurring work (vision question 2). A config file keeps the first version
-small and reversible, and borant-infra already owns `hub.toml`.
-Reversible: yes. Calls can come when Chris decides.
+Evidence: Chris decided on 2026-10-25 that Borant, not the steve bot,
+schedules recurring work (vision question 2). A config file keeps the first
+version small and reversible, and borant-infra already owns `hub.toml`.
+Reversible: yes. Calls can come later.
 
 ### A cron crate, not our own parser
 
