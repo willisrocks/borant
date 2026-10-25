@@ -299,7 +299,7 @@ impl Host {
         match self.hub(&req).await {
             Ok(v) => {
                 *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-                self.mark_hub_up();
+                let stable = self.mark_hub_up();
                 let reply = serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
                     .unwrap_or_default();
                 let lost = reply.lost;
@@ -322,7 +322,11 @@ impl Host {
                     let host = self.clone();
                     tokio::spawn(async move { host.stop_fenced(sid).await });
                 }
-                self.wake_unpaused().await;
+                // A hub that flaps during its restart must not wake a session
+                // into paused tools again: wait for a stable recovery.
+                if stable {
+                    self.wake_unpaused().await;
+                }
                 self.heartbeat_recovered();
             }
             Err(e) => {
@@ -342,14 +346,16 @@ impl Host {
         }
     }
 
-    /// Notes one successful heartbeat. The hub is fully recovered once it
-    /// stays reachable for a lease, so a new outage wakes its sessions again.
-    fn mark_hub_up(&self) {
+    /// Notes one successful heartbeat. Returns true when the hub has stayed
+    /// reachable for a lease, so the recovery is stable and the sessions it
+    /// paused can be woken.
+    fn mark_hub_up(&self) -> bool {
         let mut st = self.state();
         let since = *st.up_since.get_or_insert_with(Instant::now);
         if since.elapsed() >= self.inner.cfg.lease {
             st.outage_over = true;
         }
+        st.outage_over
     }
 
     fn mark_hub_down(&self) {

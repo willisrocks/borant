@@ -48,6 +48,15 @@ async fn wake_messages(fx: &Fx, agent: &AgentId) -> usize {
         .count()
 }
 
+/// The reason the tools of a session are blocked, if any.
+async fn fence(fx: &Fx, session: SessionId) -> Option<String> {
+    fx.host
+        .event(session, LocalEvent::TurnStart)
+        .await
+        .unwrap()
+        .fenced
+}
+
 #[tokio::test]
 async fn register_when_hub_down_detaches_then_attaches() {
     let mut fx = Fx::new(false, |_| {}).await;
@@ -372,23 +381,30 @@ async fn hub_return_wakes_paused_sessions_once() {
     fx.hub_stop.take().unwrap().cancel();
     tokio::time::sleep(Duration::from_millis(400)).await;
     fx.host.heartbeat_once().await;
-    let paused = fx
-        .host
-        .event(a.session, LocalEvent::TurnStart)
-        .await
-        .unwrap();
-    assert!(paused.fenced.unwrap().contains("unreachable"));
+    assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
 
-    // The hub is back: one wake message through the normal delivery path,
-    // and the tools work again.
+    // A brief success is not a stable recovery: the tools work again, but
+    // the session is not woken into a hub that may go away again.
     fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
     fx.host.heartbeat_once().await;
-    let back = fx
-        .host
-        .event(a.session, LocalEvent::TurnStart)
-        .await
-        .unwrap();
-    assert_eq!(back.fenced, None);
+    assert_eq!(fence(&fx, a.session).await, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 0);
+
+    // The hub flaps: down past the lease again, then up.
+    fx.hub_stop.take().unwrap().cancel();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
+    assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
+    fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
+    fx.host.heartbeat_once().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(wake_messages(&fx, &agent("a")).await, 0);
+
+    // One wake per session, once the hub stays reachable for a lease. The
+    // message goes through the normal delivery path.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    fx.host.heartbeat_once().await;
     let woken = fx
         .host
         .wait(a.session, Duration::from_secs(2))
@@ -398,42 +414,27 @@ async fn hub_return_wakes_paused_sessions_once() {
         woken.iter().any(|e| e.text == HUB_BACK),
         "the session did not wake: {woken:?}"
     );
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(wake_messages(&fx, &agent("a")).await, 1);
 
     // A session that the pause did not catch gets nothing.
     let b = fx.session("b", "wb").await;
     fx.host.heartbeat_once().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(wake_messages(&fx, &agent("b")).await, 0);
 
-    // A pause during the same outage sends nothing, even though the hub
-    // answers briefly.
+    // A new outage after the full recovery wakes every session once.
     fx.hub_stop.take().unwrap().cancel();
     tokio::time::sleep(Duration::from_millis(400)).await;
     fx.host.heartbeat_once().await;
     fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
     fx.host.heartbeat_once().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(wake_messages(&fx, &agent("a")).await, 1);
-    assert_eq!(wake_messages(&fx, &agent("b")).await, 0);
-
-    // After a full recovery, a new outage wakes the sessions again.
     tokio::time::sleep(Duration::from_millis(400)).await;
-    fx.host.heartbeat_once().await;
-    fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    fx.host.heartbeat_once().await;
-    fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
     fx.host.heartbeat_once().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(wake_messages(&fx, &agent("a")).await, 2);
     assert_eq!(wake_messages(&fx, &agent("b")).await, 1);
-    let back = fx
-        .host
-        .event(b.session, LocalEvent::TurnStart)
-        .await
-        .unwrap();
-    assert_eq!(back.fenced, None);
+    assert_eq!(fence(&fx, b.session).await, None);
 }
 
 #[tokio::test]
