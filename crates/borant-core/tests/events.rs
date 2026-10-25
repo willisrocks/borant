@@ -92,6 +92,11 @@ fn every_kind() -> Vec<SwarmEventBody> {
             harness: Harness::Omp,
             reason: "done".into(),
         },
+        SwarmEventBody::SessionRelaunch {
+            session: session(),
+            reason: "session shutdown".into(),
+            failed: Some("h1: offline".into()),
+        },
         SwarmEventBody::SessionPaused {
             why: "limit".into(),
         },
