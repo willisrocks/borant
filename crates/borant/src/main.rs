@@ -7,6 +7,7 @@ mod hook;
 mod mcp;
 mod roles;
 mod secret_exec;
+mod top;
 
 use clap::Parser;
 
