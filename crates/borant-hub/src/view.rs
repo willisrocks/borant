@@ -69,6 +69,11 @@ impl Hub {
                 // The claim needs a scan of every channel's tasks; the top
                 // task adds it with its own query.
                 claim: None,
+                role: agent.role.clone(),
+                collection: agent.collection.clone(),
+                pinned: agent.pinned,
+                retired: agent.retired,
+                model: agent.model.clone(),
             });
             // A bus that cannot report the counts leaves the agent out.
             if let Ok(stats) = self.bus.inbox_stats(&agent.id).await {

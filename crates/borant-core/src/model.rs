@@ -801,6 +801,22 @@ pub struct AgentStatus {
     /// The open task that it claimed.
     #[serde(default)]
     pub claim: Option<TaskId>,
+    /// The role from `hub.toml`, when the agent was spawned or started with
+    /// one.
+    #[serde(default)]
+    pub role: Option<RoleName>,
+    /// The collection that holds the agent.
+    #[serde(default)]
+    pub collection: Option<CollectionName>,
+    /// A pinned agent is never replaced, and its tools survive a pause.
+    #[serde(default)]
+    pub pinned: bool,
+    /// A retired agent is never placed again.
+    #[serde(default)]
+    pub retired: bool,
+    /// The model that the harness runs, when one was chosen.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// The inbox counts of one agent in the live view.

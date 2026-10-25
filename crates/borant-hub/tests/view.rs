@@ -137,3 +137,94 @@ async fn view_shows_a_host_without_stats() {
     assert!(view.hosts[0].last_seen.is_some(), "registering sets it");
     assert!(view.agents.is_empty());
 }
+
+/// The view carries the same facts as `borant agents`: the role, the
+/// collection, the pin, the model, and the retirement state.
+#[tokio::test]
+async fn view_carries_the_role_the_collection_the_pin_and_the_model() {
+    use borant_core::keys;
+    use borant_core::model::Agent;
+    use borant_core::ports::StateStore;
+    use borant_core::proto::RegisterSession;
+
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let chief: AgentId = "chief".parse().unwrap();
+    fx.req(CtlRequest::RegisterSession(RegisterSession {
+        session: borant_core::SessionId::new(),
+        host: name("h1"),
+        harness: Harness::Fake,
+        pid: Some(1),
+        cwd: "/work".into(),
+        agent: Some(chief.clone()),
+        role: Some("chief".parse().unwrap()),
+        collection: Some("personal".parse().unwrap()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    // The spawn sets the model; the test writes it into the hub's record.
+    let key = keys::agent(&chief);
+    let entry = fx.state.get(&key).await.unwrap().expect("the agent record");
+    let mut record: Agent = serde_json::from_slice(&entry.value).unwrap();
+    record.model = Some("opus".into());
+    fx.state
+        .update(
+            &key,
+            serde_json::to_vec(&record).unwrap().into(),
+            entry.revision,
+        )
+        .await
+        .unwrap();
+    fx.call(
+        None,
+        ToolCall::Pin {
+            agent: chief.clone(),
+            on: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    let v = fx
+        .req(CtlRequest::Call {
+            actor: None,
+            key: None,
+            call: ToolCall::View,
+        })
+        .await
+        .unwrap();
+    let view: SwarmView = serde_json::from_value(v).unwrap();
+    let a: &AgentStatus = view
+        .agents
+        .iter()
+        .find(|a| a.agent == chief)
+        .expect("the chief is in the view");
+    assert_eq!(a.role.as_ref().map(|r| r.as_str()), Some("chief"));
+    assert_eq!(a.collection.as_ref().map(|c| c.as_str()), Some("personal"));
+    assert!(a.pinned);
+    assert!(!a.retired);
+    assert_eq!(a.model.as_deref(), Some("opus"));
+}
+
+/// A view from an older hub has no such fields; the parse keeps them at their
+/// defaults.
+#[test]
+fn view_parses_without_the_new_agent_fields() {
+    let old = serde_json::json!({
+        "hosts": [],
+        "agents": [{
+            "agent": "w1",
+            "harness": "fake",
+            "host": "h1",
+            "busy": false
+        }],
+        "inboxes": [],
+        "at": 1000
+    });
+    let view: SwarmView = serde_json::from_value(old).unwrap();
+    assert_eq!(view.agents[0].role, None);
+    assert_eq!(view.agents[0].model, None);
+    assert!(!view.agents[0].pinned);
+    assert!(!view.agents[0].retired);
+}
