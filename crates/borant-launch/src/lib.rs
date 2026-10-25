@@ -44,10 +44,29 @@ pub fn launcher_for_with(
         "zellij" => Ok(Box::new(ZellijLauncher::new(log_dir))),
         "orca" => Ok(Box::new(OrcaLauncher)),
         "herdr" => Ok(Box::new(HerdrLauncher::new(herdr.clone()))),
-        other => Err(format!(
-            "unknown launcher {other:?}: use process, headless, tmux, zellij, orca, or herdr"
-        )),
+        other => Err(unknown_launcher(other)),
     }
+}
+
+/// The launcher that a host uses when its `host.toml` names none.
+pub const DEFAULT_LAUNCHER: &str = "tmux";
+
+/// The program that `kind` needs on `PATH`, or `None` when the launcher is
+/// this binary. The herdr program is the one of `[herdr]`. `borant doctor`
+/// checks it without starting it.
+pub fn launcher_program(kind: &str, herdr: &HerdrConfig) -> Result<Option<String>, String> {
+    match kind {
+        "process" | "headless" => Ok(None),
+        "tmux" => Ok(Some("tmux".to_owned())),
+        "zellij" => Ok(Some("zellij".to_owned())),
+        "orca" => Ok(Some("orca".to_owned())),
+        "herdr" => Ok(Some(herdr.program.clone())),
+        other => Err(unknown_launcher(other)),
+    }
+}
+
+fn unknown_launcher(kind: &str) -> String {
+    format!("unknown launcher {kind:?}: use process, headless, tmux, zellij, orca, or herdr")
 }
 
 /// The terminal multiplexer session name for an agent.

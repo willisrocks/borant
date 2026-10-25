@@ -99,7 +99,7 @@ impl HostConfig {
         Self {
             name,
             home,
-            launcher: "tmux".into(),
+            launcher: borant_launch::DEFAULT_LAUNCHER.into(),
             max_agents: 4,
             always_on: false,
             reserve_mem_mb: 1024,
@@ -907,7 +907,7 @@ pub(crate) fn terminate(pid: u32) {
 /// How full the file system that holds `path` is, as a percentage, from the
 /// longest mount point that contains it. `None` when no disk matches, so an
 /// unknown disk passes every rule that reads it.
-fn disk_used_pct(path: &Path) -> Option<f64> {
+pub fn disk_used_pct(path: &Path) -> Option<f64> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = disks
         .list()
