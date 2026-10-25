@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::ids::{
     AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
-    ProjectName, SessionId, TaskId,
+    PoolName, ProjectName, SessionId, Tag, TaskId,
 };
 use crate::time::Timestamp;
 
@@ -179,6 +179,12 @@ pub struct HostInfo {
     /// The bundles of this host with two or more members.
     #[serde(default)]
     pub members: BTreeMap<BundleName, MemberBundle>,
+    /// The pool that created this host. `None` for a static host.
+    #[serde(default)]
+    pub pool: Option<PoolName>,
+    /// The tags of this host, for example `vps` for a pool host.
+    #[serde(default)]
+    pub tags: Vec<Tag>,
 }
 
 /// The bundles of a host that have several members, and the harnesses whose
