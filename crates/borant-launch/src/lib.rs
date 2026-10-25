@@ -1,7 +1,9 @@
 //! Launcher adapters for the [`Launcher`] port: a detached process, tmux,
-//! zellij, and Orca. [`harness::command`] builds the program for each harness.
+//! zellij, Orca, and herdr. [`harness::command`] builds the program for each
+//! harness.
 
 pub mod harness;
+pub mod herdr;
 mod orca;
 mod process;
 mod tmux;
@@ -13,23 +15,35 @@ use std::process::{Output, Stdio};
 use borant_core::AgentId;
 use borant_core::ports::{LaunchHandle, Launcher, PortError, PortResult};
 
+pub use herdr::{HerdrConfig, HerdrLauncher};
 pub use orca::OrcaLauncher;
 pub use process::ProcessLauncher;
 pub use tmux::TmuxLauncher;
 pub use zellij::ZellijLauncher;
 
 /// Returns the launcher for a host configuration `launcher` value:
-/// `process`, `headless` (the same as `process`), `tmux`, `zellij`, or
-/// `orca`. The process launcher writes logs to `log_dir`, and the zellij
+/// `process`, `headless` (the same as `process`), `tmux`, `zellij`, `orca`,
+/// or `herdr`. The process launcher writes logs to `log_dir`, and the zellij
 /// launcher writes its layout files there.
 pub fn launcher_for(kind: &str, log_dir: PathBuf) -> Result<Box<dyn Launcher>, String> {
+    launcher_for_with(kind, log_dir, &HerdrConfig::default())
+}
+
+/// [`launcher_for`], with the `[herdr]` section of `host.toml` for the herdr
+/// launcher.
+pub fn launcher_for_with(
+    kind: &str,
+    log_dir: PathBuf,
+    herdr: &HerdrConfig,
+) -> Result<Box<dyn Launcher>, String> {
     match kind {
         "process" | "headless" => Ok(Box::new(ProcessLauncher::new(log_dir))),
         "tmux" => Ok(Box::new(TmuxLauncher)),
         "zellij" => Ok(Box::new(ZellijLauncher::new(log_dir))),
         "orca" => Ok(Box::new(OrcaLauncher)),
+        "herdr" => Ok(Box::new(HerdrLauncher::new(herdr.clone()))),
         other => Err(format!(
-            "unknown launcher {other:?}: use process, headless, tmux, zellij, or orca"
+            "unknown launcher {other:?}: use process, headless, tmux, zellij, orca, or herdr"
         )),
     }
 }
@@ -98,10 +112,18 @@ mod tests {
             ("tmux", "tmux"),
             ("zellij", "zellij"),
             ("orca", "orca"),
+            ("herdr", "herdr"),
         ] {
             let launcher = launcher_for(kind, PathBuf::from("/tmp")).unwrap();
             assert_eq!(launcher.kind(), want);
         }
         assert!(launcher_for("screen", PathBuf::from("/tmp")).is_err());
+        let herdr = HerdrConfig {
+            session: "p5".into(),
+            program: "herdr-dev".into(),
+            ssh: None,
+        };
+        let launcher = launcher_for_with("herdr", PathBuf::from("/tmp"), &herdr).unwrap();
+        assert_eq!(launcher.kind(), "herdr");
     }
 }
