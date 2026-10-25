@@ -1,5 +1,7 @@
 //! Request dispatch and the channel and agent calls.
 
+use std::time::Duration;
+
 use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::schema;
@@ -236,6 +238,9 @@ impl Hub {
                 Ok(json!({ "draining": host, "moving": moved }))
             }
             ToolCall::ListAgents => self.list_agents().await,
+            ToolCall::PruneAgents { older_than_secs } => {
+                crate::prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
+            }
             ToolCall::ListHosts => self.list_hosts(mem).await,
             ToolCall::ProjectAdd { project } => {
                 if project.remote_url.trim().is_empty() || project.default_branch.trim().is_empty()

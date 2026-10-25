@@ -308,10 +308,13 @@ agent session can call it too, which is harmless because it writes nothing.
 Old hosts reject the new variant, so it works on a host only after the phase 0
 release reaches that host.
 
-The hub must not hold the `mem` mutex while it reads about 146 inboxes and
-session logs, because every heartbeat waits for that mutex. Like the
-snapshot, the hub reads the KV state under the mutex, releases it, then reads
-the inboxes and the session logs. The CLI prints the result. Without `--dry-run`, the command exits with
+The hub must not hold the `mem` mutex while it reads the KV state, about 146
+inboxes, and the session logs, because every heartbeat waits for that mutex
+and `NatsState::list` reads one key at a time over about 1758 keys. Unlike the
+snapshot, the prune takes the mutex only to copy the pending moves, because a
+dry run needs no consistent read of the state. It then reads the KV state, the
+inboxes, and the session logs without the mutex. The CLI prints the result.
+Without `--dry-run`, the command exits with
 "only --dry-run is available". `--older-than-hours` sets the age, default 24.
 
 An agent is a candidate only if all of these are true:

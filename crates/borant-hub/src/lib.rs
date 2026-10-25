@@ -7,6 +7,7 @@ mod calls;
 pub mod export;
 mod leases;
 mod moves;
+mod prune;
 mod store;
 mod tasks;
 
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 use borant_core::model::{HubLease, MoveReason};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
-use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply};
+use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::{AgentId, Clock, FencingToken, HostName, Timestamp, keys, subjects};
 use futures::StreamExt;
@@ -107,6 +108,28 @@ impl Hub {
         if mem.maintenance && !matches!(req, CtlRequest::Maintenance { .. }) {
             return Reply::Error(ApiError::unavailable("the hub is in maintenance mode"));
         }
+        let req = match req {
+            // A prune reads every inbox and session log. `prune_agents` takes
+            // `mem` itself, briefly, so the request does not hold it.
+            CtlRequest::Call {
+                actor,
+                call: ToolCall::PruneAgents { older_than_secs },
+            } => {
+                drop(mem);
+                let result = async {
+                    if let Some(a) = &actor {
+                        self.verify_actor(a).await?;
+                    }
+                    prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
+                }
+                .await;
+                if let Err(e) = &result {
+                    tracing::debug!("request failed: {e}");
+                }
+                return result.into();
+            }
+            other => other,
+        };
         let result = self.dispatch(&mut mem, req).await;
         if let Err(e) = &result {
             match e.code {

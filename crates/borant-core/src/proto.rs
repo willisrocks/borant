@@ -287,6 +287,11 @@ pub enum ToolCall {
     },
     ListAgents,
     ListHosts,
+    /// Lists the agents that a prune would remove. Writes and deletes nothing.
+    PruneAgents {
+        #[serde(default = "default_prune_secs")]
+        older_than_secs: u64,
+    },
     /// Creates or replaces a project.
     ProjectAdd {
         project: Project,
@@ -299,6 +304,11 @@ pub enum ToolCall {
 
 fn default_page_size() -> usize {
     100
+}
+
+/// One day, the default age of an agent that a prune may remove.
+fn default_prune_secs() -> u64 {
+    24 * 60 * 60
 }
 
 impl ToolCall {
