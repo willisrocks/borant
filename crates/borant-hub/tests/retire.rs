@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use borant_core::events::{EventFilter, kind_of};
 use borant_core::model::{
-    Agent, CloseReason, Harness, HostInfo, Lease, LeaseState, NewTask, RepoInfo, Task, TaskRef,
-    TaskStatus,
+    Agent, CloseReason, Harness, HostInfo, HostStats, Lease, LeaseState, NewTask, RepoInfo, Task,
+    TaskRef, TaskStatus,
 };
 use borant_core::ports::{EventLog, MessageBus, StateStore};
 use borant_core::proto::{
@@ -104,6 +104,34 @@ impl Fx {
     }
 
     async fn heartbeat(&self, host: &str, w: &Registered, idle: Option<Timestamp>) {
+        self.heartbeat_with(host, w, idle, None).await;
+    }
+
+    /// A heartbeat that carries the `SessionStats` of the session, whose
+    /// `busy` is the turn state that `TurnStart` and `TurnEnd` set on the
+    /// host. The session reports no turn end, as an omp session that waits
+    /// for its first prompt does.
+    async fn heartbeat_busy(&self, host: &str, w: &Registered, busy: bool) {
+        let stats = HostStats {
+            sessions: vec![
+                serde_json::from_value(serde_json::json!({
+                    "agent": w.agent,
+                    "busy": busy,
+                }))
+                .unwrap(),
+            ],
+            ..Default::default()
+        };
+        self.heartbeat_with(host, w, None, Some(stats)).await;
+    }
+
+    async fn heartbeat_with(
+        &self,
+        host: &str,
+        w: &Registered,
+        idle: Option<Timestamp>,
+        stats: Option<HostStats>,
+    ) {
         self.req(CtlRequest::HostHeartbeat {
             host: host.parse().unwrap(),
             sessions: vec![SessionLeaseRef {
@@ -114,7 +142,7 @@ impl Fx {
                 last_event_at: None,
                 pinned: false,
             }],
-            stats: None,
+            stats,
         })
         .await
         .unwrap();
@@ -331,6 +359,154 @@ async fn retire_an_idle_session_stops_at_once() {
     // A later turn end does not send a second stop.
     fx.heartbeat("h1", &w, Some(now)).await;
     assert!(next_cmd(&mut cmds).await.is_none());
+}
+
+/// A session that the host reports no stats for gives the hub no turn state at
+/// all: the retire holds the stop for the safety grace, then sends it anyway,
+/// so the session cannot keep its lease and its clone for ever.
+#[tokio::test]
+async fn retire_stops_a_session_with_no_turn_state_at_the_safety_grace() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    // No heartbeat at all before the close: the hub knows nothing about the
+    // turn of the session, only the session that the agent row names.
+    close(&fx, &owner, &bound).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the turn may still run"
+    );
+
+    // The host reports the session, but no stats: the safety grace runs.
+    fx.heartbeat("h1", &w, None).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "the grace runs");
+    fx.clock.advance(Duration::from_secs(599));
+    fx.heartbeat("h1", &w, None).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "no stop before the safety grace"
+    );
+
+    // Past the grace, the stop goes out even though no state ever arrives.
+    fx.clock.advance(Duration::from_secs(2));
+    fx.heartbeat("h1", &w, None).await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop after the grace, got {other:?}"),
+    }
+    fx.heartbeat("h1", &w, None).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the hub sends one stop for the session"
+    );
+}
+
+/// A session whose stats say it is not busy (an omp session that waits for its
+/// first prompt reports `busy: false` and no `idle_since`) stops at the next
+/// heartbeat, so a cancelled idle worker never runs on.
+#[tokio::test]
+async fn retire_stops_a_not_busy_session_at_the_next_heartbeat() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    // No stats before the close, so the retire cannot know the turn state.
+    close(&fx, &owner, &bound).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the turn may still run"
+    );
+
+    fx.heartbeat_busy("h1", &w, false).await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop at the next heartbeat, got {other:?}"),
+    }
+    fx.heartbeat_busy("h1", &w, false).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the hub sends one stop for the session"
+    );
+}
+
+/// A session whose stats say it is busy keeps its turn: no stop at the safety
+/// grace, and the stop at the first heartbeat that reports the turn ended, so
+/// a worker that writes its last message is not cut off.
+#[tokio::test]
+async fn retire_does_not_stop_a_busy_session_at_the_grace() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    // The session is in a turn when the bound task closes.
+    fx.heartbeat_busy("h1", &w, true).await;
+    close(&fx, &owner, &bound).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "no stop in a turn");
+
+    fx.clock.advance(Duration::from_secs(31));
+    fx.heartbeat_busy("h1", &w, true).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "a busy session is not stopped at the grace"
+    );
+    fx.clock.advance(Duration::from_secs(599));
+    fx.heartbeat_busy("h1", &w, true).await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "a busy session is not stopped at the safety grace"
+    );
+
+    // The turn ends: the stop goes out.
+    fx.heartbeat_busy("h1", &w, false).await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop at the turn end, got {other:?}"),
+    }
+}
+
+/// A cancel of a session that has not ended its turn says `stopped: false`
+/// and when the stop comes, so a reply never claims a stop that did not go out.
+#[tokio::test]
+async fn retire_cancel_says_stopping_when_the_turn_has_not_ended() {
+    let (fx, owner, w, _bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    fx.heartbeat_busy("h1", &w, true).await;
+
+    let reply = fx
+        .call(
+            Some(&owner),
+            ToolCall::Cancel {
+                agent: w.agent.clone(),
+                close_task: None,
+            },
+        )
+        .await
+        .expect("cancel");
+
+    assert_eq!(reply["cancelled"], true);
+    assert_eq!(reply["stopped"], false, "no stop went out yet");
+    assert_eq!(reply["stopping"], "at the turn end");
+    assert!(fx.agent_of(&w.agent).await.retired);
+    assert!(next_cmd(&mut cmds).await.is_none(), "no stop in a turn");
+}
+
+/// The work dir of a retired agent goes also when a person stopped its session
+/// from outside: the host reports no session, so the clone goes without any
+/// stop of the hub.
+#[tokio::test]
+async fn retire_deletes_the_work_dir_of_a_session_stopped_from_outside() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    fx.heartbeat_busy("h1", &w, true).await;
+    close(&fx, &owner, &bound).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "the session runs");
+
+    // The owner killed the session: the host no longer reports it.
+    fx.heartbeat_empty("h1").await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::DeleteWork { agent }) => assert_eq!(agent, w.agent),
+        other => panic!("expected a delete-work order, got {other:?}"),
+    }
+    fx.heartbeat_empty("h1").await;
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "one delete for the agent"
+    );
 }
 
 /// The work dir of a retired agent goes only after its session ended: the

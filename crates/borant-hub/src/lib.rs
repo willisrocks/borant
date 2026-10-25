@@ -112,6 +112,9 @@ pub(crate) struct Memory {
     pub park_sent: HashMap<AgentId, Timestamp>,
     /// The sessions that the hub already told to stop, so it sends one.
     pub stopped: HashSet<SessionId>,
+    /// The sessions of retired agents that still wait for a turn end, with the
+    /// time of the retire that started their grace.
+    pub stop_pending: BTreeMap<AgentId, crate::retire::StopWait>,
     /// Retired agents whose work dir still waits for their session to end,
     /// with the host that keeps it.
     pub delete_pending: BTreeMap<AgentId, HostName>,

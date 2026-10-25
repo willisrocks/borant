@@ -575,10 +575,9 @@ impl Hub {
             match lease.as_ref().map(|l| &l.value.state) {
                 // A running agent stops the way a retired one does: its
                 // claims go back to open, and its session stops now when it
-                // is idle, else at its next turn end.
+                // is idle, else at its next turn end or at the retire grace.
                 Some(LeaseState::Held { .. }) => {
-                    self.retire(mem, &doc.value).await?;
-                    stopped = true;
+                    stopped = self.retire(mem, &doc.value).await?;
                 }
                 // A launch that has not registered gives its slot back.
                 Some(LeaseState::Reserved { .. }) | Some(LeaseState::Expired { .. }) => {
@@ -604,7 +603,13 @@ impl Hub {
             Self::queue(mem, event);
         }
         self.store.delete(&key).await?;
-        Ok(json!({ "agent": agent, "cancelled": true, "stopped": stopped }))
+        // `stopped` is true only when a stop order went out; a session that
+        // still has to end its turn says when its stop comes.
+        let mut reply = json!({ "agent": agent, "cancelled": true, "stopped": stopped });
+        if !stopped {
+            reply["stopping"] = json!("at the turn end");
+        }
+        Ok(reply)
     }
 
     /// Closes the task of a cancelled worker, when the call asks for it and
