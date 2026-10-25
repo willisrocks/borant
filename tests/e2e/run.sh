@@ -12,12 +12,17 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue sandbox"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart hub_move queue host_restart sandbox"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
-# scenario's one-slot host lives in that file too, so a change to it runs
-# every scenario.
+# scenario's one-slot host and the host_restart scenario's host-r live in that
+# file too, so a change to it runs every scenario.
+#
+# The host_restart scenario needs no path of its own: the restore that it
+# drives is crates/borant-host, which every scenario starts, and its host-r
+# service is the compose file above. Its own steps are in this file, which
+# already runs every scenario.
 SANDBOX_PATHS='^(crates/borant-launch/src/sandbox\.rs|crates/borant-host/src/sandbox\.rs|tests/e2e/sandbox/|docker/Dockerfile$|crates/borant-testkit/src/bin/borant-fake-harness\.rs$)'
 
 # The scenarios that a diff touches. Every scenario drives the same swarm, so
@@ -470,6 +475,161 @@ scenario_queue() {
   return 0
 }
 
+# The host_restart scenario of phase 10: three live sessions on one host, and
+# a restart of that host daemon alone, with its container and the harness
+# processes still up. The host must load all three from its session table in
+# under 10 s, keep their leases, and still take a direct message for each
+# agent. The host names the count and the milliseconds of the restore.
+scenario_host_restart() {
+  # The daemon is not the main process of the container (see compose), so this
+  # scenario starts it and can stop that one PID.
+  dc up -d --no-deps host-r >/dev/null || return 1
+  start_host_r 1 || return 1
+  if ! wait_for "host-r online" host_r_online; then
+    echo "  the host-r log:" >&2
+    host_r_log 1 | tail -20 >&2
+    return 1
+  fi
+
+  local a
+  for a in hr1 hr2 hr3; do
+    start_agent host-r "$a"
+  done
+  for a in hr1 hr2 hr3; do
+    wait_for "$a on host-r" on_host_r "$a" || return 1
+  done
+
+  # The leases, the harness PIDs, and the container start time before the
+  # restart: none of them may change across it, or the restart took the
+  # sessions with it.
+  local leases_before harnesses_before started_before pid
+  leases_before=$(hr_leases) || return 1
+  harnesses_before=$(harness_pids) || return 1
+  [ -n "$harnesses_before" ] || { echo "  no harness process on host-r" >&2; return 1; }
+  started_before=$(container_started) || return 1
+  pid=$(host_r_pid) || return 1
+
+  # SIGKILL, not SIGTERM: the sessions must survive the daemon as a crash
+  # leaves them, and a graceful stop ends them by design.
+  on host-r kill -9 "$pid" || return 1
+  wait_for "the old host daemon to exit" daemon_stopped "$pid" || return 1
+  start_host_r 2 || return 1
+
+  if ! wait_for "the restore line of the host" host_r_restored; then
+    echo "  the host-r log:" >&2
+    host_r_log 2 | tail -20 >&2
+    return 1
+  fi
+  local line restored ms
+  line=$(host_r_restored)
+  restored=${line#restored=}
+  restored=${restored%% *}
+  ms=${line##*ms=}
+  ms=${ms%% *}
+  echo "  restored $restored sessions in $ms ms"
+  [ "$restored" = "3" ] \
+    || { echo "  the host restored $restored sessions, not 3" >&2; return 1; }
+  [ "$ms" -lt 10000 ] \
+    || { echo "  the restore took $ms ms, the limit is 10000" >&2; return 1; }
+
+  # Only the daemon restarted: the same three harness processes, in the same
+  # container, run still.
+  [ "$(host_r_pid)" != "$pid" ] \
+    || { echo "  the daemon PID $pid did not change" >&2; return 1; }
+  [ "$(harness_pids)" = "$harnesses_before" ] || {
+    echo "  the harness processes changed: $harnesses_before -> $(harness_pids)" >&2
+    return 1
+  }
+  [ "$(container_started)" = "$started_before" ] \
+    || { echo "  the container restarted with the daemon" >&2; return 1; }
+
+  # Every lease stays held, with the same token: it did not expire and get
+  # taken again. The swarm's lease is 6 s and the host renews a held lease on
+  # each 2 s heartbeat, so a restart slower than that loses it as well: both
+  # numbers above and this check tell a slow restore from a lost one.
+  [ "$(hr_leases)" = "$leases_before" ] || {
+    echo "  the leases changed: $leases_before -> $(hr_leases)" >&2
+    return 1
+  }
+
+  # Each restored session still takes a direct message.
+  for a in hr1 hr2 hr3; do
+    borant_on host-r send "$a" "after-host-restart-$a" >/dev/null || return 1
+  done
+  for a in hr1 hr2 hr3; do
+    wait_for "$a took a message after the restart" \
+      log_has host-r "$a" "after-host-restart-$a" || return 1
+  done
+
+  # Leave no agent or host of this scenario for a later one.
+  for a in hr1 hr2 hr3; do
+    borant_on host-r cancel "$a" >/dev/null 2>&1
+  done
+  dc stop host-r >/dev/null 2>&1
+  return 0
+}
+
+# Starts the host daemon of host-r in the background under a pid file and a
+# log of its own, so the scenario stops the PID that it started and reads the
+# restore of the start it means ($1 names that start).
+start_host_r() {
+  # A pid file of an earlier start would satisfy the wait below.
+  on host-r rm -f /tmp/host-r.pid || return 1
+  dc exec -d -T host-r sh -c \
+    "echo \$\$ >/tmp/host-r.pid; exec borant host >/tmp/host-r-$1.log 2>&1" || return 1
+  wait_for "the pid file of host-r" host_r_pid_file
+}
+
+host_r_pid_file() { on host-r test -s /tmp/host-r.pid; }
+
+host_r_pid() { on host-r cat /tmp/host-r.pid 2>/dev/null | tr -d '[:space:]'; }
+
+host_r_log() { on host-r cat "/tmp/host-r-$1.log" 2>/dev/null; }
+
+# The host daemon answers and the hub lists it online.
+host_r_online() {
+  borant_on host-r hosts 2>/dev/null |
+    jq -e 'any(.[]; .host.name == "host-r" and .online)' >/dev/null
+}
+
+# The restore line of the second start: the sessions that the host restored
+# and the milliseconds of the restore.
+host_r_restored() {
+  host_r_log 2 | grep -o 'restored=[0-9]* ms=[0-9]* restored local sessions' | head -1
+}
+
+# A PID that is gone, or one that the container never reaped, is not the
+# daemon any more.
+daemon_stopped() {
+  case "$(on host-r ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')" in
+    '' | Z*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The fake harness processes of host-r: the same PIDs before and after the
+# restart say that only the daemon restarted.
+harness_pids() {
+  on host-r ps -eo pid=,args= 2>/dev/null |
+    awk '$2 == "borant-fake-harness" {print $1}' | sort | tr '\n' ' '
+}
+
+# The moment the container of host-r started, so a container restart shows.
+container_started() {
+  docker inspect --format '{{.State.StartedAt}}' "$(container host-r)" 2>/dev/null
+}
+
+# The leases of the three agents of this scenario, with their tokens.
+hr_leases() {
+  borant_on host-r agents 2>/dev/null |
+    jq -c '[.[] | select(.agent == "hr1" or .agent == "hr2" or .agent == "hr3")
+            | {agent, host: .lease.host, state: .lease.state, token: .lease.token}]
+           | sort_by(.agent)'
+}
+
+# The agent holds its lease on host-r.
+on_host_r() { [ "$(where_on host-r "$1")" = "host-r" ]; }
+
 # The elastic scenario of the elastic compute design ("Tests"): a hub with no
 # pool hosts and one pool of two hosts of two agents, which the hub starts
 # with the provision-docker plugin. It runs alone, after its own swarm.
@@ -811,6 +971,17 @@ if [ "$FAILED" != "0" ]; then
       LAST_AGENT=$(members_agents | tail -1)
       [ -n "$LAST_AGENT" ] && log_of host-members "$LAST_AGENT" | tail -30
     fi
+    case " $SCENARIOS " in
+      *" host_restart "*)
+        echo "  the daemon logs of host-r:"
+        host_r_log 1 | tail -20
+        host_r_log 2 | tail -40
+        echo "  its agents, and the harness processes of them:"
+        borant_on host-r agents 2>/dev/null |
+          jq -c '.[] | {agent, host, lease: .lease.state}' | head -10
+        harness_pids
+        ;;
+    esac
     dc --profile elastic --profile sandbox --profile members --profile move logs --no-color 2>/dev/null | tail -200
   fi
   exit 1
