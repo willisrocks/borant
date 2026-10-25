@@ -165,7 +165,7 @@ async fn beat(fx: &Fx, w: &Registered, idle: Option<Timestamp>, secs: u64) {
 }
 
 #[tokio::test]
-async fn a_spawn_with_continues_and_a_task_keeps_the_policy() {
+async fn a_spawn_with_a_continuation_and_a_task_keeps_the_policy() {
     let fx = Fx::new();
     let (owner, task) = bound(&fx).await;
     let v = fx
@@ -188,7 +188,7 @@ async fn a_spawn_with_continues_and_a_task_keeps_the_policy() {
 }
 
 #[tokio::test]
-async fn a_spawn_with_continues_and_no_task_is_invalid() {
+async fn a_spawn_that_asks_for_a_continuation_without_a_task_is_invalid() {
     let fx = Fx::new();
     let (owner, _task) = bound(&fx).await;
     let err = fx
@@ -200,7 +200,7 @@ async fn a_spawn_with_continues_and_no_task_is_invalid() {
 }
 
 #[tokio::test]
-async fn one_idle_period_gets_one_continue() {
+async fn a_continuation_is_one_per_idle_period() {
     let fx = Fx::new();
     let (_owner, w, task) = worker(&fx, unlimited(3)).await;
     let mut inbox = fx.bus.subscribe(&subjects::agent(&w.agent)).await.unwrap();
@@ -238,7 +238,7 @@ async fn one_idle_period_gets_one_continue() {
 }
 
 #[tokio::test]
-async fn a_stored_wait_stops_the_continues() {
+async fn a_stored_wait_stops_the_continuation() {
     let fx = Fx::new();
     let (_owner, w, task) = worker(&fx, unlimited(2)).await;
     let mut inbox = fx.bus.subscribe(&subjects::agent(&w.agent)).await.unwrap();
@@ -265,7 +265,7 @@ async fn a_stored_wait_stops_the_continues() {
 }
 
 #[tokio::test]
-async fn the_last_continue_sets_needs_human_and_stops() {
+async fn the_last_continuation_sets_needs_human_and_stops() {
     let fx = Fx::new();
     let (_owner, w, task) = worker(&fx, unlimited(1)).await;
     let mut inbox = fx.bus.subscribe(&subjects::agent(&w.agent)).await.unwrap();
@@ -304,7 +304,7 @@ async fn the_last_continue_sets_needs_human_and_stops() {
 }
 
 #[tokio::test]
-async fn the_session_hours_set_needs_human() {
+async fn the_session_hours_end_the_continuation() {
     let fx = Fx::new();
     let (_owner, w, task) = worker(
         &fx,
@@ -334,7 +334,7 @@ async fn the_session_hours_set_needs_human() {
 }
 
 #[tokio::test]
-async fn a_paused_worker_gets_no_continue() {
+async fn a_paused_worker_gets_no_continuation() {
     let fx = Fx::new();
     let (owner, w, _task) = worker(&fx, unlimited(2)).await;
     let mut inbox = fx.bus.subscribe(&subjects::agent(&w.agent)).await.unwrap();
@@ -356,7 +356,7 @@ async fn a_paused_worker_gets_no_continue() {
 }
 
 #[tokio::test]
-async fn a_retired_worker_gets_no_continue() {
+async fn a_retired_worker_gets_no_continuation() {
     let fx = Fx::new();
     let (owner, w, _task) = worker(&fx, unlimited(2)).await;
     let mut inbox = fx.bus.subscribe(&subjects::agent(&w.agent)).await.unwrap();
@@ -473,7 +473,7 @@ impl MessageBus for WatchBus {
 }
 
 #[tokio::test]
-async fn the_record_counts_the_continue_before_the_send() {
+async fn the_continuation_record_is_written_before_the_send() {
     let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
     let fx = {
         let seen = seen.clone();
