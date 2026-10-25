@@ -25,3 +25,4 @@ ulid.workspace = true
 [dev-dependencies]
 borant-core = { workspace = true, features = ["testing"] }
 borant-memory.workspace = true
+tempfile.workspace = true
