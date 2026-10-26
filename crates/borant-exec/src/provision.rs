@@ -36,7 +36,9 @@ pub struct ExecProvisioner {
 
 impl ExecProvisioner {
     /// `config` is the `config` table of the provisioner in `hub.toml`, the
-    /// same table in every request of every op, `describe` included.
+    /// same table in every request of every op, `describe` included. It is
+    /// opaque: whatever JSON value the table holds reaches the plugin as it
+    /// is.
     pub fn new(exec: ExecConfig, config: BTreeMap<String, Value>) -> Self {
         Self {
             exec,
