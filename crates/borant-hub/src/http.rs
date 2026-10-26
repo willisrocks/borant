@@ -1,24 +1,27 @@
-//! The read-only HTTP listener: the page, the JSON API, and `/metrics`.
+//! The HTTP listener: the page, the JSON API, and `/metrics`.
 //!
-//! Every route reads what `borant.ctl` already reads (`Hub::view`, the task
-//! list, the event log) and writes nothing. The listener is off unless
-//! `[http] listen` is set; `crates/borant/src/roles.rs` starts it.
+//! Every read route serves what `borant.ctl` already reads (`Hub::view`, the
+//! task list, the event log) and writes nothing. The one write route is
+//! `POST /v1/join`, where a pool host that the hub created trades its
+//! single-use token for the vars of bundle `host-join`. The listener is off
+//! unless `[http] listen` is set; `crates/borant/src/roles.rs` starts it.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use borant_core::events::EventFilter;
 use borant_core::model::{
     HostStatus, HubLease, InboxStatus, LeaseState, SwarmView, Task, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
-use borant_core::{ChannelName, Timestamp, keys};
+use borant_core::{ChannelName, HostName, Timestamp, keys};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,9 @@ pub fn router(hub: Arc<Hub>, started: Timestamp) -> Router {
         .route("/api/channels/{channel}/graph", get(graph))
         .route("/api/events", get(events))
         .route("/metrics", get(metrics))
+        // The one write route: a pool host trades its join token for its
+        // first secrets.
+        .route("/v1/join", post(join))
         .with_state(App { hub, started })
 }
 
@@ -117,6 +123,43 @@ async fn healthz(State(app): State<App>) -> Response {
 /// The `SwarmView` that `borant top` and `ToolCall::View` show.
 async fn snapshot(State(app): State<App>) -> Result<Json<SwarmView>, Fail> {
     Ok(Json(app.hub.view().await?))
+}
+
+/// The body of `POST /v1/join`: the host name and its single-use token.
+#[derive(Debug, Deserialize)]
+struct JoinRequest {
+    host: String,
+    token: String,
+}
+
+/// The reply of every refusal: one status and one body, so a caller learns
+/// nothing about the token that it sent.
+fn join_refused() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": "join refused" })),
+    )
+        .into_response()
+}
+
+/// `POST /v1/join`: trades the single-use join token of a pool host for the
+/// vars of bundle `host-join`. This is the only route that returns a secret,
+/// and the reply goes only to the caller.
+async fn join(State(app): State<App>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<JoinRequest>(&body) else {
+        return join_refused();
+    };
+    let Ok(host) = req.host.parse::<HostName>() else {
+        return join_refused();
+    };
+    match app.hub.redeem_join(&host, &req.token).await {
+        Ok(vars) => {
+            tracing::info!(%host, "join accepted");
+            (StatusCode::OK, Json(serde_json::json!({ "vars": vars }))).into_response()
+        }
+        // `redeem_join` logs the reason, never the token.
+        Err(_) => join_refused(),
+    }
 }
 
 /// The channels of the swarm, by name.

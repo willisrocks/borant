@@ -26,7 +26,7 @@ use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
-use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig};
+use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig, HubSecretConfig};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -285,7 +285,8 @@ pub struct HubFile {
     pub http: HttpConfig,
 }
 
-/// `[secrets]` of `hub.toml`. Phase 1 holds the member rules only.
+/// `[secrets]` of `hub.toml`: the member rules, and the stores and bundles
+/// that the hub resolves for a pool host that it creates.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HubSecretsFile {
@@ -293,6 +294,34 @@ pub struct HubSecretsFile {
     /// and how often one agent may restart on a new member in an hour.
     #[serde(default)]
     pub members: MemberRules,
+    /// `[secrets.stores.<name>]`, the same schema as `host.toml`.
+    #[serde(default)]
+    pub stores: BTreeMap<String, StoreConfig>,
+    /// `[secrets.bundles.<name>]`, the same schema as `host.toml`. The hub
+    /// resolves only `host-boot` and `host-join`.
+    #[serde(default)]
+    pub bundles: BTreeMap<BundleName, BundleFile>,
+}
+
+impl HubSecretsFile {
+    /// The section ready to open, or `None` when the hub names no store and
+    /// no bundle.
+    pub fn config(&self) -> Option<HubSecretConfig> {
+        if self.stores.is_empty() && self.bundles.is_empty() {
+            return None;
+        }
+        Some(HubSecretConfig {
+            stores: self.stores.clone(),
+            bundles: self
+                .bundles
+                .iter()
+                .map(|(name, file)| (name.clone(), file.clone().bundle(name.clone())))
+                .collect(),
+            // The exec plugin of a store takes its credential from the
+            // service manager, as a host's does.
+            credentials_dir: env("CREDENTIALS_DIRECTORY").map(PathBuf::from),
+        })
+    }
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
@@ -1645,6 +1674,56 @@ price_hour_usd = 0.1
         assert_eq!(file.secrets.members, MemberRules::default());
         assert!(
             toml::from_str::<HubFile>("[secrets.members]\nnope = 1\n").is_err(),
+            "deny_unknown_fields stays"
+        );
+    }
+
+    #[test]
+    fn config_reads_the_stores_and_bundles_of_the_hub() {
+        let file: HubFile = toml::from_str(
+            r#"
+[secrets.stores.op]
+kind = "exec"
+command = ["borant-secrets-1password"]
+credential = "store-token"
+
+[secrets.stores.file]
+kind = "file"
+root = "/var/lib/borant/credentials"
+
+[secrets.bundles.host-boot]
+store = "op"
+
+[secrets.bundles.host-boot.vars]
+TAILSCALE_AUTHKEY = "op://Borant/tailscale/key"
+
+[secrets.bundles.host-join]
+store = "file"
+
+[secrets.bundles.host-join.vars]
+STORE_TOKEN = "op-store-token"
+"#,
+        )
+        .unwrap();
+        let config = file.secrets.config().expect("a [secrets] section");
+        assert!(matches!(config.stores["op"], StoreConfig::Exec { .. }));
+        assert!(matches!(config.stores["file"], StoreConfig::File { .. }));
+        let boot = &config.bundles[&"host-boot".parse::<BundleName>().unwrap()];
+        assert_eq!(boot.store, "op");
+        assert_eq!(
+            boot.vars["TAILSCALE_AUTHKEY"],
+            SecretRef("op://Borant/tailscale/key".into())
+        );
+        let join = &config.bundles[&"host-join".parse::<BundleName>().unwrap()];
+        assert_eq!(join.vars["STORE_TOKEN"], SecretRef("op-store-token".into()));
+
+        // The member rules alone open nothing, and the section still refuses
+        // a key that it does not know.
+        let file: HubFile =
+            toml::from_str("[secrets.members]\nmax_restarts_per_hour = 2\n").unwrap();
+        assert!(file.secrets.config().is_none());
+        assert!(
+            toml::from_str::<HubFile>("[secrets.stores.op]\nnope = 1\n").is_err(),
             "deny_unknown_fields stays"
         );
     }

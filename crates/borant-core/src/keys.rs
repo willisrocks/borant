@@ -73,6 +73,15 @@ pub fn spawn(agent: &AgentId) -> String {
 
 pub const ELASTIC_PREFIX: &str = "elastic.";
 
+/// The join token of one pool host, hub only: the SHA-256 of the token, its
+/// host name, and its expiry. The value holds no token that a caller can use.
+/// The hub deletes the key at the join or at the expiry.
+pub fn join(host: &HostName) -> String {
+    format!("join.{host}")
+}
+
+pub const JOIN_PREFIX: &str = "join.";
+
 pub const SPAWN_PREFIX: &str = "spawn.";
 
 /// What the month `<yyyy-mm>` has cost, all pools together.

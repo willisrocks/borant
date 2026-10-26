@@ -27,6 +27,15 @@ fn refuse_key(key: &str) -> Result<(), ApiError> {
     )))
 }
 
+/// The error of a conditional delete that lost: another writer took the key,
+/// or the backend reports a missing key instead of a stale revision.
+fn taken(key: &str) -> ApiError {
+    ApiError::new(
+        borant_core::proto::ApiErrorCode::Conflict,
+        format!("the key {key:?} was already taken"),
+    )
+}
+
 impl Store {
     pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<Doc<T>>, ApiError> {
         // A key that the backend cannot hold reads as absent, with a debug
@@ -91,6 +100,26 @@ impl Store {
         }
     }
 
+    /// Deletes the key only when it is still at `revision`, so one of two
+    /// callers that read the same document wins and the other gets
+    /// `Conflict`.
+    ///
+    /// A key that is already gone is `Conflict`, never `Ok`: a backend may
+    /// report the delete of a missing key as `NotFound` rather than as a
+    /// revision conflict, and a caller must not take that as a win. Only the
+    /// plain [`Store::delete`] treats a missing key as nothing to do.
+    pub async fn delete_at(&self, key: &str, revision: u64) -> Result<(), ApiError> {
+        if !borant_core::keys::valid_key(key) {
+            // The store cannot hold the key, so no caller can claim it.
+            return Err(taken(key));
+        }
+        match self.0.delete(key, Some(revision)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.is(PortErrorKind::NotFound) => Err(taken(key)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub async fn list<T: DeserializeOwned>(&self, prefix: &str) -> Result<Vec<Doc<T>>, ApiError> {
         // A prefix the backend cannot hold lists nothing.
         if !borant_core::keys::valid_key(prefix.trim_end_matches('.')) {
@@ -115,8 +144,45 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use borant_core::ports::StateStore;
+    use borant_core::ports::{Change, Entry, PortError, PortResult, StateStore};
     use borant_memory::MemoryState;
+    use bytes::Bytes;
+    use futures::stream::BoxStream;
+
+    /// A backend that reports the conditional delete of a missing key as
+    /// `NotFound`, where another reports a stale revision.
+    #[derive(Debug)]
+    struct Vanishing;
+
+    #[async_trait::async_trait]
+    impl StateStore for Vanishing {
+        async fn get(&self, _key: &str) -> PortResult<Option<Entry>> {
+            Ok(None)
+        }
+
+        async fn create(&self, _key: &str, _value: Bytes) -> PortResult<u64> {
+            Ok(1)
+        }
+
+        async fn update(&self, _key: &str, _value: Bytes, _expected: u64) -> PortResult<u64> {
+            Ok(2)
+        }
+
+        async fn delete(&self, key: &str, expected: Option<u64>) -> PortResult<()> {
+            match expected {
+                None => Ok(()),
+                Some(_) => Err(PortError::not_found(format!("no key {key}"))),
+            }
+        }
+
+        async fn list(&self, _prefix: &str) -> PortResult<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+
+        async fn watch(&self, _prefix: &str) -> PortResult<BoxStream<'static, Change>> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
 
     fn store() -> (Store, std::sync::Arc<MemoryState>) {
         let state = std::sync::Arc::new(MemoryState::new());
@@ -151,6 +217,70 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// Rule: a conditional delete that finds no key at all is `Conflict`, not
+    /// a win, because a backend may report a missing key where another
+    /// reports a stale revision.
+    #[tokio::test]
+    async fn a_conditional_delete_of_a_missing_key_is_conflict() {
+        let conflict = borant_core::proto::ApiErrorCode::Conflict;
+        let (store, _state) = store();
+
+        // A reader reads, another writer deletes, the reader's claim loses.
+        store
+            .put("join.e1", &serde_json::json!({ "a": 1 }), None)
+            .await
+            .expect("a key");
+        let doc = store
+            .get::<serde_json::Value>("join.e1")
+            .await
+            .unwrap()
+            .expect("the key");
+        store.delete("join.e1").await.expect("the other writer");
+        let err = store
+            .delete_at("join.e1", doc.revision)
+            .await
+            .expect_err("a missing key is no win");
+        assert_eq!(err.code, conflict, "{err}");
+
+        // A live key: the first claim wins, the second loses.
+        store
+            .put("join.e2", &serde_json::json!({ "a": 1 }), None)
+            .await
+            .expect("a key");
+        let doc = store
+            .get::<serde_json::Value>("join.e2")
+            .await
+            .unwrap()
+            .expect("the key");
+        store
+            .delete_at("join.e2", doc.revision)
+            .await
+            .expect("the winner");
+        let err = store
+            .delete_at("join.e2", doc.revision)
+            .await
+            .expect_err("the second claim loses");
+        assert_eq!(err.code, conflict, "{err}");
+
+        // A key that the store cannot hold is no claim either.
+        let err = store
+            .delete_at("alert.", 1)
+            .await
+            .expect_err("a bad key is no claim");
+        assert_eq!(err.code, conflict, "{err}");
+
+        // A backend that says NotFound for the conditional delete of a
+        // missing key must not hand a caller a win either, and a plain
+        // delete of nothing stays Ok.
+        let vanishing = Store(Arc::new(Vanishing));
+        let err = vanishing.delete_at("join.e1", 7).await.expect_err("no win");
+        assert_eq!(err.code, conflict, "{err}");
+        vanishing
+            .delete("join.e1")
+            .await
+            .expect("a plain delete of nothing is Ok");
     }
 
     /// Rule: a write of a key the backend cannot hold names the key and fails,

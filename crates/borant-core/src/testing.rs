@@ -1,6 +1,7 @@
 //! Contract suites for port adapters. Each adapter crate runs these against
 //! its own implementation.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -15,10 +16,10 @@ use crate::model::{
     TaskEventKind, TaskStatus,
 };
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
-use crate::ports::secrets::{SecretRef, SecretStore};
+use crate::ports::secrets::{Resolved, Secret, SecretCapabilities, SecretRef, SecretStore};
 use crate::ports::{
-    Change, ChangeRequests, ChangeStatus, EventLog, MessageBus, PortErrorKind, SessionStore,
-    StateStore,
+    Change, ChangeRequests, ChangeStatus, EventLog, MessageBus, PortError, PortErrorKind,
+    PortResult, SessionStore, StateStore,
 };
 use crate::time::Timestamp;
 
@@ -524,6 +525,56 @@ fn assert_no_value(text: &str, known: &[(SecretRef, &str)], what: &str) {
             !text.contains(value),
             "{what} holds the value of {r:?}: {text}"
         );
+    }
+}
+
+/// A store over a fixed map, for the tests of a caller that resolves a bundle
+/// (the hub's join): one missing ref fails the whole call, as a real store
+/// does, and neither the debug output nor an error prints a value.
+#[derive(Clone, Default)]
+pub struct FakeSecretStore {
+    values: BTreeMap<SecretRef, String>,
+}
+
+impl FakeSecretStore {
+    pub fn new(values: impl IntoIterator<Item = (SecretRef, String)>) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+        }
+    }
+}
+
+/// The refs only, never a value.
+impl std::fmt::Debug for FakeSecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeSecretStore")
+            .field("refs", &self.values.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl SecretStore for FakeSecretStore {
+    fn kind(&self) -> &'static str {
+        "fake"
+    }
+
+    fn capabilities(&self) -> SecretCapabilities {
+        SecretCapabilities { resolve: true }
+    }
+
+    async fn resolve(&self, refs: &[SecretRef]) -> PortResult<Resolved> {
+        // All or nothing, and the error names refs only.
+        if let Some(missing) = refs.iter().find(|r| !self.values.contains_key(*r)) {
+            return Err(PortError::not_found(format!(
+                "the fake store holds no value for {missing:?}"
+            )));
+        }
+        let values = refs
+            .iter()
+            .map(|r| (r.clone(), Secret::new(self.values[r].clone())))
+            .collect();
+        Ok(Resolved { values })
     }
 }
 

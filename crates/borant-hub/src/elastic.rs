@@ -24,6 +24,8 @@ use borant_core::rules::pool::{
 use borant_core::rules::schedule::{self, HostView};
 use borant_core::{AgentId, HostName, PoolName, Timestamp, keys};
 
+use crate::join::JoinToken;
+use crate::secrets::host_boot;
 use crate::{Hub, PendingMove};
 
 /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of `hub.toml`,
@@ -101,6 +103,11 @@ impl Hub {
             self.execute(elastic, &mut pass, &caps, action, now).await?;
         }
         self.write_spend(&pass.spend, now).await?;
+        // A create that left no host behind leaves an unspent token, and the
+        // pool's `boot_timeout` bounds it.
+        if let Err(e) = self.reap_joins(now).await {
+            tracing::warn!("the join reap failed: {e}");
+        }
         // The drain and the park of a pool host queue events while they take
         // `mem`; publish them now that no lock is held.
         self.flush().await;
@@ -442,6 +449,8 @@ impl Hub {
                     .find(|h| h.name == host)
                     .map(|h| h.pool.clone());
                 self.store.delete(&keys::elastic(&host)).await?;
+                // A host that goes takes an unspent token with it.
+                self.store.delete(&keys::join(&host)).await?;
                 if let Some(pool) = pool {
                     let event = self
                         .event(now, Severity::Info, SwarmEventBody::ElasticDeleted { pool })
@@ -487,6 +496,9 @@ impl Hub {
             last_seen: now,
         };
         self.store.upsert(&key, &requested).await?;
+        // The boot values carry the vars of bundle `host-boot` and one join
+        // token. Both leave the hub in the user data of this create only.
+        let boot = self.boot_with_secrets(config, name, now).await;
         let spec = HostSpec {
             pool: pool.clone(),
             name: name.clone(),
@@ -496,7 +508,7 @@ impl Hub {
             // The adapter adds its ownership labels; these are the hub's.
             provider_labels: BTreeMap::new(),
             tags: config.tags.clone(),
-            boot: boot_values(config, name),
+            boot,
         };
         match provisioner.create(&spec).await {
             Ok(record) => {
@@ -521,13 +533,88 @@ impl Hub {
                 // No host, no key: the name is free for the next try, and the
                 // pool waits `create_backoff`.
                 self.store.delete(&key).await?;
+                // The token of an order that made no host goes too, so the
+                // KV holds no token longer than the order.
+                self.store.delete(&keys::join(name)).await?;
                 self.mem
                     .lock()
                     .await
                     .elastic_backoff
                     .insert(pool.clone(), now.plus(elastic.create_backoff));
-                self.note_refusal(pool, "create", &e).await;
-                tracing::warn!(pool = %pool, "create failed: {e}");
+                // A plugin that echoes its stdin must not put the token or a
+                // bundle value in the refusal, the log, or an alert.
+                let clean = PortError {
+                    kind: e.kind,
+                    message: redact(&e.message, &spec.boot),
+                };
+                self.note_refusal(pool, "create", &clean).await;
+                tracing::warn!(pool = %pool, "create failed: {clean}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The boot values of a create: its name, pool, and tags, the vars of
+    /// bundle `host-boot`, and a join token when the hub has its secrets.
+    ///
+    /// A hub with no `[secrets]`, no ready bundle, or no entropy creates as
+    /// before, without a join. Nothing here logs a value or a token.
+    async fn boot_with_secrets(
+        &self,
+        config: &PoolConfig,
+        name: &HostName,
+        now: Timestamp,
+    ) -> BTreeMap<String, String> {
+        let mut boot = boot_values(config, name);
+        let Some(secrets) = &self.cfg.secrets else {
+            return boot;
+        };
+        if !secrets.joins() {
+            return boot;
+        }
+        match secrets.vars(&host_boot()).await {
+            Ok(vars) => boot.extend(vars),
+            Err(e) => {
+                tracing::warn!(
+                    pool = %config.name,
+                    %name,
+                    "the host-boot bundle did not resolve, so this create has no join: {e}"
+                );
+                return boot;
+            }
+        }
+        let Some(token) = crate::join::token() else {
+            tracing::warn!(%name, "no entropy for a join token, so this create has no join");
+            return boot;
+        };
+        let doc = JoinToken {
+            host: name.clone(),
+            digest: crate::join::digest(&token),
+            expires: now.plus(config.boot_timeout),
+        };
+        if let Err(e) = self.store.upsert(&keys::join(name), &doc).await {
+            tracing::warn!(%name, "the join key did not write, so this create has no join: {e}");
+            return boot;
+        }
+        // The token wins over a var of the bundle with the same name.
+        boot.insert("BORANT_JOIN".to_owned(), token);
+        boot
+    }
+
+    /// Deletes the join keys whose expiry passed, so a create that left no
+    /// host behind leaves no token behind either. The conditional delete
+    /// keeps a fresh token of a later create for the same name.
+    async fn reap_joins(&self, now: Timestamp) -> Result<(), ApiError> {
+        for doc in self.store.list::<JoinToken>(keys::JOIN_PREFIX).await? {
+            if doc.value.expires > now {
+                continue;
+            }
+            match self.store.delete_at(&doc.key, doc.revision).await {
+                Ok(()) => {
+                    tracing::debug!(host = %doc.value.host, "expired join key deleted");
+                }
+                Err(e) if e.code == borant_core::proto::ApiErrorCode::Conflict => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(())
@@ -620,6 +707,23 @@ fn boot_values(pool: &PoolConfig, name: &HostName) -> BTreeMap<String, String> {
     ])
 }
 
+/// A provisioner message with every secret boot value replaced. The three
+/// values that the hub writes itself stay, so an error still names the host
+/// and its pool.
+fn redact(message: &str, boot: &BTreeMap<String, String>) -> String {
+    const PUBLIC: [&str; 3] = ["BORANT_HOST_NAME", "BORANT_POOL", "BORANT_TAGS"];
+    let mut out = message.to_owned();
+    for (key, value) in boot {
+        if PUBLIC.contains(&key.as_str()) || value.is_empty() {
+            continue;
+        }
+        if out.contains(value.as_str()) {
+            out = out.replace(value.as_str(), "[redacted]");
+        }
+    }
+    out
+}
+
 /// The distinct provisioner names of the pools.
 fn elastic_provisioners(pools: &[PoolConfig]) -> Vec<String> {
     let mut names: Vec<String> = pools.iter().map(|p| p.provisioner.clone()).collect();
@@ -698,6 +802,8 @@ mod tests {
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
     use crate::HubConfig;
+    use crate::join::JoinToken;
+    use crate::secrets::HubSecrets;
 
     const NOW: Timestamp = Timestamp(1_000_000_000);
 
@@ -747,6 +853,19 @@ mod tests {
     }
 
     fn hub_with(elastic: Option<ElasticConfig>, prov: Arc<MemoryProvisioner>) -> Fx {
+        build(elastic, prov, None)
+    }
+
+    /// A hub whose `[secrets]` open, so a create makes a join token.
+    fn hub_joined(elastic: Option<ElasticConfig>, prov: Arc<MemoryProvisioner>) -> Fx {
+        build(elastic, prov, Some(crate::testkit::hub_secrets()))
+    }
+
+    fn build(
+        elastic: Option<ElasticConfig>,
+        prov: Arc<MemoryProvisioner>,
+        secrets: Option<HubSecrets>,
+    ) -> Fx {
         let clock = Arc::new(ManualClock::new(NOW));
         let hub = Arc::new(Hub::new(
             Arc::new(MemoryState::new()),
@@ -755,6 +874,7 @@ mod tests {
             clock.clone(),
             HubConfig {
                 elastic,
+                secrets,
                 ..HubConfig::default()
             },
         ));
@@ -987,6 +1107,60 @@ mod tests {
         );
     }
 
+    /// A provisioner that refuses a create and echoes its boot values, as a
+    /// chatty plugin that prints its stdin could.
+    #[derive(Debug, Default)]
+    struct Echoing {
+        seen: std::sync::Mutex<Vec<HostSpec>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provisioner for Echoing {
+        async fn describe(&self) -> borant_core::ports::PortResult<ProvisionerCapabilities> {
+            use borant_core::ports::provision::SizeInfo;
+            Ok(ProvisionerCapabilities {
+                backend: "echo".to_owned(),
+                sizes: vec![SizeInfo {
+                    id: "small".to_owned(),
+                    vcpus: 1,
+                    mem_mb: 1024,
+                    price_hour_usd: Some(0.1),
+                    stopped_price_hour_usd: None,
+                }],
+                regions: vec!["r1".to_owned()],
+                typical_start: Duration::from_secs(60),
+                typical_resume: None,
+                billing_step: Duration::from_secs(3600),
+                one_host_per_agent: false,
+                stop_modes: Vec::new(),
+            })
+        }
+
+        async fn create(
+            &self,
+            spec: &HostSpec,
+        ) -> borant_core::ports::PortResult<borant_core::ports::provision::HostRecord> {
+            self.seen.lock().expect("the seen specs").push(spec.clone());
+            // A plugin that prints what it was given in its refusal.
+            Err(PortError::denied(format!(
+                "the backend refused {} with boot {:?}",
+                spec.name, spec.boot
+            )))
+        }
+
+        async fn delete(&self, _id: &ProviderHostId) -> borant_core::ports::PortResult<()> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _pool: &PoolName,
+        ) -> borant_core::ports::PortResult<Vec<borant_core::ports::provision::HostRecord>>
+        {
+            Ok(Vec::new())
+        }
+    }
+
     fn provider_spec(host: &str) -> HostSpec {
         HostSpec {
             pool: "workers".parse().unwrap(),
@@ -1044,6 +1218,280 @@ mod tests {
         // The provider holds the host.
         let listed = fx.prov.list(&"workers".parse().unwrap()).await.unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn elastic_a_create_with_secrets_adds_the_boot_vars_and_a_join_token() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "a1").await;
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let specs = created(&fx).await;
+        let spec = &specs[0];
+        // The vars of bundle `host-boot` ride in the boot values.
+        assert_eq!(spec.boot["TAILSCALE_AUTHKEY"], crate::testkit::BOOT_VALUE);
+        assert_eq!(spec.boot["BORANT_HOST_NAME"], "e1");
+        let token = spec.boot["BORANT_JOIN"].clone();
+        assert_eq!(token.len(), 64, "256 bits of hex");
+
+        // The key holds the digest, the host, and the expiry of the pool.
+        let doc = fx
+            .hub
+            .store
+            .get::<JoinToken>(&keys::join(&name("e1")))
+            .await
+            .unwrap()
+            .expect("the join key");
+        assert_eq!(doc.value.host, name("e1"));
+        assert_eq!(doc.value.digest, crate::join::digest(&token));
+        assert_eq!(doc.value.expires, NOW.plus(Duration::from_secs(10 * 60)));
+        let stored = serde_json::to_string(&doc.value).unwrap();
+        assert!(
+            !stored.contains(token.as_str()),
+            "the KV holds no token: {stored}"
+        );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_create_without_secrets_has_no_join_token() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "a1").await;
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let specs = created(&fx).await;
+        let spec = &specs[0];
+        assert_eq!(spec.boot.len(), 3, "{:?}", spec.boot);
+        assert!(
+            !spec.boot.contains_key("BORANT_JOIN"),
+            "no secrets, no join: {:?}",
+            spec.boot
+        );
+        assert!(
+            fx.hub
+                .store
+                .get::<JoinToken>(&keys::join(&name("e1")))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// The boot values are the one place that a token or a bundle value
+    /// leaves the hub: no key of the store and no log line holds one.
+    #[tokio::test]
+    async fn elastic_a_create_and_the_store_hold_no_token_or_bundle_value() {
+        use crate::testkit::{BOOT_VALUE, NATS_VALUE, STORE_TOKEN_VALUE, log_mark, log_since};
+
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "a1").await;
+
+        let mark = log_mark();
+        fx.hub.tick_elastic().await.unwrap();
+        let lines = log_since(mark);
+
+        let specs = created(&fx).await;
+        let token = specs[0].boot["BORANT_JOIN"].clone();
+        assert_eq!(specs[0].boot["TAILSCALE_AUTHKEY"], BOOT_VALUE);
+
+        let secrets = [token.as_str(), BOOT_VALUE, STORE_TOKEN_VALUE, NATS_VALUE];
+        for entry in fx.hub.store.0.list("").await.unwrap() {
+            let text = String::from_utf8_lossy(&entry.value).into_owned();
+            for value in secrets {
+                assert!(
+                    !text.contains(value),
+                    "the key {} holds {value:?}: {text}",
+                    entry.key
+                );
+            }
+        }
+        assert!(lines.contains("pool host ordered"), "the capture works");
+        for value in secrets {
+            assert!(!lines.contains(value), "the log holds {value:?}: {lines}");
+        }
+    }
+
+    #[tokio::test]
+    async fn elastic_a_failed_create_leaves_no_join_key() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        prov.set_create_failure(true);
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "a1").await;
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        assert!(
+            fx.hub
+                .store
+                .get::<JoinToken>(&keys::join(&name("e1")))
+                .await
+                .unwrap()
+                .is_none(),
+            "the token of an order that made no host goes"
+        );
+    }
+
+    /// A provisioner that echoes the boot values in its refusal must not put a
+    /// token or a bundle value in the refusal that the alerts report, or in
+    /// the log.
+    #[tokio::test]
+    async fn elastic_a_provisioner_error_holds_no_token_or_bundle_value() {
+        use crate::testkit::{BOOT_VALUE, NATS_VALUE, STORE_TOKEN_VALUE, log_mark, log_since};
+
+        let backend = Arc::new(Echoing::default());
+        let fx = build(
+            Some(ElasticConfig {
+                tick: Duration::from_secs(5),
+                lost_timeout: Duration::from_secs(10 * 60),
+                create_backoff: Duration::from_secs(5 * 60),
+                monthly_budget_usd: None,
+                pools: vec![pool()],
+                provisioners: BTreeMap::from([(
+                    "cloud".to_owned(),
+                    backend.clone() as Arc<dyn Provisioner>,
+                )]),
+            }),
+            Arc::new(MemoryProvisioner::new()),
+            Some(crate::testkit::hub_secrets()),
+        );
+        pending(&fx, "a1").await;
+
+        let mark = log_mark();
+        fx.hub.tick_elastic().await.unwrap();
+        let lines = log_since(mark);
+
+        let (token, echoed) = {
+            let seen = backend.seen.lock().expect("the seen specs");
+            (
+                seen[0].boot["BORANT_JOIN"].clone(),
+                seen[0].boot.values().any(|v| v == BOOT_VALUE),
+            )
+        };
+        assert!(echoed, "the fake echoed its spec");
+
+        let refused = fx
+            .hub
+            .mem
+            .lock()
+            .await
+            .elastic_refused
+            .get(&"workers".parse::<PoolName>().unwrap())
+            .map(|r| r.message.clone())
+            .expect("the refusal of the alerts");
+        assert!(
+            refused.contains("[redacted]"),
+            "the refusal is redacted: {refused}"
+        );
+        assert!(
+            refused.contains("e1"),
+            "the refusal names the host: {refused}"
+        );
+        for value in [token.as_str(), BOOT_VALUE, STORE_TOKEN_VALUE, NATS_VALUE] {
+            assert!(
+                !refused.contains(value),
+                "the refusal holds {value:?}: {refused}"
+            );
+            assert!(!lines.contains(value), "the log holds {value:?}: {lines}");
+        }
+    }
+
+    #[tokio::test]
+    async fn elastic_a_delete_removes_the_unspent_join_key() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let record = prov.create(&provider_spec("e1")).await.unwrap();
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        register(&fx, "e1", 2).await;
+        let host = ElasticHost {
+            name: name("e1"),
+            pool: "workers".parse().unwrap(),
+            provider_id: record.id,
+            phase: Phase::Ready,
+            created: NOW.minus(Duration::from_secs(3600)),
+            last_busy: NOW.minus(Duration::from_secs(21 * 60)),
+            billing_step_end: NOW.plus(Duration::from_secs(60)),
+            last_seen: NOW,
+        };
+        fx.hub
+            .store
+            .upsert(&keys::elastic(&name("e1")), &host)
+            .await
+            .unwrap();
+        fx.hub
+            .store
+            .upsert(
+                &keys::join(&name("e1")),
+                &JoinToken {
+                    host: name("e1"),
+                    digest: "aa".repeat(32),
+                    // Live until after the delete, so only the delete takes it.
+                    expires: NOW.plus(Duration::from_secs(600)),
+                },
+            )
+            .await
+            .unwrap();
+
+        fx.hub.tick_elastic().await.unwrap();
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick_elastic().await.unwrap();
+
+        assert!(key(&fx, "e1").await.is_none(), "the host key goes");
+        assert!(
+            fx.hub
+                .store
+                .get::<JoinToken>(&keys::join(&name("e1")))
+                .await
+                .unwrap()
+                .is_none(),
+            "the unspent token goes with the host"
+        );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_reap_deletes_an_expired_join_key() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        for (host, expires) in [
+            ("e7", NOW.minus(Duration::from_secs(1))),
+            ("e8", NOW.plus(Duration::from_secs(60))),
+        ] {
+            fx.hub
+                .store
+                .upsert(
+                    &keys::join(&name(host)),
+                    &JoinToken {
+                        host: name(host),
+                        digest: "bb".repeat(32),
+                        expires,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        assert!(
+            fx.hub
+                .store
+                .get::<JoinToken>(&keys::join(&name("e7")))
+                .await
+                .unwrap()
+                .is_none(),
+            "the expired token goes"
+        );
+        assert!(
+            fx.hub
+                .store
+                .get::<JoinToken>(&keys::join(&name("e8")))
+                .await
+                .unwrap()
+                .is_some(),
+            "a live token stays"
+        );
     }
 
     #[tokio::test]

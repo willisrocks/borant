@@ -37,6 +37,44 @@ urls = ["nats://127.0.0.1:4222"]
 Then run `borant hub`. A stable `instance` name lets a restarted hub take its
 own lease at once.
 
+### Secrets of a host that the hub creates
+
+A fresh box that the hub creates carries only two secrets: a single-use join
+token and the vars of bundle `host-boot`, for example the reusable tailnet
+key. Once on the tailnet, the box trades the token at `POST /v1/join` for the
+vars of bundle `host-join`, the store token and the NATS credential.
+
+Give the hub the same `[secrets]` table that a host takes:
+
+```toml
+[secrets.stores.op]
+kind = "exec"
+command = ["borant-secrets-1password"]
+credential = "op-store-token"   # a file in $CREDENTIALS_DIRECTORY
+
+[secrets.bundles.host-boot]
+store = "op"
+
+[secrets.bundles.host-boot.vars]
+TAILSCALE_AUTHKEY = "op://Borant/tailscale/key"
+
+[secrets.bundles.host-join]
+store = "op"
+
+[secrets.bundles.host-join.vars]
+STORE_TOKEN = "op://Borant/store/token"
+NATS_PASSWORD = "op://Borant/nats/pool"
+```
+
+The hub opens those stores at start and resolves only the two bundle names. A
+store that fails logs an error and leaves join off: pool hosts are created as
+before, without a join. It stores only the SHA-256 of each token, with the host
+name and an expiry of the pool's `boot_timeout`, and deletes it at the join,
+at the host's delete, or at that expiry. `POST /v1/join` on the `[http] listen`
+address takes `{"host": "<name>", "token": "<token>"}` and answers
+`{"vars": {...}}` once, or 403 with one generic body for every refusal. Keep
+the listener on the tailnet: this route is the only way a value leaves the hub.
+
 ## Run a host
 
 On each machine that runs agents, create `~/.borant/host.toml`:

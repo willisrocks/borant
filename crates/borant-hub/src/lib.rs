@@ -14,6 +14,7 @@ mod events;
 pub mod export;
 pub mod http;
 mod inbox;
+mod join;
 mod leases;
 mod members;
 mod moves;
@@ -22,15 +23,20 @@ mod pause;
 mod prune;
 mod retire;
 mod schedules;
+pub mod secrets;
 mod spawns;
 mod store;
 mod tasks;
+#[cfg(test)]
+mod testkit;
 mod view;
 mod waits;
 
 pub use changes::ChangeWatch;
 pub use elastic::ElasticConfig;
+pub use join::JoinToken;
 pub use schedules::{FireTask, ScheduleState};
+pub use secrets::{HubSecretConfig, HubSecrets};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -91,6 +97,10 @@ pub struct HubConfig {
     /// `[http]` of `hub.toml`: the read-only listener of the web view, off
     /// unless `listen` is set.
     pub http: HttpConfig,
+    /// The `[secrets]` stores of `hub.toml`, opened at start. `None`, or one
+    /// without both `host-boot` and `host-join`, creates pool hosts without a
+    /// join.
+    pub secrets: Option<HubSecrets>,
     /// `[channels.<name>]` from `hub.toml`, for example `max_agents`.
     pub channels: BTreeMap<ChannelName, ChannelConfig>,
 }
@@ -108,6 +118,7 @@ impl Default for HubConfig {
             schedules: Vec::new(),
             member_rules: MemberRules::default(),
             http: HttpConfig::default(),
+            secrets: None,
             channels: BTreeMap::new(),
         }
     }

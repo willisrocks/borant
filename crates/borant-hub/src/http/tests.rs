@@ -643,3 +643,182 @@ async fn http_routes_never_write_to_the_store() {
         "a route wrote to the store"
     );
 }
+
+/// A hub with the join secrets and a store that the join may write, with the
+/// clock at [`NOW`].
+struct JoinFx {
+    hub: Arc<Hub>,
+    state: MemoryState,
+}
+
+impl JoinFx {
+    fn new(secrets: Option<crate::HubSecrets>) -> Self {
+        let state = MemoryState::new();
+        let hub = Arc::new(Hub::new(
+            Arc::new(state.clone()),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            Arc::new(ManualClock::new(NOW)),
+            HubConfig {
+                secrets,
+                ..HubConfig::default()
+            },
+        ));
+        Self { hub, state }
+    }
+
+    /// Plants a join key, as a create of `host` would.
+    fn seed_token(&self, host: &str, token: &str, expires: Timestamp) {
+        let host: HostName = host.parse().expect("a host name");
+        self.state.seed(
+            &keys::join(&host),
+            bytes(&crate::JoinToken {
+                host,
+                digest: crate::join::digest(token),
+                expires,
+            }),
+        );
+    }
+
+    async fn key(&self, host: &str) -> bool {
+        let host: HostName = host.parse().expect("a host name");
+        self.state
+            .get(&keys::join(&host))
+            .await
+            .expect("the state")
+            .is_some()
+    }
+
+    async fn post(&self, body: serde_json::Value) -> (StatusCode, String) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/join")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("the request");
+        let response = router(self.hub.clone(), NOW)
+            .oneshot(request)
+            .await
+            .expect("the reply");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("the body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+}
+
+/// The one body of every refusal, so a caller learns nothing.
+const REFUSED: &str = r#"{"error":"join refused"}"#;
+
+#[tokio::test]
+async fn http_join_returns_the_vars_of_host_join_once() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    let (status, body) = fx.post(json!({ "host": "e1", "token": "the-token" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reply: serde_json::Value = serde_json::from_str(&body).expect("the reply as JSON");
+    assert_eq!(
+        reply["vars"]["STORE_TOKEN"],
+        json!(crate::testkit::STORE_TOKEN_VALUE)
+    );
+    assert_eq!(
+        reply["vars"]["NATS_PASSWORD"],
+        json!(crate::testkit::NATS_VALUE)
+    );
+    assert!(!fx.key("e1").await, "the key goes at the join");
+
+    // The second use is refused, with the one body.
+    let (status, body) = fx.post(json!({ "host": "e1", "token": "the-token" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, REFUSED);
+}
+
+#[tokio::test]
+async fn http_join_refuses_the_token_of_another_host() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    let (status, body) = fx.post(json!({ "host": "e2", "token": "the-token" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, REFUSED);
+    assert!(fx.key("e1").await, "the token of e1 survives the attempt");
+}
+
+#[tokio::test]
+async fn http_join_refuses_an_expired_token() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.minus(Duration::from_secs(1)));
+
+    let (status, body) = fx.post(json!({ "host": "e1", "token": "the-token" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, REFUSED);
+    assert!(!fx.key("e1").await, "the expired key goes at the attempt");
+}
+
+#[tokio::test]
+async fn http_join_refuses_a_token_that_does_not_match() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    let (status, body) = fx
+        .post(json!({ "host": "e1", "token": "another-token" }))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, REFUSED);
+    assert!(fx.key("e1").await, "a wrong guess does not spend the token");
+}
+
+#[tokio::test]
+async fn http_join_refuses_without_the_secrets_of_the_hub() {
+    let fx = JoinFx::new(None);
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    let (status, body) = fx.post(json!({ "host": "e1", "token": "the-token" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, REFUSED);
+    assert!(fx.key("e1").await);
+}
+
+#[tokio::test]
+async fn http_join_refuses_a_malformed_body_with_the_same_reply() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    for body in [
+        json!({ "host": "e1" }),
+        json!({ "token": "the-token" }),
+        json!({}),
+        json!({ "host": "Bad.Name", "token": "the-token" }),
+    ] {
+        let (status, reply) = fx.post(body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(reply, REFUSED, "{body}");
+    }
+    assert!(fx.key("e1").await, "no bad body spends the token");
+}
+
+#[tokio::test]
+async fn http_join_of_two_requests_lets_one_win() {
+    let fx = JoinFx::new(Some(crate::testkit::hub_secrets()));
+    fx.seed_token("e1", "the-token", NOW.plus(Duration::from_secs(60)));
+
+    let ask = || fx.post(json!({ "host": "e1", "token": "the-token" }));
+    let (first, second) = tokio::join!(ask(), ask());
+    let wins = [first.0, second.0]
+        .iter()
+        .filter(|status| **status == StatusCode::OK)
+        .count();
+    assert_eq!(wins, 1, "exactly one 200: {first:?} {second:?}");
+    let loser = if first.0 == StatusCode::OK {
+        second
+    } else {
+        first
+    };
+    assert_eq!(loser.0, StatusCode::FORBIDDEN);
+    assert_eq!(loser.1, REFUSED);
+}

@@ -52,6 +52,12 @@ async fn hub_parts(
     // The PR watch of `[changes]`: None names no adapter, or a program that is
     // not a change-request plugin (a warn, not a failed start).
     let changes = file.changes_watch().await?;
+    // The hub opens its `[secrets]` stores, as a host does. A store that
+    // fails is logged and leaves join off; the hub still runs.
+    let secrets = match file.secrets.config() {
+        Some(config) => Some(config.open().await),
+        None => None,
+    };
     let mut cfg = HubConfig {
         lease: file.timing.lease_config()?,
         elastic: file.elastic_config()?,
@@ -62,6 +68,7 @@ async fn hub_parts(
         schedules,
         member_rules: file.secrets.members,
         http: file.http,
+        secrets,
         channels: file.channels,
         ..HubConfig::default()
     };
