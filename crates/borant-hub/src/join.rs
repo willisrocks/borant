@@ -182,7 +182,10 @@ mod tests {
         assert_ne!(one, token().unwrap(), "two tokens differ");
         let digest = digest(&one);
         assert_eq!(digest.len(), 64);
-        assert!(!digest.contains(one.as_str()), "the digest is not the token");
+        assert!(
+            !digest.contains(one.as_str()),
+            "the digest is not the token"
+        );
         assert!(same(&digest, &digest));
         assert!(!same(&digest, "0"));
     }

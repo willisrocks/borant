@@ -27,6 +27,8 @@ pub mod secrets;
 mod spawns;
 mod store;
 mod tasks;
+#[cfg(test)]
+mod testkit;
 mod view;
 mod waits;
 

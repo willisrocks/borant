@@ -16,9 +16,7 @@ use crate::model::{
     TaskEventKind, TaskStatus,
 };
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
-use crate::ports::secrets::{
-    Resolved, Secret, SecretCapabilities, SecretRef, SecretStore,
-};
+use crate::ports::secrets::{Resolved, Secret, SecretCapabilities, SecretRef, SecretStore};
 use crate::ports::{
     Change, ChangeRequests, ChangeStatus, EventLog, MessageBus, PortError, PortErrorKind,
     PortResult, SessionStore, StateStore,

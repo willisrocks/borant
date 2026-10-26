@@ -179,7 +179,11 @@ mod tests {
     async fn resolves_the_vars_of_a_bundle() {
         let two = secrets(
             true,
-            vec![bundle("host-boot", "op", &[("TAILSCALE_AUTHKEY", "op://boot/key")])],
+            vec![bundle(
+                "host-boot",
+                "op",
+                &[("TAILSCALE_AUTHKEY", "op://boot/key")],
+            )],
         );
         let vars = two.vars(&host_boot()).await.unwrap();
         assert_eq!(vars["TAILSCALE_AUTHKEY"], "boot-value");
@@ -205,7 +209,11 @@ mod tests {
     async fn one_missing_bundle_leaves_join_off() {
         let one = secrets(
             true,
-            vec![bundle("host-boot", "op", &[("TAILSCALE_AUTHKEY", "op://boot/key")])],
+            vec![bundle(
+                "host-boot",
+                "op",
+                &[("TAILSCALE_AUTHKEY", "op://boot/key")],
+            )],
         );
         assert!(!one.joins(), "host-join is missing");
     }
