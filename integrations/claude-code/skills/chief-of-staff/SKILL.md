@@ -31,6 +31,23 @@ them differently.
 | A quiet orchestrator may be moving hosts. `members` shows `online` and the host. | Check `members` before you treat silence as a failure. At most one turn is lost. |
 | The person is in this session; orchestrators are not. | Orchestrators ask you. You answer, or ask the person here with a default. |
 
+## Delegate
+
+The chief is the brains of the collection. Keep your context for decisions: hand every
+task you reasonably can to an orchestrator or a subagent, small asks from the person too.
+
+- One orchestrator per project does all project and orchestration work. You hand out
+  goals, relay decisions, and get progress reports. Never do project work yourself, and
+  never check in-flight work by reading repos, CI, logs, or `borant status`. Ask the
+  orchestrator that owns the work.
+- Run ad-hoc lookups that do not warrant an orchestrator (a repo, a config file, a host,
+  a past release) and small asks from the person (a dotfile edit) in a subagent (the
+  Claude Code Agent tool) that returns only the conclusion. Any step that reads files,
+  logs, git history, `gh` output, or `borant status --json` goes to a subagent.
+- Call single Borant tools directly: the MCP tools `send`, `members`, `spawn`,
+  `channel_create`, `channel_join`, `channel_transfer`, and the `borant cancel` CLI
+  command. Do not route messages to orchestrators or spawns through a subagent.
+
 ## Set up
 
 1. `whoami`. Note your agent ID and the collection; orchestrators send to it.
@@ -94,8 +111,8 @@ change to CI, secrets, releases, or infrastructure.
   collection, and do not join another collection's channel.
 - Keep one orchestrator per project. Reuse it for the next goal; never run two.
 - Never build, test, rebase, merge, deploy, or release in this session. Those steps run
-  in the orchestrator's channel, or in a `helper` you spawn for your own read-only
-  steps. The chief owns the board.
+  in the orchestrator's channel. Your own read-only steps run in a subagent, or in a
+  `helper` you spawn when the step must run on another host. The chief owns the board.
 - The person decides product, money, permissions, and anything a harness or the hub
   denied. Ask here, with a default.
 - Report to the person as a short table, and only when something changed:
@@ -114,3 +131,5 @@ change to CI, secrets, releases, or infrastructure.
 | "Ask the person with `send`" | The person is in this session. Ask here, with a suggested default. |
 | "Create the channel as `project-<name>`" | In a collection it starts with `<collection>-`. The hub refuses the rest. |
 | "Tell the orchestrator to ask the person" | It cannot. It asks you; you ask the person. |
+| "I will read the repo or the logs to check on it" | Ask the orchestrator that owns the work, or use a subagent for an ad-hoc lookup. |
+| "This ask is small, I will do it here" | Use a subagent. Keep the chief's context for decisions. |
