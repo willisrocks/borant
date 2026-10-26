@@ -78,9 +78,18 @@ async fn two_agents_of_a_project_clone_through_one_mirror() {
     for agent in ["w1", "w2"] {
         let agent = agent.parse().unwrap();
         dirs.push(
-            checkpoint::restore(&work, &repo, &agent, &url, None, Some("main"), Some(mirror))
-                .await
-                .unwrap(),
+            checkpoint::restore(
+                &work,
+                &repo,
+                &agent,
+                &url,
+                None,
+                Some("main"),
+                Some(mirror),
+                &[],
+            )
+            .await
+            .unwrap(),
         );
     }
     let mirror_dir = checkpoint::mirror_dir(&projects, &project());
@@ -116,6 +125,7 @@ async fn two_agents_of_a_project_clone_through_one_mirror() {
         None,
         Some("main"),
         Some(mirror),
+        &[],
     )
     .await
     .unwrap();
@@ -132,7 +142,7 @@ async fn the_mirror_fetches_new_commits_from_the_remote() {
     let d = tempfile::tempdir().unwrap();
     let (url, seed) = remote(d.path(), "web.git");
     let projects = d.path().join("projects");
-    let mirror_dir = checkpoint::ensure_mirror(&projects, &project(), &url)
+    let mirror_dir = checkpoint::ensure_mirror(&projects, &project(), &url, &[])
         .await
         .unwrap();
     std::fs::write(seed.join("c.txt"), "three\n").unwrap();
@@ -140,7 +150,7 @@ async fn the_mirror_fetches_new_commits_from_the_remote() {
     git(&seed, &["commit", "-q", "-m", "three"]);
     git(&seed, &["push", "-q", &url, "main"]);
     let head = git(&seed, &["rev-parse", "HEAD"]);
-    checkpoint::ensure_mirror(&projects, &project(), &url)
+    checkpoint::ensure_mirror(&projects, &project(), &url, &[])
         .await
         .unwrap();
     assert_eq!(
@@ -163,8 +173,26 @@ async fn concurrent_restores_of_one_project_succeed() {
     let repo = info(&url);
     let a = "w1".parse().unwrap();
     let b = "w2".parse().unwrap();
-    let one = checkpoint::restore(&work, &repo, &a, &url, None, Some("main"), Some(mirror));
-    let two = checkpoint::restore(&work, &repo, &b, &url, None, Some("main"), Some(mirror));
+    let one = checkpoint::restore(
+        &work,
+        &repo,
+        &a,
+        &url,
+        None,
+        Some("main"),
+        Some(mirror),
+        &[],
+    );
+    let two = checkpoint::restore(
+        &work,
+        &repo,
+        &b,
+        &url,
+        None,
+        Some("main"),
+        Some(mirror),
+        &[],
+    );
     let (one, two) = tokio::join!(one, two);
     let one = one.unwrap();
     let two = two.unwrap();
@@ -180,7 +208,7 @@ async fn mirror_never_prunes_or_repacks() {
     let d = tempfile::tempdir().unwrap();
     let (url, _seed) = remote(d.path(), "web.git");
     let projects = d.path().join("projects");
-    let mirror_dir = checkpoint::ensure_mirror(&projects, &project(), &url)
+    let mirror_dir = checkpoint::ensure_mirror(&projects, &project(), &url, &[])
         .await
         .unwrap();
     let config = |key: &str| git(&mirror_dir, &["config", key]);
@@ -192,7 +220,7 @@ async fn mirror_never_prunes_or_repacks() {
     assert_eq!(config("gc.pruneExpire"), "never");
     assert_eq!(config("maintenance.auto"), "false");
     // A second call fetches the same mirror instead of replacing it.
-    let again = checkpoint::ensure_mirror(&projects, &project(), &url)
+    let again = checkpoint::ensure_mirror(&projects, &project(), &url, &[])
         .await
         .unwrap();
     assert_eq!(again, mirror_dir);
@@ -212,6 +240,7 @@ async fn a_launch_without_a_project_clones_without_a_mirror() {
         None,
         Some("main"),
         None,
+        &[],
     )
     .await
     .unwrap();
@@ -249,6 +278,7 @@ async fn a_wip_restore_through_the_mirror_returns_the_wip_files() {
         Some(&sha),
         None,
         Some(mirror),
+        &[],
     )
     .await
     .unwrap();
