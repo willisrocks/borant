@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Harness, HostInfo, LaunchFailure, Lease, LeaseState, MemberState, MoveReason, Project,
-    Sender, SessionEvent, SessionEventBody, SpawnRecord, SpawnState,
+    Sender, SessionEvent, SessionEventBody, SpawnRecord, SpawnState, launch_error_text,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
@@ -888,8 +888,11 @@ impl Hub {
             self.store.put(&key, &expired, Some(d.revision)).await?;
         }
         // The try counts against the spawn of the agent, and the record stops
-        // the hub after three of them.
-        let (attempts, failed) = self.note_launch_failure(agent, host, timeout_secs).await?;
+        // the hub after three of them. The record keeps the last line of the
+        // screen, so `borant ps` and the spawner read the cause.
+        let (attempts, failed) = self
+            .note_launch_failure(agent, host, timeout_secs, Some(&screen))
+            .await?;
         let severity = if failed {
             Severity::Error
         } else {
@@ -906,10 +909,10 @@ impl Hub {
 
     /// Counts one failed try of the spawn of `agent`, and fails the record
     /// after three: a launch that keeps landing on the same screen waits for
-    /// a person, not for another try. The record keeps the host and the
-    /// timeout of each try, so `borant ps` and the spawner read why it failed.
-    /// Returns the count and whether the record is `Failed` now. An agent
-    /// without a spawn record is not counted.
+    /// a person, not for another try. The record keeps the host, the timeout,
+    /// and the capped error of each try, so `borant ps` and the spawner read
+    /// why it failed. Returns the count and whether the record is `Failed`
+    /// now. An agent without a spawn record is not counted.
     ///
     /// The spawner gets one direct message, with the write that fails the
     /// record: a repeat on a `Failed` record counts nothing and sends
@@ -919,6 +922,7 @@ impl Hub {
         agent: &AgentId,
         host: &HostName,
         timeout_secs: Option<f64>,
+        error: Option<&str>,
     ) -> Result<(u32, bool), ApiError> {
         let key = keys::spawn(agent);
         let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
@@ -934,6 +938,9 @@ impl Hub {
         record.launch_failures.push(LaunchFailure {
             host: host.clone(),
             timeout_secs,
+            // Only the last line, short: the record and the queue reply carry
+            // the cause, not the screen.
+            error: error.and_then(launch_error_text),
         });
         let failed = record.attempts >= MAX_LAUNCH_TRIES;
         if failed {

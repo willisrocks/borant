@@ -624,6 +624,12 @@ impl Hub {
                     // or why a failed spawn gave up.
                     "last_reject": reject_text(&r.last_reject),
                     "fail_reason": r.fail_reason(),
+                    // The last try that named an error, so `ps --json` and
+                    // the reason of a queued spawn carry its cause.
+                    "last_error": r.last_launch_error().map(|f| json!({
+                        "host": f.host,
+                        "text": f.error,
+                    })),
                     "queue_reason": r.queue_reason,
                     "by": r.by,
                     "task": r.spec.task,

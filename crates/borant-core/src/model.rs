@@ -611,24 +611,36 @@ pub struct SpawnRecord {
 impl SpawnRecord {
     /// Why the spawn failed, for `borant ps` and the message to the spawner:
     /// the tries that did not register, the timeout when the host named it,
-    /// and the hosts in try order. `None` until the record is `Failed`.
+    /// the hosts in try order, and the last error a host reported. `None`
+    /// until the record is `Failed`.
     pub fn fail_reason(&self) -> Option<String> {
         if self.state != SpawnState::Failed {
             return None;
         }
         // A record that this version did not fail has no count to show.
         let tries = self.attempts.max(1);
-        let within = self
-            .launch_failures
-            .iter()
-            .rev()
-            .find_map(|f| f.timeout_secs)
-            .map(|secs| format!(" within {}s", secs_text(secs)))
-            .unwrap_or_default();
-        let mut out = format!(
-            "{tries} launch{} did not register{within}",
-            if tries == 1 { "" } else { "es" }
-        );
+        let error = self.last_launch_error().and_then(|f| f.error.as_deref());
+        // A host that reported an error says what it was; a try that only
+        // timed out keeps the text of the timeout.
+        let mut out = match error {
+            Some(_) => format!(
+                "{tries} launch{} failed",
+                if tries == 1 { "" } else { "es" }
+            ),
+            None => {
+                let within = self
+                    .launch_failures
+                    .iter()
+                    .rev()
+                    .find_map(|f| f.timeout_secs)
+                    .map(|secs| format!(" within {}s", secs_text(secs)))
+                    .unwrap_or_default();
+                format!(
+                    "{tries} launch{} did not register{within}",
+                    if tries == 1 { "" } else { "es" }
+                )
+            }
+        };
         if !self.launch_failures.is_empty() {
             let hosts: Vec<&str> = self
                 .launch_failures
@@ -637,7 +649,20 @@ impl SpawnRecord {
                 .collect();
             out.push_str(&format!(" ({})", hosts.join(", ")));
         }
+        if let Some(text) = error {
+            out.push_str(": last error: ");
+            out.push_str(text);
+        }
         Some(out)
+    }
+
+    /// The try that last reported an error, for `borant ps` and the reason of
+    /// a failed spawn.
+    pub fn last_launch_error(&self) -> Option<&LaunchFailure> {
+        self.launch_failures
+            .iter()
+            .rev()
+            .find(|f| f.error.is_some())
     }
 }
 
@@ -649,6 +674,30 @@ pub struct LaunchFailure {
     /// The timeout that the host waited, when it named one.
     #[serde(default)]
     pub timeout_secs: Option<f64>,
+    /// What the host reported, as `launch_error_text` keeps it: the last line
+    /// of the error or screen, at most `LAUNCH_ERROR_CHARS` characters.
+    /// `None` for a try that named no error, as the lease tick does, and for
+    /// a record of an older hub.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// The longest stored error of a launch, in characters.
+pub const LAUNCH_ERROR_CHARS: usize = 200;
+
+/// The error of one launch, as the record keeps it: the last non-empty line
+/// of what the host sent, already redacted, cut to `LAUNCH_ERROR_CHARS`
+/// characters with a trailing ellipsis, so a long screen cannot bloat the
+/// record or the queue reply. `None` when the text has no line in it.
+pub fn launch_error_text(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).rev().find(|l| !l.is_empty())?;
+    let mut chars = line.chars();
+    let mut out: String = chars.by_ref().take(LAUNCH_ERROR_CHARS).collect();
+    if chars.next().is_some() {
+        out.pop();
+        out.push('…');
+    }
+    Some(out)
 }
 
 /// A count of seconds without a trailing `.0`, as `borant ps` prints it.
@@ -1221,9 +1270,9 @@ mod tests {
     }
 
     /// A failed spawn says which launches did not register, where they were
-    /// tried, and how long the host waited.
+    /// tried, how long the host waited, and what the last host reported.
     #[test]
-    fn a_failed_spawn_names_its_tries_and_hosts() {
+    fn a_failed_spawn_names_its_tries_hosts_and_last_error() {
         let failed = |attempts: u32, failures: Vec<LaunchFailure>| SpawnRecord {
             agent: "w1".parse().unwrap(),
             spec: serde_json::from_value(serde_json::json!({ "channel": "api" })).unwrap(),
@@ -1240,7 +1289,14 @@ mod tests {
         let try_on = |host: &str| LaunchFailure {
             host: host.parse().unwrap(),
             timeout_secs: Some(90.0),
+            error: None,
         };
+        let try_with = |host: &str, error: &str| LaunchFailure {
+            host: host.parse().unwrap(),
+            timeout_secs: None,
+            error: Some(error.to_owned()),
+        };
+        // A try that only timed out keeps the text of the timeout.
         let record = failed(
             3,
             vec![try_on("borant-1"), try_on("borant-2"), try_on("borant-1")],
@@ -1248,6 +1304,34 @@ mod tests {
         assert_eq!(
             record.fail_reason().unwrap(),
             "3 launches did not register within 90s (borant-1, borant-2, borant-1)"
+        );
+        // A host that reported an error names it instead, so a person reads
+        // the cause without the host journal.
+        let record = failed(
+            3,
+            vec![
+                try_with("borant-1", "cannot clone the repository"),
+                try_on("borant-2"),
+                try_with("borant-1", "fatal: repository 'x.git' not found"),
+            ],
+        );
+        assert_eq!(
+            record.fail_reason().unwrap(),
+            "3 launches failed (borant-1, borant-2, borant-1): last error: \
+             fatal: repository 'x.git' not found"
+        );
+        // The last try that named an error wins, and it names its own host.
+        let record = failed(
+            2,
+            vec![try_with("borant-1", "first error"), try_on("borant-2")],
+        );
+        assert_eq!(
+            record.last_launch_error().unwrap().host.as_str(),
+            "borant-1"
+        );
+        assert_eq!(
+            record.fail_reason().unwrap(),
+            "2 launches failed (borant-1, borant-2): last error: first error"
         );
         // A record of an older hub names no host and no timeout.
         assert_eq!(
@@ -1262,5 +1346,29 @@ mod tests {
         let mut queued = failed(0, Vec::new());
         queued.state = SpawnState::Queued;
         assert_eq!(queued.fail_reason(), None);
+    }
+
+    /// The record keeps the last line of what the host sent, short, so a
+    /// screen of stderr cannot bloat it. A record of an older hub has no
+    /// error and still parses.
+    #[test]
+    fn a_launch_error_keeps_its_last_line_and_a_cap() {
+        assert_eq!(
+            launch_error_text("starting\nfatal: repository 'x.git' not found\n\n").as_deref(),
+            Some("fatal: repository 'x.git' not found")
+        );
+        assert_eq!(launch_error_text("\n \n"), None);
+        let long = format!("{}end", "x".repeat(400));
+        let kept = launch_error_text(&long).unwrap();
+        assert_eq!(kept.chars().count(), LAUNCH_ERROR_CHARS);
+        assert!(kept.ends_with('…'), "{kept}");
+        assert!(kept.starts_with("xxx"), "{kept}");
+
+        let old: LaunchFailure = serde_json::from_value(serde_json::json!({
+            "host": "borant-1",
+            "timeout_secs": 90.0,
+        }))
+        .unwrap();
+        assert_eq!(old.error, None);
     }
 }

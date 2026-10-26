@@ -918,18 +918,36 @@ fn render_queue(v: &Value, queued_only: bool) -> String {
             .map(|at| crate::events::utc_time(Timestamp(at)))
             .unwrap_or_else(|| "-".to_owned());
         let channel = rec["spec"]["channel"].as_str().unwrap_or("-");
-        // A failed spawn says why it gave up; a queued one says why the hosts
-        // refuse it.
-        let reject = match rec["fail_reason"].as_str() {
-            Some(reason) => reason.to_owned(),
-            None => render_reject(&rec["last_reject"]),
-        };
         let _ = writeln!(
             out,
-            "{agent:<24} {state:<10} {priority:<9} {queued:<10} {channel:<9} {reject}"
+            "{agent:<24} {state:<10} {priority:<9} {queued:<10} {channel:<9} {reason}",
+            reason = render_queue_reason(rec)
         );
     }
     out
+}
+
+/// Why a queue row waits or stopped: the reason of a failed spawn, else the
+/// hosts that refused it and the last launch error. A failed spawn names its
+/// last error in the reason already.
+fn render_queue_reason(rec: &Value) -> String {
+    if let Some(reason) = rec["fail_reason"].as_str() {
+        return reason.to_owned();
+    }
+    let reject = render_reject(&rec["last_reject"]);
+    let error = match (
+        rec["last_error"]["host"].as_str(),
+        rec["last_error"]["text"].as_str(),
+    ) {
+        (Some(host), Some(text)) => Some(format!("last error ({host}): {text}")),
+        _ => None,
+    };
+    match (reject.as_str(), error) {
+        ("-", None) => "-".to_owned(),
+        ("-", Some(error)) => error,
+        (reject, Some(error)) => format!("{reject} | {error}"),
+        (reject, None) => reject.to_owned(),
+    }
 }
 
 /// The refused hosts of a queued spawn: `borant-1: full (6/6), borant-2: low
@@ -2143,6 +2161,35 @@ mod tests {
             out.contains("3 launches did not register within 90s (borant-1, borant-2, borant-1)"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn cli_render_queue_prints_the_last_launch_error() {
+        // A queued spawn with a failed try shows why the try died, after the
+        // hosts that refuse it now.
+        let v = json!([
+            {"agent": "w1", "state": "queued", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"}, "last_reject": [["borant-1", "full (6/6)"]],
+             "last_error": {"host": "borant-2",
+                            "text": "fatal: repository 'x.git' not found"}},
+            {"agent": "w2", "state": "queued", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"}, "last_reject": null,
+             "last_error": {"host": "borant-1", "text": "no such folder"}},
+        ]);
+        let out = render_queue(&v, true);
+        assert!(
+            out.contains(
+                "borant-1: full (6/6) | last error (borant-2): \
+                 fatal: repository 'x.git' not found"
+            ),
+            "{out}"
+        );
+        // Without a refusal of its own, the error stands alone.
+        assert!(
+            out.contains("last error (borant-1): no such folder"),
+            "{out}"
+        );
+        assert!(!out.contains("- |"), "{out}");
     }
 
     #[test]
