@@ -172,7 +172,17 @@ fn refuse(host: &HostName, reason: Refusal) -> Refusal {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use borant_core::ManualClock;
+    use borant_core::ports::{Change, Entry, PortResult, StateStore};
+    use borant_memory::{MemoryBus, MemorySession, MemoryState};
+    use bytes::Bytes;
+    use futures::stream::BoxStream;
+
     use super::*;
+    use crate::{Hub, HubConfig};
 
     #[test]
     fn a_token_is_256_bits_of_hex_and_its_digest_is_64() {
@@ -196,6 +206,91 @@ mod tests {
         assert_eq!(
             digest("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// A store whose first read of a join key deletes it: two join requests
+    /// where the other one spent the token after this one read the document.
+    #[derive(Debug)]
+    struct Steals {
+        inner: MemoryState,
+        steal: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StateStore for Steals {
+        async fn get(&self, key: &str) -> PortResult<Option<Entry>> {
+            let doc = self.inner.get(key).await?;
+            if key.starts_with(keys::JOIN_PREFIX) && self.steal.swap(false, Ordering::SeqCst) {
+                // The other request deletes the key after this read.
+                self.inner.delete(key, None).await?;
+            }
+            Ok(doc)
+        }
+
+        async fn create(&self, key: &str, value: Bytes) -> PortResult<u64> {
+            self.inner.create(key, value).await
+        }
+
+        async fn update(&self, key: &str, value: Bytes, expected: u64) -> PortResult<u64> {
+            self.inner.update(key, value, expected).await
+        }
+
+        async fn delete(&self, key: &str, expected: Option<u64>) -> PortResult<()> {
+            self.inner.delete(key, expected).await
+        }
+
+        async fn list(&self, prefix: &str) -> PortResult<Vec<Entry>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn watch(&self, prefix: &str) -> PortResult<BoxStream<'static, Change>> {
+            self.inner.watch(prefix).await
+        }
+    }
+
+    #[tokio::test]
+    async fn redeem_refuses_a_key_that_another_request_spent_after_the_read() {
+        let inner = MemoryState::new();
+        let host: HostName = "e1".parse().unwrap();
+        let token = token().expect("entropy");
+        inner
+            .create(
+                &keys::join(&host),
+                Bytes::from(
+                    serde_json::to_vec(&JoinToken {
+                        host: host.clone(),
+                        digest: digest(&token),
+                        expires: Timestamp(10),
+                    })
+                    .expect("the record"),
+                ),
+            )
+            .await
+            .expect("the token");
+
+        let hub = Hub::new(
+            Arc::new(Steals {
+                inner: inner.clone(),
+                steal: AtomicBool::new(true),
+            }),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            Arc::new(ManualClock::new(Timestamp(0))),
+            HubConfig {
+                secrets: Some(crate::testkit::hub_secrets()),
+                ..HubConfig::default()
+            },
+        );
+
+        let refusal = hub
+            .redeem_join(&host, &token)
+            .await
+            .expect_err("the key is gone");
+        assert_eq!(refusal, Refusal::Spent, "the loser is refused");
+        assert!(
+            inner.get(&keys::join(&host)).await.unwrap().is_none(),
+            "no second reply and no key"
         );
     }
 }
