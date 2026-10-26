@@ -349,9 +349,10 @@ pub struct ProvisionerFile {
     /// The program of an `exec` adapter, argv.
     #[serde(default)]
     pub command: Vec<String>,
-    /// The table that every request carries, as strings.
+    /// The table that every request carries, as opaque JSON: a string,
+    /// number, bool, array, or nested table all reach the plugin unchanged.
     #[serde(default)]
-    pub config: BTreeMap<String, String>,
+    pub config: BTreeMap<String, serde_json::Value>,
     /// The name of the systemd credential that the program reads.
     pub credential: Option<String>,
     /// One timeout for every op, over the default of each.
@@ -490,13 +491,8 @@ fn open_provisioners(
                     // plugin that echoes them must not put them in the log.
                     log_stderr: false,
                 };
-                let config = file
-                    .config
-                    .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                    .collect();
                 Arc::new(
-                    ExecProvisioner::new(exec, config)
+                    ExecProvisioner::new(exec, file.config.clone())
                         .with_timeout(file.timeout_secs.map(Duration::from_secs)),
                 )
             }
@@ -1646,8 +1642,9 @@ price_hour_usd = 0.1
         assert!(elastic.provisioners.contains_key("docker"));
         let docker = &file.provisioners["docker"];
         assert_eq!(docker.command, vec!["/plugins/provision-docker.sh"]);
-        // The `config` table is a flat map of strings: the command is words
-        // and each env variable is one key.
+        // The `config` table of the docker plugin holds strings, and they
+        // reach it unchanged: the command is words and each env variable is
+        // one key.
         assert_eq!(docker.config["command"], "borant host");
         assert_eq!(docker.config["env.BORANT_MAX_AGENTS"], "2");
         let pool = &elastic.pools[0];
@@ -1656,6 +1653,46 @@ price_hour_usd = 0.1
         assert_eq!(pool.agents_per_host, 2);
         assert_eq!(pool.max_hosts, 2);
         assert_eq!(pool.idle_timeout, Duration::from_secs(30));
+    }
+
+    /// A `config` table carries any TOML value, not just strings: the
+    /// provisioner that makes hosts needs a nested table of name prefixes and
+    /// an array of sizes.
+    #[test]
+    fn config_carries_the_whole_provisioner_table() {
+        let file: HubFile = toml::from_str(
+            r#"
+[provisioners.h]
+adapter = "exec"
+command = ["borant-provision-fake"]
+config = { firewall = "f", name_prefixes = { workers = "borant-e" }, sizes = ["cpx31"], max_hosts = 2, locked = true }
+
+[[pools]]
+name = "workers"
+provisioner = "h"
+size = "cpx31"
+region = "hil"
+harnesses = ["omp"]
+agents_per_host = 1
+max_hosts = 1
+"#,
+        )
+        .expect("a nested provisioner config");
+        let elastic = file.elastic_config().unwrap().expect("a pool");
+        assert_eq!(elastic.provisioners.len(), 1);
+        assert_eq!(
+            file.provisioners["h"].config,
+            BTreeMap::from([
+                ("firewall".to_owned(), serde_json::json!("f")),
+                (
+                    "name_prefixes".to_owned(),
+                    serde_json::json!({ "workers": "borant-e" })
+                ),
+                ("sizes".to_owned(), serde_json::json!(["cpx31"])),
+                ("max_hosts".to_owned(), serde_json::json!(2)),
+                ("locked".to_owned(), serde_json::json!(true)),
+            ])
+        );
     }
 
     #[test]
