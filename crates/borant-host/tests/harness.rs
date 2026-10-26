@@ -7,9 +7,10 @@
 //! launch of a harness whose program vanished fails at once with the program
 //! named.
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use borant_core::SystemClock;
@@ -78,19 +79,48 @@ async fn record_hub(bus: &MemoryBus) -> (Arc<Mutex<Vec<Vec<Harness>>>>, Cancella
     (registered, stop)
 }
 
-/// A buffer for the log lines of one test.
-#[derive(Clone, Default)]
-struct Log(Arc<Mutex<Vec<u8>>>);
-
-impl Log {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
+thread_local! {
+    /// The log lines that the test on this thread caused. The subscriber of
+    /// this test binary is global, so the writer sorts the lines by thread.
+    static LINES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-impl Write for Log {
+/// Mounts the one subscriber of this test binary and empties the lines of this
+/// thread, for the test that runs on it.
+///
+/// The subscriber is the global default, not a scoped one: `tracing` caches the
+/// interest of a callsite for the whole process, and the first test of this
+/// binary that reaches the harness warning registers it. A `with_default`
+/// subscriber that appears later cannot reliably undo a cached `never`, because
+/// its rebuild races with that registration and a stale rebuild wins in about
+/// one run in six. Every test that logs, or that reaches the harness check,
+/// calls this first, so the callsite is only ever registered with this
+/// subscriber in the process.
+fn warn_logs() {
+    static MOUNTED: Once = Once::new();
+    MOUNTED.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(ThreadLog)
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("this test binary sets one subscriber");
+    });
+    LINES.with(|lines| lines.borrow_mut().clear());
+}
+
+/// The log lines of this thread since [`warn_logs`].
+fn warn_text() -> String {
+    LINES.with(|lines| String::from_utf8_lossy(&lines.borrow()).into_owned())
+}
+
+/// The writer of [`warn_logs`]: the lines of a test go to its own thread.
+struct ThreadLog;
+
+impl Write for ThreadLog {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        LINES.with(|lines| lines.borrow_mut().extend_from_slice(buf));
         Ok(buf.len())
     }
 
@@ -99,11 +129,11 @@ impl Write for Log {
     }
 }
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Log {
-    type Writer = Log;
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadLog {
+    type Writer = ThreadLog;
 
     fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
+        ThreadLog
     }
 }
 
@@ -111,6 +141,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Log {
 /// declaration stays, so a later install needs no restart.
 #[test]
 fn harness_missing_program_is_not_offered() {
+    warn_logs();
     let dir = tempfile::tempdir().unwrap();
     let omp = omp_program(dir.path());
     let host = host(dir.path(), |cfg| {
@@ -127,24 +158,17 @@ fn harness_missing_program_is_not_offered() {
 /// same absence stays quiet.
 #[test]
 fn harness_missing_program_warns_once() {
-    let logs = Log::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .with_writer(logs.clone())
-        .with_ansi(false)
-        .finish();
+    warn_logs();
     let dir = tempfile::tempdir().unwrap();
     let omp = omp_program(dir.path());
     let host = host(dir.path(), |cfg| {
         cfg.harnesses = vec![Harness::Fake, Harness::Omp];
         cfg.commands.omp = Some(vec![omp.to_string_lossy().into_owned()]);
     });
-    tracing::subscriber::with_default(subscriber, || {
-        host.offered_harnesses();
-        host.offered_harnesses();
-    });
+    host.offered_harnesses();
+    host.offered_harnesses();
 
-    let text = logs.text();
+    let text = warn_text();
     assert_eq!(text.matches("is not installed").count(), 1, "{text}");
     assert!(text.contains("harness=omp"), "{text}");
     assert!(text.contains(omp.to_str().unwrap()), "{text}");
@@ -156,6 +180,7 @@ fn harness_missing_program_warns_once() {
 /// next registration, without a restart.
 #[tokio::test]
 async fn harness_program_that_appears_is_offered_on_the_next_heartbeat() {
+    warn_logs();
     let dir = tempfile::tempdir().unwrap();
     let omp = omp_program(dir.path());
     let bus = MemoryBus::new();
@@ -193,6 +218,7 @@ async fn harness_program_that_appears_is_offered_on_the_next_heartbeat() {
 /// stops placing agents there.
 #[tokio::test]
 async fn harness_program_that_goes_away_leaves_the_next_registration() {
+    warn_logs();
     let dir = tempfile::tempdir().unwrap();
     let omp = omp_program(dir.path());
     std::fs::create_dir_all(omp.parent().unwrap()).unwrap();
@@ -228,6 +254,7 @@ async fn harness_program_that_goes_away_leaves_the_next_registration() {
 /// named, and nothing is prepared for the agent.
 #[tokio::test]
 async fn harness_launch_without_a_program_fails_at_once() {
+    warn_logs();
     let dir = tempfile::tempdir().unwrap();
     let omp = omp_program(dir.path());
     let host = host(dir.path(), |cfg| {
