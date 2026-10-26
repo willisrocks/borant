@@ -603,6 +603,10 @@ pub enum CtlRequest {
         agent: AgentId,
         host: HostName,
         error: String,
+        /// The launch timeout that the host waited, so the hub can say why
+        /// the spawn failed. An older host sends none.
+        #[serde(default)]
+        timeout_secs: Option<f64>,
     },
     Maintenance {
         on: bool,
@@ -854,6 +858,25 @@ mod tests {
         );
         let v = serde_json::to_value(ToolCall::Whoami).unwrap();
         assert_eq!(v, serde_json::json!({"tool": "whoami"}));
+    }
+
+    /// A host before this version names no launch timeout, and its
+    /// `LaunchFailed` still parses.
+    #[test]
+    fn launch_failed_parses_without_a_timeout() {
+        let req: CtlRequest = serde_json::from_str(
+            r#"{"op":"launch_failed","agent":"w1","host":"h1","error":"stuck"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req,
+            CtlRequest::LaunchFailed {
+                agent: "w1".parse().unwrap(),
+                host: "h1".parse().unwrap(),
+                error: "stuck".into(),
+                timeout_secs: None,
+            }
+        );
     }
 
     #[test]

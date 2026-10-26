@@ -602,6 +602,62 @@ pub struct SpawnRecord {
     /// Why the hub holds the spawn back, for example a channel at its cap.
     #[serde(default)]
     pub queue_reason: Option<String>,
+    /// The launches of the spawn that did not register, one entry per counted
+    /// try, so a failed spawn says where it was tried.
+    #[serde(default)]
+    pub launch_failures: Vec<LaunchFailure>,
+}
+
+impl SpawnRecord {
+    /// Why the spawn failed, for `borant ps` and the message to the spawner:
+    /// the tries that did not register, the timeout when the host named it,
+    /// and the hosts in try order. `None` until the record is `Failed`.
+    pub fn fail_reason(&self) -> Option<String> {
+        if self.state != SpawnState::Failed {
+            return None;
+        }
+        // A record that this version did not fail has no count to show.
+        let tries = self.attempts.max(1);
+        let within = self
+            .launch_failures
+            .iter()
+            .rev()
+            .find_map(|f| f.timeout_secs)
+            .map(|secs| format!(" within {}s", secs_text(secs)))
+            .unwrap_or_default();
+        let mut out = format!(
+            "{tries} launch{} did not register{within}",
+            if tries == 1 { "" } else { "es" }
+        );
+        if !self.launch_failures.is_empty() {
+            let hosts: Vec<&str> = self
+                .launch_failures
+                .iter()
+                .map(|f| f.host.as_str())
+                .collect();
+            out.push_str(&format!(" ({})", hosts.join(", ")));
+        }
+        Some(out)
+    }
+}
+
+/// One launch of a spawn that the host stopped because its session did not
+/// register in time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaunchFailure {
+    pub host: HostName,
+    /// The timeout that the host waited, when it named one.
+    #[serde(default)]
+    pub timeout_secs: Option<f64>,
+}
+
+/// A count of seconds without a trailing `.0`, as `borant ps` prints it.
+fn secs_text(secs: f64) -> String {
+    if secs.fract() == 0.0 {
+        format!("{}", secs.trunc())
+    } else {
+        format!("{secs}")
+    }
 }
 
 /// Reads `last_reject` of a queue record: the list of this version, or the
@@ -1162,5 +1218,49 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         assert!(s.contains("\"kind\":\"tool_result\""));
         assert_eq!(serde_json::from_str::<SessionEvent>(&s).unwrap(), ev);
+    }
+
+    /// A failed spawn says which launches did not register, where they were
+    /// tried, and how long the host waited.
+    #[test]
+    fn a_failed_spawn_names_its_tries_and_hosts() {
+        let failed = |attempts: u32, failures: Vec<LaunchFailure>| SpawnRecord {
+            agent: "w1".parse().unwrap(),
+            spec: serde_json::from_value(serde_json::json!({ "channel": "api" })).unwrap(),
+            resolved: Resolved::default(),
+            by: Sender::Human,
+            queued_at: Timestamp(1),
+            priority: 0,
+            state: SpawnState::Failed,
+            attempts,
+            last_reject: Vec::new(),
+            queue_reason: None,
+            launch_failures: failures,
+        };
+        let try_on = |host: &str| LaunchFailure {
+            host: host.parse().unwrap(),
+            timeout_secs: Some(90.0),
+        };
+        let record = failed(
+            3,
+            vec![try_on("borant-1"), try_on("borant-2"), try_on("borant-1")],
+        );
+        assert_eq!(
+            record.fail_reason().unwrap(),
+            "3 launches did not register within 90s (borant-1, borant-2, borant-1)"
+        );
+        // A record of an older hub names no host and no timeout.
+        assert_eq!(
+            failed(3, Vec::new()).fail_reason().unwrap(),
+            "3 launches did not register"
+        );
+        // One try is singular, and a record that still runs has no reason.
+        assert_eq!(
+            failed(1, Vec::new()).fail_reason().unwrap(),
+            "1 launch did not register"
+        );
+        let mut queued = failed(0, Vec::new());
+        queued.state = SpawnState::Queued;
+        assert_eq!(queued.fail_reason(), None);
     }
 }

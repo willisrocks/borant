@@ -408,6 +408,11 @@ impl Hub {
     pub async fn run(self: Arc<Self>, shutdown: CancellationToken) -> anyhow::Result<()> {
         let token = self.take_hub_lease().await?;
         self.restart_grace().await?;
+        // The spawn records of agents that stopped before this version left
+        // them behind; `borant ps` reads the store, not a filter.
+        if let Err(e) = self.drop_retired_spawns().await {
+            tracing::warn!("cannot drop the spawn records of stopped agents: {e}");
+        }
         let mut requests = self
             .bus
             .serve(subjects::CTL)

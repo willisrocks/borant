@@ -281,6 +281,7 @@ impl Hub {
             attempts: 0,
             last_reject: Vec::new(),
             queue_reason: None,
+            launch_failures: Vec::new(),
         };
         self.store.upsert(&keys::spawn(&id), &record).await?;
         let spawned = self
@@ -463,6 +464,33 @@ impl Hub {
         Ok(())
     }
 
+    /// Drops the spawn records of agents that are gone or retired, so
+    /// `borant ps` does not list a spawn that stopped. The hub runs this at
+    /// start, for the records that a hub before this version left behind, and
+    /// a retire drops its own record. Returns how many it dropped.
+    pub async fn drop_retired_spawns(&self) -> Result<usize, ApiError> {
+        let mut dropped = 0;
+        for doc in self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await? {
+            let stopped = match self
+                .store
+                .get::<Agent>(&keys::agent(&doc.value.agent))
+                .await?
+            {
+                Some(a) => a.value.retired,
+                // A record with no agent row has nothing to place.
+                None => true,
+            };
+            if stopped {
+                self.store.delete(&doc.key).await?;
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(dropped, "dropped the spawn records of stopped agents");
+        }
+        Ok(dropped)
+    }
+
     /// True while a launch of the record may still register: the host holds
     /// the lease, or reserved it. A `Launching` record without either goes
     /// back to the queue, so a launch that failed without a `LaunchFailed`
@@ -592,8 +620,10 @@ impl Hub {
                     "priority": r.priority,
                     "queued_at": r.queued_at,
                     "attempts": r.attempts,
-                    // `borant ps` shows one line of why the hosts refuse it.
+                    // `borant ps` shows one line of why the hosts refuse it,
+                    // or why a failed spawn gave up.
                     "last_reject": reject_text(&r.last_reject),
+                    "fail_reason": r.fail_reason(),
                     "queue_reason": r.queue_reason,
                     "by": r.by,
                     "task": r.spec.task,

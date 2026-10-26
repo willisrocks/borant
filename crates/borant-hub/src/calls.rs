@@ -83,8 +83,14 @@ impl Hub {
                 self.move_ready(mem, &agent, session, token).await?;
                 Ok(Value::Null)
             }
-            CtlRequest::LaunchFailed { agent, host, error } => {
-                self.launch_failed(mem, &agent, &host, &error).await?;
+            CtlRequest::LaunchFailed {
+                agent,
+                host,
+                error,
+                timeout_secs,
+            } => {
+                self.launch_failed(mem, &agent, &host, &error, timeout_secs)
+                    .await?;
                 Ok(Value::Null)
             }
             CtlRequest::Maintenance { on } => {

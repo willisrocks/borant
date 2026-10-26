@@ -940,6 +940,7 @@ impl Host {
                 agent: agent.clone(),
                 host: self.inner.cfg.name.clone(),
                 error: screen,
+                timeout_secs: Some(timeout.as_secs_f64()),
             };
             if let Err(e) = self.hub(&req).await {
                 tracing::warn!(

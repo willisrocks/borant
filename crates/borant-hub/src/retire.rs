@@ -154,6 +154,10 @@ impl Hub {
         if let Some(host) = &agent.host {
             mem.delete_pending.insert(agent.id.clone(), host.clone());
         }
+        // A retired agent is out of the queue: `borant ps` lists the spawns
+        // that this hub may still place or that failed, not the ones that are
+        // done.
+        self.store.delete(&keys::spawn(&agent.id)).await?;
         Ok(stopped)
     }
 

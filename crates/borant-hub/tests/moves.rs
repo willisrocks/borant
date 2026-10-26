@@ -201,6 +201,7 @@ async fn launch_failed_tries_other_host() {
         agent: w.agent.clone(),
         host: name(first),
         error: "no git".into(),
+        timeout_secs: None,
     })
     .await
     .unwrap();
@@ -635,6 +636,7 @@ async fn failed_spawn_is_placed_again_with_its_prompt() {
         agent: "helper".parse().unwrap(),
         host: name("h2"),
         error: "clone failed".into(),
+        timeout_secs: None,
     })
     .await
     .unwrap();
