@@ -60,14 +60,20 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
   `state` (`Queued`, `Launching`, `Running`, `Failed`, `Cancelled`),
   `attempts`, `last_reject`, and `launch_failures` (the host, the timeout, and
   the last line of the error of each launch that did not register, capped at
-  200 characters). Written only by the hub. A record
-  goes when its agent retires or is cancelled.
+  200 characters). Written only by the hub. A record goes when its agent
+  retires or is cancelled, except a `Failed` record: a spawn that gave up
+  retires its agent and keeps the record, with its reason, until a person
+  cancels it.
 - `Agent` gets `spawn_key`, `task: Option<TaskRef>`, `stop_on_close`, and
   `retired`. `Task` gets `create_key`.
 - `events.rs`: `AgentSpawned.by` becomes a `Sender`, and new kinds
   `spawn.queued`, `spawn.cancelled`, `agent.retired`, and `launch.stuck`.
 - `Launcher::capture(&self, handle, lines) -> Option<String>`, default `None`.
 - Host config `launch_timeout_secs`, default 90.
+- `CtlRequest::HostHeartbeat` gets `launching: Vec<AgentId>`, the agents whose
+  launch the host started and whose session has not registered. `HeartbeatReply`
+  gets `stop_launches: Vec<AgentId>`, the launches to stop, both with
+  `serde(default)` so an older peer still parses.
 
 ## Rules
 
@@ -102,12 +108,14 @@ heartbeat (set by `TurnStart`/`TurnEnd`) and from `idle_since`, never from
 never ended a turn, as an omp session that waits for its first prompt. A
 session that the host reports no stats for has no known turn state, so the
 stop waits a safety grace of 10 minutes and then goes out anyway. A cancel
-reply says `stopped: true` only when the stop order went out; else it says
-`stopping: "at the turn end"`. A retired agent is never placed again by a
-takeover, a wake, a move, or the queue. Its claims on other tasks go back to
-open, and its spawn record goes, so `borant ps` lists no retired agent. The
-hub also drops the records of retired agents at start, for the ones that an
-older hub left behind.
+reply says `stopped: true` only when the stop order went out, and
+`stopping: "at the turn end"` only while a live session still has to end its
+turn: a cancel of an agent with no live session retires it at once. A retired
+agent is never placed again by a takeover, a wake, a move, or the queue, and it
+takes no session from a launch that outlived its retirement. Its claims on
+other tasks go back to open, and its spawn record goes, so `borant ps` lists
+no retired agent. The hub also drops the records of retired agents at start,
+for the ones that an older hub left behind, but keeps a `Failed` record.
 
 ### The launch watchdog
 
@@ -128,6 +136,20 @@ spawn by a person has no agent to tell. `borant ps` shows the reason in its
 left. A failure on a record that is `Failed` already counts
 nothing and sends nothing. A host that still has a stale tmux session of the
 agent kills it before a relaunch.
+
+The record that fails also retires its agent, by the path of a normal retire,
+so no takeover relaunches it, and the record stays `Failed` for `borant ps`.
+
+### A launch that the hub closed
+
+The host reports the agents whose launch waits to register in its heartbeat,
+and the hub names the ones to stop: the agent is retired or paused, its spawn
+record is `Failed` or `Cancelled`, its lease is released (or gone), or another
+host holds it. The host stops such a launch with the watchdog's path, and ends
+a local session of the agent that never registered, so no harness loops on
+`not registered with the hub yet`. A launch that its own reservation or a
+session still holds here keeps running. The stop is not a failed try, so it
+sends no `LaunchFailed`.
 
 ## Tasks
 
