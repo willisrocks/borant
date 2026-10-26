@@ -144,8 +144,8 @@ so no takeover relaunches it, and the record stays `Failed` for `borant ps`.
 
 The host reports the agents whose launch waits to register in its heartbeat,
 and the hub names the ones to stop: the agent is retired or paused, its spawn
-record is `Failed` or `Cancelled`, its lease is released (or gone), or another
-host holds it. The host stops such a launch with the watchdog's path, and ends
+record is `Failed` or `Cancelled`, its lease is released, or another host
+holds it. The host stops such a launch with the watchdog's path, and ends
 a local session of the agent that never registered, so no harness loops on
 `not registered with the hub yet`. A launch that its own reservation or a
 session still holds here keeps running. The stop is not a failed try, so it

@@ -185,9 +185,9 @@ impl Hub {
     }
 
     /// The launches of `host` that must stop now: the agent is retired or
-    /// paused, its spawn failed or was cancelled, its lease is released (or
-    /// gone), or another host holds the agent. A launch that its reservation
-    /// or its session still holds here keeps running.
+    /// paused, its spawn failed or was cancelled, its lease is released, or
+    /// another host holds the agent. A launch that its reservation or its
+    /// session still holds here keeps running.
     async fn stop_launches(
         &self,
         host: &HostName,
@@ -218,13 +218,15 @@ impl Hub {
                 .map(|d| d.value.state)
             {
                 // A released lease holds no session, so the launch is stale.
-                Some(LeaseState::Released { .. }) | None => true,
+                Some(LeaseState::Released { .. }) => true,
                 Some(LeaseState::Reserved { host: h, .. } | LeaseState::Held { host: h, .. }) => {
                     h != *host
                 }
                 // A relaunch places the agent again and stops the stale
-                // launch first.
-                Some(LeaseState::Expired { .. }) => false,
+                // launch first. No lease at all keeps the launch: a
+                // reservation that the replica has not caught up with yet
+                // must not stop a launch that the hub just ordered.
+                Some(LeaseState::Expired { .. }) | None => false,
             };
             if away {
                 stop.push(agent.clone());
