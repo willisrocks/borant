@@ -390,8 +390,10 @@ shape [39], [40].
    caller does not support, or the wrong `kind`, the caller disables it.
 
 For provisioner plugins, each request also carries `config`, the `config`
-table of the provisioner in `hub.toml`. The hub runs one op at a time for
-each provisioner instance, so a plugin needs no locks. Default timeouts are
+table of the provisioner in `hub.toml`. Any TOML value in that table, a
+string, number, bool, array, or nested table, reaches the plugin as the same
+JSON. The hub runs one op at a time for each provisioner instance, so a
+plugin needs no locks. Default timeouts are
 10 s for `describe`, 30 s for `list`, 120 s for `create`, and 60 s for the
 others. `timeout_secs` sets one value for all ops. A create that times out
 can still succeed. The next reconcile finds the host, and a create with the

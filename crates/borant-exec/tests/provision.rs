@@ -122,6 +122,38 @@ async fn every_provisioner_request_carries_the_config_and_the_wire_names() {
     assert_eq!(sent["config"]["firewall"], "borant-locked");
 }
 
+/// The `config` table reaches the plugin as the same JSON: a nested table, an
+/// array, a number, and a bool included, not only strings.
+#[tokio::test]
+async fn a_nested_provisioner_config_arrives_unchanged() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let seen = dir.path().join("request.json");
+    let config = BTreeMap::from([
+        ("firewall".to_owned(), json!("f")),
+        ("locked".to_owned(), json!(true)),
+        ("name_prefixes".to_owned(), json!({ "workers": "borant-e" })),
+        ("sizes".to_owned(), json!(["cpx31"])),
+    ]);
+    let p = ExecProvisioner::new(
+        exec(vec![
+            fixture("echo_request.sh").display().to_string(),
+            seen.display().to_string(),
+        ]),
+        config.clone(),
+    );
+    let pool: PoolName = testing::unique("p").parse().expect("a pool name");
+    // The echo plugin replies `null`, so the op fails on the reply shape; the
+    // request that the plugin read is what this test checks.
+    let err = p
+        .create(&spec(&pool))
+        .await
+        .expect_err("create needs a host record");
+    assert_eq!(err.kind, PortErrorKind::Other, "{err}");
+    let sent: Value =
+        serde_json::from_slice(&std::fs::read(&seen).expect("the request")).expect("the request");
+    assert_eq!(sent["config"], json!(config));
+}
+
 #[tokio::test]
 async fn one_provisioner_op_runs_at_a_time() {
     let dir = tempfile::tempdir().expect("a temp dir");
