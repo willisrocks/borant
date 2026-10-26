@@ -715,6 +715,7 @@ impl Host {
             host: self.inner.cfg.name.clone(),
             sessions: refs,
             stats: Some(self.stats()),
+            launching: self.launching_agents(),
         };
         let sent = Instant::now();
         let reply = self.hub(&req).await;
@@ -746,6 +747,11 @@ impl Host {
                     );
                 }
                 self.set_paused(false);
+                // A launch that the hub closed stops now: the agent is
+                // retired or paused, or its lease is released.
+                for agent in reply.stop_launches {
+                    self.stop_closed_launch(&agent).await;
+                }
                 // Saving the stale work can take a network push, so it runs
                 // outside the heartbeat loop.
                 for sid in lost {
@@ -909,33 +915,23 @@ impl Host {
     /// a relaunch without this text repeats the same wait. Public for tests.
     pub async fn check_launch_timeouts(&self) {
         let timeout = self.inner.cfg.launch_timeout;
-        let late: Vec<(AgentId, LaunchHandle)> = self
+        let late: Vec<AgentId> = self
             .state()
             .pending_launch
             .iter()
             .filter(|(_, p)| p.started.elapsed() >= timeout)
-            .map(|(agent, p)| (agent.clone(), p.handle.clone()))
+            .map(|(agent, _)| agent.clone())
             .collect();
-        for (agent, handle) in late {
-            // The screen before the stop, redacted: a sticky prompt can hold a
-            // value that the harness printed.
-            let screen = self
-                .inner
-                .launcher
-                .capture(&handle, WATCHDOG_LINES)
-                .map(|text| redact(&text).into_owned())
-                .unwrap_or_default();
+        for agent in late {
+            let Some((_, screen)) = self.take_pending_launch(&agent).await else {
+                // The launch registered between the listing and the stop.
+                continue;
+            };
             tracing::warn!(
                 %agent,
                 elapsed = ?timeout,
                 "a launch did not register in time, stopping it"
             );
-            if let Err(e) = self.inner.launcher.stop(&handle).await {
-                tracing::warn!(%agent, "cannot stop a launch that did not register: {e}");
-            }
-            self.state().pending_launch.remove(&agent);
-            // Values that no session will read go with the launch.
-            self.forget_secrets(&agent, None).await;
             let req = CtlRequest::LaunchFailed {
                 agent: agent.clone(),
                 host: self.inner.cfg.name.clone(),
@@ -950,6 +946,57 @@ impl Host {
                 );
             }
         }
+    }
+
+    /// Takes the pending launch of `agent` and stops it, with the redacted end
+    /// of its screen. `None` when no launch of the agent waits to register.
+    async fn take_pending_launch(&self, agent: &AgentId) -> Option<(LaunchHandle, String)> {
+        let pending = self.state().pending_launch.remove(agent)?;
+        // The screen before the stop, redacted: a sticky prompt can hold a
+        // value that the harness printed.
+        let screen = self
+            .inner
+            .launcher
+            .capture(&pending.handle, WATCHDOG_LINES)
+            .map(|text| redact(&text).into_owned())
+            .unwrap_or_default();
+        if let Err(e) = self.inner.launcher.stop(&pending.handle).await {
+            tracing::warn!(%agent, "cannot stop a launch that did not register: {e}");
+        }
+        // Values that no session will read go with the launch.
+        self.forget_secrets(agent, None).await;
+        Some((pending.handle, screen))
+    }
+
+    /// The agents whose launch this host started and whose session has not
+    /// registered, for the heartbeat: the hub names the ones it closed.
+    fn launching_agents(&self) -> Vec<AgentId> {
+        let mut agents: Vec<AgentId> = self.state().pending_launch.keys().cloned().collect();
+        agents.sort();
+        agents
+    }
+
+    /// Stops a launch that never registered, because the hub says the agent is
+    /// retired or paused, its spawn is closed, or its lease is released. The
+    /// watchdog reports a launch that missed its timeout; this stop is the
+    /// hub's answer, so it is not a failed try. Public for tests.
+    pub async fn stop_closed_launch(&self, agent: &AgentId) {
+        if self.take_pending_launch(agent).await.is_none() {
+            return;
+        }
+        // A session that the launch never registered ends with it, so its
+        // attach retry stops asking a hub that closed the agent.
+        let unregistered: Vec<SessionId> = self
+            .state()
+            .sessions
+            .values()
+            .filter(|s| s.reg.is_none() && s.agent().as_ref() == Some(agent))
+            .map(|s| s.id)
+            .collect();
+        for id in unregistered {
+            self.end_session(id, "the hub closed the launch").await;
+        }
+        tracing::info!(%agent, "stopped a launch that the hub closed");
     }
 }
 

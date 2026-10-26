@@ -232,6 +232,11 @@ pub struct HeartbeatReply {
     /// They continue with the new token.
     #[serde(default)]
     pub renewed: Vec<RenewedLease>,
+    /// Launches that never registered and must stop now: the hub retired or
+    /// paused the agent, its spawn failed or was cancelled, or its lease was
+    /// released or names another host.
+    #[serde(default)]
+    pub stop_launches: Vec<AgentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -578,6 +583,10 @@ pub enum CtlRequest {
         /// The load and counters of the host, for the live view.
         #[serde(default)]
         stats: Option<HostStats>,
+        /// The agents whose launch this host started and whose session has not
+        /// registered. The reply names the ones that the hub closed.
+        #[serde(default)]
+        launching: Vec<AgentId>,
     },
     RegisterSession(RegisterSession),
     EndSession {

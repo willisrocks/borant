@@ -240,6 +240,7 @@ mod tests {
                     pinned: false,
                 }],
                 stats: None,
+                launching: Vec::new(),
             })
             .await
             .expect("heartbeat");

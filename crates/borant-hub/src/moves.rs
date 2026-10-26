@@ -891,7 +891,7 @@ impl Hub {
         // the hub after three of them. The record keeps the last line of the
         // screen, so `borant ps` and the spawner read the cause.
         let (attempts, failed) = self
-            .note_launch_failure(agent, host, timeout_secs, Some(&screen))
+            .note_launch_failure(mem, agent, host, timeout_secs, Some(&screen))
             .await?;
         let severity = if failed {
             Severity::Error
@@ -914,11 +914,15 @@ impl Hub {
     /// why it failed. Returns the count and whether the record is `Failed`
     /// now. An agent without a spawn record is not counted.
     ///
+    /// The record that fails also retires its agent, by the path of a normal
+    /// retire, so no takeover places it again; the record stays for `ps`.
+    ///
     /// The spawner gets one direct message, with the write that fails the
     /// record: a repeat on a `Failed` record counts nothing and sends
     /// nothing. A spawn by a person has no agent to tell.
     pub(crate) async fn note_launch_failure(
         &self,
+        mem: &mut Memory,
         agent: &AgentId,
         host: &HostName,
         timeout_secs: Option<f64>,
@@ -963,6 +967,13 @@ impl Hub {
             let text = format!("the spawn of agent {agent} failed: {reason}");
             self.tell(spawner, &text).await?;
         }
+        // A spawn that failed its launches waits for a person: the agent is
+        // retired by the normal path, and the record stays `Failed` for `ps`.
+        if let Ok(doc) = self.agent(agent).await
+            && !doc.value.retired
+        {
+            self.retire_failed_spawn(mem, &doc.value).await?;
+        }
         Ok((record.attempts, true))
     }
 
@@ -990,6 +1001,9 @@ impl Hub {
                 "collection": a.value.collection,
                 "pinned": a.value.pinned,
                 "retired": a.value.retired,
+                // A stopped agent keeps its pause across a hub restart, and
+                // no takeover or placement touches it until a resume.
+                "paused": a.value.paused,
                 "model": a.value.model,
                 // The member of each bundle that the launch picked, for
                 // `borant members` and the e2e scenario.

@@ -178,6 +178,7 @@ async fn a_register_retry_keeps_its_lease() {
                 pinned: false,
             }],
             stats: None,
+            launching: Vec::new(),
         })
         .await
         .into_result()

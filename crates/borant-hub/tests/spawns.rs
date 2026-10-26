@@ -145,6 +145,7 @@ async fn spawns_a_queued_spawn_survives_a_hub_restart_with_its_prompt() {
                 host: name(host_name),
                 sessions: Vec::new(),
                 stats: None,
+                launching: Vec::new(),
             })
             .await
             .into_result()
@@ -421,6 +422,89 @@ async fn spawns_cancel_stops_a_running_agent_and_closes_its_task() {
     let other = read_task(&fx, &other.id).await;
     assert_eq!(other.status, TaskStatus::Open);
     assert_eq!(other.claimed_by, None, "the claim goes back to open");
+}
+
+/// A cancel of an agent with no live session retires it at once: there is no
+/// turn end to wait for. The hub then names its launch on the next heartbeat,
+/// so the host stops the process that never registered.
+#[tokio::test]
+async fn spawns_cancel_of_a_sessionless_agent_retires_it_at_once() {
+    let fx = Fx::new();
+    host(&fx, "h1", 4).await;
+    let owner = owner(&fx).await;
+    let spawned = fx
+        .call(Some(&owner), spawn_call("work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    // A launch that never registered leaves an expired lease and no session.
+    fx.req(CtlRequest::LaunchFailed {
+        agent: agent.clone(),
+        host: name("h1"),
+        error: "the screen".into(),
+        timeout_secs: Some(90.0),
+    })
+    .await
+    .expect("a failed launch");
+
+    // A launch that still has a try left keeps running.
+    let reply = fx
+        .req(CtlRequest::HostHeartbeat {
+            host: name("h1"),
+            sessions: Vec::new(),
+            stats: None,
+            launching: vec![agent.clone()],
+        })
+        .await
+        .expect("heartbeat");
+    assert_eq!(
+        reply["stop_launches"],
+        serde_json::json!([]),
+        "a launch with a try left keeps running"
+    );
+
+    let mut commands = fx.commands("h1").await;
+    let cancelled = fx
+        .call(
+            Some(&owner),
+            ToolCall::Cancel {
+                agent: agent.clone(),
+                close_task: None,
+            },
+        )
+        .await
+        .expect("cancel");
+    assert_eq!(cancelled["cancelled"], true);
+    assert_eq!(cancelled["stopped"], false);
+    assert!(
+        cancelled.get("stopping").is_none(),
+        "there is no turn end to wait for: {cancelled}"
+    );
+    assert!(
+        read_agent(&fx, &agent).await.retired,
+        "a sessionless cancel retires the agent"
+    );
+    assert!(record(&fx, &agent).await.is_none(), "the record goes");
+    assert!(
+        next_cmd(&mut commands).await.is_none(),
+        "no session, so no stop order"
+    );
+
+    // The hub closes the launch of the retired agent on the next heartbeat.
+    let reply = fx
+        .req(CtlRequest::HostHeartbeat {
+            host: name("h1"),
+            sessions: Vec::new(),
+            stats: None,
+            launching: vec![agent.clone()],
+        })
+        .await
+        .expect("heartbeat");
+    assert_eq!(
+        reply["stop_launches"],
+        serde_json::json!([agent]),
+        "the hub names the launch of a retired agent"
+    );
 }
 
 async fn new_task(fx: &Fx, owner: &Registered, title: &str) -> Task {
@@ -766,6 +850,50 @@ async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
     let failed = record(&fx, &agent).await.expect("the record");
     assert_eq!(failed.attempts, 3, "a failed spawn counts no more tries");
     assert_eq!(failed.fail_reason().as_deref(), Some(reason));
+    // The record that fails retires its agent, by the path of a normal
+    // retire, so no takeover places it again.
+    assert!(
+        read_agent(&fx, &agent).await.retired,
+        "a failed spawn retires its agent"
+    );
+
+    // A restarted hub keeps the failed record and launches nothing: the
+    // record waits for a person to cancel it.
+    let restarted = Arc::new(Hub::new(
+        Arc::new(fx.state.clone()),
+        Arc::new(fx.bus.clone()),
+        Arc::new(fx.sessions.clone()),
+        fx.clock.clone(),
+        HubConfig::default(),
+    ));
+    restarted.restart_grace().await.expect("the hub starts");
+    restarted.drop_retired_spawns().await.expect("the start");
+    restarted
+        .handle(CtlRequest::HostHeartbeat {
+            host: name("h1"),
+            sessions: Vec::new(),
+            stats: None,
+            launching: Vec::new(),
+        })
+        .await
+        .into_result()
+        .expect("heartbeat");
+    let mut commands = fx.commands("h1").await;
+    fx.advance(600);
+    restarted.tick().await.expect("tick");
+    assert!(
+        next_cmd(&mut commands).await.is_none(),
+        "a hub restart does not launch a failed spawn"
+    );
+    let kept = record(&fx, &agent)
+        .await
+        .expect("the failed record survives a hub restart");
+    assert_eq!(kept.state, SpawnState::Failed);
+    assert_eq!(
+        kept.fail_reason().as_deref(),
+        Some(reason),
+        "`borant ps` keeps the reason until a person cancels the spawn"
+    );
 }
 
 /// A worker that retires leaves the queue: its spawn record goes, so

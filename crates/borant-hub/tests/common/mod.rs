@@ -215,6 +215,7 @@ impl Fx {
                 host: name(host),
                 sessions,
                 stats: None,
+                launching: Vec::new(),
             })
             .await
             .unwrap();

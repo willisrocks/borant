@@ -54,6 +54,7 @@ impl Hub {
                 host,
                 sessions,
                 stats,
+                launching,
             } => {
                 // The live view reads the latest stats of each host.
                 if let Some(stats) = stats {
@@ -61,7 +62,7 @@ impl Hub {
                     // The turns of the day and the session cap stop an agent.
                     self.check_caps(mem, &stats).await?;
                 }
-                to_value(&self.heartbeat(mem, &host, &sessions).await?)
+                to_value(&self.heartbeat(mem, &host, &sessions, &launching).await?)
             }
             CtlRequest::RegisterSession(r) => to_value(&self.register_session(mem, r).await?),
             CtlRequest::EndSession {

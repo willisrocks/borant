@@ -438,6 +438,7 @@ async fn pinned_heartbeat_restores_a_lost_pin() {
             pinned: true,
         }],
         stats: None,
+        launching: Vec::new(),
     })
     .await
     .unwrap();

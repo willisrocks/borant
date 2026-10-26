@@ -128,6 +128,7 @@ impl Fx {
             host: host.parse().unwrap(),
             sessions,
             stats: None,
+            launching: Vec::new(),
         })
         .await
         .unwrap();

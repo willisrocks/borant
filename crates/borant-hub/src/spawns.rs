@@ -465,12 +465,17 @@ impl Hub {
     }
 
     /// Drops the spawn records of agents that are gone or retired, so
-    /// `borant ps` does not list a spawn that stopped. The hub runs this at
-    /// start, for the records that a hub before this version left behind, and
-    /// a retire drops its own record. Returns how many it dropped.
+    /// `borant ps` does not list a spawn that stopped. A `Failed` record
+    /// stays: a spawn that gave up waits for a person to cancel it, and `ps`
+    /// shows its reason until then. The hub runs this at start, for the
+    /// records that a hub before this version left behind, and a retire drops
+    /// its own record. Returns how many it dropped.
     pub async fn drop_retired_spawns(&self) -> Result<usize, ApiError> {
         let mut dropped = 0;
         for doc in self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await? {
+            if doc.value.state == SpawnState::Failed {
+                continue;
+            }
             let stopped = match self
                 .store
                 .get::<Agent>(&keys::agent(&doc.value.agent))
@@ -640,8 +645,10 @@ impl Hub {
         Ok(Value::Array(rows))
     }
 
-    /// Cancels a spawn. A queued record goes away; a running agent is stopped
-    /// and its claims go back to open. A repeat succeeds.
+    /// Cancels a spawn. A queued record goes away; a running agent is
+    /// retired, and its session stops now when it is idle, else at its next
+    /// turn end. An agent with no live session has no turn end to wait for, so
+    /// it retires at once. A repeat succeeds.
     pub(crate) async fn cancel(
         &self,
         mem: &mut Memory,
@@ -656,25 +663,29 @@ impl Hub {
             .as_ref()
             .is_some_and(|d| d.value.state == SpawnState::Queued);
         let mut stopped = false;
+        // Set only when a live session still has to end its turn.
+        let mut waiting = false;
         if let Some(doc) = &existing {
             // The task first, so a close reports the task as it was.
             self.cancel_task(mem, by, &doc.value, close_task).await?;
             let lease_key = keys::lease_agent(agent);
             let lease = self.store.get::<Lease>(&lease_key).await?;
-            match lease.as_ref().map(|l| &l.value.state) {
-                // A running agent stops the way a retired one does: its
-                // claims go back to open, and its session stops now when it
-                // is idle, else at its next turn end or at the retire grace.
-                Some(LeaseState::Held { .. }) => {
-                    stopped = self.retire(mem, &doc.value).await?;
-                }
-                // A launch that has not registered gives its slot back.
-                Some(LeaseState::Reserved { .. }) | Some(LeaseState::Expired { .. }) => {
-                    let released = lease::release(&lease.as_ref().unwrap().value, self.now());
-                    let revision = lease.as_ref().map(|l| l.revision);
-                    self.store.put(&lease_key, &released, revision).await?;
-                }
-                _ => {}
+            // A live session is the only reason to wait for a turn end.
+            let live = matches!(
+                lease.as_ref().map(|l| &l.value.state),
+                Some(LeaseState::Held { .. })
+            );
+            // A launch that has not registered gives its slot back.
+            if let Some(doc) = &lease
+                && matches!(
+                    doc.value.state,
+                    LeaseState::Reserved { .. } | LeaseState::Expired { .. }
+                )
+            {
+                let released = lease::release(&doc.value, self.now());
+                self.store
+                    .put(&lease_key, &released, Some(doc.revision))
+                    .await?;
             }
             if queued {
                 // A queued spawn never started: drop its record, its
@@ -685,6 +696,13 @@ impl Hub {
                 }
                 self.store.delete(&keys::agent(agent)).await?;
                 self.store.delete(&lease_key).await?;
+            } else if !doc.value.retired {
+                // A live agent stops the way a retired one does: its claims
+                // go back to open, and its session stops now when it is idle,
+                // else at its next turn end or at the retire grace. With no
+                // live session there is no turn end, so it retires at once.
+                stopped = self.retire(mem, &doc.value).await?;
+                waiting = live && !stopped;
             }
             let event = self
                 .event(self.now(), Severity::Warn, SwarmEventBody::SpawnCancelled)
@@ -695,7 +713,7 @@ impl Hub {
         // `stopped` is true only when a stop order went out; a session that
         // still has to end its turn says when its stop comes.
         let mut reply = json!({ "agent": agent, "cancelled": true, "stopped": stopped });
-        if !stopped {
+        if waiting {
             reply["stopping"] = json!("at the turn end");
         }
         Ok(reply)

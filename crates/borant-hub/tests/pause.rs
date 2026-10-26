@@ -142,6 +142,7 @@ async fn stats_heartbeat(
         .req(CtlRequest::HostHeartbeat {
             host: name(host),
             sessions,
+            launching: Vec::new(),
             stats: Some(HostStats {
                 sessions: stats,
                 ..HostStats::default()
@@ -256,6 +257,95 @@ async fn pause_stops_at_the_turn_end() {
         .await
         .expect_err("a paused agent takes no session");
     assert!(err.message.contains("paused"), "{err}");
+}
+
+/// A stop of an agent with no session persists: `borant agents` shows it
+/// paused, and a hub restart places it nowhere.
+#[tokio::test]
+async fn pause_of_a_sessionless_agent_persists_and_launches_nothing() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.host("h2", &[Harness::Fake]).await;
+    let owner = fx.register("h1", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: api(),
+            schema: None,
+            project: None,
+            branch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let spawned = fx
+        .call(
+            Some(&owner),
+            ToolCall::Spawn {
+                key: None,
+                task: None,
+                stop_on_close: None,
+                continues: None,
+                priority: None,
+                bundles: Vec::new(),
+                channel: api(),
+                prompt: "work".into(),
+                harness: Some(Harness::Fake),
+                host: None,
+                name: Some(agent("w1")),
+                model: None,
+                role: None,
+            },
+        )
+        .await
+        .expect("spawn");
+    assert_eq!(spawned["agent"]["placed"], true);
+
+    // The launch never registered, so there is no session to stop.
+    let stopped = fx
+        .call(
+            Some(&owner),
+            ToolCall::Stop {
+                selector: paused_selector("w1"),
+                grace_secs: None,
+            },
+        )
+        .await
+        .expect("stop");
+    assert_eq!(stopped["paused"], true);
+
+    // `borant agents` reads the pause from the agent row.
+    let agents = fx.call(None, ToolCall::ListAgents).await.expect("agents");
+    let row = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == json!(agent("w1")))
+        .expect("the agent is listed");
+    assert!(
+        row["paused"].is_object(),
+        "`borant agents` shows the pause: {row}"
+    );
+    assert_eq!(row["retired"], json!(false), "{row}");
+
+    // A restarted hub places the agent nowhere, and the pause stays.
+    let mut h1 = fx.commands("h1").await;
+    let mut h2 = fx.commands("h2").await;
+    fx.hub.restart_grace().await.expect("the hub starts");
+    fx.advance(600);
+    fx.hub.tick().await.expect("tick");
+    assert!(
+        next_cmd(&mut h1).await.is_none(),
+        "a paused agent gets no launch on its host"
+    );
+    assert!(
+        next_cmd(&mut h2).await.is_none(),
+        "a paused agent gets no launch on another host"
+    );
+    assert!(
+        agent_of(&fx, "w1").await.paused.is_some(),
+        "the pause survives a hub restart"
+    );
 }
 
 #[tokio::test]
