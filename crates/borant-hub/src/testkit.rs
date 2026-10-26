@@ -2,8 +2,7 @@
 //! capture that a leak test reads.
 
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use borant_core::ports::secrets::{Bundle, SecretRef, SecretStore};
 use borant_core::testing::FakeSecretStore;
@@ -67,9 +66,15 @@ pub(crate) fn hub_secrets() -> HubSecrets {
     )
 }
 
-/// Keeps the lines that a subscriber writes.
+/// Keeps the lines that the test subscriber writes.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl Capture {
+    fn len(&self) -> usize {
+        self.0.lock().expect("the capture is not poisoned").len()
+    }
+}
 
 impl std::io::Write for Capture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -93,25 +98,33 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
     }
 }
 
-/// Runs `f` with a subscriber that keeps every line from `trace` up, and
-/// returns them.
-pub(crate) async fn log_lines<F>(f: F) -> String
-where
-    F: Future<Output = ()>,
-{
+/// The capture of this test binary, with its subscriber. It is global, not
+/// per thread: a `set_default` of a thread does not outlive its test when the
+/// tests run in parallel, and a leak test needs every line of its own run.
+static LINES: LazyLock<Capture> = LazyLock::new(|| {
     let capture = Capture::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .with_ansi(false)
         .with_writer(capture.clone())
         .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    f.await;
-    drop(guard);
-    let bytes = capture
-        .0
-        .lock()
-        .expect("the capture is not poisoned")
-        .clone();
-    String::from_utf8_lossy(&bytes).into_owned()
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        // Another subscriber came first, so the buffer stays empty and a
+        // leak test fails on it rather than passing with no lines.
+    }
+    capture
+});
+
+/// The length of the capture now. A test takes a mark before its work, so it
+/// reads its own lines and not those of a test that runs beside it.
+pub(crate) fn log_mark() -> usize {
+    LINES.len()
+}
+
+/// The lines since `mark`. A line of a parallel test is harmless: no test
+/// logs a token or a bundle value.
+pub(crate) fn log_since(mark: usize) -> String {
+    let bytes = LINES.0.lock().expect("the capture is not poisoned");
+    let start = mark.min(bytes.len());
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
 }

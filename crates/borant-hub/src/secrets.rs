@@ -237,4 +237,49 @@ mod tests {
             "the error holds no value: {err}"
         );
     }
+
+    /// `open` builds a real store from `[secrets.stores]`, reads a value
+    /// through it, and leaves out a store that does not open.
+    #[tokio::test]
+    async fn open_reads_a_file_store_and_leaves_a_failed_one_out() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("tailscale"), "a-fake-key\n").expect("the file");
+        let config = HubSecretConfig {
+            stores: BTreeMap::from([
+                (
+                    "file".to_owned(),
+                    StoreConfig::File {
+                        root: dir.path().to_path_buf(),
+                    },
+                ),
+                (
+                    "broken".to_owned(),
+                    StoreConfig::Exec {
+                        command: vec!["/nonexistent/borant-secrets-plugin".to_owned()],
+                        env: BTreeMap::new(),
+                        credential: None,
+                        timeout_secs: 5,
+                    },
+                ),
+            ]),
+            bundles: BTreeMap::from([(
+                host_boot(),
+                bundle("host-boot", "file", &[("TAILSCALE_AUTHKEY", "tailscale")]),
+            )]),
+            credentials_dir: None,
+        };
+
+        let secrets = config.open().await;
+
+        assert_eq!(
+            secrets.vars(&host_boot()).await.unwrap()["TAILSCALE_AUTHKEY"],
+            "a-fake-key"
+        );
+        assert!(
+            secrets.stores.contains_key("file") && !secrets.stores.contains_key("broken"),
+            "the failed store is left out: {:?}",
+            secrets.stores.keys().collect::<Vec<_>>()
+        );
+        assert!(!secrets.joins(), "host-join is missing");
+    }
 }

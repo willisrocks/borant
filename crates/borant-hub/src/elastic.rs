@@ -541,9 +541,14 @@ impl Hub {
                     .await
                     .elastic_backoff
                     .insert(pool.clone(), now.plus(elastic.create_backoff));
-                self.note_refusal(pool, "create", &e).await;
-                // The error names the create, never the boot values.
-                tracing::warn!(pool = %pool, "create failed: {e}");
+                // A plugin that echoes its stdin must not put the token or a
+                // bundle value in the refusal, the log, or an alert.
+                let clean = PortError {
+                    kind: e.kind,
+                    message: redact(&e.message, &spec.boot),
+                };
+                self.note_refusal(pool, "create", &clean).await;
+                tracing::warn!(pool = %pool, "create failed: {clean}");
             }
         }
         Ok(())
@@ -700,6 +705,23 @@ fn boot_values(pool: &PoolConfig, name: &HostName) -> BTreeMap<String, String> {
         ("BORANT_POOL".to_owned(), pool.name.to_string()),
         ("BORANT_TAGS".to_owned(), tags),
     ])
+}
+
+/// A provisioner message with every secret boot value replaced. The three
+/// values that the hub writes itself stay, so an error still names the host
+/// and its pool.
+fn redact(message: &str, boot: &BTreeMap<String, String>) -> String {
+    const PUBLIC: [&str; 3] = ["BORANT_HOST_NAME", "BORANT_POOL", "BORANT_TAGS"];
+    let mut out = message.to_owned();
+    for (key, value) in boot {
+        if PUBLIC.contains(&key.as_str()) || value.is_empty() {
+            continue;
+        }
+        if out.contains(value.as_str()) {
+            out = out.replace(value.as_str(), "[redacted]");
+        }
+    }
+    out
 }
 
 /// The distinct provisioner names of the pools.
@@ -1085,6 +1107,60 @@ mod tests {
         );
     }
 
+    /// A provisioner that refuses a create and echoes its boot values, as a
+    /// chatty plugin that prints its stdin could.
+    #[derive(Debug, Default)]
+    struct Echoing {
+        seen: std::sync::Mutex<Vec<HostSpec>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provisioner for Echoing {
+        async fn describe(&self) -> borant_core::ports::PortResult<ProvisionerCapabilities> {
+            use borant_core::ports::provision::SizeInfo;
+            Ok(ProvisionerCapabilities {
+                backend: "echo".to_owned(),
+                sizes: vec![SizeInfo {
+                    id: "small".to_owned(),
+                    vcpus: 1,
+                    mem_mb: 1024,
+                    price_hour_usd: Some(0.1),
+                    stopped_price_hour_usd: None,
+                }],
+                regions: vec!["r1".to_owned()],
+                typical_start: Duration::from_secs(60),
+                typical_resume: None,
+                billing_step: Duration::from_secs(3600),
+                one_host_per_agent: false,
+                stop_modes: Vec::new(),
+            })
+        }
+
+        async fn create(
+            &self,
+            spec: &HostSpec,
+        ) -> borant_core::ports::PortResult<borant_core::ports::provision::HostRecord> {
+            self.seen.lock().expect("the seen specs").push(spec.clone());
+            // A plugin that prints what it was given in its refusal.
+            Err(PortError::denied(format!(
+                "the backend refused {} with boot {:?}",
+                spec.name, spec.boot
+            )))
+        }
+
+        async fn delete(&self, _id: &ProviderHostId) -> borant_core::ports::PortResult<()> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _pool: &PoolName,
+        ) -> borant_core::ports::PortResult<Vec<borant_core::ports::provision::HostRecord>>
+        {
+            Ok(Vec::new())
+        }
+    }
+
     fn provider_spec(host: &str) -> HostSpec {
         HostSpec {
             pool: "workers".parse().unwrap(),
@@ -1208,16 +1284,15 @@ mod tests {
     /// leaves the hub: no key of the store and no log line holds one.
     #[tokio::test]
     async fn elastic_a_create_and_the_store_hold_no_token_or_bundle_value() {
-        use crate::testkit::{BOOT_VALUE, NATS_VALUE, STORE_TOKEN_VALUE, log_lines};
+        use crate::testkit::{BOOT_VALUE, NATS_VALUE, STORE_TOKEN_VALUE, log_mark, log_since};
 
         let prov = Arc::new(MemoryProvisioner::new());
         let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
         pending(&fx, "a1").await;
 
-        let lines = log_lines(async {
-            fx.hub.tick_elastic().await.unwrap();
-        })
-        .await;
+        let mark = log_mark();
+        fx.hub.tick_elastic().await.unwrap();
+        let lines = log_since(mark);
 
         let specs = created(&fx).await;
         let token = specs[0].boot["BORANT_JOIN"].clone();
@@ -1258,6 +1333,70 @@ mod tests {
                 .is_none(),
             "the token of an order that made no host goes"
         );
+    }
+
+    /// A provisioner that echoes the boot values in its refusal must not put a
+    /// token or a bundle value in the refusal that the alerts report, or in
+    /// the log.
+    #[tokio::test]
+    async fn elastic_a_provisioner_error_holds_no_token_or_bundle_value() {
+        use crate::testkit::{BOOT_VALUE, NATS_VALUE, STORE_TOKEN_VALUE, log_mark, log_since};
+
+        let backend = Arc::new(Echoing::default());
+        let fx = build(
+            Some(ElasticConfig {
+                tick: Duration::from_secs(5),
+                lost_timeout: Duration::from_secs(10 * 60),
+                create_backoff: Duration::from_secs(5 * 60),
+                monthly_budget_usd: None,
+                pools: vec![pool()],
+                provisioners: BTreeMap::from([(
+                    "cloud".to_owned(),
+                    backend.clone() as Arc<dyn Provisioner>,
+                )]),
+            }),
+            Arc::new(MemoryProvisioner::new()),
+            Some(crate::testkit::hub_secrets()),
+        );
+        pending(&fx, "a1").await;
+
+        let mark = log_mark();
+        fx.hub.tick_elastic().await.unwrap();
+        let lines = log_since(mark);
+
+        let (token, echoed) = {
+            let seen = backend.seen.lock().expect("the seen specs");
+            (
+                seen[0].boot["BORANT_JOIN"].clone(),
+                seen[0].boot.values().any(|v| v == BOOT_VALUE),
+            )
+        };
+        assert!(echoed, "the fake echoed its spec");
+
+        let refused = fx
+            .hub
+            .mem
+            .lock()
+            .await
+            .elastic_refused
+            .get(&"workers".parse::<PoolName>().unwrap())
+            .map(|r| r.message.clone())
+            .expect("the refusal of the alerts");
+        assert!(
+            refused.contains("[redacted]"),
+            "the refusal is redacted: {refused}"
+        );
+        assert!(
+            refused.contains("e1"),
+            "the refusal names the host: {refused}"
+        );
+        for value in [token.as_str(), BOOT_VALUE, STORE_TOKEN_VALUE, NATS_VALUE] {
+            assert!(
+                !refused.contains(value),
+                "the refusal holds {value:?}: {refused}"
+            );
+            assert!(!lines.contains(value), "the log holds {value:?}: {lines}");
+        }
     }
 
     #[tokio::test]
