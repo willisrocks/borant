@@ -143,6 +143,7 @@ impl Fx {
                 pinned: false,
             }],
             stats,
+            launching: Vec::new(),
         })
         .await
         .unwrap();
@@ -154,6 +155,7 @@ impl Fx {
             host: host.parse().unwrap(),
             sessions: Vec::new(),
             stats: None,
+            launching: Vec::new(),
         })
         .await
         .unwrap();
@@ -565,6 +567,26 @@ async fn retire_never_comes_back() {
     fx.clock.advance(Duration::from_secs(600));
     fx.hub.tick().await.unwrap();
     assert!(next_cmd(&mut cmds).await.is_none(), "no takeover");
+
+    // A launch that outlived the retirement cannot register a session.
+    let err = fx
+        .req(CtlRequest::RegisterSession(RegisterSession {
+            session: SessionId::new(),
+            host: "h1".parse().unwrap(),
+            harness: Harness::Fake,
+            harness_session_id: None,
+            pid: Some(7),
+            cwd: "/work".into(),
+            repo: None,
+            agent: Some(w.agent.clone()),
+            channel: None,
+            shared_dir: false,
+            role: None,
+            collection: None,
+        }))
+        .await
+        .expect_err("a retired agent takes no session");
+    assert!(err.message.contains("retired"), "{err}");
 
     // A wake message does not bring it back either.
     let env = borant_core::testing::envelope(

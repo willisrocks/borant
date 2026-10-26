@@ -125,6 +125,7 @@ impl Fx {
             host: name(host),
             sessions,
             stats,
+            launching: Vec::new(),
         })
         .await
         .expect("heartbeat");

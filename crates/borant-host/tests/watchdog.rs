@@ -6,13 +6,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use borant_core::model::Harness;
-use borant_core::ports::{LaunchHandle, LaunchSpec, Launcher, MessageBus, PortError, PortResult};
+use borant_core::model::{Agent, Harness, Lease, LeaseState, MoveReason};
+use borant_core::ports::{
+    LaunchHandle, LaunchSpec, Launcher, MessageBus, PortError, PortResult, StateStore,
+};
 use borant_core::proto::{CtlRequest, LocalRegister, Reply};
-use borant_core::{AgentId, SystemClock, subjects};
+use borant_core::{AgentId, FencingToken, SystemClock, Timestamp, keys, subjects};
 use borant_host::outbox::Outbox;
 use borant_host::{Host, HostConfig};
-use borant_memory::{MemoryBus, MemorySession};
+use borant_hub::{Hub, HubConfig};
+use borant_memory::{MemoryBus, MemorySession, MemoryState};
 use futures::StreamExt;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -291,6 +294,190 @@ async fn watchdog_kills_a_stale_session_before_a_relaunch() {
             .count(),
         0,
         "the relaunch is no failure"
+    );
+
+    f.stop.cancel();
+    drop(f.dir);
+}
+
+/// A host with the fake launcher and a real hub over a memory store: the stop
+/// of a launch comes from the state of the agent in the hub.
+struct ClosedFixture {
+    host: Host,
+    launcher: FakeLauncher,
+    state: MemoryState,
+    stop: CancellationToken,
+    dir: tempfile::TempDir,
+}
+
+/// Serves the real hub on the bus until the token is cancelled.
+async fn serve_real_hub(bus: &MemoryBus, hub: Arc<Hub>) -> CancellationToken {
+    let stop = CancellationToken::new();
+    let mut reqs = bus.serve(subjects::CTL).await.expect("serve the hub");
+    let token = stop.clone();
+    tokio::spawn(async move {
+        loop {
+            let next = tokio::select! {
+                _ = token.cancelled() => return,
+                n = reqs.next() => n,
+            };
+            let Some(req) = next else { return };
+            let reply = match serde_json::from_slice::<CtlRequest>(&req.payload) {
+                Ok(r) => hub.handle(r).await,
+                Err(e) => Reply::Error(borant_core::proto::ApiError::invalid(e.to_string())),
+            };
+            let _ = req
+                .responder
+                .respond(serde_json::to_vec(&reply).unwrap().into())
+                .await;
+        }
+    });
+    stop
+}
+
+async fn closed_fixture() -> ClosedFixture {
+    let bus = MemoryBus::new();
+    let sessions = MemorySession::new();
+    let state = MemoryState::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf());
+    cfg.harnesses = vec![Harness::Fake];
+    // A launch checks that the program of its harness exists.
+    cfg.commands.fake = Some(vec!["true".to_owned()]);
+    cfg.hub_timeout = Duration::from_millis(500);
+    let launcher = FakeLauncher::default();
+    let host = Host::new(
+        cfg,
+        Arc::new(bus.clone()),
+        Arc::new(sessions.clone()),
+        Arc::new(SystemClock),
+        Box::new(launcher.clone()),
+        None,
+        None,
+        Outbox::in_memory().unwrap(),
+    );
+    let hub = Arc::new(Hub::new(
+        Arc::new(state.clone()),
+        Arc::new(bus.clone()),
+        Arc::new(sessions.clone()),
+        Arc::new(borant_core::ManualClock::new(Timestamp(1_000_000))),
+        HubConfig::default(),
+    ));
+    let stop = serve_real_hub(&bus, hub).await;
+    ClosedFixture {
+        host,
+        launcher,
+        state,
+        stop,
+        dir,
+    }
+}
+
+/// Stores the agent row of `agent` in the hub.
+async fn put_agent(f: &ClosedFixture, agent: &AgentId, retired: bool, paused: bool) {
+    let agent = Agent {
+        id: agent.clone(),
+        preferred_harness: Harness::Fake,
+        retired,
+        paused: paused.then(|| borant_core::model::PauseReason {
+            by: borant_core::model::Sender::Human,
+            why: "stopped by Human".into(),
+            at: Timestamp(1_000_000),
+        }),
+        ..Default::default()
+    };
+    f.state
+        .create(
+            &keys::agent(&agent.id),
+            serde_json::to_vec(&agent).unwrap().into(),
+        )
+        .await
+        .expect("the agent row");
+}
+
+/// Stores the lease of `agent` in the hub.
+async fn put_lease(f: &ClosedFixture, agent: &AgentId, state: LeaseState) {
+    let lease = Lease {
+        agent: agent.clone(),
+        token: FencingToken(1),
+        state,
+    };
+    f.state
+        .create(
+            &keys::lease_agent(agent),
+            serde_json::to_vec(&lease).unwrap().into(),
+        )
+        .await
+        .expect("the lease");
+}
+
+fn reserved_on(host: &str) -> LeaseState {
+    LeaseState::Reserved {
+        host: host.parse().unwrap(),
+        reason: MoveReason::Spawn,
+        until: Timestamp(2_000_000),
+    }
+}
+
+/// A launch whose lease the hub released stops on the next heartbeat, instead
+/// of looping on a registration that the hub closed.
+#[tokio::test]
+async fn a_released_launch_stops_on_the_next_heartbeat() {
+    let f = closed_fixture().await;
+    let agent: AgentId = "a1".parse().unwrap();
+    put_agent(&f, &agent, false, false).await;
+    put_lease(
+        &f,
+        &agent,
+        LeaseState::Released {
+            since: Timestamp(1_000_000),
+            parked: false,
+        },
+    )
+    .await;
+    f.host.launch(order(&agent)).await.unwrap();
+
+    f.host.heartbeat_once().await;
+
+    assert_eq!(
+        f.launcher.calls(),
+        vec!["launch fake-a1".to_owned(), "stop fake-a1".to_owned()],
+        "the hub released the lease, so the launch stops"
+    );
+
+    f.stop.cancel();
+    drop(f.dir);
+}
+
+/// A launch of a retired or paused agent stops on the next heartbeat, and a
+/// launch that its reservation still holds keeps running.
+#[tokio::test]
+async fn a_retired_or_paused_launch_stops_on_the_next_heartbeat() {
+    let f = closed_fixture().await;
+    let retired: AgentId = "a1".parse().unwrap();
+    let paused: AgentId = "a2".parse().unwrap();
+    let live: AgentId = "a3".parse().unwrap();
+    put_agent(&f, &retired, true, false).await;
+    put_agent(&f, &paused, false, true).await;
+    put_agent(&f, &live, false, false).await;
+    put_lease(&f, &paused, reserved_on("h1")).await;
+    put_lease(&f, &live, reserved_on("h1")).await;
+    for agent in [&retired, &paused, &live] {
+        f.host.launch(order(agent)).await.unwrap();
+    }
+
+    f.host.heartbeat_once().await;
+
+    assert_eq!(
+        f.launcher.calls(),
+        vec![
+            "launch fake-a1".to_owned(),
+            "launch fake-a2".to_owned(),
+            "launch fake-a3".to_owned(),
+            "stop fake-a1".to_owned(),
+            "stop fake-a2".to_owned(),
+        ],
+        "the retired and the paused launch stop, and the live one runs on"
     );
 
     f.stop.cancel();

@@ -75,6 +75,26 @@ impl Hub {
     /// host reports no stats for stops at [`UNKNOWN_TURN_GRACE`]. Returns
     /// whether a stop order went out now.
     pub(crate) async fn retire(&self, mem: &mut Memory, agent: &Agent) -> Result<bool, ApiError> {
+        self.retire_inner(mem, agent, false).await
+    }
+
+    /// Retires an agent whose spawn failed its launches, and keeps the
+    /// `Failed` record: `borant ps` lists it with its reason until a person
+    /// cancels it.
+    pub(crate) async fn retire_failed_spawn(
+        &self,
+        mem: &mut Memory,
+        agent: &Agent,
+    ) -> Result<bool, ApiError> {
+        self.retire_inner(mem, agent, true).await
+    }
+
+    async fn retire_inner(
+        &self,
+        mem: &mut Memory,
+        agent: &Agent,
+        keep_spawn: bool,
+    ) -> Result<bool, ApiError> {
         let now = self.now();
         let released = self.unclaim_everywhere(mem, &agent.id).await?;
         let mut saved = agent.clone();
@@ -156,8 +176,11 @@ impl Hub {
         }
         // A retired agent is out of the queue: `borant ps` lists the spawns
         // that this hub may still place or that failed, not the ones that are
-        // done.
-        self.store.delete(&keys::spawn(&agent.id)).await?;
+        // done. A failed spawn keeps its record for the reason that `ps`
+        // shows, until a person cancels it.
+        if !keep_spawn {
+            self.store.delete(&keys::spawn(&agent.id)).await?;
+        }
         Ok(stopped)
     }
 

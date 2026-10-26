@@ -103,6 +103,7 @@ impl Hub {
         mem: &mut Memory,
         host: &HostName,
         sessions: &[SessionLeaseRef],
+        launching: &[AgentId],
     ) -> Result<HeartbeatReply, ApiError> {
         let now = self.now();
         mem.hosts_seen.insert(host.clone(), now);
@@ -174,7 +175,64 @@ impl Hub {
         // A bound worker that went idle gets its continue here, after the
         // stops, so a session on its way out is not told to go on.
         self.continue_idle(mem, sessions).await;
-        Ok(HeartbeatReply { lost, renewed })
+        // A launch that never registered stops when the hub closed its agent.
+        let stop_launches = self.stop_launches(host, launching).await?;
+        Ok(HeartbeatReply {
+            lost,
+            renewed,
+            stop_launches,
+        })
+    }
+
+    /// The launches of `host` that must stop now: the agent is retired or
+    /// paused, its spawn failed or was cancelled, its lease is released, or
+    /// another host holds the agent. A launch that its reservation or its
+    /// session still holds here keeps running.
+    async fn stop_launches(
+        &self,
+        host: &HostName,
+        launching: &[AgentId],
+    ) -> Result<Vec<AgentId>, ApiError> {
+        let mut stop = Vec::new();
+        for agent in launching {
+            let closed = match self.store.get::<Agent>(&keys::agent(agent)).await? {
+                None => true,
+                Some(d) => d.value.retired || d.value.paused.is_some(),
+            };
+            if closed {
+                stop.push(agent.clone());
+                continue;
+            }
+            // A spawn that failed its launches, or that a person cancelled,
+            // waits for a person: its launch does not keep the agent alive.
+            if let Some(rec) = self.store.get::<SpawnRecord>(&keys::spawn(agent)).await?
+                && matches!(rec.value.state, SpawnState::Failed | SpawnState::Cancelled)
+            {
+                stop.push(agent.clone());
+                continue;
+            }
+            let away = match self
+                .store
+                .get::<Lease>(&keys::lease_agent(agent))
+                .await?
+                .map(|d| d.value.state)
+            {
+                // A released lease holds no session, so the launch is stale.
+                Some(LeaseState::Released { .. }) => true,
+                Some(LeaseState::Reserved { host: h, .. } | LeaseState::Held { host: h, .. }) => {
+                    h != *host
+                }
+                // A relaunch places the agent again and stops the stale
+                // launch first. No lease at all keeps the launch: a
+                // reservation that the replica has not caught up with yet
+                // must not stop a launch that the hub just ordered.
+                Some(LeaseState::Expired { .. }) | None => false,
+            };
+            if away {
+                stop.push(agent.clone());
+            }
+        }
+        Ok(stop)
     }
 
     pub(crate) async fn new_agent_id(&self, harness: Harness) -> Result<AgentId, ApiError> {
@@ -356,6 +414,14 @@ impl Hub {
             return Err(ApiError::new(
                 ApiErrorCode::Conflict,
                 format!("agent {agent_id} is paused"),
+            ));
+        }
+        // A retired agent is gone for good: a launch that outlived its
+        // retirement cannot bring it back with a session.
+        if existing.as_ref().is_some_and(|d| d.value.retired) {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("agent {agent_id} is retired"),
             ));
         }
         let new_lease = lease::acquire(
@@ -801,7 +867,7 @@ impl Hub {
                 // The tick knows the host but neither the timeout the host
                 // waited nor the error it saw, so the try records neither.
                 let _ = self
-                    .note_launch_failure(&agent_id, host, None, None)
+                    .note_launch_failure(mem, &agent_id, host, None, None)
                     .await?;
                 next.state = LeaseState::Expired {
                     since: now.minus(cfg.grace),

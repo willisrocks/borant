@@ -46,6 +46,7 @@ async fn heartbeat_with_stats(fx: &Fx, host: &str, load1: f64, session: SessionS
         host: name(host),
         sessions: vec![],
         stats: Some(stats),
+        launching: Vec::new(),
     })
     .await
     .unwrap();

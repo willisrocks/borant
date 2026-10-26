@@ -234,10 +234,12 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
   failed (borant-1, borant-2, borant-1): last error: fatal: repository 'x.git'
   not found`, or `3 launches did not register within 90s (borant-1, borant-2,
   borant-1)` for tries that only timed out, and the hub
-  sends that reason to the agent that spawned it. An agent that retired or
-  was cancelled leaves the list.
+  sends that reason to the agent that spawned it. A spawn that gave up retires
+  its agent, so nothing launches it again, and stays in the list until a person
+  cancels it. An agent that retired or was cancelled otherwise leaves the list.
 - `borant cancel <agent>` stops a running agent or cancels a queued spawn;
-  `--close-task <reason>` also closes the task it is bound to.
+  with no live session there is no turn end to wait for, so it retires the
+  agent at once. `--close-task <reason>` also closes the task it is bound to.
 - `borant logs <agent> [--follow]` prints the session log.
 - A worker bound to a task (`--task` or `--task-title`) stops when the task
   closes (`--no-stop-on-close` keeps it), which frees its slot for the next
@@ -249,7 +251,10 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
   the `wait` tool on its task for `closed`, and the continues stop.
 - A launch that does not register fails after `launch_timeout_secs` in
   `[timing]` (default 90 s). The hub runs at most 3 launches for a spawn, then
-  the spawn waits for a person.
+  the spawn waits for a person. The host reports each launch that waits to
+  register in its heartbeat, and stops the ones that the hub closed: a retired
+  or paused agent, a failed or cancelled spawn, or a released lease, so no
+  harness loops on a registration that cannot succeed.
 - `borant inbox` lists the tasks that wait for a person, and `borant answer
   <channel>/<id> <text>` answers one. Only the channel owner closes a task as
   done; on a channel with no owner, only a person may.

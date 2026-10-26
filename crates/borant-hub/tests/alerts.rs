@@ -134,6 +134,7 @@ impl Fx {
                 last_event_at: Some(last),
                 pinned: false,
             }],
+            launching: Vec::new(),
             stats: Some(HostStats {
                 version: "test".into(),
                 sessions: vec![SessionStats {
