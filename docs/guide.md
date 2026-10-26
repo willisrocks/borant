@@ -226,10 +226,14 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
 ```
 
 - `borant ps --queued` shows each queued spawn and why each host refused it,
-  for example `host-1: full (1/1)`. The hub stores the queue, so a queued
+  for example `host-1: full (1/1)`, then the last error of a try that failed,
+  for example `borant-1: full (6/6) | last error (borant-2): fatal: repository
+  'x.git' not found`. The hub stores the queue, so a queued
   spawn survives a hub restart and starts on the next free slot. `borant ps`
   also shows a spawn that gave up, with its reason, for example `3 launches
-  did not register within 90s (borant-1, borant-2, borant-1)`, and the hub
+  failed (borant-1, borant-2, borant-1): last error: fatal: repository 'x.git'
+  not found`, or `3 launches did not register within 90s (borant-1, borant-2,
+  borant-1)` for tries that only timed out, and the hub
   sends that reason to the agent that spawned it. An agent that retired or
   was cancelled leaves the list.
 - `borant cancel <agent>` stops a running agent or cancels a queued spawn;

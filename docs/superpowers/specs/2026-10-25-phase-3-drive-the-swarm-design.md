@@ -58,8 +58,9 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
 - `SpawnRecord` at KV key `spawn.<agent>`: `spec`, `resolved` (the
   `roles::Resolved` at enqueue time), `by: Sender`, `queued_at`, `priority`,
   `state` (`Queued`, `Launching`, `Running`, `Failed`, `Cancelled`),
-  `attempts`, `last_reject`, and `launch_failures` (the host and the timeout
-  of each launch that did not register). Written only by the hub. A record
+  `attempts`, `last_reject`, and `launch_failures` (the host, the timeout, and
+  the last line of the error of each launch that did not register, capped at
+  200 characters). Written only by the hub. A record
   goes when its agent retires or is cancelled.
 - `Agent` gets `spawn_key`, `task: Option<TaskRef>`, `stop_on_close`, and
   `retired`. `Task` gets `create_key`.
@@ -115,12 +116,16 @@ register within `launch_timeout_secs`, the host captures the last 40 screen
 lines, redacts them, stops the launch, and sends `LaunchFailed` with the text
 and the timeout it waited. The hub emits `launch.stuck` with the redacted
 screen, adds the host to the agent's `failed_hosts`, and counts the try in
-`SpawnRecord.attempts`, with the host of the try in `launch_failures`. After 3
+`SpawnRecord.attempts`, with the host of the try and the last line of its
+error (at most 200 characters) in `launch_failures`. After 3
 failed tries, the record goes to `Failed`, the hub logs a `warn`, and the
 spawner gets one direct message with the agent and the reason, for example
-`3 launches did not register within 90s (borant-1, borant-2, borant-1)`. A
+`3 launches failed (borant-1, borant-2, borant-1): last error: fatal:
+repository 'x.git' not found`, or `3 launches did not register within 90s
+(borant-1, borant-2, borant-1)` when no try named an error. A
 spawn by a person has no agent to tell. `borant ps` shows the reason in its
-`REASON` column. A failure on a record that is `Failed` already counts
+`REASON` column, and the last launch error of a spawn that still has tries
+left. A failure on a record that is `Failed` already counts
 nothing and sends nothing. A host that still has a stale tmux session of the
 agent kills it before a relaunch.
 

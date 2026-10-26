@@ -648,9 +648,9 @@ fn listed(queue: &serde_json::Value, agent: &AgentId) -> bool {
 }
 
 /// Three launches that do not register fail the spawn: the record keeps the
-/// hosts and the reason, `borant ps` shows it, and the spawner gets one
-/// direct message with the agent and the reason. A repeat sends no second
-/// message and counts no try.
+/// hosts, the timeout, and the errors, `borant ps` shows why, and the spawner
+/// gets one direct message with the agent and the reason. A repeat sends no
+/// second message and counts no try.
 #[tokio::test]
 async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
     let fx = Fx::new();
@@ -667,24 +667,55 @@ async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
         .subscribe(&borant_core::subjects::agent(&spawner.agent))
         .await
         .expect("watch the spawner");
-    for host in ["h1", "h2", "h1"] {
+    let error_on = |host: &str| format!("fatal: repository '{host}.git' not found\n");
+    for host in ["h1", "h2"] {
         fx.req(CtlRequest::LaunchFailed {
             agent: agent.clone(),
             host: name(host),
-            error: "Do you trust this folder?".into(),
+            error: error_on(host),
             timeout_secs: Some(90.0),
         })
         .await
         .expect("a failed launch");
     }
 
-    let reason = "3 launches did not register within 90s (h1, h2, h1)";
+    // A spawn that still has a try left keeps the error of the last try, so
+    // `borant ps` names the cause before the spawn gives up.
+    let queue = fx
+        .call(None, ToolCall::SpawnQueue)
+        .await
+        .expect("spawn_queue");
+    let row = queue
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["agent"] == serde_json::json!(agent))
+        .expect("the spawn is listed");
+    assert_ne!(row["state"], serde_json::json!("failed"), "{row}");
+    assert_eq!(row["fail_reason"], serde_json::Value::Null, "{row}");
+    assert_eq!(
+        row["last_error"],
+        serde_json::json!({ "host": "h2", "text": "fatal: repository 'h2.git' not found" }),
+        "{row}"
+    );
+
+    fx.req(CtlRequest::LaunchFailed {
+        agent: agent.clone(),
+        host: name("h1"),
+        error: error_on("h1"),
+        timeout_secs: Some(90.0),
+    })
+    .await
+    .expect("the third failed launch");
+
+    let reason = "3 launches failed (h1, h2, h1): last error: \
+                  fatal: repository 'h1.git' not found";
     let failed = record(&fx, &agent).await.expect("the record");
     assert_eq!(failed.state, SpawnState::Failed);
     assert_eq!(failed.attempts, 3, "each failed launch counts once");
     assert_eq!(failed.fail_reason().as_deref(), Some(reason), "{failed:?}");
 
-    // `borant ps` names the reason of the failed spawn.
+    // `borant ps` names the reason of the failed spawn, with the last error.
     let queue = fx
         .call(None, ToolCall::SpawnQueue)
         .await
@@ -697,6 +728,11 @@ async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
         .expect("the failed spawn is listed");
     assert_eq!(row["state"], serde_json::json!("failed"));
     assert_eq!(row["fail_reason"], serde_json::json!(reason), "{row}");
+    assert_eq!(
+        row["last_error"]["text"],
+        serde_json::json!("fatal: repository 'h1.git' not found"),
+        "{row}"
+    );
 
     // The spawner hears once, with the agent and the reason.
     let envelope: Envelope = messages.next().await.expect("one message for the spawner");
@@ -704,6 +740,13 @@ async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
     assert_eq!(envelope.to, Target::Agent(spawner.agent.clone()));
     assert!(envelope.text.contains(agent.as_str()), "{}", envelope.text);
     assert!(envelope.text.contains(reason), "{}", envelope.text);
+    assert!(
+        envelope
+            .text
+            .contains("fatal: repository 'h1.git' not found"),
+        "{}",
+        envelope.text
+    );
 
     // A fourth failure of the same spawn waits for a person: no second
     // message, and the count and the reason stay.
