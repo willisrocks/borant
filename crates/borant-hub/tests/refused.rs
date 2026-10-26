@@ -165,6 +165,7 @@ impl Fx {
             attempts: 0,
             last_reject: Vec::new(),
             queue_reason: None,
+            launch_failures: Vec::new(),
         };
         let bytes = serde_json::to_vec(&record).unwrap();
         self.state

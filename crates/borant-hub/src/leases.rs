@@ -798,7 +798,8 @@ impl Hub {
                     .entry(agent_id.clone())
                     .or_default()
                     .insert(host.clone());
-                let _ = self.note_launch_failure(&agent_id).await?;
+                // The tick knows the host but not the timeout the host waited.
+                let _ = self.note_launch_failure(&agent_id, host, None).await?;
                 next.state = LeaseState::Expired {
                     since: now.minus(cfg.grace),
                     last_session: None,

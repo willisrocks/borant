@@ -58,7 +58,9 @@ The orchestrator wrote it in auto-pilot. The decision records are at the end.
 - `SpawnRecord` at KV key `spawn.<agent>`: `spec`, `resolved` (the
   `roles::Resolved` at enqueue time), `by: Sender`, `queued_at`, `priority`,
   `state` (`Queued`, `Launching`, `Running`, `Failed`, `Cancelled`),
-  `attempts`, `last_reject`. Written only by the hub.
+  `attempts`, `last_reject`, and `launch_failures` (the host and the timeout
+  of each launch that did not register). Written only by the hub. A record
+  goes when its agent retires or is cancelled.
 - `Agent` gets `spawn_key`, `task: Option<TaskRef>`, `stop_on_close`, and
   `retired`. `Task` gets `create_key`.
 - `events.rs`: `AgentSpawned.by` becomes a `Sender`, and new kinds
@@ -102,17 +104,25 @@ stop waits a safety grace of 10 minutes and then goes out anyway. A cancel
 reply says `stopped: true` only when the stop order went out; else it says
 `stopping: "at the turn end"`. A retired agent is never placed again by a
 takeover, a wake, a move, or the queue. Its claims on other tasks go back to
-open.
+open, and its spawn record goes, so `borant ps` lists no retired agent. The
+hub also drops the records of retired agents at start, for the ones that an
+older hub left behind.
 
 ### The launch watchdog
 
 The host records the start time of each launch. If the session does not
 register within `launch_timeout_secs`, the host captures the last 40 screen
-lines, redacts them, stops the launch, and sends `LaunchFailed` with the text.
-The hub emits `launch.stuck` with the redacted screen, adds the host to the
-agent's `failed_hosts`, and counts the try in `SpawnRecord.attempts`. After 3
-failed tries, the record goes to `Failed` and the hub logs a `warn`. A host
-that still has a stale tmux session of the agent kills it before a relaunch.
+lines, redacts them, stops the launch, and sends `LaunchFailed` with the text
+and the timeout it waited. The hub emits `launch.stuck` with the redacted
+screen, adds the host to the agent's `failed_hosts`, and counts the try in
+`SpawnRecord.attempts`, with the host of the try in `launch_failures`. After 3
+failed tries, the record goes to `Failed`, the hub logs a `warn`, and the
+spawner gets one direct message with the agent and the reason, for example
+`3 launches did not register within 90s (borant-1, borant-2, borant-1)`. A
+spawn by a person has no agent to tell. `borant ps` shows the reason in its
+`REASON` column. A failure on a record that is `Failed` already counts
+nothing and sends nothing. A host that still has a stale tmux session of the
+agent kills it before a relaunch.
 
 ## Tasks
 

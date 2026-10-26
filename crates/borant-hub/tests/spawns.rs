@@ -9,17 +9,19 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use borant_core::model::{
-    Agent, CloseReason, Harness, HostInfo, NewTask, Sender, SpawnRecord, SpawnState, Task,
-    TaskBinding, TaskStatus,
+    Agent, CloseReason, Envelope, Harness, HostInfo, NewTask, Sender, SpawnRecord, SpawnState,
+    Target, Task, TaskBinding, TaskStatus,
 };
-use borant_core::ports::StateStore;
+use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Actor, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
 use borant_core::rules::roles::{OnePer, RoleConfig};
 use borant_core::{AgentId, ChannelName, Clock, RoleName, keys};
 use borant_hub::{Hub, HubConfig};
 use common::{Fx, name, next_cmd};
+use futures::StreamExt;
 
 fn api() -> ChannelName {
     "api".parse().unwrap()
@@ -636,4 +638,200 @@ async fn a_person_spawns_from_the_cli() {
         .await
         .expect("the retry");
     assert_eq!(again["agent"]["agent"], serde_json::json!(agent.id));
+}
+
+/// Whether `borant ps` lists the spawn of `agent`.
+fn listed(queue: &serde_json::Value, agent: &AgentId) -> bool {
+    queue
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|r| r["agent"] == serde_json::json!(agent)))
+}
+
+/// Three launches that do not register fail the spawn: the record keeps the
+/// hosts and the reason, `borant ps` shows it, and the spawner gets one
+/// direct message with the agent and the reason. A repeat sends no second
+/// message and counts no try.
+#[tokio::test]
+async fn spawns_a_failed_spawn_keeps_the_reason_and_tells_the_spawner() {
+    let fx = Fx::new();
+    host(&fx, "h1", 4).await;
+    let spawner = owner(&fx).await;
+    let spawned = fx
+        .call(Some(&spawner), spawn_call("write the docs", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+
+    let mut messages = fx
+        .bus
+        .subscribe(&borant_core::subjects::agent(&spawner.agent))
+        .await
+        .expect("watch the spawner");
+    for host in ["h1", "h2", "h1"] {
+        fx.req(CtlRequest::LaunchFailed {
+            agent: agent.clone(),
+            host: name(host),
+            error: "Do you trust this folder?".into(),
+            timeout_secs: Some(90.0),
+        })
+        .await
+        .expect("a failed launch");
+    }
+
+    let reason = "3 launches did not register within 90s (h1, h2, h1)";
+    let failed = record(&fx, &agent).await.expect("the record");
+    assert_eq!(failed.state, SpawnState::Failed);
+    assert_eq!(failed.attempts, 3, "each failed launch counts once");
+    assert_eq!(failed.fail_reason().as_deref(), Some(reason), "{failed:?}");
+
+    // `borant ps` names the reason of the failed spawn.
+    let queue = fx
+        .call(None, ToolCall::SpawnQueue)
+        .await
+        .expect("spawn_queue");
+    let row = queue
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["agent"] == serde_json::json!(agent))
+        .expect("the failed spawn is listed");
+    assert_eq!(row["state"], serde_json::json!("failed"));
+    assert_eq!(row["fail_reason"], serde_json::json!(reason), "{row}");
+
+    // The spawner hears once, with the agent and the reason.
+    let envelope: Envelope = messages.next().await.expect("one message for the spawner");
+    assert_eq!(envelope.from, Sender::Human);
+    assert_eq!(envelope.to, Target::Agent(spawner.agent.clone()));
+    assert!(envelope.text.contains(agent.as_str()), "{}", envelope.text);
+    assert!(envelope.text.contains(reason), "{}", envelope.text);
+
+    // A fourth failure of the same spawn waits for a person: no second
+    // message, and the count and the reason stay.
+    fx.req(CtlRequest::LaunchFailed {
+        agent: agent.clone(),
+        host: name("h1"),
+        error: String::new(),
+        timeout_secs: Some(90.0),
+    })
+    .await
+    .expect("a repeat");
+    let again: Option<Envelope> = tokio::time::timeout(Duration::from_millis(200), messages.next())
+        .await
+        .ok()
+        .flatten();
+    assert!(again.is_none(), "one message per failure: {again:?}");
+    let failed = record(&fx, &agent).await.expect("the record");
+    assert_eq!(failed.attempts, 3, "a failed spawn counts no more tries");
+    assert_eq!(failed.fail_reason().as_deref(), Some(reason));
+}
+
+/// A worker that retires leaves the queue: its spawn record goes, so
+/// `borant ps` no longer lists it as running.
+#[tokio::test]
+async fn spawns_a_retired_agent_leaves_the_queue() {
+    let fx = Fx::new();
+    host(&fx, "h1", 4).await;
+    let owner = owner(&fx).await;
+    let task: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskCreate {
+                channel: api(),
+                task: NewTask {
+                    title: "ship it".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .expect("the task"),
+    )
+    .unwrap();
+    let bound = task.id;
+    let mut call = spawn_call("ship it", 0);
+    if let ToolCall::Spawn { task, name, .. } = &mut call {
+        *task = Some(TaskBinding::Existing {
+            channel: api(),
+            id: bound,
+        });
+        *name = Some("w1".parse().unwrap());
+    }
+    fx.call(Some(&owner), call).await.expect("spawn");
+    let agent: AgentId = "w1".parse().unwrap();
+    fx.register_in("h1", Some(agent.as_str()), Some("api"), None)
+        .await;
+    assert_eq!(
+        record(&fx, &agent).await.expect("the record").state,
+        SpawnState::Running,
+        "the session registered"
+    );
+    let queue = fx
+        .call(None, ToolCall::SpawnQueue)
+        .await
+        .expect("spawn_queue");
+    assert!(listed(&queue, &agent), "{queue}");
+
+    // Closing the bound task retires the worker, and its record goes.
+    fx.call(
+        Some(&owner),
+        ToolCall::TaskClose {
+            channel: api(),
+            id: bound,
+            reason: CloseReason::Done,
+            message: "shipped".into(),
+        },
+    )
+    .await
+    .expect("close");
+    assert!(read_agent(&fx, &agent).await.retired, "the worker retired");
+    assert!(
+        record(&fx, &agent).await.is_none(),
+        "the spawn record of a retired agent is gone"
+    );
+    let queue = fx
+        .call(None, ToolCall::SpawnQueue)
+        .await
+        .expect("spawn_queue");
+    assert!(!listed(&queue, &agent), "{queue}");
+}
+
+/// A record that an older hub left behind for a retired agent goes at start,
+/// so `borant ps` shows the spawns that still matter.
+#[tokio::test]
+async fn spawns_start_drops_the_records_of_stopped_agents() {
+    let fx = Fx::new();
+    host(&fx, "h1", 4).await;
+    let owner = owner(&fx).await;
+    let spawned = fx
+        .call(Some(&owner), spawn_call("old work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    // The agent retired, and the record stayed.
+    let mut row = read_agent(&fx, &agent).await;
+    row.retired = true;
+    let doc = fx.state.get(&keys::agent(&agent)).await.unwrap().unwrap();
+    fx.state
+        .update(
+            &doc.key,
+            serde_json::to_vec(&row).unwrap().into(),
+            doc.revision,
+        )
+        .await
+        .expect("retire the row");
+    assert!(listed(
+        &fx.call(None, ToolCall::SpawnQueue).await.unwrap(),
+        &agent
+    ));
+
+    assert_eq!(
+        fx.hub.drop_retired_spawns().await.expect("the sweep"),
+        1,
+        "one stale record"
+    );
+    assert!(record(&fx, &agent).await.is_none());
+    assert!(!listed(
+        &fx.call(None, ToolCall::SpawnQueue).await.unwrap(),
+        &agent
+    ));
 }

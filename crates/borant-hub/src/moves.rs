@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Harness, HostInfo, Lease, LeaseState, MemberState, MoveReason, Project, SessionEvent,
-    SessionEventBody, SpawnRecord, SpawnState,
+    Agent, Harness, HostInfo, LaunchFailure, Lease, LeaseState, MemberState, MoveReason, Project,
+    Sender, SessionEvent, SessionEventBody, SpawnRecord, SpawnState,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
@@ -857,6 +857,7 @@ impl Hub {
         agent: &AgentId,
         host: &HostName,
         error: &str,
+        timeout_secs: Option<f64>,
     ) -> Result<(), ApiError> {
         // The end of the screen that the host captured, redacted again: a
         // sticky prompt can hold a value that the harness printed.
@@ -888,7 +889,7 @@ impl Hub {
         }
         // The try counts against the spawn of the agent, and the record stops
         // the hub after three of them.
-        let (attempts, failed) = self.note_launch_failure(agent).await?;
+        let (attempts, failed) = self.note_launch_failure(agent, host, timeout_secs).await?;
         let severity = if failed {
             Severity::Error
         } else {
@@ -905,32 +906,57 @@ impl Hub {
 
     /// Counts one failed try of the spawn of `agent`, and fails the record
     /// after three: a launch that keeps landing on the same screen waits for
-    /// a person, not for another try. Returns the count and whether the
-    /// record is `Failed` now. An agent without a spawn record is not
-    /// counted.
+    /// a person, not for another try. The record keeps the host and the
+    /// timeout of each try, so `borant ps` and the spawner read why it failed.
+    /// Returns the count and whether the record is `Failed` now. An agent
+    /// without a spawn record is not counted.
+    ///
+    /// The spawner gets one direct message, with the write that fails the
+    /// record: a repeat on a `Failed` record counts nothing and sends
+    /// nothing. A spawn by a person has no agent to tell.
     pub(crate) async fn note_launch_failure(
         &self,
         agent: &AgentId,
+        host: &HostName,
+        timeout_secs: Option<f64>,
     ) -> Result<(u32, bool), ApiError> {
         let key = keys::spawn(agent);
         let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
             return Ok((0, false));
         };
         let mut record = doc.value;
+        // A failed spawn waits for a person: the record keeps the count and
+        // the hosts of the tries that failed it.
+        if record.state == SpawnState::Failed {
+            return Ok((record.attempts, true));
+        }
         record.attempts = record.attempts.saturating_add(1);
+        record.launch_failures.push(LaunchFailure {
+            host: host.clone(),
+            timeout_secs,
+        });
         let failed = record.attempts >= MAX_LAUNCH_TRIES;
-        if failed && record.state != SpawnState::Failed {
+        if failed {
             record.state = SpawnState::Failed;
-            tracing::warn!(
-                %agent,
-                attempts = record.attempts,
-                "a spawn failed three launches, giving up"
-            );
         }
         self.store
             .put(&doc.key, &record, Some(doc.revision))
             .await?;
-        Ok((record.attempts, failed))
+        if !failed {
+            return Ok((record.attempts, false));
+        }
+        let reason = record.fail_reason().unwrap_or_default();
+        tracing::warn!(
+            %agent,
+            attempts = record.attempts,
+            reason,
+            "a spawn failed its launches, giving up"
+        );
+        if let Sender::Agent(spawner) = &record.by {
+            let text = format!("the spawn of agent {agent} failed: {reason}");
+            self.tell(spawner, &text).await?;
+        }
+        Ok((record.attempts, true))
     }
 
     pub(crate) async fn list_agents(

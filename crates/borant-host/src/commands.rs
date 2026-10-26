@@ -58,6 +58,8 @@ impl Host {
                         agent: agent.clone(),
                         host: self.inner.cfg.name.clone(),
                         error: format!("{e:#}"),
+                        // A launch that errors never waited a timeout.
+                        timeout_secs: None,
                     };
                     if let Err(e) = self.hub(&req).await {
                         tracing::warn!(

@@ -167,6 +167,7 @@ async fn members_a_failed_pool_launch_does_not_fall_back_to_a_host_without_the_b
         agent: agent("w1"),
         host: name("h1"),
         error: "first-run screen".into(),
+        timeout_secs: Some(90.0),
     })
     .await
     .unwrap();

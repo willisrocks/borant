@@ -900,9 +900,8 @@ fn render_queue(v: &Value, queued_only: bool) -> String {
     let Some(list) = list else {
         return format!("{}\n", serde_json::to_string_pretty(v).unwrap_or_default());
     };
-    let mut out = String::from(
-        "AGENT                    STATE      PRIORITY  QUEUED     CHANNEL   LAST REJECT\n",
-    );
+    let mut out =
+        String::from("AGENT                    STATE      PRIORITY  QUEUED     CHANNEL   REASON\n");
     for rec in list
         .iter()
         .filter(|rec| !queued_only || rec["state"] == json!("queued"))
@@ -919,7 +918,12 @@ fn render_queue(v: &Value, queued_only: bool) -> String {
             .map(|at| crate::events::utc_time(Timestamp(at)))
             .unwrap_or_else(|| "-".to_owned());
         let channel = rec["spec"]["channel"].as_str().unwrap_or("-");
-        let reject = render_reject(&rec["last_reject"]);
+        // A failed spawn says why it gave up; a queued one says why the hosts
+        // refuse it.
+        let reject = match rec["fail_reason"].as_str() {
+            Some(reason) => reason.to_owned(),
+            None => render_reject(&rec["last_reject"]),
+        };
         let _ = writeln!(
             out,
             "{agent:<24} {state:<10} {priority:<9} {queued:<10} {channel:<9} {reject}"
@@ -2122,6 +2126,21 @@ mod tests {
         let out = render_queue(&v, true);
         assert!(
             out.contains("borant-1: full (6/6), borant-2: low memory (700 MB free, 1024 reserved)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn cli_render_queue_prints_the_reason_of_a_failed_spawn() {
+        let v = json!([
+            {"agent": "w1", "state": "failed", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "attempts": 3, "spec": {"channel": "api"}, "last_reject": null,
+             "fail_reason": "3 launches did not register within 90s (borant-1, borant-2, borant-1)",
+             "queue_reason": null},
+        ]);
+        let out = render_queue(&v, false);
+        assert!(
+            out.contains("3 launches did not register within 90s (borant-1, borant-2, borant-1)"),
             "{out}"
         );
     }

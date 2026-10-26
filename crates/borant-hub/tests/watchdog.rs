@@ -192,6 +192,7 @@ impl Fx {
             attempts,
             last_reject: Vec::new(),
             queue_reason: None,
+            launch_failures: Vec::new(),
         };
         let value = serde_json::to_vec(&record).unwrap();
         match self.state.get(&keys::spawn(agent)).await.unwrap() {
@@ -295,6 +296,7 @@ async fn watchdog_failure_reports_the_redacted_screen_and_counts_tries() {
             agent: agent.clone(),
             host: "h1".parse().unwrap(),
             error: screen.into(),
+            timeout_secs: Some(90.0),
         })
         .await
         .unwrap();
