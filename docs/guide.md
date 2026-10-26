@@ -190,6 +190,13 @@ any. Otherwise the hub answers `bundle <b> is not yours to give`. A move
 recomputes the list, so a channel bundle added to `hub.toml` applies at the
 next launch of its agents.
 
+The clone of a launch runs with the launch's bundle variables, so a
+collection bundle can carry the git credential of its repositories; the host
+has no git-specific config. The values reach the git commands of the clone,
+the mirror fetch, and the project `setup` only as the environment of those
+child processes, and a launch whose values do not resolve fails before it
+clones.
+
 Delivery rules:
 
 - A direct message wakes the agent.

@@ -15,6 +15,13 @@ use tokio::process::Command;
 /// The limit for one git command, including a push over the network.
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// The variables that the git commands of a restore run with: the resolved
+/// bundles of the launch, so the credential of a collection's bundle reaches
+/// the commands that the host runs for the launch. A pair goes into the
+/// environment of the child process and nowhere else. Empty for a launch
+/// without bundles, which then runs as before.
+pub type GitEnv = [(String, String)];
+
 pub fn wip_ref(agent: &AgentId) -> String {
     format!("refs/borant/{agent}/wip")
 }
@@ -23,13 +30,21 @@ pub fn stale_ref(agent: &AgentId, at: Timestamp) -> String {
     format!("refs/borant/{agent}/stale/{at}")
 }
 
-async fn git(dir: &Path, args: &[&str], index: Option<&Path>) -> anyhow::Result<String> {
+async fn git(
+    dir: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+    env: &GitEnv,
+) -> anyhow::Result<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if let Some(i) = index {
         cmd.env("GIT_INDEX_FILE", i);
     }
+    // After our own variables, so a bundle cannot turn off the guard against
+    // an interactive prompt.
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     cmd.kill_on_drop(true);
     let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await
@@ -60,14 +75,14 @@ const CHECKPOINT_REMOTE_KEY: &str = "borant.checkpointRemote";
 /// The absolute git directory of the repository of `dir`.
 pub async fn git_dir(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(
-        git(dir, &["rev-parse", "--absolute-git-dir"], None).await?,
+        git(dir, &["rev-parse", "--absolute-git-dir"], None, &[]).await?,
     ))
 }
 
 /// Stores the checkpoint remote of a project in the clone, so `detect`
 /// finds it again for each session, also after a daemon restart.
 pub async fn set_checkpoint_remote(dir: &Path, remote: &str) -> anyhow::Result<()> {
-    git(dir, &["config", CHECKPOINT_REMOTE_KEY, remote], None).await?;
+    git(dir, &["config", CHECKPOINT_REMOTE_KEY, remote], None, &[]).await?;
     Ok(())
 }
 
@@ -76,15 +91,15 @@ pub async fn set_checkpoint_remote(dir: &Path, remote: &str) -> anyhow::Result<(
 /// outside a repository or without any remote.
 pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFacts> {
     let root = PathBuf::from(
-        git(cwd, &["rev-parse", "--show-toplevel"], None)
+        git(cwd, &["rev-parse", "--show-toplevel"], None, &[])
             .await
             .ok()?,
     );
-    let remote = match git(cwd, &["remote", "get-url", "origin"], None).await {
+    let remote = match git(cwd, &["remote", "get-url", "origin"], None, &[]).await {
         Ok(u) => u,
         Err(_) => fallback_remote?.to_owned(),
     };
-    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"], None)
+    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"], None, &[])
         .await
         .unwrap_or_else(|_| "main".to_owned());
     let canon_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
@@ -93,7 +108,7 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
         .strip_prefix(&canon_root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let checkpoint_remote = git(cwd, &["config", "--get", CHECKPOINT_REMOTE_KEY], None)
+    let checkpoint_remote = git(cwd, &["config", "--get", CHECKPOINT_REMOTE_KEY], None, &[])
         .await
         .ok()
         .filter(|r| !r.is_empty());
@@ -116,6 +131,7 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
         cwd,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
         None,
+        &[],
     )
     .await?;
     let tmp = tempfile::NamedTempFile::new().context("create a temporary index")?;
@@ -131,9 +147,9 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
             .set_times(std::fs::FileTimes::new().set_modified(real.modified()?))
             .context("set the timestamp of the temporary index")?;
     }
-    git(cwd, &["add", "-A"], Some(tmp.path())).await?;
-    let tree = git(cwd, &["write-tree"], Some(tmp.path())).await?;
-    let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD"], None)
+    git(cwd, &["add", "-A"], Some(tmp.path()), &[]).await?;
+    let tree = git(cwd, &["write-tree"], Some(tmp.path()), &[]).await?;
+    let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD"], None, &[])
         .await
         .ok();
     let mut args = vec!["commit-tree", tree.as_str(), "-m", message];
@@ -141,7 +157,7 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
         args.push("-p");
         args.push(h);
     }
-    let sha = git(cwd, &args, None).await?;
+    let sha = git(cwd, &args, None, &[]).await?;
     Ok((tree, sha))
 }
 
@@ -157,7 +173,7 @@ pub async fn create(
     let (tree, sha) = snapshot(cwd, &format!("borant checkpoint of {agent}")).await?;
     // A new commit with the same tree still needs a checkpoint, or a restore
     // returns to the old parent and loses the commit.
-    let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD"], None)
+    let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD"], None, &[])
         .await
         .unwrap_or_default();
     let key = format!("{tree} {head}");
@@ -165,7 +181,13 @@ pub async fn create(
         return Ok(None);
     }
     let refspec = format!("{sha}:{}", wip_ref(agent));
-    git(cwd, &["push", "--force", "--quiet", remote, &refspec], None).await?;
+    git(
+        cwd,
+        &["push", "--force", "--quiet", remote, &refspec],
+        None,
+        &[],
+    )
+    .await?;
     Ok(Some((key, sha)))
 }
 
@@ -179,7 +201,13 @@ pub async fn save_stale(
 ) -> anyhow::Result<String> {
     let (_, sha) = snapshot(cwd, &format!("borant stale work of {agent}")).await?;
     let refspec = format!("{sha}:{}", stale_ref(agent, at));
-    git(cwd, &["push", "--force", "--quiet", remote, &refspec], None).await?;
+    git(
+        cwd,
+        &["push", "--force", "--quiet", remote, &refspec],
+        None,
+        &[],
+    )
+    .await?;
     Ok(sha)
 }
 
@@ -243,17 +271,18 @@ pub async fn ensure_mirror(
     root: &Path,
     name: &ProjectName,
     remote_url: &str,
+    env: &GitEnv,
 ) -> anyhow::Result<PathBuf> {
     let dir = mirror_dir(root, name);
     let lock = project_lock(name);
     let _guard = lock.lock().await;
     if dir.join("HEAD").exists() {
-        git(&dir, &["fetch", "--quiet", "origin"], None)
+        git(&dir, &["fetch", "--quiet", "origin"], None, env)
             .await
             .with_context(|| format!("update the mirror of {name} in {}", dir.display()))?;
         return Ok(dir);
     }
-    create_mirror(&dir, remote_url)
+    create_mirror(&dir, remote_url, env)
         .await
         .with_context(|| format!("create the mirror of {name} in {}", dir.display()))?;
     Ok(dir)
@@ -262,7 +291,7 @@ pub async fn ensure_mirror(
 /// Clones `remote_url` bare into a temporary directory next to `dir`, sets
 /// the config of the mirror, and moves it into place, so a failure leaves no
 /// mirror.
-async fn create_mirror(dir: &Path, remote_url: &str) -> anyhow::Result<()> {
+async fn create_mirror(dir: &Path, remote_url: &str, env: &GitEnv) -> anyhow::Result<()> {
     let parent = dir.parent().context("the mirror directory has no parent")?;
     tokio::fs::create_dir_all(parent).await?;
     let tmp = tempfile::Builder::new()
@@ -274,10 +303,11 @@ async fn create_mirror(dir: &Path, remote_url: &str) -> anyhow::Result<()> {
         tmp.path(),
         &["clone", "--bare", "--quiet", remote_url, "repo.git"],
         None,
+        env,
     )
     .await?;
     for (key, value) in MIRROR_CONFIG {
-        git(&tmp_dir, &["config", key, value], None).await?;
+        git(&tmp_dir, &["config", key, value], None, &[]).await?;
     }
     tokio::fs::rename(&tmp_dir, dir)
         .await
@@ -292,7 +322,12 @@ async fn create_mirror(dir: &Path, remote_url: &str) -> anyhow::Result<()> {
 /// on the remote and not local starts from `origin/{base}`, if `base` is set.
 /// A restore of a project updates the bare mirror of the project first, then
 /// a new clone borrows its objects; the `origin` of the clone stays the real
-/// remote. Returns the working directory.
+/// remote. Every git command of the restore runs with `env`, the resolved
+/// bundles of the launch, so a collection bundle can carry the credential of
+/// the repositories. Returns the working directory.
+// The parameters are the facts of one launch, and a struct would only move
+// them to the call site.
+#[allow(clippy::too_many_arguments)]
 pub async fn restore(
     work_root: &Path,
     repo: &RepoInfo,
@@ -301,20 +336,24 @@ pub async fn restore(
     wip: Option<&str>,
     base: Option<&str>,
     mirror: Option<Mirror<'_>>,
+    env: &GitEnv,
 ) -> anyhow::Result<PathBuf> {
     let dir = work_root
         .join(agent.as_str())
         .join(repo_dir_name(&repo.remote_url));
     let reference = match mirror {
-        Some(m) => Some(ensure_mirror(m.root, m.name, &repo.remote_url).await?),
+        Some(m) => Some(ensure_mirror(m.root, m.name, &repo.remote_url, env).await?),
         None => None,
     };
     if dir.join(".git").exists() {
-        git(&dir, &["fetch", "--quiet", "origin"], None).await?;
+        git(&dir, &["fetch", "--quiet", "origin"], None, env).await?;
     } else {
         tokio::fs::create_dir_all(dir.parent().unwrap_or(work_root)).await?;
         let mut cmd = Command::new("git");
         cmd.env("GIT_TERMINAL_PROMPT", "0");
+        // After our own variables, so a bundle cannot turn off the guard
+        // against an interactive prompt.
+        cmd.envs(env.iter().map(|(k, v)| (k, v)));
         cmd.args(["clone", "--quiet"]);
         if let Some(r) = &reference {
             cmd.arg("--reference").arg(r);
@@ -331,58 +370,79 @@ pub async fn restore(
     let branch = repo.branch.as_str();
     match wip {
         Some(sha) => {
-            git(&dir, &["fetch", "--quiet", remote, &wip_ref(agent)], None).await?;
+            git(
+                &dir,
+                &["fetch", "--quiet", remote, &wip_ref(agent)],
+                None,
+                env,
+            )
+            .await?;
             let parent = git(
                 &dir,
                 &["rev-parse", "--verify", "-q", &format!("{sha}^")],
                 None,
+                env,
             )
             .await
             .ok();
             match &parent {
                 Some(p) => {
-                    git(&dir, &["checkout", "--quiet", "-f", "-B", branch, p], None).await?;
+                    git(
+                        &dir,
+                        &["checkout", "--quiet", "-f", "-B", branch, p],
+                        None,
+                        env,
+                    )
+                    .await?;
                 }
                 None => {
                     git(
                         &dir,
                         &["checkout", "--quiet", "-f", "--orphan", branch],
                         None,
+                        env,
                     )
                     .await?;
                 }
             }
-            git(&dir, &["read-tree", "-u", "--reset", sha], None).await?;
+            git(&dir, &["read-tree", "-u", "--reset", sha], None, env).await?;
             match &parent {
-                Some(p) => git(&dir, &["reset", "--quiet", "--mixed", p], None).await?,
-                None => git(&dir, &["rm", "-r", "--cached", "--quiet", "."], None).await?,
+                Some(p) => git(&dir, &["reset", "--quiet", "--mixed", p], None, env).await?,
+                None => git(&dir, &["rm", "-r", "--cached", "--quiet", "."], None, env).await?,
             };
         }
         None => {
             let remote_branch = format!("origin/{branch}");
-            if git(&dir, &["rev-parse", "--verify", "-q", &remote_branch], None)
-                .await
-                .is_ok()
+            if git(
+                &dir,
+                &["rev-parse", "--verify", "-q", &remote_branch],
+                None,
+                env,
+            )
+            .await
+            .is_ok()
             {
                 git(
                     &dir,
                     &["checkout", "--quiet", "-f", "-B", branch, &remote_branch],
                     None,
+                    env,
                 )
                 .await?;
             } else if let Some(base) = base {
                 let local = format!("refs/heads/{branch}");
-                if git(&dir, &["rev-parse", "--verify", "-q", &local], None)
+                if git(&dir, &["rev-parse", "--verify", "-q", &local], None, env)
                     .await
                     .is_ok()
                 {
-                    git(&dir, &["checkout", "--quiet", branch], None).await?;
+                    git(&dir, &["checkout", "--quiet", branch], None, env).await?;
                 } else {
                     let from = format!("origin/{base}");
                     git(
                         &dir,
                         &["checkout", "--quiet", "-f", "-B", branch, &from],
                         None,
+                        env,
                     )
                     .await?;
                 }

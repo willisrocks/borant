@@ -118,3 +118,28 @@ fn secret_exec_without_pre_commands_keeps_the_arguments() {
     );
     assert!(!dir.join("env").exists(), "the env file must be deleted");
 }
+
+/// The value of a bundle wins over the same name in the environment of the
+/// process that starts the shim: a laptop daemon exports its own token, and
+/// the harness must still get the value of the launch.
+#[test]
+fn secret_exec_overrides_a_variable_of_its_own_environment() {
+    let tmp = fixture("TOKEN=bundle-value-123456\n", None);
+    let dir = tmp.path();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_borant"))
+        .arg("secret-exec")
+        .arg(dir)
+        .arg("--")
+        .args(["/bin/sh", "-c", "printf '%s' \"$TOKEN\""])
+        .env("TOKEN", "daemon-value-123456")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "bundle-value-123456");
+}

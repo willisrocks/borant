@@ -37,6 +37,29 @@ pub(crate) struct LaunchSecrets {
     pub bundles: Vec<BundleName>,
     pub members: BTreeMap<BundleName, MemberName>,
     pub redactor: Arc<Redactor>,
+    /// The `name=value` pairs that the shim gives the harness, for the work
+    /// that the host does for the launch before the harness starts.
+    pub vars: LaunchVars,
+}
+
+/// The variables of one launch: the same pairs that the shim gives the
+/// harness. A value leaves this type only as the environment of a child
+/// process, and the `Debug` prints the names only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct LaunchVars(Vec<(String, String)>);
+
+impl LaunchVars {
+    /// The pairs, sorted by name, for `Command::envs`.
+    pub(crate) fn pairs(&self) -> &[(String, String)] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for LaunchVars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.0.iter().map(|(name, _)| name.as_str()).collect();
+        write!(f, "LaunchVars {names:?}")
+    }
 }
 
 /// The exact values of one agent. It removes them first, longest first, and
@@ -111,6 +134,10 @@ impl Host {
             return Ok(None);
         }
         let values = resolve(secrets, &planned.by_store).await?;
+        let mut vars = Vec::with_capacity(planned.vars.len());
+        for (name, r) in &planned.vars {
+            vars.push((name.clone(), value_of(&values, r)?.to_owned()));
+        }
         let dir = self.secret_dir(&o.agent);
         // A failure after the `env` file is written must not leave values on
         // disk: the caller cannot clean up what it does not see.
@@ -129,6 +156,7 @@ impl Host {
             bundles,
             members: planned.members,
             redactor: redactor_of(&values),
+            vars: LaunchVars(vars),
         })))
     }
 
@@ -594,9 +622,14 @@ mod tests {
             bundles: Vec::new(),
             members: std::collections::BTreeMap::new(),
             redactor: std::sync::Arc::new(r),
+            vars: super::LaunchVars(vec![("TOKEN".to_owned(), "gh-value-123456".to_owned())]),
         };
         let printed = format!("{issued:?}");
         assert!(!printed.contains("gh-value-123456"), "{printed}");
+        assert!(
+            printed.contains("TOKEN"),
+            "the names stay visible: {printed}"
+        );
     }
 
     #[test]

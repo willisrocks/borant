@@ -1,6 +1,6 @@
 //! Commands from the hub: launch, prepare a move, fence, and stop.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -146,54 +146,23 @@ impl Host {
                 bin
             );
         }
-        let work_root = cfg.home.join("work");
-        let project = o.project.as_ref();
-        let cwd = match &o.repo {
-            Some(repo) => {
-                let project_remote = project.and_then(|p| p.checkpoint_remote.as_deref());
-                let remote = match project_remote {
-                    Some(r) => r.to_owned(),
-                    None => self
-                        .inner
-                        .cfg
-                        .checkpoint_remote
-                        .clone()
-                        .unwrap_or_else(|| repo.remote_url.clone()),
-                };
-                let base = project.map(|p| p.default_branch.as_str());
-                let mirrors = cfg.home.join(checkpoint::MIRRORS_DIR);
-                let mirror = project.map(|p| checkpoint::Mirror {
-                    root: mirrors.as_path(),
-                    name: &p.name,
-                });
-                let dir = checkpoint::restore(
-                    &work_root,
-                    repo,
-                    &o.agent,
-                    &remote,
-                    o.wip.as_deref(),
-                    base,
-                    mirror,
-                )
-                .await?;
-                if let Some(r) = project_remote {
-                    checkpoint::set_checkpoint_remote(&dir, r).await?;
+        // The values of the launch come before its clone: the git commands of
+        // the restore run with them, so a collection bundle can carry the
+        // credential of its repositories. A launch that needs bundles never
+        // clones with the daemon's own credentials, and a launch whose values
+        // do not resolve fails here, before anything is prepared.
+        let issued = self.issue_secrets(&o).await?;
+        let vars = issued
+            .as_ref()
+            .map_or(&[][..], |issued| issued.vars.pairs());
+        let cwd = match self.prepare_dir(&o, vars, started).await {
+            Ok(cwd) => cwd,
+            Err(e) => {
+                // No session will read the values of a launch that failed.
+                if let Some(issued) = &issued {
+                    remove_dir(&issued.dir).await;
                 }
-                if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
-                    // The session must register before the hub reservation
-                    // ends, or the hub launches the agent again.
-                    let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
-                    let budget = reserve
-                        .saturating_sub(SETUP_MARGIN)
-                        .saturating_sub(started.elapsed());
-                    run_setup(&dir, cmd, budget).await?;
-                }
-                dir
-            }
-            None => {
-                let d = work_root.join(o.agent.as_str());
-                tokio::fs::create_dir_all(&d).await?;
-                d
+                return Err(e);
             }
         };
         let mut env = vec![
@@ -240,7 +209,6 @@ impl Host {
         );
         // Resolver mode: the values go into the agent's secret directory, and
         // only its path reaches the launch. The shim hands them to the harness.
-        let issued = self.issue_secrets(&o).await?;
         if let Some(issued) = &issued {
             program = match self.shim_program(&issued.dir, program) {
                 Ok(program) => program,
@@ -337,6 +305,64 @@ impl Host {
         Ok(())
     }
 
+    /// Prepares the working directory of a launch: the clone or the fetch of
+    /// its project, its checkpoint remote, and the setup of the project. Each
+    /// git command and the setup run with `vars`, the resolved bundles of the
+    /// launch, so the host needs no git-specific configuration of its own.
+    async fn prepare_dir(
+        &self,
+        o: &LaunchOrder,
+        vars: &checkpoint::GitEnv,
+        started: std::time::Instant,
+    ) -> anyhow::Result<PathBuf> {
+        let cfg = &self.inner.cfg;
+        let work_root = cfg.home.join("work");
+        let project = o.project.as_ref();
+        let Some(repo) = &o.repo else {
+            let d = work_root.join(o.agent.as_str());
+            tokio::fs::create_dir_all(&d).await?;
+            return Ok(d);
+        };
+        let project_remote = project.and_then(|p| p.checkpoint_remote.as_deref());
+        let remote = match project_remote {
+            Some(r) => r.to_owned(),
+            None => cfg
+                .checkpoint_remote
+                .clone()
+                .unwrap_or_else(|| repo.remote_url.clone()),
+        };
+        let base = project.map(|p| p.default_branch.as_str());
+        let mirrors = cfg.home.join(checkpoint::MIRRORS_DIR);
+        let mirror = project.map(|p| checkpoint::Mirror {
+            root: mirrors.as_path(),
+            name: &p.name,
+        });
+        let dir = checkpoint::restore(
+            &work_root,
+            repo,
+            &o.agent,
+            &remote,
+            o.wip.as_deref(),
+            base,
+            mirror,
+            vars,
+        )
+        .await?;
+        if let Some(r) = project_remote {
+            checkpoint::set_checkpoint_remote(&dir, r).await?;
+        }
+        if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
+            // The session must register before the hub reservation ends, or
+            // the hub launches the agent again.
+            let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
+            let budget = reserve
+                .saturating_sub(SETUP_MARGIN)
+                .saturating_sub(started.elapsed());
+            run_setup(&dir, cmd, budget, vars).await?;
+        }
+        Ok(dir)
+    }
+
     /// Marks a launch of `agent` as running. Fails if one already runs, so
     /// two launches never share a working directory.
     fn launch_lock(&self, agent: &AgentId) -> anyhow::Result<LaunchLock> {
@@ -391,8 +417,14 @@ const SETUP_OUTPUT_CHARS: usize = 4000;
 /// A marker in the git directory records a success, so a restore of the
 /// same clone skips it, and a clone whose setup failed runs it again. The
 /// output goes to a file in the git directory, so a process that the
-/// command leaves in the background cannot hold the launch.
-async fn run_setup(dir: &Path, cmd: &str, budget: Duration) -> anyhow::Result<()> {
+/// command leaves in the background cannot hold the launch. `vars` are the
+/// resolved bundles of the launch: the setup may fetch private dependencies.
+async fn run_setup(
+    dir: &Path,
+    cmd: &str,
+    budget: Duration,
+    vars: &checkpoint::GitEnv,
+) -> anyhow::Result<()> {
     let git_dir = checkpoint::git_dir(dir).await?;
     let marker = git_dir.join("borant-setup-done");
     if marker.exists() {
@@ -408,6 +440,7 @@ async fn run_setup(dir: &Path, cmd: &str, budget: Duration) -> anyhow::Result<()
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
+        .envs(vars.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
