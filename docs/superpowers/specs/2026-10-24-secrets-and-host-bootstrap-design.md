@@ -234,6 +234,16 @@ with them. This is the default.
 6. When the session ends, the daemon deletes the directory. At start, it
    deletes each directory with no live session.
 
+The values are resolved before the working directory of the launch is
+prepared. The git commands of a restore — the create and fetch of the bare
+mirror, the clone, the fetches, and the checkpoint remote fetch — and the
+`setup` command of the project run with the resolved vars in their child
+environment, so the clone of a launch runs with the launch's bundle
+variables and a collection bundle can carry the git credential of its
+repositories; the host has no git-specific config. A launch whose values do
+not resolve fails before it clones, and never falls back to the credentials
+of the daemon.
+
 The shim is needed because the tmux launcher puts each `LaunchSpec.env` pair
 in a `-e KEY=VALUE` argument (`new_session_args` in
 `crates/borant-launch/src/tmux.rs`), and `ps` shows it. Every agent runs as
