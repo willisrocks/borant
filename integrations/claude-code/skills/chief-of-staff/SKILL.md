@@ -133,3 +133,4 @@ change to CI, secrets, releases, or infrastructure.
 | "Tell the orchestrator to ask the person" | It cannot. It asks you; you ask the person. |
 | "I will read the repo or the logs to check on it" | Ask the orchestrator that owns the work, or use a subagent for an ad-hoc lookup. |
 | "This ask is small, I will do it here" | Use a subagent. Keep the chief's context for decisions. |
+| "I will run this cleanup command myself" | Send it to the orchestrator that owns the project. |
