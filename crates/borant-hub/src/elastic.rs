@@ -448,6 +448,13 @@ impl Hub {
                     .iter()
                     .find(|h| h.name == host)
                     .map(|h| h.pool.clone());
+                // A pool host leaves no record behind: the box is gone, so
+                // `borant hosts` must not name it. Only a host with an
+                // `elastic.*` key is the hub's; a static host keeps its
+                // record.
+                if pool.is_some() {
+                    self.forget_host(&host).await?;
+                }
                 self.store.delete(&keys::elastic(&host)).await?;
                 // A host that goes takes an unspent token with it.
                 self.store.delete(&keys::join(&host)).await?;
@@ -462,6 +469,21 @@ impl Hub {
                 self.create(elastic, pass, caps, &pool, &name, now).await?;
             }
         }
+        Ok(())
+    }
+
+    /// Deletes the record of a pool host that the provider deleted, and drops
+    /// the host from the live view, so `borant hosts`, the view, and placement
+    /// stop naming a box that is gone. The pool rule deletes only a host with
+    /// no agent, so this needs none of the checks of `remove_host`. The record
+    /// goes before the `elastic.*` key, so a store error here leaves the key
+    /// for the next tick to retry, as a failed provider delete does.
+    async fn forget_host(&self, host: &HostName) -> Result<(), ApiError> {
+        self.store.delete(&keys::host(host)).await?;
+        let mut mem = self.mem.lock().await;
+        mem.hosts_seen.remove(host);
+        mem.host_stats.remove(host);
+        tracing::info!(host = %host, "pool host record removed");
         Ok(())
     }
 
@@ -797,7 +819,7 @@ mod tests {
     use borant_core::model::{
         Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskStatus,
     };
-    use borant_core::proto::{CtlRequest, MoveTarget};
+    use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
@@ -937,7 +959,7 @@ mod tests {
 
     /// Registers a host of the `workers` pool and marks it seen now.
     async fn register(fx: &Fx, host: &str, max_agents: u32) {
-        register_in(fx, host, "workers", max_agents).await;
+        register_in(fx, host, Some("workers"), max_agents).await;
     }
 
     /// An agent whose session ended with the host that ran it (a killed pool
@@ -1025,8 +1047,9 @@ mod tests {
             .collect()
     }
 
-    /// Registers a host of `pool` and marks it seen now.
-    async fn register_in(fx: &Fx, host: &str, pool: &str, max_agents: u32) {
+    /// Registers a host of `pool` and marks it seen now. `None` is a static
+    /// host, one that belongs to no pool.
+    async fn register_in(fx: &Fx, host: &str, pool: Option<&str>, max_agents: u32) {
         let info = HostInfo {
             name: name(host),
             harnesses: vec![Harness::ClaudeCode],
@@ -1037,7 +1060,7 @@ mod tests {
             ssh: None,
             tmux_socket: None,
             members: Default::default(),
-            pool: Some(pool.parse().unwrap()),
+            pool: pool.map(|p| p.parse().unwrap()),
             tags: vec!["vps".parse().unwrap()],
             bundles: Vec::new(),
             reserve_mem_mb: None,
@@ -1670,6 +1693,9 @@ mod tests {
         let record = prov.create(&provider_spec("e1")).await.unwrap();
         let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
         register(&fx, "e1", 2).await;
+        // A static host of the same hub keeps its record: the hub never made
+        // its box, so only the pool's delete may forget a record.
+        register_in(&fx, "h1", None, 2).await;
         let host = ElasticHost {
             name: name("e1"),
             pool: "workers".parse().unwrap(),
@@ -1709,6 +1735,45 @@ mod tests {
                 .is_empty(),
             "the host is deleted"
         );
+        // The box is gone, so its record goes with it: `borant hosts` must not
+        // name a host that the provider deleted.
+        assert!(
+            fx.hub
+                .store
+                .get::<HostInfo>(&keys::host(&name("e1")))
+                .await
+                .unwrap()
+                .is_none(),
+            "the record of the deleted host goes"
+        );
+        let hosts = fx
+            .hub
+            .handle(CtlRequest::Call {
+                actor: None,
+                key: None,
+                call: ToolCall::ListHosts,
+            })
+            .await
+            .into_result()
+            .unwrap();
+        let names: Vec<&str> = hosts
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["host"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["h1"], "`borant hosts` names no box that is gone");
+        // The live view drops the deleted host with its stats.
+        let mem = fx.hub.mem.lock().await;
+        assert!(
+            !mem.hosts_seen.contains_key(&name("e1")),
+            "the seen time of the deleted host goes"
+        );
+        assert!(
+            !mem.host_stats.contains_key(&name("e1")),
+            "the stats of the deleted host go"
+        );
+        drop(mem);
         // The bill of the finished host is on record.
         let spend = fx
             .hub
@@ -1858,8 +1923,8 @@ mod tests {
         slow.name = "slow".parse().unwrap();
         slow.idle_timeout = Duration::from_secs(20 * 60);
         let fx = hub_with(Some(elastic(vec![fast, slow], &prov)), prov.clone());
-        register_in(&fx, "f1", "fast", 2).await;
-        register_in(&fx, "s1", "slow", 2).await;
+        register_in(&fx, "f1", Some("fast"), 2).await;
+        register_in(&fx, "s1", Some("slow"), 2).await;
         // One agent on each host, each idle for six minutes: past the timeout
         // of the fast pool, not of the slow one.
         let six = NOW.minus(Duration::from_secs(6 * 60));

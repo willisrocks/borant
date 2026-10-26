@@ -326,7 +326,10 @@ keys, unplaced agents, and time to a list of actions. The hub runs it every
 5. To remove an idle host: set `draining` on `host.{name}`, then read the
    leases again. If a lease appeared, clear `draining`. Otherwise, stop the
    host if the pool has room under `keep_stopped` and the backend has
-   `StopMode::Stop`. Else delete it.
+   `StopMode::Stop`. Else delete it, and delete `host.{name}` with the
+   `elastic.*` key and the view entry, as `host remove` does, so
+   `borant hosts` names no box that is gone. A static host never takes this
+   path.
 6. Reconcile: compare `list(pool)` with the `elastic.*` keys. A host with no
    key (for example, after a hub crash during a create) gets a key in
    `Booting`. A key with no host goes away.
