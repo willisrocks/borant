@@ -24,6 +24,8 @@ use borant_core::rules::pool::{
 use borant_core::rules::schedule::{self, HostView};
 use borant_core::{AgentId, HostName, PoolName, Timestamp, keys};
 
+use crate::join::JoinToken;
+use crate::secrets::host_boot;
 use crate::{Hub, PendingMove};
 
 /// The `[elastic]`, `[provisioners]`, and `[[pools]]` sections of `hub.toml`,
@@ -101,6 +103,11 @@ impl Hub {
             self.execute(elastic, &mut pass, &caps, action, now).await?;
         }
         self.write_spend(&pass.spend, now).await?;
+        // A create that left no host behind leaves an unspent token, and the
+        // pool's `boot_timeout` bounds it.
+        if let Err(e) = self.reap_joins(now).await {
+            tracing::warn!("the join reap failed: {e}");
+        }
         // The drain and the park of a pool host queue events while they take
         // `mem`; publish them now that no lock is held.
         self.flush().await;
@@ -442,6 +449,8 @@ impl Hub {
                     .find(|h| h.name == host)
                     .map(|h| h.pool.clone());
                 self.store.delete(&keys::elastic(&host)).await?;
+                // A host that goes takes an unspent token with it.
+                self.store.delete(&keys::join(&host)).await?;
                 if let Some(pool) = pool {
                     let event = self
                         .event(now, Severity::Info, SwarmEventBody::ElasticDeleted { pool })
@@ -487,6 +496,9 @@ impl Hub {
             last_seen: now,
         };
         self.store.upsert(&key, &requested).await?;
+        // The boot values carry the vars of bundle `host-boot` and one join
+        // token. Both leave the hub in the user data of this create only.
+        let boot = self.boot_with_secrets(config, name, now).await;
         let spec = HostSpec {
             pool: pool.clone(),
             name: name.clone(),
@@ -496,7 +508,7 @@ impl Hub {
             // The adapter adds its ownership labels; these are the hub's.
             provider_labels: BTreeMap::new(),
             tags: config.tags.clone(),
-            boot: boot_values(config, name),
+            boot,
         };
         match provisioner.create(&spec).await {
             Ok(record) => {
@@ -521,13 +533,83 @@ impl Hub {
                 // No host, no key: the name is free for the next try, and the
                 // pool waits `create_backoff`.
                 self.store.delete(&key).await?;
+                // The token of an order that made no host goes too, so the
+                // KV holds no token longer than the order.
+                self.store.delete(&keys::join(name)).await?;
                 self.mem
                     .lock()
                     .await
                     .elastic_backoff
                     .insert(pool.clone(), now.plus(elastic.create_backoff));
                 self.note_refusal(pool, "create", &e).await;
+                // The error names the create, never the boot values.
                 tracing::warn!(pool = %pool, "create failed: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The boot values of a create: its name, pool, and tags, the vars of
+    /// bundle `host-boot`, and a join token when the hub has its secrets.
+    ///
+    /// A hub with no `[secrets]`, no ready bundle, or no entropy creates as
+    /// before, without a join. Nothing here logs a value or a token.
+    async fn boot_with_secrets(
+        &self,
+        config: &PoolConfig,
+        name: &HostName,
+        now: Timestamp,
+    ) -> BTreeMap<String, String> {
+        let mut boot = boot_values(config, name);
+        let Some(secrets) = &self.cfg.secrets else {
+            return boot;
+        };
+        if !secrets.joins() {
+            return boot;
+        }
+        match secrets.vars(&host_boot()).await {
+            Ok(vars) => boot.extend(vars),
+            Err(e) => {
+                tracing::warn!(
+                    pool = %config.name,
+                    %name,
+                    "the host-boot bundle did not resolve, so this create has no join: {e}"
+                );
+                return boot;
+            }
+        }
+        let Some(token) = crate::join::token() else {
+            tracing::warn!(%name, "no entropy for a join token, so this create has no join");
+            return boot;
+        };
+        let doc = JoinToken {
+            host: name.clone(),
+            digest: crate::join::digest(&token),
+            expires: now.plus(config.boot_timeout),
+        };
+        if let Err(e) = self.store.upsert(&keys::join(name), &doc).await {
+            tracing::warn!(%name, "the join key did not write, so this create has no join: {e}");
+            return boot;
+        }
+        // The token wins over a var of the bundle with the same name.
+        boot.insert("BORANT_JOIN".to_owned(), token);
+        boot
+    }
+
+    /// Deletes the join keys whose expiry passed, so a create that left no
+    /// host behind leaves no token behind either. The conditional delete
+    /// keeps a fresh token of a later create for the same name.
+    async fn reap_joins(&self, now: Timestamp) -> Result<(), ApiError> {
+        for doc in self.store.list::<JoinToken>(keys::JOIN_PREFIX).await? {
+            if doc.value.expires > now {
+                continue;
+            }
+            match self.store.delete_at(&doc.key, doc.revision).await {
+                Ok(()) => {
+                    tracing::debug!(host = %doc.value.host, "expired join key deleted");
+                }
+                Err(e) if e.code == borant_core::proto::ApiErrorCode::Conflict => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(())

@@ -79,12 +79,23 @@ impl Store {
     }
 
     pub async fn delete(&self, key: &str) -> Result<(), ApiError> {
+        self.delete_maybe(key, None).await
+    }
+
+    /// Deletes the key only when it is still at `revision`, so one of two
+    /// callers that read the same document wins and the other gets
+    /// `Conflict`. A missing key is not an error.
+    pub async fn delete_at(&self, key: &str, revision: u64) -> Result<(), ApiError> {
+        self.delete_maybe(key, Some(revision)).await
+    }
+
+    async fn delete_maybe(&self, key: &str, revision: Option<u64>) -> Result<(), ApiError> {
         // A key the backend cannot hold has nothing to delete.
         if !borant_core::keys::valid_key(key) {
             tracing::debug!(key = %key, "skipping a delete of a key the store refuses");
             return Ok(());
         }
-        match self.0.delete(key, None).await {
+        match self.0.delete(key, revision).await {
             Ok(()) => Ok(()),
             Err(e) if e.is(PortErrorKind::NotFound) => Ok(()),
             Err(e) => Err(e.into()),

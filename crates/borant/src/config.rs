@@ -26,7 +26,7 @@ use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
-use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig};
+use borant_hub::{ChangeWatch, ElasticConfig, HubSecretConfig, HttpConfig};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -285,7 +285,8 @@ pub struct HubFile {
     pub http: HttpConfig,
 }
 
-/// `[secrets]` of `hub.toml`. Phase 1 holds the member rules only.
+/// `[secrets]` of `hub.toml`: the member rules, and the stores and bundles
+/// that the hub resolves for a pool host that it creates.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HubSecretsFile {
@@ -293,6 +294,34 @@ pub struct HubSecretsFile {
     /// and how often one agent may restart on a new member in an hour.
     #[serde(default)]
     pub members: MemberRules,
+    /// `[secrets.stores.<name>]`, the same schema as `host.toml`.
+    #[serde(default)]
+    pub stores: BTreeMap<String, StoreConfig>,
+    /// `[secrets.bundles.<name>]`, the same schema as `host.toml`. The hub
+    /// resolves only `host-boot` and `host-join`.
+    #[serde(default)]
+    pub bundles: BTreeMap<BundleName, BundleFile>,
+}
+
+impl HubSecretsFile {
+    /// The section ready to open, or `None` when the hub names no store and
+    /// no bundle.
+    pub fn config(&self) -> Option<HubSecretConfig> {
+        if self.stores.is_empty() && self.bundles.is_empty() {
+            return None;
+        }
+        Some(HubSecretConfig {
+            stores: self.stores.clone(),
+            bundles: self
+                .bundles
+                .iter()
+                .map(|(name, file)| (name.clone(), file.clone().bundle(name.clone())))
+                .collect(),
+            // The exec plugin of a store takes its credential from the
+            // service manager, as a host's does.
+            credentials_dir: env("CREDENTIALS_DIRECTORY").map(PathBuf::from),
+        })
+    }
 }
 
 /// `[elastic]` of `hub.toml`. Phase 4 has no `keep_stopped` and no
