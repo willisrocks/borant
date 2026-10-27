@@ -2,6 +2,7 @@
 // navigation and buttons, and a board or task source that fails.
 import { expect, mock, test } from 'claude-code/testing'
 import board from '../fixtures/board.js'
+import { tasks as fixtureTasks } from '../fixtures/tasks.js'
 
 const SESSION = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 
@@ -490,5 +491,52 @@ test('the help lists every key', async ($, on) => {
   ]) {
     expect(await ui.find({ type: 'Text', text })).toBeDefined()
   }
+  await ui.unmount()
+})
+
+test('a channel is read once, and again on the tick only while its view is open', async ($, on) => {
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'cli' })
+  const clock = mock.clock(on)
+  const reads: string[] = []
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.focus', () => ({ value: {} }))
+  on('ui.scroll', () => ({ value: {} }))
+  on('ui.close', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) {
+      reads.push(argv[2])
+      return { value: { exitCode: 0, stdout: JSON.stringify((fixtureTasks as Record<string, unknown>)['personal-borant']), stderr: '' } }
+    }
+    return { value: { exitCode: 0, stdout: JSON.stringify(board), stderr: '' } }
+  })
+
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-projects' })
+  // The borant project names one channel: personal-borant.
+  await ui.press({ key: 'row-2' })
+  await ui.press({ key: 'row-2' })
+  expect(reads).toEqual(['personal-borant'])
+  // Its epic lives in the same channel, so the cache answers.
+  await ui.press({ key: 'row-1' })
+  await ui.press({ key: 'row-1' })
+  expect(reads).toEqual(['personal-borant'])
+
+  // The 15 s tick reads the open view's channel again.
+  await clock.advance(15000)
+  expect(reads).toEqual(['personal-borant', 'personal-borant'])
+
+  // Closed, the tick reads nothing more.
+  await ui.press({ key: 'nav-back' })
+  await ui.press({ key: 'nav-back' })
+  await ui.press({ key: 'nav-back' })
+  await clock.advance(15000)
+  expect(reads).toEqual(['personal-borant', 'personal-borant'])
   await ui.unmount()
 })
