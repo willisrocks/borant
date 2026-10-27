@@ -148,6 +148,24 @@ The plugin registers the session, logs events, takes checkpoints after tool
 calls, and adds the `borant` MCP tools. An `asyncRewake` hook on `Stop` waits
 for messages and wakes an idle session.
 
+### The chief-of-staff board
+
+A session that starts with `BORANT_ROLE=chief` also draws the board: a band
+above the prompt with what needs the person and one row per project, a pane
+with the tabs Needs you and Projects (`/cos pane`, or `[1]` and `[2]` and up
+while the prompt is empty), a toast when a new item needs the person, and
+`/cos` for the digest as text, with `/cos <project>` for one project. Every
+other session registers no timer, no command, and draws nothing.
+
+The band reads `borant board --json`. For a session without a hub, set
+`BORANT_COS_BOARD=fixture` and it draws the fixture under
+`integrations/claude-code/mod/fixtures` instead; when the read fails it shows
+`board unavailable` quietly. The Done and Ask orchestrator buttons in the pane
+submit a prompt to the chief session and call nothing else.
+
+To pick up a new version, run `claude plugin update borant`, then
+`/reload-plugins` in a session that is already open.
+
 ## Connect Pi and omp
 
 Link the extension into both extension folders:
