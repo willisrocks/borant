@@ -986,8 +986,8 @@ impl Hub {
         // The hub never replaces a pinned agent whose session may still run.
         // A dead session holds nothing, so the agent comes back on the host
         // that held it, never on another one.
-        let pinned_recovery = agent.pinned
-            && pinned_session_dead(mem, &agent, &doc.value, now, &self.cfg.lease);
+        let pinned_recovery =
+            agent.pinned && pinned_session_dead(mem, &agent, &doc.value, now, &self.cfg.lease);
         if agent.pinned
             && !pinned_recovery
             && !matches!(doc.value.state, LeaseState::Released { .. })

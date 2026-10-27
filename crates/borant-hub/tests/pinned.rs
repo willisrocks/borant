@@ -5,7 +5,9 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{Agent, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus};
+use borant_core::model::{
+    Agent, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
+};
 use borant_core::ports::StateStore;
 use borant_core::proto::{
     CtlRequest, MoveSelector, MoveTarget, PauseSelector, RegisterSession, ToolCall,
@@ -507,7 +509,10 @@ async fn pinned_dead_session_registers_on_its_own_host_only() {
 
     assert!(err.message.contains("pinned"), "{err}");
     assert!(
-        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        matches!(
+            lease(&fx, &who.agent).await.state,
+            LeaseState::Expired { .. }
+        ),
         "another host takes no session of a pinned agent"
     );
 }
@@ -567,7 +572,10 @@ async fn pinned_dead_agent_is_not_placed_on_another_host() {
     fx.hub.tick().await.unwrap();
 
     assert!(
-        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        matches!(
+            lease(&fx, &who.agent).await.state,
+            LeaseState::Expired { .. }
+        ),
         "the agent waits for the host that held it"
     );
     assert!(next_cmd(&mut h2).await.is_none(), "never on another host");
@@ -596,7 +604,10 @@ async fn paused_pinned_agent_is_not_relaunched() {
     fx.hub.tick().await.unwrap();
 
     assert!(
-        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        matches!(
+            lease(&fx, &who.agent).await.state,
+            LeaseState::Expired { .. }
+        ),
         "a paused agent is not placed"
     );
     while let Some(cmd) = next_cmd(&mut cmds).await {
