@@ -2,8 +2,8 @@
 
 `borant.ts` connects a Pi or omp session to the Borant host daemon. It
 registers the session, reports turn events, wakes the agent when a message
-arrives, and adds the Borant tools (`send`, `task_*`, `channel_*`, `spawn`,
-and others).
+arrives, and adds the Borant tools (`send`, `task_*`, `channel_*`, `board`,
+`spawn`, and others).
 
 It needs a running Borant host daemon. The extension finds it at
 `$BORANT_HOME/host.sock` (default `~/.borant/host.sock`). If there is no

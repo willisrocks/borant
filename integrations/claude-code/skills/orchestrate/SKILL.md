@@ -26,6 +26,12 @@ general plan gets wrong.
 | `spawn` takes `harness` and `model`. The model reaches the harness as `--model`. If placement must use another harness, the hub drops the model. | Always set both, as a pair the user approved: for example cheap workers on `omp` with a cheap model, hard work on `claude-code`. Ask the user before you move work to a more expensive pair, unless they gave standing permission. |
 | `spawn` takes `host`. | A helper for your own steps (rebases, release notes, releases) runs as `claude-code` on your own host. Brief it like a worker, plus the permissions the user granted for those steps. |
 | `task_list(ready_only: true)` returns open tasks whose `blocked_by` tasks are all closed. | Close a task only when its work is on the base branch, so the tasks after it see real code. |
+| A saga's gate holds every claim and spawn in the channel until it closes as `done`; before that the hub refuses both with `saga_not_approved`, and `task_list(ready_only)` returns nothing. | Create the epics, set the gate to `needs_human`, and end the turn. Only a person or a role with `approves = true` approves it. |
+| An epic is a task of kind `epic` that holds tasks; it is never claimed, no spawn binds to it, and the board derives its status from its children. | Create every epic's tasks with `parent` set to the epic, and spawn only for plain tasks. |
+| A task is ready only when its own `blocked_by` and the `blocked_by` of each parent are closed, so an epic blocked by another epic holds back every child of it. | Set `blocked_by` between epics for order, and create every task before the first spawn. |
+| A spawn bound to a task starts on the `branch` property of the task's epic, if the epic has one; otherwise on the channel branch. The branch must be on `origin`. | Keep the epic's `branch` at the top branch of its stack, and push that branch before you spawn. |
+| `gh stack` keeps its metadata in the local clone, so only you run it, in your own clone; the host of an orchestrator needs the `gh-stack` extension of the GitHub CLI. | Run `gh stack` yourself; workers push a branch and open a PR, and never run it. |
+| `channel_close` closes a channel, only for its owner or a person, and only when every task of it is closed; a closed channel refuses `task_create`, `task_claim`, and `spawn`. | Close a saga when its last epic closes; close a wontfix saga's epics as `wontfix` first. |
 | The user is not an agent. `send` cannot reach them. | A question for the user: `task_update(status: "needs_human", attention_msg: ...)`, and say it in this session. |
 
 ## Set up
@@ -34,11 +40,66 @@ general plan gets wrong.
 2. Note the base branch and the focused test command of the repo. If the repo is not
    a Borant project yet, run `borant project add <name> --from-cwd` (`project_list`
    shows the projects).
-3. `channel_create` one channel for the epic, with `project` and the base `branch`.
+3. Size the goal: a plain task runs in the project channel; a standalone epic
+   needs `channel_create` with `kind: "epic"` and a `title`; a saga needs
+   `channel_create` with `kind: "saga"`, a `title`, and the `issue` link. An
+   epic channel's hub-created root task is the epic; a saga holds a gate and the
+   epics.
 4. Create every task before the first spawn. The body is the worker's brief: the
    acceptance criteria, the files in scope, and the test that proves it. Set
    `blocked_by` for order.
 5. Spawn one worker for each task that is ready now, with the brief below.
+
+## Sagas and epics
+
+A saga is one approval, then a set of epics that run without more gates.
+
+1. Create the saga: `channel_create` with `kind: "saga"`, `title`, `issue`,
+   `project`, and base `branch`. The hub also creates the gate task "Approve the
+   scope and the epics".
+2. Create the epics: `task_create` with `kind: "epic"` and a body that states the
+   scope of each; set `blocked_by` between epics for order.
+3. Set the gate to `needs_human` with `task_update`, and an `attention_msg` that
+   states the scope and lists the epics. End the turn.
+4. After the approval, create every epic's tasks with `parent` set to their epic,
+   then spawn for the ready tasks.
+5. When the last epic closes, `channel_close` the saga. If the gate closes as
+   `wontfix`, close the epics as `wontfix`, then `channel_close`.
+
+## Epic stacks
+
+The PRs of one epic's tasks form one linear stack on the base branch. The tasks
+are a DAG, so acceptance is the order.
+
+1. One owner of the stack: `gh stack` keeps its metadata in the local clone, so
+   only you run it, in your own clone, and your host needs the `gh-stack`
+   extension of the GitHub CLI. Workers push a branch and open a PR.
+2. Start: when an epic becomes ready, set the epic task's `branch` property to
+   the base branch. Run no `gh stack` yet: `gh stack init --base <base>` with no
+   branch names fails without a terminal ("interactive input required; provide
+   branch names as arguments"), so the stack starts on the first accepted PR.
+3. Accept the first PR: on a worker's "ready", review it, `git fetch origin
+   <branch>:<branch>`, then `gh stack init --base <base> <branch>`, which adopts
+   the pushed branch as the stack. Then `gh stack rebase` and `gh stack submit
+   --auto`. `submit` retargets the PR to the branch below it and links the stack;
+   new PRs it creates are drafts unless `--open`, and the worker's PR already
+   exists so it is retargeted. Set the epic's `branch` and `pr_url` to the new
+   top, and close the task.
+4. Accept each later PR: `git fetch origin <branch>:<branch>`, `gh stack top`
+   (the current branch must be the top of the stack, else `gh stack add` answers
+   "current branch is not part of a stack"), then `gh stack add <branch>`, which
+   prints "Adopted existing branch". Then `gh stack rebase` and `gh stack submit
+   --auto` as above; set `branch` and `pr_url` to the new top, and close the task.
+5. Order: a task starts only after its `blocked_by` closed and closes when its PR
+   is in the stack, so the acceptance order is a topological order of the DAG.
+6. Parallel tasks both start on the same top; the second accepted is rebased onto
+   the first by `gh stack rebase`. On a conflict, run `gh stack rebase --abort`
+   before you send the task back to its worker.
+7. A change lower in the stack, a review fix for example, gets `gh stack rebase`
+   and `gh stack submit --auto`, so every PR above it is rebased up.
+8. Merge only when every child of the epic is closed and the CI of every PR is
+   green: `gh stack merge --yes` up to the top PR lands the stack at once. Branch
+   protection still applies.
 
 ## Parallelize
 
@@ -181,6 +242,8 @@ the rest:
 
 | Thought | Do instead |
 |---|---|
+| "Spawn before the approval" | The hub refuses it. Set the gate to needs_human and end the turn. |
+| "Close the gate myself" | Only a person or the chief approves. |
 | "The worker should clone the repo first" | It is already in its clone. Use a project channel, or push your branch before the spawn. |
 | "Spawn returned placed: false, retry" | It is queued. Wait. |
 | "Tell the worker to stop when it is done" | Bind it to its task with `stop_on_close`, so the slot frees on close; otherwise `borant cancel <agent>`. |

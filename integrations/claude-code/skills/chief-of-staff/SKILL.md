@@ -30,6 +30,9 @@ them differently.
 | You wake when a task in your channels closes, gets stuck, or needs a human, and when anyone sends you a message. | End your turn while you wait. Do not poll `task_list` or `members` in a loop. |
 | A quiet orchestrator may be moving hosts. `members` shows `online` and the host. | Check `members` before you treat silence as a failure. At most one turn is lost. |
 | The person is in this session; orchestrators are not. | Orchestrators ask you. You answer, or ask the person here with a default. |
+| A role with `approves = true` in `hub.toml` approves saga gates. When a saga gate goes `needs_human`, the hub sends a direct message to every agent of the collection whose role approves. | The gate is yours to approve only on the person's word. Close it as `done` with their words, or as `wontfix` when they say no. |
+| The gate is a task of the saga channel, owned by its orchestrator, and the orchestrator cannot close it as `done` unless its role has `approves = true`. | Never let an orchestrator approve its own scope. You bring the gate to the person. |
+| `board` reads the board of the collection: projects, sagas, epics, and the questions that wait for a person. It is computed and stores nothing. | Answer status questions from `board`, not from repos, CI, logs, or `borant status`. |
 
 ## Delegate
 
@@ -45,8 +48,8 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
   Claude Code Agent tool) that returns only the conclusion. Any step that reads files,
   logs, git history, `gh` output, or `borant status --json` goes to a subagent.
 - Call single Borant tools directly: the MCP tools `send`, `members`, `spawn`,
-  `channel_create`, `channel_join`, `channel_transfer`, and the `borant cancel` CLI
-  command. Do not route messages to orchestrators or spawns through a subagent.
+  `channel_create`, `channel_join`, `channel_transfer`, `board`, and the `borant cancel`
+  CLI command. Do not route messages to orchestrators or spawns through a subagent.
 
 ## Set up
 
@@ -64,6 +67,20 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
    (`channel_create` with the project, its base `branch`, and the
    `<collection>-<project>` name), join it, then spawn one orchestrator with the brief
    below.
+
+## Size the goal and approve sagas
+
+1. Map a new goal to a project and a size, and tell the orchestrator: a plain task in
+   the project channel, a standalone epic, or a saga.
+2. A saga gate is the main `needs_human` case. The hub sends you a direct message when
+   a gate goes `needs_human`.
+3. Show the person the title, the scope, and the epics, with a suggested answer. Never
+   guess.
+4. On their yes: `task_close` on the gate with `reason: "done"` and the person's words
+   as the `message`. On a no: `reason: "wontfix"`.
+5. After a `wontfix`, the orchestrator closes the epics as `wontfix` and then calls
+   `channel_close`; do not close the saga channel yourself.
+6. Answer status questions from `board`.
 
 ## Orchestrator brief
 
@@ -92,8 +109,10 @@ change to CI, secrets, releases, or infrastructure.
   the options, and your suggested default, then relay the answer as a direct message.
 - **A task is stuck:** read `attention_msg`. Suggest a rewrite, a split, or a stronger
   role, and tell the orchestrator. After two failed tries, bring it to the person.
-- **A task needs a human - your main duty:** read its `attention_msg`. If the
-  person's standing permissions already answer it, answer the orchestrator with `send`
+- **A task needs a human - your main duty:** read its `attention_msg`. A saga gate is
+  the main case: the hub messages you when a gate goes `needs_human`, and you approve
+  it with the person here (see "Size the goal and approve sagas"). If the person's
+  standing permissions already answer it, answer the orchestrator with `send`
   and `task_update(status: "open")`, naming the permission you used. Otherwise bring
   it to the person in this session with the background, the options, and a suggested
   default, then relay the answer as a direct message and set the task back to `open`.
@@ -101,9 +120,10 @@ change to CI, secrets, releases, or infrastructure.
 - **An orchestrator goes quiet:** `members` for `online` and the host. If it is
   moving, wait. If it is gone, spawn one replacement for the project, with the same
   goal and the tasks that are still open.
-- **The person asks for something new:** map it to projects of the collection, create
-  the tasks' channels if needed, and send the goal to the orchestrator of each
-  project. Spawn only for a project that has no orchestrator.
+- **The person asks for something new:** map it to projects of the collection, name
+  the size (plain task, standalone epic, or saga), create the tasks' channels if
+  needed, and send the goal to the orchestrator of each project. Spawn only for a
+  project that has no orchestrator.
 
 ## Role rules
 
