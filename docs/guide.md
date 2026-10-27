@@ -157,6 +157,20 @@ while the prompt is empty), a toast when a new item needs the person, and
 `/cos` for the digest as text, with `/cos <project>` for one project. Every
 other session registers no timer, no command, and draws nothing.
 
+The band's title row carries a dim hint of the keys and a `[ ? ]` button. The
+help view, a third tab beside Needs you and Projects, opens from that button,
+from a `?` typed on its own at the prompt (Enter then opens it, and no turn
+runs), and from `/cos help`, which prints the same text in the transcript. The
+keys are the real bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json`
+can change:
+
+|Key|What it does|
+|---|---|
+|`1`–`9`|open the band's rows: `1` is what needs you, then one per project|
+|Ctrl+X Tab|focus the band, then each pane, then back to the prompt|
+|Ctrl+X Ctrl+A|collapse the band to one row, and expand it again|
+|Esc|return to the prompt, or close the pane|
+
 The band reads `borant board --json`. For a session without a hub, set
 `BORANT_COS_BOARD=fixture` and it draws the fixture under
 `integrations/claude-code/mod/fixtures` instead; when the read fails it shows

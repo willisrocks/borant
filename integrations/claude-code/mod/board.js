@@ -231,15 +231,74 @@ export function badgeStyle(project, index) {
   return index % 2 === 0 ? 'badgeBlue' : 'badgeMagenta'
 }
 
-function ruleCell(label, right, width) {
-  const used = Array.from(label).length + Array.from(right).length + 4
+/** The digits that open rows, as the band hints them: `1`, `1-3`, or `` when
+ * no row is there. Rows are the needs-you row, then one per project. */
+export function digitRange(rows) {
+  const n = Math.max(0, Number(rows) || 0)
+  if (n === 0) return ''
+  return n === 1 ? '1' : '1-' + Math.min(9, n)
+}
+
+/** The dim hint in the band's title row: focus the band, the digits, help. */
+export function keyHint(rows) {
+  const digits = digitRange(rows)
+  return ['ctrl+x tab focus', digits ? digits + ' open' : null, '? help'].filter(Boolean).join(' \u00b7 ')
+}
+
+/**
+ * The help view as plain text: every key and command of the board. The pane's
+ * Help tab and `/cos help` draw these lines, so they always agree.
+ */
+export function helpLines(options = {}) {
+  const digits = digitRange(options.rows) || '1'
+  const row = (key, what) => '  ' + pad(key, 17) + what
   return [
-    text(RULE + RULE + ' ', 'faint'),
-    text(label, 'bold'),
-    text(' ' + RULE.repeat(Math.max(0, width - used)), 'faint'),
-    text(right, 'dim'),
-    text(' ' + RULE + RULE, 'faint'),
+    'keys',
+    row(digits, (digits === '1' ? '1 opens a row' : digits + ' open a row') + ': 1 needs you, then one per project'),
+    row('ctrl+x tab', 'focus the band, then each pane, then the prompt'),
+    row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
+    row('esc', 'back to the prompt, or close the pane'),
+    row('?', 'this help, or the [ ? ] button in the band'),
+    '',
+    'commands',
+    row('/cos', 'the board as text'),
+    row('/cos <project>', 'one project'),
+    row('/cos pane', 'open the pane'),
+    row('/cos help', 'this help'),
+    '',
+    'buttons',
+    row('Done', 'submits "Chris marked done: <item>" to the chief'),
+    row('Ask orchestrator', 'submits a question about <item> to the chief'),
+    row('', 'neither button calls the hub'),
   ]
+}
+
+/** The rows of the pane's Help tab. */
+export function paneHelpRows(options = {}) {
+  const width = Math.max(20, options.width || 60)
+  return helpLines(options).map((line) => fit([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], width))
+}
+
+/** The title row of the band: its name, the key hint, and the help button. */
+function ruleCell(label, right, width, hint = '') {
+  const help = { text: '[ ? ]', style: 'button', button: { key: 'help', label: '?', kind: 'help' } }
+  const build = (tail) => {
+    const fixed =
+      3 + Array.from(label).length + 1 + Array.from(right).length + Array.from(tail).length + 1 + 5 + 3
+    const dashes = Math.max(0, width - fixed)
+    const out = [
+      text(RULE + RULE + ' ', 'faint'),
+      text(label, 'bold'),
+      text(' ' + RULE.repeat(dashes), 'faint'),
+      text(right, 'dim'),
+    ]
+    if (tail) out.push(text(tail, 'dim'))
+    out.push(text(' '), help, text(' ' + RULE + RULE, 'faint'))
+    return { out, dashes }
+  }
+  // The hint goes before anything else, leaving the rule four cells to itself.
+  const full = build(hint ? ' ' + hint : '')
+  return hint && full.dashes < 4 ? build('').out : full.out
 }
 
 /** The row of the band that shows what waits on the person. */
@@ -358,7 +417,11 @@ export function bandRows(board, options = {}) {
   const projects = allProjects(board)
   const narrow = width < 110
   const plural = projects.length === 1 ? 'project' : 'projects'
-  const rows = [fit(ruleCell('chief of staff', ' ' + projects.length + ' ' + plural + ' \u00b7 updated ' + updated + ' ', width), width)]
+  const right = ' ' + projects.length + ' ' + plural + ' \u00b7 updated ' + updated + ' '
+  // The band numbers one row for what needs you, then one row per project.
+  const rowCount = (questions.length ? 1 : 0) + projects.length
+  const hint = narrow ? '' : keyHint(rowCount)
+  const rows = [fit(ruleCell('chief of staff', right, width, hint), width)]
 
   if (questions.length) rows.push(needsRow(questions, width, narrow, 1))
   const base = questions.length ? 2 : 1
@@ -468,7 +531,9 @@ export function paneTabs(tab, questions) {
     },
     text('  '),
     { text: '[ Projects ]', style: 'button', width: 12, button: { key: 'tab-projects', label: 'Projects', kind: 'tab-projects' } },
-    text(tab === 'needs' ? '   needs you' : '   projects', 'dim'),
+    text('  '),
+    { text: '[ Help ]', style: 'button', width: 8, button: { key: 'tab-help', label: 'Help', kind: 'tab-help' } },
+    text(tab === 'needs' ? '   needs you' : tab === 'projects' ? '   projects' : '   help', 'dim'),
   ]
 }
 
