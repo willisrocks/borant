@@ -239,15 +239,20 @@ impl Hub {
             return Ok(false);
         }
         // A pinned agent is never replaced while its session may still run.
-        // Only a clean end (a released lease) lets the hub place it again.
+        // Only a clean end (a released lease) or a dead session on its own
+        // host lets the hub place it again.
         if agent.pinned {
             let key = keys::lease_agent(&agent.id);
-            let released = self
-                .store
-                .get::<Lease>(&key)
-                .await?
+            let lease = self.store.get::<Lease>(&key).await?;
+            let released = lease
+                .as_ref()
                 .is_some_and(|d| matches!(d.value.state, LeaseState::Released { .. }));
-            if !released {
+            let recovery = reason == MoveReason::Takeover
+                && target.host == agent.host
+                && lease.as_ref().is_some_and(|d| {
+                    crate::leases::pinned_session_dead(mem, agent, &d.value, now, &self.cfg.lease)
+                });
+            if !released && !recovery {
                 tracing::info!(agent = %agent.id, "placement skipped: the agent is pinned");
                 return Ok(false);
             }

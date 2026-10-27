@@ -6,19 +6,19 @@ use borant_core::model::{
     Task, TaskEventKind, TaskStatus,
 };
 use borant_core::proto::{
-    ApiError, ApiErrorCode, HeartbeatReply, RegisterSession, Registered, RenewedLease,
+    ApiError, ApiErrorCode, HeartbeatReply, MoveTarget, RegisterSession, Registered, RenewedLease,
     SessionLeaseRef,
 };
 use borant_core::rules::roles::OnePer;
 use borant_core::rules::{lease, schedule, session_log, wake};
 use borant_core::{
     AgentId, ChannelName, CollectionName, FencingToken, HostName, ProjectName, RoleName, SessionId,
-    keys,
+    Timestamp, keys,
 };
 use serde_json::{Value, json};
 
 use crate::store::Doc;
-use crate::{Hub, IdleReport, Memory, PendingMove};
+use crate::{HostSessions, Hub, IdleReport, Memory, PendingMove};
 
 /// How often the hub reads the pending messages of an idle expired agent.
 const WAKE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -39,6 +39,38 @@ fn letters() -> String {
             c
         })
         .collect()
+}
+
+/// True when the session of a pinned `agent` is dead, so it holds nothing:
+/// its pinned host sent a heartbeat after the lease expired that leaves the
+/// session out, or no session held the agent for the claim timeout. A held
+/// lease, a reservation, and a session that its host still reports keep the
+/// agent, and an agent with no host has no place to come back on.
+pub(crate) fn pinned_session_dead(
+    mem: &Memory,
+    agent: &Agent,
+    lease: &Lease,
+    now: Timestamp,
+    cfg: &lease::LeaseConfig,
+) -> bool {
+    let LeaseState::Expired {
+        since,
+        last_session: Some(last),
+    } = lease.state
+    else {
+        return false;
+    };
+    let Some(host) = &agent.host else {
+        return false;
+    };
+    // Nothing held the agent for the claim timeout, so no session can be
+    // waiting on the other side of a lost heartbeat.
+    if now.since(since) >= cfg.claim_timeout {
+        return true;
+    }
+    mem.host_sessions
+        .get(host)
+        .is_some_and(|h| h.at > since && !h.sessions.contains(&last))
 }
 
 impl Hub {
@@ -107,6 +139,13 @@ impl Hub {
     ) -> Result<HeartbeatReply, ApiError> {
         let now = self.now();
         mem.hosts_seen.insert(host.clone(), now);
+        mem.host_sessions.insert(
+            host.clone(),
+            HostSessions {
+                at: now,
+                sessions: sessions.iter().map(|s| s.session).collect(),
+            },
+        );
         for s in sessions {
             mem.idle.insert(
                 s.agent.clone(),
@@ -333,14 +372,19 @@ impl Hub {
             }
         }
         // A pinned agent keeps its session: no other session may take it while
-        // the lease is held or the last session may still run.
-        if existing.as_ref().is_some_and(|d| d.value.pinned) {
+        // the lease is held or the last session may still run. A dead session
+        // is not a session, so the host that held it may register a new one.
+        if let Some(d) = existing.as_ref().filter(|d| d.value.pinned) {
             let other = match lease_doc.as_ref().map(|d| &d.value.state) {
                 Some(LeaseState::Held { session, .. }) => Some(*session),
                 Some(LeaseState::Expired { last_session, .. }) => *last_session,
                 _ => None,
             };
-            if other.is_some_and(|s| s != r.session) {
+            let dead = d.value.host.as_ref() == Some(&r.host)
+                && lease_doc.as_ref().is_some_and(|l| {
+                    pinned_session_dead(mem, &d.value, &l.value, now, &self.cfg.lease)
+                });
+            if other.is_some_and(|s| s != r.session) && !dead {
                 return Err(ApiError::invalid(format!(
                     "agent {agent_id} is pinned; only its current session can register"
                 )));
@@ -940,7 +984,14 @@ impl Hub {
             }
         }
         // The hub never replaces a pinned agent whose session may still run.
-        if agent.pinned && !matches!(doc.value.state, LeaseState::Released { .. }) {
+        // A dead session holds nothing, so the agent comes back on the host
+        // that held it, never on another one.
+        let pinned_recovery = agent.pinned
+            && pinned_session_dead(mem, &agent, &doc.value, now, &self.cfg.lease);
+        if agent.pinned
+            && !pinned_recovery
+            && !matches!(doc.value.state, LeaseState::Released { .. })
+        {
             return Ok(());
         }
 
@@ -950,6 +1001,28 @@ impl Hub {
         let parked = matches!(doc.value.state, LeaseState::Released { parked: true, .. });
         let pending = mem.pending_moves.get(&agent_id).cloned();
         if quiet || now.since(since) < cfg.grace {
+            return Ok(());
+        }
+        if pinned_recovery {
+            let target = MoveTarget {
+                host: agent.host.clone(),
+                harness: None,
+            };
+            let placed = self
+                .place_agent(mem, &agent, MoveReason::Takeover, target.clone(), None)
+                .await?;
+            if !placed {
+                // The pinned host is not ready. The demand waits for it, so
+                // the agent goes up there and nowhere else.
+                mem.pending_moves.insert(
+                    agent_id.clone(),
+                    PendingMove {
+                        target,
+                        reason: MoveReason::Takeover,
+                        prompt: None,
+                    },
+                );
+            }
             return Ok(());
         }
         if let Some(p) = pending {
