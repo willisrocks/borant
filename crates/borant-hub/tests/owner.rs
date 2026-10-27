@@ -4,7 +4,7 @@
 mod common;
 
 use borant_core::events::{EventFilter, kind_of};
-use borant_core::model::{Channel, CloseReason, Harness, NewTask, Task};
+use borant_core::model::{Channel, ChannelKind, CloseReason, Harness, NewTask, Task};
 use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{Registered, ToolCall};
 use borant_core::{AgentId, ChannelName, keys};
@@ -31,6 +31,9 @@ async fn create_channel(fx: &Fx, who: &Registered, name: ChannelName) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
+    Agent, ChannelKind, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
 };
 use borant_core::ports::StateStore;
 use borant_core::proto::{
@@ -42,6 +42,9 @@ async fn pinned_agent(fx: &Fx) -> borant_core::proto::Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -175,6 +178,9 @@ async fn pinned_pending_move_is_not_placed() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

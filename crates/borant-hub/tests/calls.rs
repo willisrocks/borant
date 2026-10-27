@@ -2,7 +2,9 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{CloseReason, Envelope, Harness, NewTask, Target, Task, TaskStatus};
+use borant_core::model::{
+    ChannelKind, CloseReason, Envelope, Harness, NewTask, Target, Task, TaskStatus,
+};
 use borant_core::ports::MessageBus;
 use borant_core::proto::{ApiErrorCode, ToolCall};
 use borant_core::rules::schema;
@@ -66,6 +68,9 @@ async fn with_channel(fx: &Fx) -> borant_core::proto::Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -132,6 +137,9 @@ async fn channel_create_sets_owner_and_default_schema() {
                 schema: None,
                 project: None,
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await

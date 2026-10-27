@@ -7,7 +7,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use borant_core::model::{CloseReason, Envelope, Harness, NewTask, Task, TaskStatus};
+use borant_core::model::{ChannelKind, CloseReason, Envelope, Harness, NewTask, Task, TaskStatus};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Registered, ToolCall};
 use borant_core::{ChannelName, TaskId, keys};
@@ -29,6 +29,9 @@ async fn setup(fx: &Fx) -> (Registered, Registered, TaskId) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

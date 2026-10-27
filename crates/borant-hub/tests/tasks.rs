@@ -3,7 +3,7 @@
 mod common;
 
 use borant_core::ChannelName;
-use borant_core::model::{NewTask, Task};
+use borant_core::model::{ChannelKind, NewTask, Task};
 use borant_core::ports::StateStore;
 use borant_core::proto::{CtlRequest, ToolCall};
 use common::Fx;
@@ -23,6 +23,9 @@ async fn fixture() -> (Fx, borant_core::proto::Registered) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

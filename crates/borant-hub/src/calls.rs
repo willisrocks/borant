@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
-use borant_core::model::{Agent, Channel, ChannelKind, Lease, LeaseState, Member, Project, Sender};
+use borant_core::model::{
+    Agent, Channel, ChannelKind, Lease, LeaseState, Member, Project, Sender, Task, TaskEventKind,
+    TaskKind, TaskStatus,
+};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
-use borant_core::rules::{continuation, roles, schema};
-use borant_core::{AgentId, ChannelName, CollectionName, ProjectName, keys, subjects};
-use serde_json::{Value, json};
+use borant_core::rules::{continuation, roles, saga, schema};
+use borant_core::{AgentId, ChannelName, CollectionName, ProjectName, TaskId, keys, subjects};
+use serde_json::{Map, Value, json};
 
 use crate::store::Doc;
 use crate::{Hub, Memory};
@@ -183,11 +186,24 @@ impl Hub {
                 schema: s,
                 project,
                 branch,
+                kind,
+                title,
+                issue,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 to_value(
                     &self
-                        .channel_create(&me, mine.as_ref(), &name, s, project, branch)
+                        .channel_create(
+                            &me,
+                            mine.as_ref(),
+                            &name,
+                            s,
+                            project,
+                            branch,
+                            kind,
+                            title,
+                            issue,
+                        )
                         .await?,
                 )
             }
@@ -547,6 +563,7 @@ impl Hub {
             .ok_or_else(|| ApiError::not_found(format!("no project {name}")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn channel_create(
         &self,
         owner: &AgentId,
@@ -555,6 +572,9 @@ impl Hub {
         s: Option<Value>,
         project: Option<ProjectName>,
         branch: Option<String>,
+        kind: ChannelKind,
+        title: Option<String>,
+        issue: Option<String>,
     ) -> Result<Channel, ApiError> {
         let (collection, branch) = match &project {
             Some(p) => {
@@ -580,12 +600,68 @@ impl Hub {
                 )));
             }
         }
+        saga::check_channel(kind, project.as_ref())?;
         let schema = match s {
             Some(s) => {
                 schema::check_schema(&s)?;
                 s
             }
             None => schema::default_schema(),
+        };
+        // Choice C5: a saga and an epic channel take their name as the
+        // title; the root epic of an epic channel gets that title.
+        let title = match kind {
+            ChannelKind::Project => title,
+            ChannelKind::Saga | ChannelKind::Epic => {
+                Some(title.unwrap_or_else(|| name.as_str().to_owned()))
+            }
+        };
+        // The hub writes the gate of a saga or the root epic of an epic
+        // channel with the channel, and names it in the reply.
+        let new_task = match kind {
+            ChannelKind::Project => None,
+            ChannelKind::Saga => Some(Task {
+                id: TaskId::new(),
+                title: saga::GATE_TITLE.to_owned(),
+                body: String::new(),
+                status: TaskStatus::Open,
+                close_reason: None,
+                close_message: None,
+                attention_msg: None,
+                claimed_by: None,
+                deadline: None,
+                attempts: 0,
+                max_attempts: None,
+                blocked_by: Vec::new(),
+                parent: None,
+                kind: TaskKind::Task,
+                issue: None,
+                properties: Map::new(),
+                created: self.now(),
+                updated: self.now(),
+                create_key: None,
+            }),
+            ChannelKind::Epic => Some(Task {
+                id: TaskId::new(),
+                title: title.clone().unwrap_or_default(),
+                body: String::new(),
+                status: TaskStatus::Open,
+                close_reason: None,
+                close_message: None,
+                attention_msg: None,
+                claimed_by: None,
+                deadline: None,
+                attempts: 0,
+                max_attempts: None,
+                blocked_by: Vec::new(),
+                parent: None,
+                kind: TaskKind::Epic,
+                issue: issue.clone(),
+                properties: Map::new(),
+                created: self.now(),
+                updated: self.now(),
+                create_key: None,
+            }),
         };
         let ch = Channel {
             name: name.clone(),
@@ -597,11 +673,17 @@ impl Hub {
             branch,
             collection,
             paused: false,
-            kind: ChannelKind::Project,
-            title: None,
-            issue: None,
-            gate: None,
-            root: None,
+            kind,
+            title,
+            issue,
+            gate: new_task
+                .as_ref()
+                .filter(|_| kind == ChannelKind::Saga)
+                .map(|t| t.id),
+            root: new_task
+                .as_ref()
+                .filter(|_| kind == ChannelKind::Epic)
+                .map(|t| t.id),
         };
         self.store
             .put(&keys::channel(name), &ch, None)
@@ -612,7 +694,24 @@ impl Hub {
                 }
                 _ => e,
             })?;
+        // Review Focus 8: a failed write of the gate or the root leaves no
+        // half-made channel behind.
+        if let Some(task) = &new_task
+            && let Err(e) = self
+                .store
+                .put(&keys::task(name, &task.id), task, None)
+                .await
+        {
+            if let Err(cleanup) = self.store.delete(&keys::channel(name)).await {
+                tracing::warn!(%name, "the channel of a failed create stays: {cleanup}");
+            }
+            return Err(e);
+        }
         self.join(owner, name).await?;
+        if let Some(task) = &new_task {
+            self.task_event(name, &ch.owner, task, TaskEventKind::Created, "created")
+                .await?;
+        }
         Ok(ch)
     }
 

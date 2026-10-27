@@ -81,8 +81,8 @@ mod tests {
 
     use borant_core::events::{EventFilter, kind_of};
     use borant_core::model::{
-        Agent, Harness, HostInfo, MemberBundle, MemberState, MoveReason, NewTask, RepoInfo, Task,
-        TaskKind, TaskPatch, TaskStatus,
+        Agent, ChannelKind, Harness, HostInfo, MemberBundle, MemberState, MoveReason, NewTask,
+        RepoInfo, Task, TaskKind, TaskPatch, TaskStatus,
     };
     use borant_core::ports::{PortError, PortResult};
     use borant_core::proto::{
@@ -260,6 +260,9 @@ mod tests {
                     schema: None,
                     project: None,
                     branch: None,
+                    kind: ChannelKind::Project,
+                    title: None,
+                    issue: None,
                 },
             )
             .await

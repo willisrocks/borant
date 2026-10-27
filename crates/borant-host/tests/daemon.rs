@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{Harness, SessionEventBody, Target};
+use borant_core::model::{ChannelKind, Harness, SessionEventBody, Target};
 use borant_core::ports::{MessageBus, SessionStore};
 use borant_core::proto::{ApiErrorCode, LocalEvent, LocalRegister, LocalState, ToolCall};
 use borant_core::{AgentId, ChannelName, EventId, SessionId, Timestamp, subjects, testing};
@@ -126,6 +126,9 @@ async fn broadcast_is_delivered_on_next_event_not_wake() {
                 schema: None,
                 project: None,
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await
@@ -572,6 +575,9 @@ async fn turn_end_events_do_not_take_messages() {
                 schema: None,
                 project: None,
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await

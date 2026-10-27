@@ -5,7 +5,8 @@ mod common;
 use std::collections::BTreeMap;
 
 use borant_core::model::{
-    Agent, Channel, CloseReason, GitAuthor, Harness, HostInfo, NewTask, Project, Target, TaskPatch,
+    Agent, Channel, ChannelKind, CloseReason, GitAuthor, Harness, HostInfo, NewTask, Project,
+    Target, TaskPatch,
 };
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
@@ -43,6 +44,9 @@ async fn create_channel(
                 schema: None,
                 project: project.map(proj),
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await?;
@@ -210,6 +214,9 @@ async fn collections_launch_order_gets_the_bundles_and_git_author() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

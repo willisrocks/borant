@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borant_core::events::{EventFilter, SwarmEventBody};
-use borant_core::model::{Harness, HostInfo, HostStats, RepoInfo, SessionStats, Task, TaskStatus};
+use borant_core::model::{
+    ChannelKind, Harness, HostInfo, HostStats, RepoInfo, SessionStats, Task, TaskStatus,
+};
 use borant_core::ports::{EventLog, Notice, Notifier, PortResult, StateStore};
 use borant_core::proto::{
     Actor, ApiError, CtlRequest, RegisterSession, Registered, SessionLeaseRef, ToolCall,
@@ -184,6 +186,9 @@ async fn task(fx: &Fx, reg: &Registered) -> Task {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await;

@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use borant_core::events::EventFilter;
 use borant_core::model::{
-    Agent, Harness, HostStats, Lease, LeaseState, MoveReason, NewTask, SessionStats, Task,
-    TaskStatus,
+    Agent, ChannelKind, Harness, HostStats, Lease, LeaseState, MoveReason, NewTask, SessionStats,
+    Task, TaskStatus,
 };
 use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{
@@ -51,6 +51,9 @@ async fn setup(fx: &Fx, roles: &[(&str, RoleConfig)]) -> (Registered, Registered
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -274,6 +277,9 @@ async fn pause_of_a_sessionless_agent_persists_and_launches_nothing() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -659,6 +665,9 @@ async fn pause_channel_cap_queues_the_spawn() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

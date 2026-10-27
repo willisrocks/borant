@@ -9,7 +9,7 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{Harness, Lease, LeaseState, NewTask, Target, Task};
+use borant_core::model::{ChannelKind, Harness, Lease, LeaseState, NewTask, Target, Task};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{CtlRequest, HostCommand, Registered, ToolCall};
 use borant_core::{AgentId, ChannelName, Clock, Timestamp, keys, subjects, testing};
@@ -36,6 +36,9 @@ async fn setup(fx: &Fx) -> (Registered, Registered) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

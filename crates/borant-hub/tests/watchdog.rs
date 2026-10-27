@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use borant_core::events::{SwarmEvent, SwarmEventBody};
 use borant_core::model::{
-    Harness, HostInfo, NewTask, RepoInfo, Sender, SpawnRecord, SpawnSpec, SpawnState, Task,
+    ChannelKind, Harness, HostInfo, NewTask, RepoInfo, Sender, SpawnRecord, SpawnSpec, SpawnState,
+    Task,
 };
 use borant_core::ports::{EventLog, MessageBus, StateStore};
 use borant_core::proto::{
@@ -240,6 +241,9 @@ async fn setup(fx: &Fx) -> (Registered, Registered) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await;
