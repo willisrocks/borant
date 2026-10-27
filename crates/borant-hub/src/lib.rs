@@ -142,12 +142,24 @@ pub(crate) struct IdleReport {
     pub at: Timestamp,
 }
 
+/// The sessions of one heartbeat of a host. The host reports every session
+/// that is not fenced on each beat, so a session that a later beat leaves out
+/// is gone.
+#[derive(Debug, Clone)]
+pub(crate) struct HostSessions {
+    /// When the heartbeat arrived, on the hub clock.
+    pub at: Timestamp,
+    pub sessions: HashSet<SessionId>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Memory {
     /// The last heartbeat of each host, on the hub clock.
     pub hosts_seen: HashMap<HostName, Timestamp>,
     /// The idle signal of each agent, from its host's latest heartbeat.
     pub idle: HashMap<AgentId, IdleReport>,
+    /// The sessions of the latest heartbeat of each host.
+    pub host_sessions: HashMap<HostName, HostSessions>,
     /// When the hub last sent a park command, per agent.
     pub park_sent: HashMap<AgentId, Timestamp>,
     /// The sessions that the hub already told to stop, so it sends one.
