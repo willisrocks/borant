@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use borant_core::model::{
-    Agent, Channel, GitAuthor, Harness, HostInfo, MemberBundle, Project, RepoInfo,
+    Agent, Channel, ChannelKind, GitAuthor, Harness, HostInfo, MemberBundle, Project, RepoInfo,
 };
 use borant_core::proto::{LaunchOrder, RegisterSession};
 use borant_core::{
@@ -69,6 +69,11 @@ fn roles_old_json_of_every_record_parses() {
         branch: None,
         collection: Some("work".parse().unwrap()),
         paused: false,
+        kind: ChannelKind::Project,
+        title: None,
+        issue: None,
+        gate: None,
+        root: None,
     };
     let parsed: Channel = serde_json::from_value(without(&channel, "collection")).unwrap();
     assert_eq!(parsed.collection, None);
@@ -82,6 +87,7 @@ fn roles_old_json_of_every_record_parses() {
         setup: None,
         test: None,
         collection: Some("work".parse().unwrap()),
+        mirror_issues: None,
     };
     let parsed: Project = serde_json::from_value(without(&project, "collection")).unwrap();
     assert_eq!(parsed.collection, None);

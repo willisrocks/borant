@@ -21,6 +21,7 @@ fn project() -> Project {
         setup: Some("just bootstrap".into()),
         test: None,
         collection: None,
+        mirror_issues: None,
     }
 }
 

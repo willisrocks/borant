@@ -82,7 +82,7 @@ mod tests {
     use borant_core::events::{EventFilter, kind_of};
     use borant_core::model::{
         Agent, Harness, HostInfo, MemberBundle, MemberState, MoveReason, NewTask, RepoInfo, Task,
-        TaskPatch, TaskStatus,
+        TaskKind, TaskPatch, TaskStatus,
     };
     use borant_core::ports::{PortError, PortResult};
     use borant_core::proto::{
@@ -274,6 +274,8 @@ mod tests {
                             body: String::new(),
                             blocked_by: Vec::new(),
                             parent: None,
+                            kind: TaskKind::Task,
+                            issue: None,
                             properties: Default::default(),
                             deadline: None,
                             max_attempts: None,
@@ -409,6 +411,7 @@ mod tests {
                     attention_msg: None,
                     blocked_by: None,
                     parent: None,
+                    issue: None,
                     properties: None,
                     deadline: None,
                     max_attempts: None,

@@ -27,7 +27,9 @@ impl IntoResponse for ApiFail {
         let status = match &self.0.code {
             ApiErrorCode::Invalid => StatusCode::BAD_REQUEST,
             ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ApiErrorCode::Conflict | ApiErrorCode::StaleToken => StatusCode::CONFLICT,
+            ApiErrorCode::Conflict | ApiErrorCode::StaleToken | ApiErrorCode::SagaNotApproved => {
+                StatusCode::CONFLICT
+            }
             ApiErrorCode::Denied => StatusCode::FORBIDDEN,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiErrorCode::Internal | ApiErrorCode::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,

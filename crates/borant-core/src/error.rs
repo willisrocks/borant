@@ -1,4 +1,4 @@
-use crate::ids::{AgentId, HostName, TaskId};
+use crate::ids::{AgentId, ChannelName, HostName, TaskId};
 
 /// Errors from domain rules. Each variant maps to one API error code.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -33,6 +33,16 @@ pub enum CoreError {
     ContinuesWithoutTask,
     #[error("continues.max is at least 1: a worker with no continue has no policy")]
     ContinueLimit,
+    #[error("saga #{0} is not approved: close its gate task as done first")]
+    SagaNotApproved(ChannelName),
+    #[error("channel #{0} is closed")]
+    ChannelClosed(ChannelName),
+    #[error("task {0} is an epic: an epic holds tasks and is never work")]
+    EpicNotWork(TaskId),
+    #[error("invalid channel structure: {0}")]
+    Structure(String),
+    #[error("task {task} is blocked by {}", fmt_path(.by))]
+    Blocked { task: TaskId, by: Vec<TaskId> },
 }
 
 fn fmt_path(ids: &[TaskId]) -> String {

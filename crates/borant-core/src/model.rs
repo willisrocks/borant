@@ -450,6 +450,22 @@ pub struct Channel {
     /// channel it is.
     #[serde(default)]
     pub paused: bool,
+    /// The kind of the channel: a project channel, a saga, or a standalone
+    /// epic. Set at the create.
+    #[serde(default)]
+    pub kind: ChannelKind,
+    /// A display name, for example "Elastic compute". The name stays a slug.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The issue link of a saga.
+    #[serde(default)]
+    pub issue: Option<String>,
+    /// The approval task of a saga.
+    #[serde(default)]
+    pub gate: Option<TaskId>,
+    /// The epic task of a standalone epic channel.
+    #[serde(default)]
+    pub root: Option<TaskId>,
 }
 
 /// A named git repository that spawns clone.
@@ -470,6 +486,10 @@ pub struct Project {
     /// The collection that holds this project and its channels.
     #[serde(default)]
     pub collection: Option<CollectionName>,
+    /// Copy the objects of this project out to an issue tracker. Overrides
+    /// the collection setting; `None` takes the collection's.
+    #[serde(default)]
+    pub mirror_issues: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +517,30 @@ pub enum CloseReason {
     Superseded,
 }
 
+/// What a channel holds (spec: sagas and epics). Set at the create, never
+/// changed. A record from before the kinds parses as `project`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    /// The plain channel of a project, for plain tasks.
+    #[default]
+    Project,
+    /// One saga: a gate task and epics, all in one channel.
+    Saga,
+    /// A standalone epic with its own channel and one root task.
+    Epic,
+}
+
+/// What a task is (spec: sagas and epics). Set at the create, never changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Task,
+    /// A parent that holds tasks. An epic is never claimed.
+    Epic,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: TaskId,
@@ -522,6 +566,12 @@ pub struct Task {
     #[serde(default)]
     pub blocked_by: Vec<TaskId>,
     pub parent: Option<TaskId>,
+    /// What the task is: a plain task or an epic.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// The issue link of an epic or a task.
+    #[serde(default)]
+    pub issue: Option<String>,
     #[serde(default)]
     pub properties: Map<String, Value>,
     pub created: Timestamp,
@@ -754,6 +804,12 @@ pub struct NewTask {
     pub blocked_by: Vec<TaskId>,
     #[serde(default)]
     pub parent: Option<TaskId>,
+    /// What the task is: a plain task or an epic.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// The issue link of the new task.
+    #[serde(default)]
+    pub issue: Option<String>,
     #[serde(default)]
     pub properties: Map<String, Value>,
     /// When the task is due.
@@ -780,6 +836,9 @@ pub struct TaskPatch {
     pub blocked_by: Option<Vec<TaskId>>,
     #[serde(default)]
     pub parent: Option<TaskId>,
+    /// The issue link of the task.
+    #[serde(default)]
+    pub issue: Option<String>,
     #[serde(default)]
     pub properties: Option<Map<String, Value>>,
     #[serde(default)]
@@ -1142,6 +1201,8 @@ mod tests {
             max_attempts: None,
             blocked_by: Vec::new(),
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Map::new(),
             created: Timestamp(1),
             updated: Timestamp(2),
@@ -1169,6 +1230,11 @@ mod tests {
             branch: None,
             collection: None,
             paused: false,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            gate: None,
+            root: None,
         };
         let mut old = serde_json::to_value(&channel).unwrap();
         old.as_object_mut().unwrap().remove("paused");
@@ -1196,6 +1262,117 @@ mod tests {
         .unwrap();
         assert_eq!(ch.project, None);
         assert_eq!(ch.branch, None);
+    }
+
+    /// v0.16.0 wrote no kind, title, issue, gate, root, or mirror_issues.
+    /// Every new field is `serde(default)`, so the old records parse
+    /// unchanged, and the records with every new field set round-trip.
+    #[test]
+    fn sagas_old_records_parse_without_kinds() {
+        let channel: Channel = serde_json::from_value(serde_json::json!({
+            "name": "api",
+            "owner": "boss",
+            "schema": {},
+            "created": 1,
+            "closed": null,
+            "project": "web",
+            "branch": "main",
+            "collection": "work",
+            "paused": false,
+        }))
+        .unwrap();
+        assert_eq!(channel.kind, ChannelKind::Project);
+        assert_eq!(channel.title, None);
+        assert_eq!(channel.issue, None);
+        assert_eq!(channel.gate, None);
+        assert_eq!(channel.root, None);
+
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "01M5S3PATRKMGFD9C0HB1CS4ZK",
+            "title": "t",
+            "body": "",
+            "status": "open",
+            "close_reason": null,
+            "close_message": null,
+            "attention_msg": null,
+            "claimed_by": null,
+            "deadline": null,
+            "attempts": 0,
+            "max_attempts": null,
+            "blocked_by": [],
+            "parent": null,
+            "properties": {},
+            "created": 1,
+            "updated": 2,
+            "create_key": null,
+        }))
+        .unwrap();
+        assert_eq!(task.kind, TaskKind::Task);
+        assert_eq!(task.issue, None);
+
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "web",
+            "remote_url": "git://git/demo.git",
+            "default_branch": "main",
+            "checkpoint_remote": null,
+            "setup": null,
+            "test": null,
+            "collection": "work",
+        }))
+        .unwrap();
+        assert_eq!(project.mirror_issues, None);
+
+        let new: NewTask = serde_json::from_value(serde_json::json!({"title": "t"})).unwrap();
+        assert_eq!(new.kind, TaskKind::Task);
+        assert_eq!(new.issue, None);
+
+        let patch: TaskPatch =
+            serde_json::from_value(serde_json::json!({"status": "stuck"})).unwrap();
+        assert_eq!(patch.issue, None);
+
+        let channel = Channel {
+            kind: ChannelKind::Saga,
+            title: Some("Elastic compute".into()),
+            issue: Some("ENG-7".into()),
+            gate: Some(task.id),
+            root: Some(task.id),
+            ..channel
+        };
+        let back: Channel =
+            serde_json::from_value(serde_json::to_value(&channel).unwrap()).unwrap();
+        assert_eq!(back, channel);
+
+        let task = Task {
+            kind: TaskKind::Epic,
+            issue: Some("ENG-8".into()),
+            ..task
+        };
+        let back: Task = serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
+        assert_eq!(back, task);
+
+        let project = Project {
+            mirror_issues: Some(false),
+            ..project
+        };
+        let back: Project =
+            serde_json::from_value(serde_json::to_value(&project).unwrap()).unwrap();
+        assert_eq!(back, project);
+
+        let new = NewTask {
+            kind: TaskKind::Epic,
+            issue: Some("ENG-9".into()),
+            ..new
+        };
+        let back: NewTask = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
+
+        let patch = TaskPatch {
+            issue: Some("ENG-10".into()),
+            ..patch
+        };
+        let back: TaskPatch =
+            serde_json::from_value(serde_json::to_value(&patch).unwrap()).unwrap();
+        assert_eq!(back, patch);
     }
 
     #[test]

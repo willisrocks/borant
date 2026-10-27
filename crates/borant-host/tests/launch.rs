@@ -79,6 +79,7 @@ fn order(remote: &Path, setup: &str) -> LaunchOrder {
             setup: Some(setup.into()),
             test: None,
             collection: None,
+            mirror_issues: None,
         }),
         ..Default::default()
     }

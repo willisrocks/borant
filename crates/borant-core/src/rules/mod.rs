@@ -8,6 +8,7 @@ pub mod members;
 pub mod pool;
 pub mod redact;
 pub mod roles;
+pub mod saga;
 pub mod schedule;
 pub mod schedules;
 pub mod schema;

@@ -1047,6 +1047,34 @@ mod tests {
     }
 
     #[test]
+    fn hub_file_parses_saga_settings() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [roles.chief]
+            approves = true
+
+            [roles.worker]
+            spawns = []
+
+            [collections.work]
+            mirror_issues = true
+
+            [collections.personal]
+            "#,
+        )
+        .unwrap();
+        let chief = &f.roles[&"chief".parse().unwrap()];
+        assert!(chief.approves);
+        let worker = &f.roles[&"worker".parse().unwrap()];
+        assert!(!worker.approves, "the flag defaults to false");
+        assert!(f.collections[&"work".parse().unwrap()].mirror_issues);
+        assert!(
+            !f.collections[&"personal".parse().unwrap()].mirror_issues,
+            "the mirror defaults to off"
+        );
+    }
+
+    #[test]
     fn parses_host_file() {
         let f: HostFile = toml::from_str(
             r#"

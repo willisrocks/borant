@@ -61,6 +61,7 @@ async fn add_project(fx: &Fx, name: &str, collection: Option<&str>) {
                 setup: None,
                 test: None,
                 collection: collection.map(col),
+                mirror_issues: None,
             },
         },
     )
@@ -183,6 +184,7 @@ async fn collections_launch_order_gets_the_bundles_and_git_author() {
         CollectionConfig {
             bundles: vec!["github-work".parse().unwrap()],
             git_author: Some(author.clone()),
+            mirror_issues: false,
         },
     )]);
     let worker: RoleName = "worker".parse().unwrap();

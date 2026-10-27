@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use borant_core::model::{Agent, Channel, Lease, LeaseState, Member, Project, Sender};
+use borant_core::model::{Agent, Channel, ChannelKind, Lease, LeaseState, Member, Project, Sender};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
 use borant_core::rules::{continuation, roles, schema};
 use borant_core::{AgentId, ChannelName, CollectionName, ProjectName, keys, subjects};
@@ -597,6 +597,11 @@ impl Hub {
             branch,
             collection,
             paused: false,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            gate: None,
+            root: None,
         };
         self.store
             .put(&keys::channel(name), &ch, None)
