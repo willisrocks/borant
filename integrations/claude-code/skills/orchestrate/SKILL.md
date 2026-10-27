@@ -74,22 +74,30 @@ are a DAG, so acceptance is the order.
 1. One owner of the stack: `gh stack` keeps its metadata in the local clone, so
    only you run it, in your own clone, and your host needs the `gh-stack`
    extension of the GitHub CLI. Workers push a branch and open a PR.
-2. Start: when an epic is ready, `gh stack init --base <base>` starts its stack;
-   then set the epic task's `branch` property to the base branch.
-3. Accept: on a worker's "ready", review the PR, `gh stack add <branch>` to adopt
-   the pushed branch on top, then `gh stack rebase` and `gh stack submit --auto`.
-   `submit` retargets each PR to the branch below it and links the stack; new PRs
-   it creates are drafts unless `--open`, and the worker's PR already exists so it
-   is retargeted. Set the epic's `branch` and `pr_url` to the new top, and close
-   the task.
-4. Order: a task starts only after its `blocked_by` closed and closes when its PR
+2. Start: when an epic becomes ready, set the epic task's `branch` property to
+   the base branch. Run no `gh stack` yet: `gh stack init --base <base>` with no
+   branch names fails without a terminal ("interactive input required; provide
+   branch names as arguments"), so the stack starts on the first accepted PR.
+3. Accept the first PR: on a worker's "ready", review it, `git fetch origin
+   <branch>:<branch>`, then `gh stack init --base <base> <branch>`, which adopts
+   the pushed branch as the stack. Then `gh stack rebase` and `gh stack submit
+   --auto`. `submit` retargets the PR to the branch below it and links the stack;
+   new PRs it creates are drafts unless `--open`, and the worker's PR already
+   exists so it is retargeted. Set the epic's `branch` and `pr_url` to the new
+   top, and close the task.
+4. Accept each later PR: `git fetch origin <branch>:<branch>`, `gh stack top`
+   (the current branch must be the top of the stack, else `gh stack add` answers
+   "current branch is not part of a stack"), then `gh stack add <branch>`, which
+   prints "Adopted existing branch". Then `gh stack rebase` and `gh stack submit
+   --auto` as above; set `branch` and `pr_url` to the new top, and close the task.
+5. Order: a task starts only after its `blocked_by` closed and closes when its PR
    is in the stack, so the acceptance order is a topological order of the DAG.
-5. Parallel tasks both start on the same top; the second accepted is rebased onto
+6. Parallel tasks both start on the same top; the second accepted is rebased onto
    the first by `gh stack rebase`. On a conflict, run `gh stack rebase --abort`
    before you send the task back to its worker.
-6. A change lower in the stack, a review fix for example, gets `gh stack rebase`
+7. A change lower in the stack, a review fix for example, gets `gh stack rebase`
    and `gh stack submit --auto`, so every PR above it is rebased up.
-7. Merge only when every child of the epic is closed and the CI of every PR is
+8. Merge only when every child of the epic is closed and the CI of every PR is
    green: `gh stack merge --yes` up to the top PR lands the stack at once. Branch
    protection still applies.
 
