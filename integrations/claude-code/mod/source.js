@@ -2,8 +2,13 @@
 // the sagas spec); `fixture` uses the fixture module under mod/fixtures, for a
 // session without a hub. Every failure comes back as `{ board: null, reason }`,
 // so a session without borant draws "board unavailable" and never an error.
+//
+// The drill-in views also read one channel's tasks with `borant tasks
+// <channel>`: `readTasks` has the same never-throw shape, `{ tasks, reason }`,
+// and the fixture answers from mod/fixtures/tasks.js.
 
 import { board as fixtureBoard } from './fixtures/board.js'
+import { tasks as fixtureTasks } from './fixtures/tasks.js'
 
 /** `fixture` or `cli`, from BORANT_COS_BOARD. The default is `cli`. */
 export function sourceMode(value) {
@@ -44,5 +49,39 @@ export async function readBoard($, options = {}) {
     return parseBoard(run.stdout || '')
   } catch (error) {
     return { board: null, reason: reasonOf(error) }
+  }
+}
+
+/** Parse and check the task list of one channel: an array of Task records. */
+export function parseTasks(text) {
+  let value
+  try {
+    value = JSON.parse(text)
+  } catch (error) {
+    return { tasks: null, reason: 'not JSON: ' + reasonOf(error) }
+  }
+  if (!Array.isArray(value)) return { tasks: null, reason: 'not a task list' }
+  return { tasks: value, reason: null }
+}
+
+/**
+ * Read one channel's tasks with `borant tasks <channel>`. `options` is
+ * `{ mode }`, from the plugin's config, and the fixture answers from
+ * mod/fixtures/tasks.js. Never throws: a missing `borant`, an old one without
+ * the command, an unknown channel, a timeout, and a bad payload all come back
+ * as `{ tasks: null, reason }`, which the pane draws as `tasks unavailable`.
+ */
+export async function readTasks($, options = {}, channel) {
+  if (sourceMode(options.mode) === 'fixture') {
+    return { tasks: fixtureTasks[channel] || [], reason: null }
+  }
+  try {
+    const run = await $.process.run(['borant', 'tasks', String(channel)], { timeoutMs: 8000 })
+    if (!run || run.exitCode !== 0) {
+      return { tasks: null, reason: 'borant tasks exited ' + (run ? run.exitCode : '?') }
+    }
+    return parseTasks(run.stdout || '')
+  } catch (error) {
+    return { tasks: null, reason: reasonOf(error) }
   }
 }
