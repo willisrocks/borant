@@ -217,7 +217,7 @@ test('the pane has both tabs, and its buttons submit a prompt instead of calling
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
   await ui.press({ key: 'done-0' })
   expect(prompts).toEqual([
-    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant-hub-backup/01M5ZCS35Z2RWKFF0BCYQWJYW1)',
+    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant/01M5ZG00000000000000000015)',
   ])
 
   await ui.press({ key: 'tab-projects' })

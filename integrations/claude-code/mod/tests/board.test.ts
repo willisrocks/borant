@@ -17,24 +17,40 @@ import {
 
 const updated = '14:32'
 
+/** One project of the fixture, by name: the board lists projects in name order. */
+function projectOf(name: string) {
+  const found = allProjects(board).find((p) => p.project === name)
+  if (!found) throw new Error('no project ' + name)
+  return found
+}
+
 test('the board counts what the mockup shows', () => {
   expect(countNeedsYou(board)).toBe(2)
-  const [borant, boopmark] = allProjects(board)
-  const first = projectSummary(borant)
+  expect(allProjects(board).map((p) => p.project)).toEqual(['boopmark', 'borant'])
+  const first = projectSummary(projectOf('borant'))
   expect(first.saga).toBe('Elastic compute')
   expect(first.bar.text).toBe('████░░░░░░ 2/5')
   expect(first.running).toBe(0)
   expect(first.blocked).toBe(2)
-  expect(first.needs).toBe(1)
-  const second = projectSummary(boopmark)
+  expect(first.needs).toBe(0)
+  const second = projectSummary(projectOf('boopmark'))
   expect(second.saga).toBe('no saga')
   expect(second.bar.text).toBe('██████████ 1/1')
   expect(second.needs).toBe(0)
 })
 
 test('an epic is done, needs you, blocked, running, or waiting', () => {
-  const [borant] = allProjects(board)
-  expect(borant.sagas[0].epics.map(epicState)).toEqual(['done', 'done', 'needs', 'blocked', 'waiting'])
+  // Open epics first, then the closed ones, so the fixture shows them in this
+  // order; the mockup drew the closed ones first.
+  const epics = projectOf('borant').sagas[0].epics
+  expect(epics.map((e: { title: string }) => e.title)).toEqual([
+    'Hub backup to object storage',
+    'Delete borant-2',
+    'Hub move to borant-hub',
+    'Golden image',
+    'Hub join for pool boxes',
+  ])
+  expect(epics.map(epicState)).toEqual(['needs', 'blocked', 'waiting', 'done', 'done'])
   expect(epicState({ status: 'in_progress', counts: {} })).toBe('running')
   expect(epicState({ status: 'stuck', counts: {} })).toBe('needs')
   expect(epicState({ status: 'open', counts: {} })).toBe('waiting')
@@ -70,10 +86,13 @@ test('a gate comes first, then the oldest', () => {
     'Create Hetzner bucket borant-hub-backup + 1Password item',
     'Revoke old willisrocks gh token?',
   ])
-  // The gate wins even when a plain question is older.
+  // The gate wins even when a plain question is older. The fixture's own
+  // questions are not gates: an approved saga has none.
   const later = structuredClone(board)
+  later.collections[0].needs_you[0].gate = true
   later.collections[0].needs_you[0].since = 1793027400000
   expect(allQuestions(later)[0].title).toBe('Create Hetzner bucket borant-hub-backup + 1Password item')
+  expect(allQuestions(board)[0].gate).toBe(false)
 })
 
 test('the expanded band has the title rule, the needs-you row, and one row per project', () => {
@@ -87,19 +106,20 @@ test('the expanded band has the title rule, the needs-you row, and one row per p
   expect(rows[1]).toContain('borant')
   expect(rows[1]).toContain('+1 more')
   expect(rows[2]).toContain('[ 2 ]')
-  expect(rows[2]).toContain('Elastic compute')
-  expect(rows[2]).toContain('████░░░░░░ 2/5')
-  expect(rows[2]).toContain('2 blocked')
-  expect(rows[2]).toContain('1 needs you')
-  expect(rows[3]).toContain('no saga')
-  expect(rows[3]).toContain('1/1')
+  expect(rows[2]).toContain('no saga')
+  expect(rows[2]).toContain('1/1')
+  expect(rows[3]).toContain('[ 3 ]')
+  expect(rows[3]).toContain('Elastic compute')
+  expect(rows[3]).toContain('████░░░░░░ 2/5')
+  expect(rows[3]).toContain('2 blocked')
+  expect(rows[3]).toContain('0 needs you')
 })
 
 test('the band collapsed to one row is one condensed row', () => {
   const rows = bandRows(board, { width: 120, maxRows: 1, updated })
   expect(rows).toHaveLength(1)
   expect(rowText(rows[0]).trimEnd()).toBe(
-    'cos  [ 1 ] ▲ 2 need you  │   borant  2/5 ■ 2 blocked  │   boopmark  1/1 ✓ idle  │  14:32',
+    'cos  [ 1 ] ▲ 2 need you  │   boopmark  1/1 ✓ idle  │   borant  2/5 ■ 2 blocked  │  14:32',
   )
   expect(rowText(condensedRow(board, { width: 120, updated })).trimEnd()).toBe(rowText(rows[0]).trimEnd())
 })
@@ -121,10 +141,12 @@ test('every row fits the terminal at any width', () => {
 
 test('a narrow band drops the padded columns and the ten-cell bar', () => {
   const rows = bandRows(board, { width: 100, updated }).map(rowText)
-  expect(rows[2]).toContain('███░░░░░ 2/5')
-  expect(rows[2]).toContain('■ 2')
-  expect(rows[2]).toContain('▲ 1')
-  expect(rows[2]).not.toContain('running')
+  expect(rows[2]).toContain('1/1')
+  expect(rows[3]).toContain('███░░░░░ 2/5')
+  expect(rows[3]).toContain('■ 2')
+  // The ▲ is the state glyph of the current epic; the needs count is 0.
+  expect(rows[3]).not.toContain('▲ 0')
+  expect(rows[3]).not.toContain('running')
   expect(rows[1]).toContain('Needs you (2)')
 })
 
