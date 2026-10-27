@@ -180,8 +180,8 @@ bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json` can change:
 |`1`–`9`|open the band's rows: `1` is what needs you, then one per project|
 |Ctrl+X Tab|focus the band, then each pane, then back to the prompt|
 |Ctrl+X Ctrl+A|collapse the band to one row, and expand it again|
-|`↑` `↓`, `j` `k`|move the selection through the rows|
-|`←` `→`, `h` `l`|switch tabs; fold or unfold the selected node; `l` also opens a collapsed node or a leaf|
+|`j` `k`|move the selection through the rows|
+|`h` `l`|switch tabs; fold or unfold the selected node; `l` also opens a collapsed node or a leaf|
 |Enter|open the selected project, saga, epic, or task: a task opens its detail|
 |Esc|go back one level, and at the top close the pane|
 
@@ -190,9 +190,9 @@ second click (or a click on its `▸`) opens it. Drilling in keeps a breadcrumb 
 the pane title and in a dim line at the top of the pane, for example
 `borant › Elastic compute › Hub backup`. A task's detail shows its title,
 status, owner agent, blockers with their titles and states, its PR link, and the
-time it last changed. The arrow keys move the selection while the pane's
-drawing fits on screen; in a longer drawing they scroll it, and `j`/`k` still
-move the selection. Project, epic, and task views read the channel with
+time it last changed. On Claude Code 2.1.310 a pane's Up and Down arrows scroll
+the drawing, so `j` and `k` (or the footer's `↑` and `↓` buttons) move the
+selection. Project, epic, and task views read the channel with
 `borant tasks <channel>`; when that read fails the pane says `tasks unavailable`
 quietly. (The board itself names no channel for a project's plain tasks, so
 those appear only in the counts line unless the board names their channel.)

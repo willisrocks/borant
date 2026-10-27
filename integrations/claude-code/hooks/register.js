@@ -140,13 +140,13 @@ export function register(on) {
 
   // Esc (with closeOnEscape) and ctrl+x x raise this. Deeper than the root it
   // goes back a level and keeps the pane open; at the root it closes.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
+  on('ui.close', async ($, e, next) => {
     try {
-      if (isChief && e.origin && e.origin.kind === 'person' && path.length) {
+      if (isChief && e.id === PANE && e.origin && e.origin.kind === 'person' && path.length) {
         await back($)
-        return {}
+        return { deny: 'back one level' }
       }
-      paneOpen = false
+      if (e.id === PANE) paneOpen = false
     } catch {
       // Fall through: the pane closes.
     }
@@ -343,7 +343,7 @@ async function setTitle($) {
   const title = breadcrumb(path)
   if (title === paneTitle) return
   try {
-    await $.ui.open({ id: PANE, title })
+    await $.ui.open({ id: PANE, title, closeOnEscape: true })
     paneTitle = title
   } catch {
     // The title is cosmetic.
@@ -631,28 +631,32 @@ function paneBody($, e, width) {
     if (r.selectable) {
       const props = {
         key: r.key,
+        plain: true,
         children: r.segments.map((s) =>
-          Text({ children: [s.text], ...styleProps(s.style) }),
+          Text({ children: [s.text], wrap: 'truncate', ...styleProps(s.style) }),
         ),
         onPress: () => pressRow($, r),
       }
       if (selectionOf() === Number(String(r.key).slice(4))) props.autoFocus = true
       cells.push(Button(props))
     } else if (r.link) {
-      cells.push(Text({ children: [''], ...styleProps('dim') }))
+      for (const [j, s] of r.segments.entries()) {
+        cells.push(Text({ key: 'pane-row-' + i + '-' + j, children: [s.text], ...styleProps(s.style) }))
+      }
       cells.push(Link({ key: 'link-' + i, href: r.link.href, label: r.link.label }))
     } else {
       cells.push(
         Box({
           flexDirection: 'row',
           children: r.segments.map((s, j) =>
-            Text({ key: 'pane-row-' + i + '-' + j, children: [s.text], ...styleProps(s.style) }),
+            Text({ key: 'pane-row-' + i + '-' + j, children: [s.text], wrap: 'truncate', ...styleProps(s.style) }),
           ),
         }),
       )
     }
+    children.push(Box({ key: 'pane-line-' + i, flexDirection: 'row', children: cells }))
     if (r.buttons.length) {
-      cells.push(
+      children.push(
         Box({
           key: 'pane-buttons-' + i,
           flexDirection: 'row',
@@ -663,7 +667,6 @@ function paneBody($, e, width) {
         }),
       )
     }
-    children.push(Box({ key: 'pane-line-' + i, flexDirection: 'row', children: cells }))
   })
 
   children.push(Text({ key: 'pane-foot-blank', children: [' '] }))

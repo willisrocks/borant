@@ -30,19 +30,8 @@ import {
 /** The pane's tabs, in the order h and l cycle them. */
 export const TABS = ['needs', 'projects', 'help']
 
-export const TAB_LABEL = { needs: 'Needs you', projects: 'Projects', help: 'Help' }
-
 /** The first breadcrumb segment: the mod itself. */
 export const ROOT = 'borant'
-
-/** The pane's navigation keys, as the help view and the pane's footer show them. */
-export const NAV_KEYS = [
-  ['↑ ↓  j k', 'move the selection'],
-  ['← →  h l', 'switch tabs, or fold and unfold; l opens a leaf'],
-  ['enter', 'open the selected row'],
-  ['esc', 'back one level, then close the pane'],
-  ['tab', 'next control'],
-]
 
 const SEP = ' \u203a '
 const SELECTED = '\u258c '
@@ -211,7 +200,9 @@ function finish(rows, selection) {
       if (index === selection) segments = [text(SELECTED, 'select'), ...segments]
       index += 1
     }
-    return { ...r, segments: fit(segments, Math.max(1, r.width || 1)) }
+    // A link row draws its label and then the Link itself, not a padded cell.
+    const fitted = r.link ? segments : fit(segments, Math.max(1, r.width || 1))
+    return { ...r, segments: fitted }
   })
 }
 

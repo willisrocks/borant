@@ -278,7 +278,7 @@ test('the help view opens from the band button and /cos help', async ($, on) => 
   expect(answer.text).toContain('/cos help')
 })
 
-test('j, k, and the arrows move the selection in every view', async ($, on) => {
+test('j, k, and a focus move select the row in every view', async ($, on) => {
   chiefStubs(on)
   await $.session.start({ ...SESSION })
   await $.command.run({ command: 'cos', args: 'pane' })
@@ -301,7 +301,8 @@ test('j, k, and the arrows move the selection in every view', async ($, on) => {
   await ui.press({ key: 'nav-up' })
   expect(JSON.stringify(await ui.find({ key: 'row-0' })).includes('\u258c')).toBe(true)
 
-  // The engine's Down lands the ring on row-1, which is the selection.
+  // When the engine moves the ring (Tab, a click, an arrow where the surface
+  // grants one), its ui.focus names the row and the selection follows.
   await $.ui.focus({
     component: 'Pane',
     requestId: 'cos',
@@ -476,8 +477,9 @@ test('the help lists every key', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-help' })
   for (const text of [
-    /\u2191 \u2193  j k/,
-    /\u2190 \u2192  h l/,
+    /\u2191 \u2193/,
+    /j k/,
+    /h l/,
     /enter/,
     /esc/,
     /tab/,
