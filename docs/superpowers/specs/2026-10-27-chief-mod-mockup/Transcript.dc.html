@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Transcript rows and cos digest</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0d0e10}
+.t{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;line-height:18px;color:#d0d3d8;font-variant-ligatures:none}
+.row{white-space:pre;height:18px;overflow:hidden}
+.flex{display:flex}
+.fill{flex:1;overflow:hidden}
+.cell{display:inline-block;overflow:hidden;vertical-align:top;white-space:pre}
+.d{color:#8a8f98}.f{color:#4a4f57}.B{font-weight:700}.w{color:#ffffff}
+.r{color:#f07178}.g{color:#a3d977}.y{color:#f2c86b}.b{color:#6cb6ff}.m{color:#d595f0}.c{color:#5fd4d4}
+.cb{background:#6cb6ff;color:#0d0e10}.cm{background:#d595f0;color:#0d0e10}
+.k{font:inherit;background:none;border:0;padding:0;margin:0;color:inherit;cursor:pointer;line-height:inherit}
+.sel{background:#1c2633}
+.hdr{height:28px;box-sizing:border-box;padding:5px 16px;background:#17181b;border-bottom:1px solid #26282c;color:#8a8f98;font-size:12px}
+.term{flex:1;min-width:0;display:flex;flex-direction:column;border:1px solid #26282c;background:#0d0e10;overflow:hidden}
+.body{padding:12px 16px;display:flex;flex-direction:column}
+</style>
+</helmet>
+<div class="t" style="width: 1720px; height: 920px; box-sizing: border-box; background: #0d0e10; display: flex; gap: 24px;">
+
+  <div class="term">
+    <div class="hdr row" style="height: 28px;">Today · no mod · Borant reports arrive as full system-reminder blocks · 104 cols</div>
+    <div class="body">
+      <div class="row"><span class="d">&gt;</span> morning. status?</div>
+      <div class="row"> </div>
+      <div class="row d">  ⎿ &lt;system-reminder&gt;</div>
+      <div class="row d">    Borant message · channel chief-personal · from orch-boopmark-2 (project boopmark) · 13:05</div>
+      <div class="row d">    REPORT boopmark</div>
+      <div class="row d">    Epic Move production to Fly.io is done. v0.8.2 shipped.</div>
+      <div class="row d">    No saga is active. I am idle and waiting for a goal.</div>
+      <div class="row d">    &lt;/system-reminder&gt;</div>
+      <div class="row"> </div>
+      <div class="row d">  ⎿ &lt;system-reminder&gt;</div>
+      <div class="row d">    Borant message · channel chief-personal · from orchestrator (project borant) · 14:32</div>
+      <div class="row d">    REPORT borant / saga Elastic compute</div>
+      <div class="row d">    Released v0.16.0 and deployed it to the hub. The work GitHub token now comes</div>
+      <div class="row d">    from the collection bundle.</div>
+      <div class="row d">    Epics:</div>
+      <div class="row d">      Golden image ................. done</div>
+      <div class="row d">      Hub join for pool boxes ...... done</div>
+      <div class="row d">      Hub backup to object storage . BLOCKED: needs Chris to create Hetzner</div>
+      <div class="row d">                                     bucket borant-hub-backup + 1Password item</div>
+      <div class="row d">      Delete borant-2 .............. blocked by Hub backup</div>
+      <div class="row d">      Hub move to borant-hub ....... scheduled ~Nov 2</div>
+      <div class="row d">    Tasks:</div>
+      <div class="row d">      Delete old NATS data copy .... scheduled Oct 27 09:07</div>
+      <div class="row d">    Optional: the old willisrocks gh token can be revoked now.</div>
+      <div class="row d">    &lt;/system-reminder&gt;</div>
+      <div class="row"> </div>
+      <div class="row"><span class="w">⏺</span> Two reports came in. borant deployed v0.16.0, which moves the work GitHub token into</div>
+      <div class="row">  the collection bundle. Hub backup to object storage is blocked until you create the</div>
+      <div class="row">  Hetzner bucket borant-hub-backup and a 1Password item, and Delete borant-2 waits on</div>
+      <div class="row">  that. Hub move to borant-hub is set for about Nov 2. Delete old NATS data copy runs</div>
+      <div class="row">  Oct 27 at 09:07. boopmark shipped v0.8.2 on Fly.io and is idle, waiting for a goal.</div>
+      <div class="row">  You can also revoke the old willisrocks gh token.</div>
+      <div class="row"> </div>
+      <div class="row d">  ⎿ &lt;system-reminder&gt;</div>
+      <div class="row d">    Borant message · channel chief-personal · from orchestrator (project borant) · 14:41</div>
+      <div class="row d">    REPORT borant / saga Elastic compute</div>
+      <div class="row d">    Still blocked on Hub backup to object storage. Epics:</div>
+      <div class="row d">      Golden image ................. done</div>
+      <div class="row d">      Hub join for pool boxes ...... done</div>
+      <div class="row d">      Hub backup to object storage . BLOCKED: needs Chris to create Hetzner</div>
+      <div class="row d">                                     bucket borant-hub-backup + 1Password item</div>
+      <div class="row d">      Delete borant-2 .............. blocked by Hub backup</div>
+      <div class="row d">      Hub move to borant-hub ....... scheduled ~Nov 2</div>
+      <div class="row d">    ...</div>
+    </div>
+  </div>
+
+  <div class="term">
+    <div class="hdr row" style="height: 28px;">With the mod · <span class="w B">restyled transcript rows</span> + <span class="w B">/cos slash command output</span> · 104 cols</div>
+    <div class="body">
+      <div class="row"><span class="d">&gt;</span> morning. status?</div>
+      <div class="row"> </div>
+      <div class="row"><span class="d">13:05 </span><span class="cm"> boopmark </span><span class="g"> ✓</span> Move production to Fly.io done · v0.8.2 shipped · idle<span class="f">                         ctrl+o</span></div>
+      <div class="row sel"><span class="d">14:32 </span><span class="cb"> borant </span><span class="g">   ✓</span> v0.16.0 deployed: work GitHub token via collection bundle<span class="y">  ▲ 1 needs you</span><span class="d"> · +4</span><span class="w">  ▾</span></div>
+      <div class="row d">                    REPORT borant / saga Elastic compute</div>
+      <div class="row d">                    Released v0.16.0 and deployed it to the hub. The work GitHub token now</div>
+      <div class="row d">                    comes from the collection bundle.</div>
+      <div class="row d">                    ... 11 more lines · ctrl+o to collapse</div>
+      <div class="row"> </div>
+      <div class="row"><span class="w">⏺</span> borant shipped v0.16.0 and waits on you for one bucket. boopmark is idle.</div>
+      <div class="row"> </div>
+      <div class="row"><span class="d">14:41 </span><span class="cb"> borant </span><span class="d">   = still blocked on Hub backup · no change</span><span class="f">                                ctrl+o</span></div>
+      <div class="row"> </div>
+      <div class="row"><span class="d">&gt;</span> /cos</div>
+      <div class="row flex"><span class="f">╭─ </span><span class="B">since you last looked</span><span class="d"> · 09:40, 5h ago </span><span class="f fill">──────────────────────────────────────────────────────────────────────────────────────────────</span></div>
+      <div class="row f">│</div>
+      <div class="row"><span class="f">│ </span><span class="y B">▲ Needs you (2)</span></div>
+      <div class="row"><span class="f">│ </span>  <button class="k" type="button" aria-label="Open item 1"><span class="B w">1</span></button>  <span class="cell" style="width: 60ch;">Create Hetzner bucket borant-hub-backup + 1Password item</span><span class="cb"> borant </span><span class="d">  blocks 2 epics</span></div>
+      <div class="row"><span class="f">│ </span>  <button class="k" type="button" aria-label="Open item 2"><span class="B w">2</span></button>  <span class="cell" style="width: 60ch;">Revoke old willisrocks gh token?<span class="d">  optional</span></span><span class="cb"> borant </span></div>
+      <div class="row f">│</div>
+      <div class="row"><span class="f">│ </span><span class="cb"> borant </span>  <span class="B">Elastic compute</span>  <span class="g">████</span><span class="f">░░░░░░</span> 2/5<span class="d"> · </span><span class="g">●</span><span class="d"> orchestrator online (macbook)</span></div>
+      <div class="row"><span class="f">│ </span>  <span class="g">✓</span> v0.16.0 deployed: work GitHub token via collection bundle</div>
+      <div class="row"><span class="f">│ </span>  <span class="y">▲</span> Hub backup to object storage<span class="y"> waits on you (item 1)</span></div>
+      <div class="row"><span class="f">│ </span>  <span class="r">■</span> Delete borant-2<span class="r"> blocked</span><span class="d"> by Hub backup</span></div>
+      <div class="row"><span class="f">│ </span>  <span class="c">◇</span> Delete old NATS data copy<span class="c"> Oct 27 09:07</span></div>
+      <div class="row"><span class="f">│ </span>  <span class="c">◇</span> Hub move to borant-hub<span class="c"> ~Nov 2</span></div>
+      <div class="row f">│</div>
+      <div class="row"><span class="f">│ </span><span class="cm"> boopmark </span>  <span class="d">no saga · </span><span class="d">○ orch-boopmark-2 idle</span></div>
+      <div class="row"><span class="f">│ </span>  <span class="g">✓</span> Move production to Fly.io done · v0.8.2 shipped</div>
+      <div class="row"><span class="f">│ </span>  <span class="d">○</span> Waiting for a goal</div>
+      <div class="row f">│</div>
+      <div class="row flex"><span class="f">╰─ </span><span class="d">1-2 open an item · /cos borant for one project · printed by the mod, no Claude turn </span><span class="f fill">──────────────────────────────</span></div>
+      <div class="row"> </div>
+      <div class="row flex"><span class="f">╭</span><span class="f fill">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╮</span></div>
+      <div class="row flex"><span class="f">│</span><span class="d"> &gt; </span><span class="fill"> </span><span class="f">│</span></div>
+      <div class="row flex"><span class="f">╰</span><span class="f fill">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╯</span></div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1720,"height":920}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

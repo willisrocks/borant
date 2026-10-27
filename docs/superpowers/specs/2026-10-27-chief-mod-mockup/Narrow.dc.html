@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Narrow terminal</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0d0e10}
+.t{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;line-height:18px;color:#d0d3d8;font-variant-ligatures:none}
+.row{white-space:pre;height:18px;overflow:hidden}
+.flex{display:flex}
+.fill{flex:1;overflow:hidden}
+.cell{display:inline-block;overflow:hidden;vertical-align:top;white-space:pre}
+.d{color:#8a8f98}.f{color:#4a4f57}.B{font-weight:700}.w{color:#ffffff}
+.r{color:#f07178}.g{color:#a3d977}.y{color:#f2c86b}.b{color:#6cb6ff}.m{color:#d595f0}.c{color:#5fd4d4}
+.cb{background:#6cb6ff;color:#0d0e10}.cm{background:#d595f0;color:#0d0e10}
+.k{font:inherit;background:none;border:0;padding:0;margin:0;color:inherit;cursor:pointer;line-height:inherit}
+.hdr{height:28px;box-sizing:border-box;padding:5px 16px;background:#17181b;border-bottom:1px solid #26282c;color:#8a8f98;font-size:12px}
+</style>
+</helmet>
+<div class="t" style="width: 840px; height: 440px; box-sizing: border-box; background: #0d0e10; border: 1px solid #26282c; display: flex; flex-direction: column; position: relative;">
+  <div class="hdr row" style="height: 28px;">Surface: <span class="w B">Band</span> + <span class="w B">toast</span> + <span class="w B">status line</span> · 100 cols, too narrow for the pane</div>
+
+  <div style="position: absolute; top: 40px; right: 16px; padding: 6px 12px; background: #1d1f23; border: 1px solid #3a3d43; color: #d0d3d8; white-space: pre;">borant: v0.16.0 deployed</div>
+
+  <div style="padding: 12px 16px; display: flex; flex-direction: column;">
+    <div class="row"><span class="d">&gt;</span> what changed overnight?</div>
+    <div class="row"> </div>
+    <div class="row"><span class="w">⏺</span> boopmark finished the Fly.io move. borant still waits on your bucket.</div>
+    <div class="row"> </div>
+    <div class="row"><span class="d">13:05 </span><span class="cm"> boopmark </span><span class="g"> ✓</span> Move production to Fly.io done · v0.8.2 shipped<span class="f">      ctrl+o</span></div>
+    <div class="row"><span class="d">14:32 </span><span class="cb"> borant </span><span class="g">   ✓</span> v0.16.0 deployed: work GitHub token via collection bundle<span class="f">  ctrl+o</span></div>
+    <div class="row"> </div>
+    <div class="row"> </div>
+
+    <div class="row flex"><span class="f">── </span><span class="B">chief of staff</span><span class="f fill"> ──────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="d"> 14:32 </span><span class="f">▾ ──</span></div>
+    <div class="row"><span class="cell" style="width: 4ch;"><button class="k" type="button" aria-label="Open needs-you list"><span class="d">[</span><span class="B w">1</span><span class="d">]</span></button></span><span class="cell y" style="width: 2ch;">▲</span><span class="cell y B" style="width: 15ch;">Needs you (2)</span><span class="cell" style="width: 50ch;">Create Hetzner bucket borant-hub-backup + 1P item</span><span class="cb"> borant </span><span class="d">  +1</span></div>
+    <div class="row"><span class="cell" style="width: 4ch;"><button class="k" type="button" aria-label="Open borant"><span class="d">[</span><span class="B w">2</span><span class="d">]</span></button></span><span class="cell" style="width: 11ch;"><span class="cb"> borant </span></span><span class="cell B" style="width: 17ch;">Elastic compute</span><span class="cell r" style="width: 2ch;">■</span><span class="cell" style="width: 30ch;">Hub backup to object storage</span><span class="cell" style="width: 13ch;"><span class="g">███</span><span class="f">░░░░░</span> 2/5</span><span class="r">■2</span>  <span class="y">▲1</span></div>
+    <div class="row"><span class="cell" style="width: 4ch;"><button class="k" type="button" aria-label="Open boopmark"><span class="d">[</span><span class="B w">3</span><span class="d">]</span></button></span><span class="cell" style="width: 11ch;"><span class="cm"> boopmark </span></span><span class="cell d" style="width: 17ch;">no saga</span><span class="cell g" style="width: 2ch;">✓</span><span class="cell" style="width: 30ch;">Move production to Fly.io</span><span class="cell" style="width: 13ch;"><span class="g">████████</span> 1/1</span><span class="d">idle</span></div>
+
+    <div class="row"> </div>
+    <div class="row flex"><span class="f">╭</span><span class="f fill">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╮</span></div>
+    <div class="row flex"><span class="f">│</span><span class="d"> &gt; </span><span class="fill"> </span><span class="f">│</span></div>
+    <div class="row flex"><span class="f">╰</span><span class="f fill">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╯</span></div>
+    <div class="row">  cos: 2 need you · borant 2/5 · boopmark idle · last report 14:32</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":840,"height":440}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
