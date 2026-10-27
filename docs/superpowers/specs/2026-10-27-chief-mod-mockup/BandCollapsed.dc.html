@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Band collapsed</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0d0e10}
+.t{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;line-height:18px;color:#d0d3d8;font-variant-ligatures:none}
+.row{white-space:pre;height:18px;overflow:hidden}
+.flex{display:flex}
+.fill{flex:1;overflow:hidden}
+.cell{display:inline-block;overflow:hidden;vertical-align:top;white-space:pre}
+.d{color:#8a8f98}.f{color:#4a4f57}.B{font-weight:700}.w{color:#ffffff}
+.r{color:#f07178}.g{color:#a3d977}.y{color:#f2c86b}.b{color:#6cb6ff}.m{color:#d595f0}.c{color:#5fd4d4}
+.cb{background:#6cb6ff;color:#0d0e10}.cm{background:#d595f0;color:#0d0e10}
+.k{font:inherit;background:none;border:0;padding:0;margin:0;color:inherit;cursor:pointer;line-height:inherit}
+.hdr{height:28px;box-sizing:border-box;padding:5px 16px;background:#17181b;border-bottom:1px solid #26282c;color:#8a8f98;font-size:12px}
+.lbl{color:#8a8f98;font-size:12px}
+</style>
+</helmet>
+<div class="t" style="width: 1000px; height: 460px; box-sizing: border-box; background: #0d0e10; border: 1px solid #26282c; display: flex; flex-direction: column;">
+  <div class="hdr row" style="height: 28px;">Surface: <span class="w B">Band</span> (collapsed to one row by the user) · 120 cols</div>
+  <div style="padding: 12px 16px; display: flex; flex-direction: column;">
+    <div class="row"><span class="w">⏺</span> Nothing is running right now. Delete old NATS data copy runs tomorrow at 09:07.</div>
+    <div class="row"> </div>
+    <div class="row"><span class="d">&gt;</span> draft the Q4 reading list from my notes</div>
+    <div class="row"> </div>
+    <div class="row"><span class="w">⏺</span> Here is a first cut, grouped by theme:</div>
+    <div class="row d">  ...</div>
+    <div class="row"> </div>
+
+    <div class="row"><span class="f">▸ </span><span class="d B">cos  </span><button class="k" type="button" aria-label="Open needs-you list"><span class="d">[</span><span class="B w">1</span><span class="d">]</span></button><span class="y B"> ▲ 2 need you</span><span class="f">  │  </span><span class="cb"> borant </span> 2/5 <span class="r">■ 2 blocked</span><span class="f">  │  </span><span class="cm"> boopmark </span><span class="g"> ✓</span><span class="d"> idle</span><span class="f">  │  </span><span class="d">14:32 v0.16.0 deployed</span></div>
+
+    <div class="row"> </div>
+    <div class="row flex"><span class="f">╭</span><span class="f fill">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╮</span></div>
+    <div class="row flex"><span class="f">│</span><span class="d"> &gt; </span><span class="fill"> </span><span class="f">│</span></div>
+    <div class="row flex"><span class="f">╰</span><span class="f fill">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="f">╯</span></div>
+    <div class="row d">  1 opens needs-you · /cos for a digest</div>
+  </div>
+
+  <div style="margin-top: 8px; padding: 14px 16px; border-top: 1px solid #26282c; display: flex; flex-direction: column; gap: 6px;">
+    <div class="lbl">Same row, other states</div>
+    <div class="lbl" style="margin-top: 6px;">Nothing waits on Chris</div>
+    <div class="row"><span class="f">▸ </span><span class="d B">cos  </span><span class="g">✓ all clear</span><span class="f">  │  </span><span class="cb"> borant </span> 2/5 <span class="r">■ 2 blocked</span><span class="f">  │  </span><span class="cm"> boopmark </span><span class="g"> ✓</span><span class="d"> idle</span><span class="f">  │  </span><span class="d">14:32 v0.16.0 deployed</span></div>
+    <div class="lbl" style="margin-top: 6px;">An update just arrived (bold for about 10 s, then back to dim)</div>
+    <div class="row"><span class="f">▸ </span><span class="d B">cos  </span><button class="k" type="button" aria-label="Open needs-you list"><span class="d">[</span><span class="B w">1</span><span class="d">]</span></button><span class="y B"> ▲ 2 need you</span><span class="f">  │  </span><span class="cb"> borant </span> 2/5 <span class="r">■ 2 blocked</span><span class="f">  │  </span><span class="cm"> boopmark </span><span class="g"> ✓</span><span class="d"> idle</span><span class="f">  │  </span><span class="b B">● borant</span><span class="w B"> v0.16.0 deployed: work GitHub token via…</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":460}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

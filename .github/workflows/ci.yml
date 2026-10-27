@@ -56,6 +56,21 @@ jobs:
       - run: bun install
       - run: bun run check
 
+  # The chief-of-staff mod ships in the Claude Code plugin, so the plugin's
+  # manifest and hooks module are checked where they are built. A pinned Claude
+  # Code keeps the check on the version the mod was written for, and
+  # `claude plugin test` needs no sign-in and no network.
+  claude-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --global @anthropic-ai/claude-code@2.1.310
+      - run: claude plugin validate integrations/claude-code --strict
+      - run: claude plugin test integrations/claude-code
+
   # The slowest job: it builds the e2e image and runs the Docker swarm. The
   # image comes from the Docker layer cache, and on a pull request only the
   # scenarios of the changed paths run. Nothing of `test` is needed here, so
