@@ -12,11 +12,11 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use borant_core::AgentId;
 use borant_core::ports::PortError;
 use borant_core::ports::secrets::{Bundle, BundleName, MemberName, Secret, SecretRef};
 use borant_core::proto::LaunchOrder;
 use borant_core::rules::redact::redact;
+use borant_core::{AgentId, SessionId};
 
 use crate::{Host, HostSecrets, LocalSess};
 
@@ -160,12 +160,16 @@ impl Host {
         })))
     }
 
-    /// Rebuilds the redactor of a session that a restart restored, from its
-    /// saved bundles and members: the values of a live session must still
-    /// leave the session log. A failure logs a warn and keeps the session,
-    /// which then gets the patterns only.
-    pub(crate) async fn restore_redactor(
+    /// Rebuilds the redactor and the variables of a session that a restart
+    /// restored, from its saved bundles and members: the values of a live
+    /// session must still leave the session log, and its checkpoint pushes
+    /// still need the credential of its launch. Resolving again also picks up
+    /// a value that changed in the store since the launch. A failure logs a
+    /// warn and keeps the session, which then gets the patterns only and
+    /// pushes with the daemon's own environment, as before.
+    pub(crate) async fn restore_secrets(
         &self,
+        id: SessionId,
         agent: &AgentId,
         bundles: &[BundleName],
         members: &BTreeMap<BundleName, MemberName>,
@@ -174,14 +178,24 @@ impl Host {
             return;
         };
         let resolved = match plan(secrets, bundles, members) {
-            Ok(planned) => resolve(secrets, &planned.by_store).await,
+            Ok(planned) => resolve(secrets, &planned.by_store)
+                .await
+                .and_then(|values| {
+                    let mut vars = Vec::with_capacity(planned.vars.len());
+                    for (name, r) in &planned.vars {
+                        vars.push((name.clone(), value_of(&values, r)?.to_owned()));
+                    }
+                    Ok((values, vars))
+                }),
             Err(e) => Err(e),
         };
         match resolved {
-            Ok(values) => {
-                self.state()
-                    .redactors
-                    .insert(agent.clone(), redactor_of(&values));
+            Ok((values, vars)) => {
+                let mut st = self.state();
+                st.redactors.insert(agent.clone(), redactor_of(&values));
+                if let Some(s) = st.sessions.get_mut(&id) {
+                    s.vars = LaunchVars(vars);
+                }
             }
             Err(e) => tracing::warn!(
                 %agent,

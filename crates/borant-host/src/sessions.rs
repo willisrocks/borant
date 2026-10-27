@@ -107,6 +107,7 @@ impl Host {
                         .map(|i| i.members.clone())
                         .unwrap_or_default(),
                     secrets_dir: issued.as_ref().map(|i| i.dir.clone()),
+                    vars: issued.as_ref().map(|i| i.vars.clone()).unwrap_or_default(),
                 },
             );
         }
@@ -605,14 +606,28 @@ impl Host {
                 s.repo.clone(),
                 s.pid,
                 s.launch.clone(),
+                s.vars.clone(),
             )
         };
-        let (agent, repo, pid, launch) = info;
+        let (agent, repo, pid, launch, vars) = info;
         if let (Some(agent), Some(repo)) = (&agent, &repo) {
             let remote = self.remote_for(repo);
-            match checkpoint::save_stale(&repo.root, &remote, agent, self.inner.clock.now()).await {
+            match checkpoint::save_stale(
+                &repo.root,
+                &remote,
+                agent,
+                self.inner.clock.now(),
+                vars.pairs(),
+            )
+            .await
+            {
                 Ok(sha) => tracing::info!(%agent, sha, "saved the lost turn to a stale ref"),
-                Err(e) => tracing::warn!(%agent, "could not save stale work: {e:#}"),
+                Err(e) => {
+                    // git's stderr can echo a credential of the remote.
+                    let e = format!("{e:#}");
+                    let e = self.redact_text(agent, &e);
+                    tracing::warn!(%agent, "could not save stale work: {e}");
+                }
             }
         }
         // The session stays known, so its hooks keep blocking tools until
@@ -690,7 +705,7 @@ impl Host {
     /// Runs one checkpoint now and logs it.
     /// Returns false if a checkpoint was due and failed.
     pub(crate) async fn checkpoint_now(&self, id: SessionId) -> bool {
-        let (agent, repo, last) = {
+        let (agent, repo, last, vars) = {
             let st = self.state();
             let Some(s) = st.sessions.get(&id) else {
                 return true;
@@ -698,10 +713,15 @@ impl Host {
             let (Some(r), Some(repo)) = (&s.reg, &s.repo) else {
                 return true;
             };
-            (r.agent.clone(), repo.clone(), s.last_tree.clone())
+            (
+                r.agent.clone(),
+                repo.clone(),
+                s.last_tree.clone(),
+                s.vars.clone(),
+            )
         };
         let remote = self.remote_for(&repo);
-        match checkpoint::create(&repo.root, &remote, &agent, last.as_deref()).await {
+        match checkpoint::create(&repo.root, &remote, &agent, last.as_deref(), vars.pairs()).await {
             Ok(Some((tree, sha))) => {
                 if let Some(s) = self.state().sessions.get_mut(&id) {
                     s.last_tree = Some(tree);
@@ -718,7 +738,10 @@ impl Host {
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(%agent, "checkpoint failed: {e:#}");
+                // git's stderr can echo a credential of the remote.
+                let e = format!("{e:#}");
+                let e = self.redact_text(&agent, &e);
+                tracing::warn!(%agent, "checkpoint failed: {e}");
                 return false;
             }
         }

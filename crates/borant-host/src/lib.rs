@@ -42,7 +42,7 @@ use crate::checkpoint::RepoFacts;
 use crate::hub_down::{HubAlert, HubDownWatch};
 use crate::outbox::Outbox;
 pub use crate::sandbox::SandboxConfig;
-use crate::secrets::{LaunchSecrets, Redactor};
+use crate::secrets::{LaunchSecrets, LaunchVars, Redactor};
 
 pub use client::LocalClient;
 pub use commands::DesktopNotifier;
@@ -351,6 +351,11 @@ pub(crate) struct LocalSess {
     pub members: BTreeMap<BundleName, MemberName>,
     /// The secret directory of the session, when it runs through the shim.
     pub secrets_dir: Option<PathBuf>,
+    /// The variables of the launch, the pairs that the shim gave the harness.
+    /// The checkpoint pushes of the session run with them, so a collection
+    /// bundle carries the credential of its remote. Memory only: the session
+    /// table never holds a value, and a restart resolves them again.
+    pub vars: LaunchVars,
 }
 
 impl LocalSess {

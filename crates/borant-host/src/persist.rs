@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+use crate::secrets::LaunchVars;
 use crate::{Host, LocalSess, checkpoint, pid_alive};
 
 /// The limit of one step of the restore. A session log over a slow link, or a
@@ -206,6 +207,8 @@ impl Host {
                     bundles: s.bundles,
                     members: s.members,
                     secrets_dir: s.secrets_dir,
+                    // Filled by the restore below, from the saved bundles.
+                    vars: LaunchVars::default(),
                 },
             );
             jobs.push((s.id, agent, bundles, members, cancel));
@@ -231,9 +234,9 @@ impl Host {
                 // redacting them, not only the patterns.
                 if !bundles.is_empty() {
                     host.step(
-                        "redactor",
+                        "secrets",
                         Some(agent.clone()),
-                        host.restore_redactor(&agent, &bundles, &members),
+                        host.restore_secrets(id, &agent, &bundles, &members),
                     )
                     .await;
                 }

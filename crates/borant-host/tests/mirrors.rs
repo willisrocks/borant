@@ -262,7 +262,7 @@ async fn a_wip_restore_through_the_mirror_returns_the_wip_files() {
     let agent = "w1".parse().unwrap();
     std::fs::write(seed.join("a.txt"), "edited\n").unwrap();
     std::fs::write(seed.join("b.txt"), "untracked\n").unwrap();
-    let (_, sha) = checkpoint::create(&seed, &checkpoint_url, &agent, None)
+    let (_, sha) = checkpoint::create(&seed, &checkpoint_url, &agent, None, &[])
         .await
         .unwrap()
         .unwrap();
