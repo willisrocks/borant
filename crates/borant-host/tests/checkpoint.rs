@@ -55,7 +55,7 @@ fn agent() -> AgentId {
 async fn create_includes_untracked_files() {
     let (_d, remote, work) = setup();
     std::fs::write(work.join("new.txt"), "fresh\n").unwrap();
-    let (_, sha) = checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None)
+    let (_, sha) = checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None, &[])
         .await
         .unwrap()
         .unwrap();
@@ -69,7 +69,7 @@ async fn create_skips_unchanged_tree() {
     let (_d, remote, work) = setup();
     std::fs::write(work.join("a.txt"), "two\n").unwrap();
     let r = remote.to_str().unwrap();
-    let (tree, sha) = checkpoint::create(&work, r, &agent(), None)
+    let (tree, sha) = checkpoint::create(&work, r, &agent(), None, &[])
         .await
         .unwrap()
         .unwrap();
@@ -77,7 +77,7 @@ async fn create_skips_unchanged_tree() {
     // index entry, so a snapshot that trusts stale stat data commits the old
     // blob instead.
     assert_eq!(git(&remote, &["show", &format!("{sha}:a.txt")]), "two");
-    let again = checkpoint::create(&work, r, &agent(), Some(&tree))
+    let again = checkpoint::create(&work, r, &agent(), Some(&tree), &[])
         .await
         .unwrap();
     assert!(
@@ -94,7 +94,7 @@ async fn create_does_not_touch_index_or_branch() {
     std::fs::write(work.join("u.txt"), "untracked\n").unwrap();
     let head = git(&work, &["rev-parse", "HEAD"]);
     let status = git(&work, &["status", "--porcelain"]);
-    checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None)
+    checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None, &[])
         .await
         .unwrap();
     assert_eq!(git(&work, &["rev-parse", "HEAD"]), head);
@@ -107,7 +107,7 @@ async fn restore_reproduces_files_on_new_root() {
     std::fs::write(work.join("a.txt"), "edited\n").unwrap();
     std::fs::write(work.join("b.txt"), "untracked\n").unwrap();
     let r = remote.to_str().unwrap();
-    let (_, sha) = checkpoint::create(&work, r, &agent(), None)
+    let (_, sha) = checkpoint::create(&work, r, &agent(), None, &[])
         .await
         .unwrap()
         .unwrap();
@@ -134,9 +134,15 @@ async fn restore_reproduces_files_on_new_root() {
 async fn save_stale_pushes_side_ref() {
     let (_d, remote, work) = setup();
     std::fs::write(work.join("a.txt"), "lost turn\n").unwrap();
-    let sha = checkpoint::save_stale(&work, remote.to_str().unwrap(), &agent(), Timestamp(42))
-        .await
-        .unwrap();
+    let sha = checkpoint::save_stale(
+        &work,
+        remote.to_str().unwrap(),
+        &agent(),
+        Timestamp(42),
+        &[],
+    )
+    .await
+    .unwrap();
     assert_eq!(git(&remote, &["rev-parse", "refs/borant/w1/stale/42"]), sha);
 }
 
@@ -157,12 +163,12 @@ async fn create_checkpoints_a_new_commit_with_the_same_tree() {
     let (_d, remote, work) = setup();
     std::fs::write(work.join("a.txt"), "two\n").unwrap();
     let r = remote.to_str().unwrap();
-    let (key, _) = checkpoint::create(&work, r, &agent(), None)
+    let (key, _) = checkpoint::create(&work, r, &agent(), None, &[])
         .await
         .unwrap()
         .unwrap();
     git(&work, &["commit", "-q", "-am", "two"]);
-    let (_, sha) = checkpoint::create(&work, r, &agent(), Some(&key))
+    let (_, sha) = checkpoint::create(&work, r, &agent(), Some(&key), &[])
         .await
         .unwrap()
         .expect("a commit changes HEAD, so a checkpoint is due");

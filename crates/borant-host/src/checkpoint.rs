@@ -163,12 +163,14 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
 
 /// Creates a checkpoint and pushes it to the WIP ref of the agent. Returns
 /// a key for the tree and `HEAD`, and the commit SHA, or `None` if the key
-/// equals `last`.
+/// equals `last`. The push runs with `env`, the variables of the session's
+/// launch, so a collection bundle can carry the credential of the remote.
 pub async fn create(
     cwd: &Path,
     remote: &str,
     agent: &AgentId,
     last_tree: Option<&str>,
+    env: &GitEnv,
 ) -> anyhow::Result<Option<(String, String)>> {
     let (tree, sha) = snapshot(cwd, &format!("borant checkpoint of {agent}")).await?;
     // A new commit with the same tree still needs a checkpoint, or a restore
@@ -185,19 +187,20 @@ pub async fn create(
         cwd,
         &["push", "--force", "--quiet", remote, &refspec],
         None,
-        &[],
+        env,
     )
     .await?;
     Ok(Some((key, sha)))
 }
 
 /// Pushes the current tree to a stale ref, for the lost turn of a session
-/// that lost its lease.
+/// that lost its lease. The push runs with `env`, as in [`create`].
 pub async fn save_stale(
     cwd: &Path,
     remote: &str,
     agent: &AgentId,
     at: Timestamp,
+    env: &GitEnv,
 ) -> anyhow::Result<String> {
     let (_, sha) = snapshot(cwd, &format!("borant stale work of {agent}")).await?;
     let refspec = format!("{sha}:{}", stale_ref(agent, at));
@@ -205,7 +208,7 @@ pub async fn save_stale(
         cwd,
         &["push", "--force", "--quiet", remote, &refspec],
         None,
-        &[],
+        env,
     )
     .await?;
     Ok(sha)
