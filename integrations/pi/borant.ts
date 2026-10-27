@@ -220,6 +220,11 @@ const CloseReason = StringEnum(
   ["done", "wontfix", "duplicate", "superseded"] as const,
   "Why the task is closed",
 );
+const ChannelKind = StringEnum(
+  ["project", "saga", "epic"] as const,
+  "Kind of channel: project (default), saga, or epic",
+);
+const TaskKind = StringEnum(["task", "epic"] as const, "Kind of task: task (default) or epic");
 const HarnessName = StringEnum(
   ["claude-code", "pi", "omp", "codex"] as const,
   "Harness for the new agent",
@@ -400,6 +405,9 @@ export default function borant(pi: ExtensionAPI) {
       "Create a channel. You become its owner.",
       Type.Object({
         name,
+        kind: Type.Optional(ChannelKind),
+        title: Type.Optional(Type.String({ description: "Display name; a saga or epic channel takes its name when omitted" })),
+        issue: Type.Optional(Type.String({ description: "Issue link of a saga" })),
         schema: Type.Optional(JsonObject("JSON Schema for task properties. Default schema if omitted.")),
         project: Type.Optional(Type.String({ description: "Project name. A spawn in the channel clones it" })),
         branch: Type.Optional(Type.String({ description: "Base branch for spawns. Default: the project's default branch" })),
@@ -412,6 +420,11 @@ export default function borant(pi: ExtensionAPI) {
       "channel_transfer",
       "Give ownership of a channel you own to another agent.",
       Type.Object({ name, to: Type.String({ description: "Agent ID of the new owner" }) }),
+    );
+    tool(
+      "channel_close",
+      "Close a channel. Only the owner or a person closes it, and only when every task of the channel is closed.",
+      Type.Object({ name }),
     );
     tool("members", "List the members of a channel.", Type.Object({ name }));
     tool(
@@ -429,6 +442,8 @@ export default function borant(pi: ExtensionAPI) {
       "Create a task in a channel.",
       Type.Object({
         channel: Channel,
+        kind: Type.Optional(TaskKind),
+        issue: Type.Optional(Type.String({ description: "Issue link of the task" })),
         title: Type.String({ description: "Task title" }),
         body: Type.Optional(Type.String({ description: "Task details" })),
         blocked_by: Type.Optional(TaskIds("IDs of tasks that must close first")),
@@ -454,6 +469,7 @@ export default function borant(pi: ExtensionAPI) {
         id: TaskId,
         title: Type.Optional(Type.String({ description: "New title" })),
         body: Type.Optional(Type.String({ description: "New body" })),
+        issue: Type.Optional(Type.String({ description: "Issue link of the task" })),
         status: Type.Optional(TaskStatus),
         attention_msg: Type.Optional(Type.String({ description: "What a human or the owner must know or do" })),
         blocked_by: Type.Optional(TaskIds("New list of blocking task IDs")),
@@ -492,6 +508,11 @@ export default function borant(pi: ExtensionAPI) {
     );
     tool("project_list", "List projects: git repositories that spawns clone.", none);
     tool("project_get", "Get one project.", Type.Object({ name: Type.String({ description: "Project name" }) }));
+    tool(
+      "board",
+      "Read the board: the sagas, epics, and waiting questions of your collection, computed from the records. Nothing is stored.",
+      Type.Object({ collection: Type.Optional(Type.String({ description: "One collection of hub.toml; omit for every collection you may see" })) }),
+    );
     tool(
       "session_history",
       "Read the event history of your session, newest page first.",

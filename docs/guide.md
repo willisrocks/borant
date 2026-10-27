@@ -32,10 +32,20 @@ instance = "hub-1"
 
 [nats]
 urls = ["nats://127.0.0.1:4222"]
+
+[roles.chief]
+approves = true            # may approve a saga's gate
+
+[collections.work]
+mirror_issues = true       # copy objects out to an issue tracker
 ```
 
 Then run `borant hub`. A stable `instance` name lets a restarted hub take its
 own lease at once.
+
+Only a person, or an agent whose role sets `approves = true`, closes a saga
+gate as done. `mirror_issues` on a collection is the default for its
+projects, and the `--mirror-issues` flag of a project overrides it.
 
 ### Secrets of a host that the hub creates
 
@@ -222,6 +232,53 @@ Delivery rules:
 - A task event wakes the owner only when a task closes, gets stuck, or needs
   a human.
 
+### Sagas and epics
+
+A channel has a kind, set at the create and never changed. `project` is the
+default, and old records parse as this one. A `saga` must name a project:
+the hub creates the gate task "Approve the scope and the epics", its epics
+are tasks of kind `epic` with no parent, and every other task except the
+gate has a chain of parents that ends at an epic. An `epic` channel must
+name a project: the hub creates one root epic task with the channel title, a
+task created without a parent gets the root, and a second epic task is
+refused.
+
+While the gate is not closed as `done`, `task_claim` and `spawn` are
+refused with `saga_not_approved`, and `task_list(ready_only)` returns
+nothing. The orchestrator creates the epics, then sets the gate
+`needs_human` with an `attention_msg` that states the scope and lists the
+epics.
+
+A person (`borant task close`) or an agent whose role has `approves = true`
+in `hub.toml` approves. The channel owner cannot approve its own scope
+unless its role has the flag. When a gate goes `needs_human`, the hub sends
+a direct message to each agent of the saga's collection whose role approves.
+A close as `wontfix` rejects the saga, and the orchestrator then closes the
+channel.
+
+An epic is not work: no agent claims it, no spawn binds to it, `ready` never
+returns one, and the board derives its status from its children.
+
+Blocks flow down: a task is ready only when its own `blocked_by` tasks and
+the `blocked_by` tasks of each parent are closed, so an epic that is blocked
+by another epic holds back every child of it.
+
+A spawn bound to a task starts on the `branch` property of the task's epic,
+if it has one, otherwise on the channel branch. The orchestrator keeps it at
+the top branch of the epic's stack, and the branch must be on `origin`
+before the spawn.
+
+A parent with open children cannot close, and when the root epic of an epic
+channel closes the hub closes the channel. `channel_close` (MCP) and
+`borant channel close <name>` close a channel, only for its owner or a
+person, and only when every task of it is closed. A closed channel refuses
+`task_create`, `task_claim`, and `spawn`.
+
+The board is a computed read that stores nothing:
+`borant board [--collection C] [--json]`, the MCP tool `board`, and
+`GET /api/board?collection=C`. It shows the projects, sagas, epics, and the
+questions that wait for a person, and the mod of a chief session draws it.
+
 ## Orchestrate from a shell
 
 A person or a channel owner can drive the swarm from any machine that runs a
@@ -349,16 +406,18 @@ anyway.
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |
 | `borant logs <agent> [--follow]` | The session log of an agent |
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
+| `borant board [--collection C] [--json]` | The board: projects, sagas, epics, and waiting questions, computed from the records; stores nothing |
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant task close <channel>/<id> --reason R --message M` | Close a task as a person |
+| `borant channel close <name>` | Close a channel as its owner or a person; every task of it must be closed first |
 | `borant move <agent> [--host H] [--harness X] [--here] [--member M]` | Move one agent, or switch it to another token-pool member |
 | `borant move --from <host> --here` | Move all agents of a host to this host |
 | `borant move --channel <channel> --here` | Move all members of a channel |
 | `borant drain <host>` | Move all agents away from a host |
 | `borant undrain <host>` | Place agents on a drained host again, and place the spawns that waited for it |
 | `borant host remove <host>` | Delete the record of an offline host that runs no agent, so `borant hosts` stops naming a box that is gone |
-| `borant project add <name> <remote_url> [--branch B] [--setup CMD] [--test CMD]` | Add or replace a project |
+| `borant project add <name> <remote_url> [--branch B] [--setup CMD] [--test CMD] [--mirror-issues true\|false]` | Add or replace a project |
 | `borant project add <name> --from-cwd` | Add the repository of this directory as a project |
 | `borant project list` | List projects |
 | `borant attach <agent>` | Attach to the tmux or zellij session of an agent |

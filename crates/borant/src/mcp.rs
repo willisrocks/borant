@@ -69,6 +69,13 @@ pub struct ChannelCreate {
     pub project: Option<String>,
     /// The base branch for spawns. Defaults to the default branch of the project.
     pub branch: Option<String>,
+    /// One of: project, saga, epic. The hub checks it.
+    pub kind: Option<String>,
+    /// A display name. A saga and an epic channel take their name when this is
+    /// unset.
+    pub title: Option<String>,
+    /// The issue link of a saga.
+    pub issue: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -102,6 +109,10 @@ pub struct TaskCreate {
     pub blocked_by: Option<Vec<String>>,
     /// The ID of a parent task, for grouping.
     pub parent: Option<String>,
+    /// One of: task, epic. The hub checks it.
+    pub kind: Option<String>,
+    /// The issue link of the task.
+    pub issue: Option<String>,
     /// Properties that follow the task schema of the channel.
     pub properties: Option<Map<String, Value>>,
 }
@@ -130,6 +141,8 @@ pub struct TaskUpdate {
     /// A one-line reason, for needs_human or stuck.
     pub attention_msg: Option<String>,
     pub blocked_by: Option<Vec<String>>,
+    /// The issue link of the task.
+    pub issue: Option<String>,
     /// Properties to merge. A null value removes a key.
     pub properties: Option<Map<String, Value>>,
 }
@@ -257,6 +270,21 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
     }))
 }
 
+/// The call that the MCP channel_create tool forwards.
+fn channel_create_call(a: &ChannelCreate) -> Value {
+    strip_nulls(
+        json!({"tool": "channel_create", "name": a.name, "schema": a.schema, "project": a.project, "branch": a.branch, "kind": a.kind, "title": a.title, "issue": a.issue}),
+    )
+}
+
+/// The call that the MCP task_create tool forwards.
+fn task_create_call(a: TaskCreate) -> Value {
+    let task = strip_nulls(
+        json!({"title": a.title, "body": a.body.unwrap_or_default(), "blocked_by": a.blocked_by.unwrap_or_default(), "parent": a.parent, "kind": a.kind, "issue": a.issue, "properties": a.properties.unwrap_or_default()}),
+    );
+    json!({"tool": "task_create", "channel": a.channel, "task": task})
+}
+
 fn strip_nulls(v: Value) -> Value {
     match v {
         Value::Object(m) => Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).collect()),
@@ -353,8 +381,7 @@ impl BorantMcp {
         &self,
         Parameters(a): Parameters<ChannelCreate>,
     ) -> Result<String, String> {
-        self.forward(json!({"tool": "channel_create", "name": a.name, "schema": a.schema, "project": a.project, "branch": a.branch}))
-            .await
+        self.forward(channel_create_call(&a)).await
     }
 
     #[tool(description = "Join a channel to get its broadcasts and task events.")]
@@ -413,12 +440,7 @@ impl BorantMcp {
 
     #[tool(description = "Create a task in a channel.")]
     async fn task_create(&self, Parameters(a): Parameters<TaskCreate>) -> Result<String, String> {
-        let task = strip_nulls(json!({
-            "title": a.title, "body": a.body.unwrap_or_default(), "blocked_by": a.blocked_by.unwrap_or_default(),
-            "parent": a.parent, "properties": a.properties.unwrap_or_default(),
-        }));
-        self.forward(json!({"tool": "task_create", "channel": a.channel, "task": task}))
-            .await
+        self.forward(task_create_call(a)).await
     }
 
     #[tool(description = "Show one task.")]
@@ -441,7 +463,7 @@ impl BorantMcp {
     async fn task_update(&self, Parameters(a): Parameters<TaskUpdate>) -> Result<String, String> {
         let patch = strip_nulls(json!({
             "title": a.title, "body": a.body, "status": a.status, "attention_msg": a.attention_msg,
-            "blocked_by": a.blocked_by, "properties": a.properties,
+            "blocked_by": a.blocked_by, "issue": a.issue, "properties": a.properties,
         }));
         self.forward(
             json!({"tool": "task_update", "channel": a.channel, "id": a.id, "patch": patch}),
@@ -607,6 +629,52 @@ mod tests {
             strip_nulls(json!({"status": "stuck", "attention_msg": "need creds", "title": null}));
         let call: ToolCall = serde_json::from_value(json!({"tool": "task_update", "channel": "api", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "patch": patch})).unwrap();
         assert!(matches!(call, ToolCall::TaskUpdate { .. }));
+    }
+
+    #[test]
+    fn channel_create_passes_kind_title_and_issue() {
+        let a = ChannelCreate {
+            name: "work-api".into(),
+            schema: None,
+            project: Some("api".into()),
+            branch: None,
+            kind: Some("saga".into()),
+            title: Some("Elastic compute".into()),
+            issue: Some("ENG-7".into()),
+        };
+        let call: ToolCall = serde_json::from_value(channel_create_call(&a)).unwrap();
+        match call {
+            ToolCall::ChannelCreate {
+                kind, title, issue, ..
+            } => {
+                assert_eq!(kind, borant_core::model::ChannelKind::Saga);
+                assert_eq!(title.as_deref(), Some("Elastic compute"));
+                assert_eq!(issue.as_deref(), Some("ENG-7"));
+            }
+            other => panic!("not a channel_create: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_create_passes_kind_and_issue() {
+        let a = TaskCreate {
+            channel: "work-api".into(),
+            title: "Add the parser".into(),
+            body: None,
+            blocked_by: None,
+            parent: Some("01JABCDEFGHJKMNPQRSTVWXYZ0".into()),
+            kind: Some("epic".into()),
+            issue: Some("ENG-8".into()),
+            properties: None,
+        };
+        let call: ToolCall = serde_json::from_value(task_create_call(a)).unwrap();
+        match call {
+            ToolCall::TaskCreate { task, .. } => {
+                assert_eq!(task.kind, borant_core::model::TaskKind::Epic);
+                assert_eq!(task.issue.as_deref(), Some("ENG-8"));
+            }
+            other => panic!("not a task_create: {other:?}"),
+        }
     }
 
     #[test]
