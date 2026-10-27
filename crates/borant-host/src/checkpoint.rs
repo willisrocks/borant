@@ -38,13 +38,14 @@ async fn git(
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
+    // The bundle first, then our own variables: the last value of a name
+    // wins, so a bundle cannot turn off the guard against an interactive
+    // prompt or move the index of a checkpoint.
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if let Some(i) = index {
         cmd.env("GIT_INDEX_FILE", i);
     }
-    // After our own variables, so a bundle cannot turn off the guard against
-    // an interactive prompt.
-    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     cmd.kill_on_drop(true);
     let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await

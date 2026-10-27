@@ -294,3 +294,24 @@ async fn a_failed_push_names_no_variable_value() {
     assert!(msg.contains("push"), "{msg}");
     assert!(!msg.contains(TOKEN), "the error holds a value: {msg}");
 }
+
+#[tokio::test]
+async fn a_bundle_cannot_turn_off_the_prompt_guard() {
+    let root = tempfile::tempdir().unwrap();
+    let record = root.path().join("env.txt");
+    let dir = hooks(&root.path().join("hooks"), &record);
+    let remote = remote(root.path());
+    let work = work_tree(root.path(), &remote);
+    let mut env = vars(&dir);
+    env.push(("GIT_TERMINAL_PROMPT".into(), "1".into()));
+
+    checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None, &env)
+        .await
+        .unwrap();
+
+    let seen = std::fs::read_to_string(&record).expect("the push saw no variables");
+    assert!(
+        seen.lines().any(|line| line == "GIT_TERMINAL_PROMPT=0"),
+        "the bundle turned the guard off: {seen}"
+    );
+}

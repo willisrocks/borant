@@ -622,7 +622,12 @@ impl Host {
             .await
             {
                 Ok(sha) => tracing::info!(%agent, sha, "saved the lost turn to a stale ref"),
-                Err(e) => tracing::warn!(%agent, "could not save stale work: {e:#}"),
+                Err(e) => {
+                    // git's stderr can echo a credential of the remote.
+                    let e = format!("{e:#}");
+                    let e = self.redact_text(agent, &e);
+                    tracing::warn!(%agent, "could not save stale work: {e}");
+                }
             }
         }
         // The session stays known, so its hooks keep blocking tools until
@@ -733,7 +738,10 @@ impl Host {
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(%agent, "checkpoint failed: {e:#}");
+                // git's stderr can echo a credential of the remote.
+                let e = format!("{e:#}");
+                let e = self.redact_text(&agent, &e);
+                tracing::warn!(%agent, "checkpoint failed: {e}");
                 return false;
             }
         }
