@@ -16,17 +16,19 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use borant_core::board::BoardView;
 use borant_core::events::EventFilter;
 use borant_core::model::{
     HostStatus, HubLease, InboxStatus, LeaseState, SwarmView, Task, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
-use borant_core::{ChannelName, HostName, Timestamp, keys};
+use borant_core::{ChannelName, CollectionName, HostName, Timestamp, keys};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 use crate::Hub;
+use crate::board::Caller;
 
 /// The web page, embedded into the binary.
 const PAGE: &str = include_str!("web/index.html");
@@ -45,6 +47,7 @@ pub fn router(hub: Arc<Hub>, started: Timestamp) -> Router {
         .route("/", get(page))
         .route("/healthz", get(healthz))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/board", get(board))
         .route("/api/channels", get(channels))
         .route("/api/channels/{channel}/graph", get(graph))
         .route("/api/events", get(events))
@@ -124,6 +127,21 @@ async fn healthz(State(app): State<App>) -> Response {
 /// The `SwarmView` that `borant top` and `ToolCall::View` show.
 async fn snapshot(State(app): State<App>) -> Result<Json<SwarmView>, Fail> {
     Ok(Json(app.hub.view().await?))
+}
+
+/// The query of `GET /api/board`.
+#[derive(Debug, Deserialize)]
+struct BoardQuery {
+    collection: Option<CollectionName>,
+}
+
+/// The board that a person reads: every collection, or the one that the query
+/// names. It serves the person's view, as `/api/snapshot` does.
+async fn board(
+    State(app): State<App>,
+    Query(query): Query<BoardQuery>,
+) -> Result<Json<BoardView>, Fail> {
+    Ok(Json(app.hub.board(Caller::Person, query.collection).await?))
 }
 
 /// The body of `POST /v1/join`: the host name and its single-use token.

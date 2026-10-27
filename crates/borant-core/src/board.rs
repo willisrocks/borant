@@ -473,10 +473,6 @@ mod tests {
         name.parse().unwrap()
     }
 
-    fn agent(name: &str) -> AgentId {
-        name.parse().unwrap()
-    }
-
     fn col(name: &str) -> CollectionName {
         name.parse().unwrap()
     }
