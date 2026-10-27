@@ -93,5 +93,8 @@
         ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./register.js"
+  ]
 }
