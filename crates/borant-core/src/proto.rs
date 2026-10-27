@@ -553,6 +553,15 @@ pub enum ToolCall {
     ProjectList,
     /// The live view of the swarm, for `borant top` and `borant status --json`.
     View,
+    /// The board of sagas, epics, and questions (spec: sagas and epics). A
+    /// computed read that stores nothing. A person reads every collection, an
+    /// agent only its own.
+    Board {
+        /// One collection of `hub.toml`. `None` reads every collection that
+        /// the caller may see.
+        #[serde(default)]
+        collection: Option<CollectionName>,
+    },
     /// The latest usage report of one bundle member, from a human.
     UsageReport {
         bundle: BundleName,

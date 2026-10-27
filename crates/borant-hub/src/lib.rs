@@ -6,6 +6,7 @@
 //! restart on a large store still answers requests.
 
 mod alerts;
+mod board;
 mod calls;
 pub mod changes;
 mod continuation;
@@ -335,6 +336,39 @@ impl Hub {
                     }
                     serde_json::to_value(self.view().await?)
                         .map_err(|e| ApiError::internal(e.to_string()))
+                }
+                .await;
+                if let Err(e) = &result {
+                    tracing::debug!("request failed: {e}");
+                }
+                return result.into();
+            }
+            // The board reads every task and the live view, so it must not
+            // run behind the request mutex either.
+            CtlRequest::Call {
+                actor,
+                key: None,
+                call: ToolCall::Board { collection },
+                ..
+            } => {
+                drop(mem);
+                let result = async {
+                    let call = ToolCall::Board {
+                        collection: collection.clone(),
+                    };
+                    self.authorize(&actor, &call).await?;
+                    let view = match &actor {
+                        None => self.board(board::Caller::Person, collection).await?,
+                        Some(a) => {
+                            let agent = self.agent(&a.agent).await?;
+                            self.board(
+                                board::Caller::Agent(agent.value.collection.as_ref()),
+                                collection,
+                            )
+                            .await?
+                        }
+                    };
+                    serde_json::to_value(view).map_err(|e| ApiError::internal(e.to_string()))
                 }
                 .await;
                 if let Err(e) = &result {
