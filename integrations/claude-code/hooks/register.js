@@ -11,8 +11,11 @@
 import {
   bandRows,
   allQuestions,
+  allProjects,
   digest,
+  helpLines,
   hhmm,
+  paneHelpRows,
   paneNeedsRows,
   paneProjectRows,
   paneTabs,
@@ -82,6 +85,8 @@ export function register(on) {
         else rows.push(...paneNeedsRows(questions, { width, selectedQuestion }))
         rows.push([seg('')])
         rows.push([seg('  Done tells the project orchestrator. Nothing else waits on you.', 'dim')])
+      } else if (tab === 'help') {
+        rows.push(...paneHelpRows({ width, rows: rowCount() }))
       } else {
         if (!board) rows.push([seg('  board unavailable', 'faint')])
         else rows.push(...paneProjectRows(board, { width, selectedProject }))
@@ -97,6 +102,7 @@ export function register(on) {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
       await refresh($, true)
       const args = String(e.args || '').trim()
+      if (args === 'help') return { text: helpText() }
       if (args === 'pane') return openPane($)
       if (!board) return { text: 'cos: board unavailable' }
       return { text: digest(board, { project: args || null, width: columns || 96 }) }
@@ -141,8 +147,8 @@ async function start($) {
   try {
     await $.command.register({
       name: 'cos',
-      description: 'The chief-of-staff board: needs you, projects, or /cos pane',
-      argumentHint: '[pane|project]',
+      description: 'The chief-of-staff board: /cos, /cos <project>, /cos pane, or /cos help',
+      argumentHint: '[help|pane|project]',
       immediate: true,
     })
   } catch {
@@ -202,8 +208,10 @@ function announceNew($) {
   seenNeeds = keys
 }
 
-async function openPane($) {
-  if (!board) return { text: 'cos: board unavailable' }
+async function openPane($, view = null) {
+  if (view) tab = view
+  // The help view explains the board without one, so it opens on its own.
+  if (!board && tab !== 'help') return { text: 'cos: board unavailable' }
   try {
     const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, focus: true, closeOnEscape: true })
     if (opened && opened.isPlaced === false) {
@@ -214,6 +222,16 @@ async function openPane($) {
   } catch {
     return { text: 'cos: the pane did not open' }
   }
+}
+
+/** The rows the band numbers: the needs-you row, then one per project. */
+function rowCount() {
+  return (allQuestions(board).length ? 1 : 0) + allProjects(board).length
+}
+
+/** The help view as the transcript shows it, the same text as the pane tab. */
+function helpText() {
+  return helpLines({ rows: rowCount() }).join('\n')
 }
 
 function measure(e) {
@@ -299,18 +317,21 @@ function tree($, e, rows, prefix) {
 function press($, button) {
   switch (button.kind) {
     case 'needs':
-      tab = 'needs'
       selectedQuestion = 0
-      return openPane($)
+      return openPane($, 'needs')
     case 'project':
-      tab = 'projects'
       selectedProject = button.arg
-      return openPane($)
+      return openPane($, 'projects')
+    case 'help':
+      return openPane($, 'help')
     case 'tab-needs':
       tab = 'needs'
       return redraw($)
     case 'tab-projects':
       tab = 'projects'
+      return redraw($)
+    case 'tab-help':
+      tab = 'help'
       return redraw($)
     case 'done':
     case 'ask': {

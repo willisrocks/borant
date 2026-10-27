@@ -9,7 +9,9 @@ import {
   countNeedsYou,
   digest,
   epicState,
+  helpLines,
   hhmm,
+  paneHelpRows,
   progressBar,
   projectSummary,
   rowText,
@@ -148,6 +150,55 @@ test('a narrow band drops the padded columns and the ten-cell bar', () => {
   expect(rows[3]).not.toContain('▲ 0')
   expect(rows[3]).not.toContain('running')
   expect(rows[1]).toContain('Needs you (2)')
+})
+
+test('the band title hints the keys, and drops the hint on a narrow terminal', () => {
+  const wide = bandRows(board, { width: 140, updated })
+  expect(rowText(wide[0])).toContain('chief of staff')
+  expect(rowText(wide[0])).toContain('ctrl+x tab focus')
+  expect(rowText(wide[0])).toContain('1-3 open')
+  expect(rowText(wide[0])).toContain('/cos help')
+  expect(wide[0].some((s: { button?: { kind: string } }) => s.button?.kind === 'help')).toBe(true)
+  expect(Array.from(rowText(wide[0])).length).toBe(140)
+
+  // A narrow band keeps the name and the help button, and drops the hint.
+  const narrow = bandRows(board, { width: 100, updated })
+  expect(rowText(narrow[0])).toContain('chief of staff')
+  expect(rowText(narrow[0])).not.toContain('ctrl+x tab')
+  expect(narrow[0].some((s: { button?: { kind: string } }) => s.button?.kind === 'help')).toBe(true)
+
+  // The digits in the hint follow the rows the band numbers.
+  const one = structuredClone(board)
+  one.collections[0].needs_you = []
+  one.collections[0].projects = [projectOf('borant')] as (typeof one.collections)[0]['projects']
+  expect(rowText(bandRows(one, { width: 140, updated })[0])).toContain('1 open')
+  one.collections[0].projects = []
+  expect(rowText(bandRows(one, { width: 140, updated })[0])).toContain('ctrl+x tab focus')
+  expect(rowText(bandRows(one, { width: 140, updated })[0])).not.toContain(' open')
+})
+
+test('the help view names every key, every command, and both buttons', () => {
+  const text = helpLines({ rows: 3 }).join('\n')
+  expect(text).toContain('1-3')
+  expect(text).toContain('ctrl+x tab')
+  expect(text).toContain('ctrl+x ctrl+a')
+  expect(text).toContain('esc')
+  expect(text).toContain('/cos')
+  expect(text).toContain('/cos <project>')
+  expect(text).toContain('/cos pane')
+  expect(text).toContain('/cos help')
+  expect(text).toContain('[ ? ]')
+  expect(text).toContain('Done')
+  expect(text).toContain('Ask orchestrator')
+  expect(text).toContain('Chris marked done:')
+  expect(text).toContain('neither button calls the hub')
+  expect(helpLines({ rows: 1 }).join('\n')).toContain('1 opens a row')
+
+  // The pane draws the same lines, each fitted to its width.
+  const rows = paneHelpRows({ rows: 3, width: 60 })
+  expect(rows).toHaveLength(helpLines({ rows: 3 }).length)
+  for (const row of rows) expect(Array.from(rowText(row)).length).toBe(60)
+  expect(rowText(rows[1])).toContain('1-3')
 })
 
 test('the digest lists needs you, then each project with its epics', () => {

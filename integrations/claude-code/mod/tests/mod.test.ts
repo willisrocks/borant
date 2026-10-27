@@ -187,7 +187,7 @@ test('a board source that rejects draws "board unavailable", and nothing else', 
   expect(toasts).toEqual([])
 })
 
-test('the pane has both tabs, and its buttons submit a prompt instead of calling the hub', async ($, on) => {
+test('the pane has its tabs, and its buttons submit a prompt instead of calling the hub', async ($, on) => {
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
   mock.clock(on)
   const prompts: string[] = []
@@ -212,6 +212,7 @@ test('the pane has both tabs, and its buttons submit a prompt instead of calling
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Button', key: 'tab-needs' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tab-projects' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'tab-help' })).toBeDefined()
 
   // The Needs you tab opens on the gate, and Done submits its title and ids.
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
@@ -228,4 +229,44 @@ test('the pane has both tabs, and its buttons submit a prompt instead of calling
   await ui.press({ key: 'ask-1' })
   expect(prompts[1]).toContain('Chris asks the orchestrator: Revoke old willisrocks gh token?')
   await ui.unmount()
+})
+
+test('the help view opens from the band button and /cos help', async ($, on) => {
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
+  mock.clock(on)
+  const opened: string[] = []
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.open', ($, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.session.start({ ...SESSION })
+
+  // The band draws the hint and its help button.
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /ctrl\+x tab focus/ })).toBeDefined()
+  expect(await band.find({ type: 'Button', key: 'help' })).toBeDefined()
+  await band.press({ key: 'help' })
+  expect(opened).toEqual(['cos'])
+  await band.unmount()
+
+  // The help view lists the keys and the commands.
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /ctrl\+x ctrl\+a/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /\/cos pane/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Ask orchestrator/ })).toBeDefined()
+  await pane.press({ key: 'tab-needs' })
+  expect(await pane.find({ type: 'Text', text: /ctrl\+x ctrl\+a/ })).toBeUndefined()
+  await pane.press({ key: 'tab-help' })
+  expect(await pane.find({ type: 'Text', text: /ctrl\+x ctrl\+a/ })).toBeDefined()
+  await pane.unmount()
+
+  // `/cos help` prints the same text, and starts no turn.
+  const answer = await $.command.run({ command: 'cos', args: 'help' })
+  expect(answer.text).toContain('ctrl+x tab')
+  expect(answer.text).toContain('/cos help')
 })
