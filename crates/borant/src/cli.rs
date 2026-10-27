@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
+use borant_core::board::{BoardView, EpicLine, SagaState};
 use borant_core::model::{
-    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, UsageWindow,
+    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskStatus, UsageWindow,
 };
 use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
@@ -228,6 +229,16 @@ pub enum Command {
     /// agents.
     Inbox {
         /// Print the inbox as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the board: the projects, sagas, epics, and questions of each
+    /// collection.
+    Board {
+        /// One collection of `hub.toml`.
+        #[arg(long)]
+        collection: Option<CollectionName>,
+        /// Print the board as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1039,6 +1050,128 @@ fn render_inbox(v: &Value) -> String {
     out
 }
 
+/// The text of `borant board` (choice C18): one block per collection, a line
+/// per project, then its sagas and epics, the plain-task counts, and the
+/// questions that wait for a person.
+fn render_board(v: &BoardView) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    if v.collections.is_empty() {
+        return "No collection has a board.\n".to_owned();
+    }
+    for board in &v.collections {
+        match &board.collection {
+            Some(name) => {
+                let _ = writeln!(out, "COLLECTION {name}");
+            }
+            None => out.push_str("COLLECTION (no collection)\n"),
+        }
+        for project in &board.projects {
+            let orchestrators = if project.orchestrators.is_empty() {
+                "none".to_owned()
+            } else {
+                project
+                    .orchestrators
+                    .iter()
+                    .map(|line| {
+                        let state = if line.online { "online" } else { "offline" };
+                        format!("{} ({state})", line.agent)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let _ = writeln!(
+                out,
+                "project {}  mirror={}  orchestrators: {orchestrators}",
+                project.project,
+                if project.mirror_issues { "on" } else { "off" },
+            );
+            for saga in &project.sagas {
+                let _ = writeln!(
+                    out,
+                    "  saga #{}  {}  {}  {}/{} epics",
+                    saga.channel,
+                    saga.title.as_deref().unwrap_or(saga.channel.as_str()),
+                    saga_state_word(saga.state),
+                    saga.done,
+                    saga.total,
+                );
+                for epic in &saga.epics {
+                    let _ = writeln!(out, "    {}", epic_text(epic));
+                }
+            }
+            // A standalone epic channel has no saga above it, so its line
+            // names the channel.
+            for epic in &project.epics {
+                let _ = writeln!(out, "  epic #{}  {}", epic.channel, epic_text(epic));
+            }
+            let counts = &project.tasks;
+            let _ = writeln!(
+                out,
+                "  tasks: {} open, {} ready, {} running, {} blocked, {} stuck, {} needs_human, {} done",
+                counts.open,
+                counts.ready,
+                counts.running,
+                counts.blocked,
+                counts.stuck,
+                counts.needs_human,
+                counts.done,
+            );
+        }
+        if board.needs_you.is_empty() {
+            out.push_str("  Needs you: nothing\n");
+        } else {
+            out.push_str("  Needs you:\n");
+            for question in &board.needs_you {
+                let age = age_label(
+                    i64::try_from(v.at.since(question.since).as_millis()).unwrap_or(i64::MAX),
+                );
+                let gate = if question.gate { "[gate] " } else { "" };
+                let mut line = format!(
+                    "    {gate}{}/{}  {}",
+                    question.channel, question.task, question.title,
+                );
+                if let Some(msg) = &question.attention_msg {
+                    let _ = write!(line, ": {msg}");
+                }
+                let _ = writeln!(out, "{line} ({age})");
+            }
+        }
+    }
+    out
+}
+
+/// One epic of the text board: its title, its status, and its counts.
+fn epic_text(epic: &EpicLine) -> String {
+    format!(
+        "{}  {}  {} ready, {} running, {} done",
+        epic.title,
+        status_word(epic.status),
+        epic.counts.ready,
+        epic.counts.running,
+        epic.counts.done,
+    )
+}
+
+fn saga_state_word(state: SagaState) -> &'static str {
+    match state {
+        SagaState::Proposed => "proposed",
+        SagaState::Approved => "approved",
+        SagaState::Closed => "closed",
+    }
+}
+
+fn status_word(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Open => "open",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::NeedsHuman => "needs_human",
+        TaskStatus::Stuck => "stuck",
+        TaskStatus::Closed => "closed",
+    }
+}
+
 /// A count of milliseconds as seconds, minutes, hours, or days.
 fn age_label(ms: i64) -> String {
     let secs = ms.max(0) / 1000;
@@ -1486,6 +1619,16 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 print!("{}", render_inbox(&v));
             }
         }
+        Command::Board { collection, json } => {
+            let v = call(&c, ToolCall::Board { collection }).await?;
+            if json {
+                pretty(&v);
+            } else {
+                let board: BoardView =
+                    serde_json::from_value(v).context("the board reply is not a board")?;
+                print!("{}", render_board(&board));
+            }
+        }
         Command::Answer { task, text } => {
             let (channel, id) = task_ref(&task)?;
             // Read the task first: the answer names the version that the
@@ -1697,6 +1840,8 @@ mod tests {
             "borant logs w1 --follow",
             "borant inbox",
             "borant inbox --json",
+            "borant board",
+            "borant board --collection personal --json",
             "borant schedules",
             "borant schedules --json",
             "borant answer api/01M5S3PATRKMGFD9C0HB1CS4ZK use postgres",
@@ -2401,6 +2546,173 @@ mod tests {
         assert_eq!(
             out,
             "Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\nKept (1):\n  busy                     session\nTotals: candidates=1 keys=2 bytes=42\nDry run: nothing was deleted.\n"
+        );
+    }
+
+    #[test]
+    fn board_parses_its_flags() {
+        let cli =
+            Cli::try_parse_from(["borant", "board", "--collection", "personal", "--json"]).unwrap();
+        let Command::Board { collection, json } = cli.command else {
+            panic!("not a board");
+        };
+        assert_eq!(collection, Some("personal".parse().unwrap()));
+        assert!(json);
+
+        let cli = Cli::try_parse_from(["borant", "board"]).unwrap();
+        let Command::Board { collection, json } = cli.command else {
+            panic!("not a board");
+        };
+        assert_eq!(collection, None);
+        assert!(!json);
+
+        // A collection is a name of `hub.toml`.
+        assert!(Cli::try_parse_from(["borant", "board", "--collection", "Bad.Name"]).is_err());
+    }
+
+    /// One board of every part that the text shows.
+    fn board_view() -> BoardView {
+        use borant_core::board::{
+            AgentLine, CollectionBoard, Counts, ProjectBoard, Question, SagaLine,
+        };
+
+        let at = Timestamp(1_000_000);
+        let epic = TaskId::new();
+        let metrics = TaskId::new();
+        let stuck = TaskId::new();
+        let line = |agent: &str, online: bool| AgentLine {
+            agent: agent.parse().unwrap(),
+            online,
+            busy: online,
+            host: online.then(|| "h1".parse().unwrap()),
+        };
+        BoardView {
+            at,
+            collections: vec![CollectionBoard {
+                collection: Some("personal".parse().unwrap()),
+                projects: vec![ProjectBoard {
+                    project: "borant".parse().unwrap(),
+                    mirror_issues: true,
+                    orchestrators: vec![line("orchestrator", true), line("chief", false)],
+                    sagas: vec![SagaLine {
+                        channel: "elastic".parse().unwrap(),
+                        title: Some("Elastic compute".into()),
+                        issue: None,
+                        state: SagaState::Approved,
+                        gate: Some(TaskId::new()),
+                        epics: vec![
+                            EpicLine {
+                                channel: "elastic".parse().unwrap(),
+                                task: epic,
+                                title: "the provisioner".into(),
+                                status: TaskStatus::InProgress,
+                                issue: None,
+                                branch: None,
+                                pr_url: None,
+                                counts: Counts {
+                                    open: 1,
+                                    ready: 1,
+                                    running: 2,
+                                    blocked: 0,
+                                    stuck: 0,
+                                    needs_human: 0,
+                                    done: 4,
+                                },
+                            },
+                            EpicLine {
+                                channel: "elastic".parse().unwrap(),
+                                task: TaskId::new(),
+                                title: "the client".into(),
+                                status: TaskStatus::Open,
+                                issue: None,
+                                branch: None,
+                                pr_url: None,
+                                counts: Counts::default(),
+                            },
+                        ],
+                        done: 3,
+                        total: 5,
+                    }],
+                    epics: vec![EpicLine {
+                        channel: "metrics".parse().unwrap(),
+                        task: metrics,
+                        title: "Metrics".into(),
+                        status: TaskStatus::Open,
+                        issue: None,
+                        branch: None,
+                        pr_url: None,
+                        counts: Counts {
+                            open: 1,
+                            ready: 1,
+                            ..Counts::default()
+                        },
+                    }],
+                    tasks: Counts {
+                        open: 2,
+                        ready: 1,
+                        running: 1,
+                        blocked: 1,
+                        stuck: 1,
+                        needs_human: 0,
+                        done: 4,
+                    },
+                }],
+                needs_you: vec![
+                    Question {
+                        project: Some("borant".parse().unwrap()),
+                        channel: "elastic".parse().unwrap(),
+                        task: TaskId::new(),
+                        title: "Approve the scope and the epics".into(),
+                        status: TaskStatus::NeedsHuman,
+                        attention_msg: Some("waiting on Chris".into()),
+                        since: Timestamp(at.0 - 180_000),
+                        gate: true,
+                    },
+                    Question {
+                        project: None,
+                        channel: "roadmap".parse().unwrap(),
+                        task: stuck,
+                        title: "the migration".into(),
+                        status: TaskStatus::Stuck,
+                        attention_msg: None,
+                        since: Timestamp(at.0 - 90_000),
+                        gate: false,
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn board_renders_projects_sagas_and_questions() {
+        let v = board_view();
+        let gate = v.collections[0].needs_you[0].task;
+        let stuck = v.collections[0].needs_you[1].task;
+        assert_eq!(
+            render_board(&v),
+            format!(
+                "COLLECTION personal\n\
+                 project borant  mirror=on  orchestrators: orchestrator (online), chief (offline)\n\
+                 \x20 saga #elastic  Elastic compute  approved  3/5 epics\n\
+                 \x20   the provisioner  in_progress  1 ready, 2 running, 4 done\n\
+                 \x20   the client  open  0 ready, 0 running, 0 done\n\
+                 \x20 epic #metrics  Metrics  open  1 ready, 0 running, 0 done\n\
+                 \x20 tasks: 2 open, 1 ready, 1 running, 1 blocked, 1 stuck, 0 needs_human, 4 done\n\
+                 \x20 Needs you:\n\
+                 \x20   [gate] elastic/{gate}  Approve the scope and the epics: waiting on Chris (3m)\n\
+                 \x20   roadmap/{stuck}  the migration (1m)\n"
+            )
+        );
+    }
+
+    #[test]
+    fn board_renders_its_empty_case() {
+        assert_eq!(
+            render_board(&BoardView {
+                at: Timestamp(1_000_000),
+                collections: Vec::new(),
+            }),
+            "No collection has a board.\n"
         );
     }
 }

@@ -11,7 +11,7 @@ use axum::http::{Request, StatusCode, header};
 use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     Agent, AgentStatus, Channel, ChannelKind, HostInfo, HostStats, HostStatus, HubLease,
-    InboxStatus, Lease, LeaseState, SwarmView, Task, TaskKind, TaskStatus,
+    InboxStatus, Lease, LeaseState, Project, SwarmView, Task, TaskKind, TaskStatus,
 };
 use borant_core::ports::{Change, Entry, EventLog, InboxStats, PortError, PortResult, StateStore};
 use borant_core::{AgentId, ChannelName, ManualClock, SessionId, TaskId, Timestamp, keys};
@@ -483,6 +483,86 @@ async fn http_graph_of_a_bad_channel_name_is_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// A saga channel of the project `borant`, with `gate`.
+fn saga_channel(name: &str, gate: TaskId) -> Channel {
+    Channel {
+        name: name.parse().unwrap(),
+        owner: None,
+        schema: json!({}),
+        created: NOW,
+        closed: None,
+        project: Some("borant".parse().unwrap()),
+        branch: None,
+        collection: None,
+        paused: false,
+        kind: ChannelKind::Saga,
+        title: Some("Elastic compute".into()),
+        issue: None,
+        gate: Some(gate),
+        root: None,
+    }
+}
+
+#[tokio::test]
+async fn board_route_serves_the_board() {
+    let fx = Fx::new();
+    fx.state.seed(
+        &keys::project(&"borant".parse().unwrap()),
+        bytes(&Project {
+            name: "borant".parse().unwrap(),
+            remote_url: "git://git/demo.git".into(),
+            default_branch: "main".into(),
+            checkpoint_remote: None,
+            setup: None,
+            test: None,
+            collection: None,
+            mirror_issues: None,
+        }),
+    );
+    // A saga whose gate waits for a person.
+    let elastic: ChannelName = "elastic".parse().unwrap();
+    let gate = TaskId::new();
+    fx.state.seed(
+        &keys::channel(&elastic),
+        bytes(&saga_channel("elastic", gate)),
+    );
+    fx.state.seed(
+        &keys::task(&elastic, &gate),
+        bytes(&task(gate, TaskStatus::NeedsHuman, Vec::new())),
+    );
+
+    let (status, body) = fx.get("/api/board").await;
+    assert_eq!(status, StatusCode::OK);
+    let board: serde_json::Value = serde_json::from_str(&body).expect("the board as JSON");
+    assert_eq!(board["at"], json!(NOW));
+    assert_eq!(board["collections"][0]["collection"], json!(null));
+    let project = &board["collections"][0]["projects"][0];
+    assert_eq!(project["project"], json!("borant"));
+    assert_eq!(project["sagas"][0]["channel"], json!("elastic"));
+    assert_eq!(project["sagas"][0]["title"], json!("Elastic compute"));
+    assert_eq!(project["sagas"][0]["state"], json!("proposed"));
+    assert_eq!(project["sagas"][0]["gate"], json!(gate));
+    assert_eq!(board["collections"][0]["needs_you"][0]["gate"], json!(true));
+}
+
+#[tokio::test]
+async fn board_route_filters_by_collection() {
+    let fx = Fx::new();
+    let (status, body) = fx.get("/api/board?collection=work").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+        json!({
+            "at": NOW,
+            "collections": [{
+                "collection": "work",
+                "projects": [],
+                "needs_you": [],
+            }],
+        })
+    );
+}
+
 #[tokio::test]
 async fn http_channels_lists_the_channels_and_not_their_tasks() {
     let fx = Fx::new();
@@ -636,6 +716,8 @@ async fn http_routes_never_write_to_the_store() {
         "/",
         "/healthz",
         "/api/snapshot",
+        "/api/board",
+        "/api/board?collection=work",
         "/api/channels",
         "/api/channels/roadmap/graph",
         "/metrics",

@@ -498,6 +498,11 @@ impl Hub {
             ToolCall::View => Err(ApiError::internal(
                 "a view must not run behind the hub request mutex",
             )),
+            // `Hub::handle` routes the board the same way: it reads every
+            // task and the live view.
+            ToolCall::Board { .. } => Err(ApiError::internal(
+                "a board must not run behind the hub request mutex",
+            )),
         }
     }
 

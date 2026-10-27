@@ -132,7 +132,7 @@ test('a new needs-you item raises one toast, and no more', async ($, on) => {
     title: 'Give boopmark a goal',
     status: 'needs_human',
     attention_msg: null,
-    since: '2026-10-26T14:40:00Z',
+    since: 1793025600000,
     gate: false,
   } as (typeof board)['collections'][0]['needs_you'][number])
   payload = next
@@ -217,7 +217,7 @@ test('the pane has both tabs, and its buttons submit a prompt instead of calling
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
   await ui.press({ key: 'done-0' })
   expect(prompts).toEqual([
-    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant-hub-backup/01M5ZCS35Z2RWKFF0BCYQWJYW1)',
+    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant/01M5ZG00000000000000000015)',
   ])
 
   await ui.press({ key: 'tab-projects' })

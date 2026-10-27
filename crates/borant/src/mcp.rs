@@ -197,6 +197,12 @@ pub struct History {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct BoardArgs {
+    /// One collection of hub.toml. Omit it for every collection that you may see.
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct Wait {
     pub channel: String,
     pub task: String,
@@ -332,6 +338,14 @@ impl BorantMcp {
     #[tool(description = "Show your Borant agent ID, host, channels, and the channels you own.")]
     async fn whoami(&self, Parameters(_): Parameters<NoArgs>) -> Result<String, String> {
         self.forward(json!({"tool": "whoami"})).await
+    }
+
+    #[tool(
+        description = "Read the board: the sagas, epics, and waiting questions of your collection, computed from the records. Nothing is stored."
+    )]
+    async fn board(&self, Parameters(a): Parameters<BoardArgs>) -> Result<String, String> {
+        self.forward(json!({"tool": "board", "collection": a.collection}))
+            .await
     }
 
     #[tool(description = "Create a channel. You become its owner.")]
@@ -517,6 +531,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "board",
                 "channel_create",
                 "channel_join",
                 "channel_leave",
