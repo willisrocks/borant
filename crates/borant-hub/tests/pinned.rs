@@ -5,11 +5,13 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{Agent, Harness, Lease, LeaseState, NewTask, Task, TaskStatus};
+use borant_core::model::{Agent, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus};
 use borant_core::ports::StateStore;
-use borant_core::proto::{CtlRequest, MoveSelector, MoveTarget, RegisterSession, ToolCall};
+use borant_core::proto::{
+    CtlRequest, MoveSelector, MoveTarget, PauseSelector, RegisterSession, ToolCall,
+};
 use borant_core::{AgentId, ChannelName, SessionId, keys};
-use common::Fx;
+use common::{Fx, next_cmd};
 use serde_json::{Value, json};
 
 /// The default lease of a hub config.
@@ -447,4 +449,160 @@ async fn pinned_heartbeat_restores_a_lost_pin() {
         agent_doc(&fx, &who.agent).await.pinned,
         "a pinned agent stays pinned"
     );
+}
+
+/// A new `RegisterSession` for `who` with a fresh session, on `host`.
+fn new_session_on(who: &borant_core::proto::Registered, host: &str) -> RegisterSession {
+    RegisterSession {
+        session: SessionId::new(),
+        host: host.parse().unwrap(),
+        harness: Harness::Fake,
+        pid: Some(2),
+        cwd: "/work".into(),
+        repo: Some(common::repo()),
+        agent: Some(who.agent.clone()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn pinned_dead_session_accepts_a_new_session() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    expire(&fx).await;
+    // The host of the pinned agent lost the session and says so: its
+    // heartbeat no longer lists it.
+    fx.heartbeat("h1", &[]).await;
+
+    let v = fx
+        .req(CtlRequest::RegisterSession(new_session_on(&who, "h1")))
+        .await
+        .expect("a dead session does not hold the agent");
+    let reg: borant_core::proto::Registered = serde_json::from_value(v).unwrap();
+
+    assert!(reg.pinned, "the agent stays pinned");
+    assert_ne!(reg.session, who.session);
+    assert!(
+        matches!(
+            lease(&fx, &who.agent).await.state,
+            LeaseState::Held { host: h, .. } if h == host()
+        ),
+        "the new session holds the lease on the same host"
+    );
+    assert!(agent(&fx, &who.agent).await.pinned);
+}
+
+#[tokio::test]
+async fn pinned_dead_session_registers_on_its_own_host_only() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    expire(&fx).await;
+    fx.host("h2", &[Harness::Fake]).await;
+    fx.heartbeat("h1", &[]).await;
+
+    let err = fx
+        .req(CtlRequest::RegisterSession(new_session_on(&who, "h2")))
+        .await
+        .unwrap_err();
+
+    assert!(err.message.contains("pinned"), "{err}");
+    assert!(
+        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        "another host takes no session of a pinned agent"
+    );
+}
+
+#[tokio::test]
+async fn pinned_dead_agent_comes_back_on_its_host() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    let task = claim_task(&fx, &who).await;
+    expire(&fx).await;
+    let mut cmds = fx.commands("h1").await;
+    // No session held the agent for the claim timeout, with no heartbeat of
+    // the host to say that the session is gone.
+    fx.clock.advance(CLAIM_TIMEOUT * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+
+    fx.hub.tick().await.unwrap();
+
+    let order = match next_cmd(&mut cmds).await {
+        Some(borant_core::proto::HostCommand::Launch(o)) => o,
+        other => panic!("expected a launch on the pinned host, got {other:?}"),
+    };
+    assert_eq!(order.agent, who.agent);
+    assert_eq!(order.reason, MoveReason::Takeover);
+    assert!(matches!(
+        lease(&fx, &who.agent).await.state,
+        LeaseState::Reserved { host: h, .. } if h == host()
+    ));
+    // The claims stay, and so does the pin.
+    let e = fx
+        .state
+        .get(&keys::task(&api(), &task.id))
+        .await
+        .unwrap()
+        .expect("the task");
+    let task: Task = serde_json::from_slice(&e.value).unwrap();
+    assert_eq!(task.claimed_by, Some(who.agent.clone()));
+    assert!(agent(&fx, &who.agent).await.pinned);
+}
+
+#[tokio::test]
+async fn pinned_dead_agent_is_not_placed_on_another_host() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    expire(&fx).await;
+    fx.host("h2", &[Harness::Fake]).await;
+    // The pinned host cannot take the agent now.
+    fx.call(None, ToolCall::Drain { host: host() })
+        .await
+        .unwrap();
+    fx.clock.advance(CLAIM_TIMEOUT * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.heartbeat("h1", &[]).await;
+    let mut h1 = fx.commands("h1").await;
+    let mut h2 = fx.commands("h2").await;
+
+    fx.hub.tick().await.unwrap();
+
+    assert!(
+        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        "the agent waits for the host that held it"
+    );
+    assert!(next_cmd(&mut h2).await.is_none(), "never on another host");
+    assert!(next_cmd(&mut h1).await.is_none());
+}
+
+#[tokio::test]
+async fn paused_pinned_agent_is_not_relaunched() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    fx.call(
+        Some(&who),
+        ToolCall::Stop {
+            selector: PauseSelector::Agent(who.agent.clone()),
+            grace_secs: None,
+        },
+    )
+    .await
+    .expect("the owner stops its agent");
+    expire(&fx).await;
+    fx.clock.advance(CLAIM_TIMEOUT * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+    fx.heartbeat("h1", &[]).await;
+    let mut cmds = fx.commands("h1").await;
+
+    fx.hub.tick().await.unwrap();
+
+    assert!(
+        matches!(lease(&fx, &who.agent).await.state, LeaseState::Expired { .. }),
+        "a paused agent is not placed"
+    );
+    while let Some(cmd) = next_cmd(&mut cmds).await {
+        assert!(
+            !matches!(cmd, borant_core::proto::HostCommand::Launch(_)),
+            "no launch of a paused agent: {cmd:?}"
+        );
+    }
 }
