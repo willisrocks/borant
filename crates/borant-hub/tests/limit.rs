@@ -7,7 +7,9 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use borant_core::model::{Agent, Harness, HostInfo, MemberBundle, MemberState, MoveReason};
+use borant_core::model::{
+    Agent, ChannelKind, Harness, HostInfo, MemberBundle, MemberState, MoveReason,
+};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{CtlRequest, HostCommand, ToolCall};
 use borant_core::{AgentId, BundleName, ChannelName, Clock, MemberName, keys};
@@ -61,6 +63,9 @@ async fn setup(fx: &Fx, members: &[&str]) -> borant_core::proto::Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

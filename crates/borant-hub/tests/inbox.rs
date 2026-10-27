@@ -6,7 +6,8 @@ mod common;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, Envelope, Harness, NewTask, PauseReason, Sender, Target, TaskPatch, TaskStatus,
+    Agent, ChannelKind, Envelope, Harness, NewTask, PauseReason, Sender, Target, TaskPatch,
+    TaskStatus,
 };
 use borant_core::ports::MessageBus;
 use borant_core::ports::StateStore;
@@ -31,6 +32,9 @@ async fn with_channel(fx: &Fx) -> Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

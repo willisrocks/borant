@@ -5,7 +5,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use borant_core::model::{Agent, Harness, Target};
+use borant_core::model::{Agent, ChannelKind, Harness, Target};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{HostCommand, Registered, ToolCall};
 use borant_core::rules::roles::RoleConfig;
@@ -73,6 +73,9 @@ async fn setup(fx: &Fx) -> Setup {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

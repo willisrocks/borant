@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, ContinuePolicy, ContinueState, Envelope, Harness, NewTask, Target, Task, TaskBinding,
-    TaskStatus,
+    Agent, ChannelKind, ContinuePolicy, ContinueState, Envelope, Harness, NewTask, Target, Task,
+    TaskBinding, TaskStatus,
 };
 use borant_core::ports::{Delivery, Incoming, MessageBus, PortResult, StateStore};
 use borant_core::proto::{ApiErrorCode, PauseSelector, Registered, ToolCall};
@@ -71,6 +71,9 @@ async fn bound(fx: &Fx) -> (Registered, Task) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

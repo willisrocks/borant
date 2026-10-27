@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use borant_core::events::{EventFilter, SwarmEvent, SwarmEventBody, kind_of};
 use borant_core::model::{
-    Harness, HostInfo, HostStats, RepoInfo, Sender, SpawnRecord, SpawnSpec, SpawnState,
+    ChannelKind, Harness, HostInfo, HostStats, RepoInfo, Sender, SpawnRecord, SpawnSpec, SpawnState,
 };
 use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{Actor, ApiError, CtlRequest, Registered, SessionLeaseRef, ToolCall};
@@ -204,6 +204,9 @@ async fn channel(fx: &Fx, owner: &Registered) -> ChannelName {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

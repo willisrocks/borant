@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use borant_core::events::{EventFilter, kind_of};
 use borant_core::model::{
-    Agent, CloseReason, Harness, HostInfo, HostStats, Lease, LeaseState, NewTask, RepoInfo, Task,
-    TaskRef, TaskStatus,
+    Agent, ChannelKind, CloseReason, Harness, HostInfo, HostStats, Lease, LeaseState, NewTask,
+    RepoInfo, Task, TaskRef, TaskStatus,
 };
 use borant_core::ports::{EventLog, MessageBus, StateStore};
 use borant_core::proto::{
@@ -242,6 +242,9 @@ async fn fixture() -> (Fx, Registered, Registered, Task, Task) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

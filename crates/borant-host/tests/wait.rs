@@ -6,7 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use borant_core::model::{CloseReason, NewTask};
+use borant_core::model::{ChannelKind, CloseReason, NewTask};
 use borant_core::proto::ApiErrorCode;
 use borant_core::proto::ToolCall;
 use borant_core::{ChannelName, SessionId, TaskId};
@@ -48,6 +48,9 @@ async fn channel_and_task(fx: &Fx, channel: &str) -> (SessionId, TaskId) {
                 schema: None,
                 project: None,
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await

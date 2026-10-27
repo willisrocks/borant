@@ -153,6 +153,9 @@ async fn prune_keeps_an_agent_with_a_pending_move() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

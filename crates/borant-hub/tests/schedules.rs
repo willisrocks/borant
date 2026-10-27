@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use borant_core::Clock;
 use borant_core::config::{ScheduleConfig, ScheduleMessageConfig, ScheduleTaskConfig};
-use borant_core::model::{CloseReason, Envelope, Harness, Task};
+use borant_core::model::{ChannelKind, CloseReason, Envelope, Harness, Task};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Registered, ToolCall};
 use borant_core::rules::schedules::{Overlap, Schedule};
@@ -81,6 +81,9 @@ async fn fixture(schedule: &Schedule) -> Fx {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

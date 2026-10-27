@@ -5,7 +5,7 @@ use std::time::Duration;
 
 mod common;
 
-use borant_core::model::{CloseReason, Harness, NewTask, Task, TaskPatch, TaskStatus};
+use borant_core::model::{ChannelKind, CloseReason, Harness, NewTask, Task, TaskPatch, TaskStatus};
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, Registered, ToolCall};
 use borant_core::{ChannelName, Clock, TaskId, keys};
@@ -35,6 +35,9 @@ async fn rig() -> Rig {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

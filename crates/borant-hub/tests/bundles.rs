@@ -12,7 +12,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use borant_core::config::ChannelConfig;
-use borant_core::model::{Agent, Harness, HostInfo, MoveReason};
+use borant_core::model::{Agent, ChannelKind, Harness, HostInfo, MoveReason};
 use borant_core::ports::StateStore;
 use borant_core::proto::{
     ApiErrorCode, CtlRequest, HostCommand, MoveSelector, MoveTarget, Registered, ToolCall,
@@ -60,6 +60,9 @@ async fn channel(fx: &Fx, who: &Registered, name: &str) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

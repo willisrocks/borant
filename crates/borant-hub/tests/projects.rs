@@ -1,6 +1,6 @@
 mod common;
 
-use borant_core::model::{Agent, Harness, NewTask, Project, Task};
+use borant_core::model::{Agent, ChannelKind, Harness, NewTask, Project, Task};
 use borant_core::ports::StateStore;
 use borant_core::proto::{
     ApiErrorCode, CtlRequest, HostCommand, LaunchOrder, RegisterSession, Registered, ToolCall,
@@ -43,6 +43,9 @@ async fn setup(fx: &Fx, project: Option<&str>, branch: Option<&str>) -> Register
             schema: None,
             project: project.map(|p| p.parse().unwrap()),
             branch: branch.map(Into::into),
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -135,6 +138,9 @@ async fn channel_create_with_unknown_project_fails() {
                 schema: None,
                 project: Some("nope".parse::<ProjectName>().unwrap()),
                 branch: None,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
             },
         )
         .await
@@ -258,6 +264,9 @@ async fn takeover_in_another_harness_drops_the_model() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

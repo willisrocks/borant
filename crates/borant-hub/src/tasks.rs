@@ -5,10 +5,10 @@ use std::time::Duration;
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
-    TaskKind, TaskPatch, TaskStatus,
+    TaskPatch, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
-use borant_core::rules::{schema, tasks as rules};
+use borant_core::rules::{saga, schema, tasks as rules};
 use borant_core::{AgentId, ChannelName, CoreError, MessageId, TaskId, keys, subjects};
 use serde_json::{Map, Value};
 
@@ -45,12 +45,13 @@ impl Hub {
         channel: &ChannelName,
         ready_only: bool,
     ) -> Result<Vec<Task>, ApiError> {
-        self.channel(channel).await?;
+        let ch = self.channel(channel).await?;
         let all = self.tasks(channel).await?;
         if !ready_only {
             return Ok(all);
         }
-        let ready = rules::ready(&all);
+        // Rule 2: an unapproved saga has no ready task.
+        let ready = saga::ready_in(&ch.value, &all);
         Ok(all.into_iter().filter(|t| ready.contains(&t.id)).collect())
     }
 
@@ -87,6 +88,9 @@ impl Hub {
         {
             return Err(CoreError::UnknownTask(p).into());
         }
+        // The kind of the channel decides the parent that a create stores,
+        // and an epic channel parents a loose task to its root.
+        let parent = saga::check_create(&ch.value, &all, &new)?;
         let now = self.now();
         let task = Task {
             id,
@@ -101,9 +105,9 @@ impl Hub {
             attempts: 0,
             max_attempts: new.max_attempts,
             blocked_by: new.blocked_by,
-            parent: new.parent,
-            kind: TaskKind::Task,
-            issue: None,
+            parent,
+            kind: new.kind,
+            issue: new.issue,
             properties: new.properties,
             created: now,
             updated: now,
@@ -184,6 +188,9 @@ impl Hub {
         if let Some(max) = patch.max_attempts {
             t.max_attempts = Some(max);
         }
+        if let Some(issue) = patch.issue {
+            t.issue = Some(issue);
+        }
         if let Some(blocked_by) = patch.blocked_by {
             let all = self.tasks(channel).await?;
             let others: Vec<Task> = all.into_iter().filter(|o| o.id != *id).collect();
@@ -197,6 +204,7 @@ impl Hub {
             self.task(channel, &parent).await?;
             // The new parent must not be a child of this task.
             let all = self.tasks(channel).await?;
+            saga::check_parent(&ch.value, &all, t, parent)?;
             let mut at = Some(parent);
             let mut path = vec![*id, parent];
             while let Some(p) = at {
@@ -238,6 +246,15 @@ impl Hub {
         )
         .await?;
         self.task_status_event(mem, channel, &before, &doc.value);
+        // Rule 2: the gate goes to a question, so the approvers of the
+        // collection hear once, on the change into `needs_human`.
+        if before.status != TaskStatus::NeedsHuman
+            && doc.value.status == TaskStatus::NeedsHuman
+            && ch.value.gate == Some(*id)
+            && let Err(e) = self.notify_approvers(&ch.value, &doc.value).await
+        {
+            tracing::warn!(%channel, task = %id, "the approver message was lost: {e}");
+        }
         // A worker bound to this task with `stop_on_close` retires when the
         // update closes the task, not on any other field.
         if doc.value.status == TaskStatus::Closed {
@@ -291,6 +308,10 @@ impl Hub {
         let ch = self.channel(channel).await?;
         let mut doc = self.task(channel, id).await?;
         let before = doc.value.clone();
+        // Rules 2 and 5, choice C7: a claim sees the gate and the blockers of
+        // the channel.
+        let all = self.tasks(channel).await?;
+        saga::check_claim(&ch.value, &all, &doc.value)?;
         match &doc.value.claimed_by {
             Some(other) if other != agent => return Err(CoreError::Claimed(other.clone()).into()),
             _ => {}
@@ -358,9 +379,20 @@ impl Hub {
         message: String,
     ) -> Result<Task, ApiError> {
         let ch = self.channel(channel).await?;
-        // Only the owner of the channel and a person close a task as done. A
-        // channel with no owner has only a person: an agent always needs one.
-        if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
+        // Rule 3 and choice C4: the gate of a saga closes, for every reason,
+        // only by a person or an approver. The owner of the channel is bound
+        // by the same rule as anyone else.
+        if ch.value.gate == Some(*id) {
+            if !self.is_approver(by).await? {
+                return Err(ApiError::new(
+                    ApiErrorCode::Denied,
+                    "only a person or an approver closes the gate of a saga",
+                ));
+            }
+        } else if reason == CloseReason::Done && !is_owner_or_person(&ch.value.owner, by) {
+            // Only the owner of the channel and a person close a task as
+            // done. A channel with no owner has only a person: an agent
+            // always needs one.
             return Err(ApiError::new(
                 ApiErrorCode::Denied,
                 "only the owner closes a task as done",

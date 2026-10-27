@@ -7,7 +7,7 @@ mod common;
 
 use borant_core::events::{EventFilter, SwarmEvent, SwarmEventBody, kind_of};
 use borant_core::model::{
-    Agent, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
+    Agent, ChannelKind, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
 };
 use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{CtlRequest, HostCommand, Registered, ToolCall};
@@ -31,6 +31,9 @@ async fn setup(fx: &Fx) -> (Registered, Registered) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

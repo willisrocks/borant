@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, CloseReason, Envelope, Harness, HostInfo, NewTask, Sender, SpawnRecord, SpawnState,
-    Target, Task, TaskBinding, TaskStatus,
+    Agent, ChannelKind, CloseReason, Envelope, Harness, HostInfo, NewTask, Sender, SpawnRecord,
+    SpawnState, Target, Task, TaskBinding, TaskStatus,
 };
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Actor, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
@@ -56,6 +56,9 @@ async fn owner(fx: &Fx) -> Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -572,6 +575,9 @@ async fn spawns_one_per_counts_a_queued_record() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -667,6 +673,9 @@ async fn a_person_spawns_from_the_cli() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

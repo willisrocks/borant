@@ -1,6 +1,6 @@
 mod common;
 
-use borant_core::model::{Harness, MoveReason, NewTask, Target, Task, TaskStatus};
+use borant_core::model::{ChannelKind, Harness, MoveReason, NewTask, Target, Task, TaskStatus};
 use borant_core::ports::MessageBus;
 use borant_core::proto::{
     ApiErrorCode, CtlRequest, HostCommand, MoveSelector, MoveTarget, ToolCall,
@@ -29,6 +29,9 @@ async fn setup(
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -226,6 +229,9 @@ async fn claims_return_to_open_after_claim_timeout() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -666,6 +672,9 @@ async fn claims_of_an_unmovable_agent_time_out() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

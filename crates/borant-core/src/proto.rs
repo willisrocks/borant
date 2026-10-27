@@ -12,9 +12,9 @@ use crate::ids::{
     ProjectName, RoleName, SessionId, TaskId,
 };
 use crate::model::{
-    CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo, HostStats, MoveReason,
-    NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch, TaskStatus,
-    UsageWindow,
+    ChannelKind, CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo, HostStats,
+    MoveReason, NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch,
+    TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -347,6 +347,17 @@ pub enum ToolCall {
         /// The base branch. Defaults to the default branch of the project.
         #[serde(default)]
         branch: Option<String>,
+        /// The kind of the channel. A saga gets a gate task and an epic
+        /// channel a root epic; the reply names it.
+        #[serde(default)]
+        kind: ChannelKind,
+        /// A display name. A saga and an epic channel take their name when
+        /// this is unset.
+        #[serde(default)]
+        title: Option<String>,
+        /// The issue link of a saga.
+        #[serde(default)]
+        issue: Option<String>,
     },
     ChannelJoin {
         name: ChannelName,

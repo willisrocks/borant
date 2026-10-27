@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, Harness, HostInfo, MemberBundle, MemberState, SpawnRecord, SpawnState, UsageWindow,
+    Agent, ChannelKind, Harness, HostInfo, MemberBundle, MemberState, SpawnRecord, SpawnState,
+    UsageWindow,
 };
 use borant_core::ports::StateStore;
 use borant_core::proto::{CtlRequest, HostCommand, ToolCall};
@@ -61,6 +62,9 @@ async fn setup(fx: &Fx) -> borant_core::proto::Registered {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -217,6 +221,9 @@ async fn members_no_member_agent_still_lands_on_a_host_without_the_bundle() {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await

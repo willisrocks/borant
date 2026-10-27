@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use borant_core::events::{EventFilter, SwarmEvent};
-use borant_core::model::{Envelope, Harness, NewTask, Task};
+use borant_core::model::{ChannelKind, Envelope, Harness, NewTask, Task};
 use borant_core::ports::changes::{
     ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState,
 };
@@ -56,6 +56,9 @@ async fn setup(fx: &Fx) -> (Registered, Registered, TaskId) {
             schema: None,
             project: None,
             branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
         },
     )
     .await
@@ -425,6 +428,9 @@ async fn changes_publish_one_change_updated_event() {
         schema: None,
         project: None,
         branch: None,
+        kind: ChannelKind::Project,
+        title: None,
+        issue: None,
     })
     .await;
     call(ToolCall::TaskCreate {
