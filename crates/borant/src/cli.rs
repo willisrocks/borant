@@ -122,6 +122,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TaskCmd,
     },
+    /// Work with one channel.
+    Channel {
+        #[command(subcommand)]
+        cmd: ChannelCmd,
+    },
     /// Send a direct message to an agent, or a broadcast to #channel.
     Send {
         /// An agent ID, or #channel.
@@ -343,6 +348,15 @@ pub enum TaskCmd {
         /// What was done, for the channel owner.
         #[arg(long, default_value = "")]
         message: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChannelCmd {
+    /// Close a channel. Every task of the channel must be closed first.
+    Close {
+        /// The channel name.
+        name: ChannelName,
     },
 }
 
@@ -1403,6 +1417,9 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 );
             }
         },
+        Command::Channel { cmd } => match cmd {
+            ChannelCmd::Close { name } => pretty(&call(&c, ToolCall::ChannelClose { name }).await?),
+        },
         Command::Send { to, text, urgent } => {
             let to: Target = to.parse()?;
             pretty(
@@ -1977,6 +1994,18 @@ mod tests {
 
     fn cli_command(line: &str) -> Command {
         Cli::try_parse_from(line.split(' ')).unwrap().command
+    }
+
+    #[test]
+    fn channel_close_parses() {
+        let cmd = cli_command("borant channel close sagatest");
+        let Command::Channel {
+            cmd: ChannelCmd::Close { name },
+        } = cmd
+        else {
+            panic!("not a channel close");
+        };
+        assert_eq!(name, "sagatest".parse::<ChannelName>().unwrap());
     }
 
     #[test]

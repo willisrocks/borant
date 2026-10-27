@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
-    CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
-    TaskPatch, TaskStatus,
+    ChannelKind, CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent,
+    TaskEventKind, TaskPatch, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::{saga, schema, tasks as rules};
@@ -432,6 +432,11 @@ impl Hub {
         self.task_status_event(mem, channel, &before, &doc.value);
         // A worker bound to this task with `stop_on_close` retires now.
         self.retire_for_task(mem, channel, id).await?;
+        // Rule 8: the root epic of an epic channel closes its channel.
+        if ch.value.kind == ChannelKind::Epic && ch.value.root == Some(*id) {
+            let again = self.channel(channel).await?;
+            self.close_channel(again).await?;
+        }
         Ok(doc.value)
     }
 
@@ -662,7 +667,7 @@ impl Hub {
 }
 
 /// Whether `by` is the owner of the channel or a person.
-fn is_owner_or_person(owner: &Option<AgentId>, by: &Sender) -> bool {
+pub(crate) fn is_owner_or_person(owner: &Option<AgentId>, by: &Sender) -> bool {
     match by {
         Sender::Human => true,
         Sender::Agent(agent) => owner.as_ref() == Some(agent),

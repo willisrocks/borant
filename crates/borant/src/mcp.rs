@@ -387,6 +387,17 @@ impl BorantMcp {
     }
 
     #[tool(
+        description = "Close a channel. Only the owner or a person closes it, and only when every task of the channel is closed."
+    )]
+    async fn channel_close(
+        &self,
+        Parameters(a): Parameters<ChannelName>,
+    ) -> Result<String, String> {
+        self.forward(json!({"tool": "channel_close", "name": a.name}))
+            .await
+    }
+
+    #[tool(
         description = "List the members of a channel, with their host and whether they are online."
     )]
     async fn members(&self, Parameters(a): Parameters<ChannelName>) -> Result<String, String> {
@@ -532,6 +543,7 @@ mod tests {
             names,
             [
                 "board",
+                "channel_close",
                 "channel_create",
                 "channel_join",
                 "channel_leave",

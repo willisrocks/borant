@@ -253,6 +253,10 @@ impl Hub {
                     .await?;
                 to_value(&ch.value)
             }
+            ToolCall::ChannelClose { name } => {
+                let closed = self.channel_close(&sender, mine.as_ref(), &name).await?;
+                to_value(&closed)
+            }
             ToolCall::Members { name } => {
                 self.channel_for(mine.as_ref(), &name).await?;
                 let mut out = Vec::new();
@@ -543,7 +547,7 @@ impl Hub {
     }
 
     /// The channel, checked against the collection of the caller.
-    async fn channel_for(
+    pub(crate) async fn channel_for(
         &self,
         mine: Option<&CollectionName>,
         name: &ChannelName,
