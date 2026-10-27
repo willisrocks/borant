@@ -157,7 +157,7 @@ test('the band title hints the keys, and drops the hint on a narrow terminal', (
   expect(rowText(wide[0])).toContain('chief of staff')
   expect(rowText(wide[0])).toContain('ctrl+x tab focus')
   expect(rowText(wide[0])).toContain('1-3 open')
-  expect(rowText(wide[0])).toContain('? help')
+  expect(rowText(wide[0])).toContain('/cos help')
   expect(wide[0].some((s: { button?: { kind: string } }) => s.button?.kind === 'help')).toBe(true)
   expect(Array.from(rowText(wide[0])).length).toBe(140)
 
@@ -187,6 +187,7 @@ test('the help view names every key, every command, and both buttons', () => {
   expect(text).toContain('/cos <project>')
   expect(text).toContain('/cos pane')
   expect(text).toContain('/cos help')
+  expect(text).toContain('[ ? ]')
   expect(text).toContain('Done')
   expect(text).toContain('Ask orchestrator')
   expect(text).toContain('Chris marked done:')

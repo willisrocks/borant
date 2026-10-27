@@ -242,7 +242,7 @@ export function digitRange(rows) {
 /** The dim hint in the band's title row: focus the band, the digits, help. */
 export function keyHint(rows) {
   const digits = digitRange(rows)
-  return ['ctrl+x tab focus', digits ? digits + ' open' : null, '? help'].filter(Boolean).join(' \u00b7 ')
+  return ['ctrl+x tab focus', digits ? digits + ' open' : null, '/cos help'].filter(Boolean).join(' \u00b7 ')
 }
 
 /**
@@ -258,7 +258,6 @@ export function helpLines(options = {}) {
     row('ctrl+x tab', 'focus the band, then each pane, then the prompt'),
     row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
     row('esc', 'back to the prompt, or close the pane'),
-    row('?', 'this help, or the [ ? ] button in the band'),
     '',
     'commands',
     row('/cos', 'the board as text'),
@@ -267,6 +266,7 @@ export function helpLines(options = {}) {
     row('/cos help', 'this help'),
     '',
     'buttons',
+    row('[ ? ]', "the band's help button: this view"),
     row('Done', 'submits "Chris marked done: <item>" to the chief'),
     row('Ask orchestrator', 'submits a question about <item> to the chief'),
     row('', 'neither button calls the hub'),

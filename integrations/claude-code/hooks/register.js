@@ -111,21 +111,6 @@ export function register(on) {
     }
   })
 
-  // `?` alone is the help key. A band hotkey is one digit or one lowercase
-  // letter, so the band's `?` reads the prompt instead: Enter after it opens
-  // the help view and no turn runs.
-  on('prompt.submit', async ($, e, next) => {
-    try {
-      if (isChief && String(e.text || '').trim() === '?') {
-        await openPane($, 'help')
-        return { drop: 'cos: the help view is in the pane' }
-      }
-    } catch {
-      // A prompt the chief typed always goes on.
-    }
-    return next(e)
-  })
-
   // A turn starts when a Borant message arrives, so the board catches up then.
   on('turn.start', async ($, e, next) => {
     try {

@@ -158,11 +158,12 @@ while the prompt is empty), a toast when a new item needs the person, and
 other session registers no timer, no command, and draws nothing.
 
 The band's title row carries a dim hint of the keys and a `[ ? ]` button. The
-help view, a third tab beside Needs you and Projects, opens from that button,
-from a `?` typed on its own at the prompt (Enter then opens it, and no turn
-runs), and from `/cos help`, which prints the same text in the transcript. The
-keys are the real bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json`
-can change:
+help view, a third tab beside Needs you and Projects, opens from that button
+and from `/cos help`, which prints the same text in the transcript without
+starting a turn. `?` on its own at the prompt is Claude Code's own shortcuts
+panel, and a band hotkey may only be a digit or a lowercase letter, so `?` is
+the button's label and `/cos help` is the typed form. The keys are the real
+bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json` can change:
 
 |Key|What it does|
 |---|---|

@@ -231,7 +231,7 @@ test('the pane has its tabs, and its buttons submit a prompt instead of calling 
   await ui.unmount()
 })
 
-test('the help view opens from the band button, the ? prompt, and /cos help', async ($, on) => {
+test('the help view opens from the band button and /cos help', async ($, on) => {
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
   mock.clock(on)
   const opened: string[] = []
@@ -269,8 +269,4 @@ test('the help view opens from the band button, the ? prompt, and /cos help', as
   const answer = await $.command.run({ command: 'cos', args: 'help' })
   expect(answer.text).toContain('ctrl+x tab')
   expect(answer.text).toContain('/cos help')
-
-  // `?` at the prompt opens it, and no prompt reaches the chief.
-  expect(await $.prompt.submit({ text: '?' })).toEqual({ drop: 'cos: the help view is in the pane' })
-  expect(opened).toEqual(['cos', 'cos'])
 })
