@@ -217,6 +217,12 @@ jobs:
           name="borant-integrations-v${VERSION}"
           mkdir -p "$name"
           cp -R integrations/claude-code "$name/claude-code"
+          # The bump job writes the version on main only after the release,
+          # so the released commit still carries the previous one. Stamp the
+          # packaged plugin with the version that it ships in.
+          plugin="$name/claude-code/.claude-plugin/plugin.json"
+          jq --arg v "$VERSION" '.version = $v' "$plugin" > "$plugin.new" && mv "$plugin.new" "$plugin"
+          [[ "$(jq -r .version "$plugin")" == "$VERSION" ]] || { echo "plugin version mismatch" >&2; exit 1; }
           mkdir -p "$name/pi"
           cp integrations/pi/borant.ts integrations/pi/README.md "$name/pi/"
           tar -czf "out/$name.tar.gz" "$name"
