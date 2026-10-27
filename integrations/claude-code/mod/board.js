@@ -239,10 +239,10 @@ export function digitRange(rows) {
   return n === 1 ? '1' : '1-' + Math.min(9, n)
 }
 
-/** The dim hint in the band's title row: focus the band, the digits, help. */
+/** The dim hint in the band's title row: focus the band, move, the digits, help. */
 export function keyHint(rows) {
   const digits = digitRange(rows)
-  return ['ctrl+x tab focus', digits ? digits + ' open' : null, '/cos help'].filter(Boolean).join(' \u00b7 ')
+  return ['ctrl+x tab focus', 'j/k move', digits ? digits + ' open' : null, '/cos help'].filter(Boolean).join(' \u00b7 ')
 }
 
 /**
@@ -257,7 +257,12 @@ export function helpLines(options = {}) {
     row(digits, (digits === '1' ? '1 opens a row' : digits + ' open a row') + ': 1 needs you, then one per project'),
     row('ctrl+x tab', 'focus the band, then each pane, then the prompt'),
     row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
-    row('esc', 'back to the prompt, or close the pane'),
+    row('\u2191 \u2193  j k', 'move the selection through the rows'),
+    row('\u2190 \u2192  h l', 'switch tabs; fold or unfold a node; l opens a leaf'),
+    row('enter', 'open the selected project, saga, epic, or task'),
+    row('esc', 'back one level, and at the top close the pane'),
+    row('tab', 'the next control, and shift+tab the one before'),
+    row('click', 'a row selects it; a second click or its \u25b8 opens it'),
     '',
     'commands',
     row('/cos', 'the board as text'),
@@ -270,6 +275,13 @@ export function helpLines(options = {}) {
     row('Done', 'submits "Chris marked done: <item>" to the chief'),
     row('Ask orchestrator', 'submits a question about <item> to the chief'),
     row('', 'neither button calls the hub'),
+    '',
+    'the pane',
+    row('project', 'opens its sagas, epics, and plain tasks'),
+    row('epic', 'opens its child tasks'),
+    row('task', 'its status, owner, blockers, PR, and last update'),
+    row('', 'the breadcrumb in the title shows where you are'),
+    row('', 'borant tasks <channel> reads a view; tasks unavailable if it fails'),
   ]
 }
 
@@ -431,48 +443,6 @@ export function bandRows(board, options = {}) {
   return rows.slice(0, maxRows === Infinity ? rows.length : maxRows)
 }
 
-/** The rows of the pane's Projects tab. */
-export function paneProjectRows(board, options = {}) {
-  const width = Math.max(20, options.width || 60)
-  const rows = []
-  allProjects(board).forEach((project, i) => {
-    const s = projectSummary(project, 10)
-    const isSelected = options.selectedProject && options.selectedProject === project.project
-    rows.push(
-      fit(
-        [
-          text(isSelected ? ' \u25be ' : '   ', 'dim'),
-          text(badge(project), badgeStyle(project, i)),
-          text('  ' + s.saga + '  ', 'bold'),
-          text(s.bar.filled, 'green'),
-          text(s.bar.empty, 'faint'),
-          text(' ' + s.bar.label + ' epics', 'plain'),
-        ],
-        width,
-      ),
-    )
-    rows.push(fit([text('      ' + orchestratorLine(project), 'dim')], width))
-    for (const epic of activeSaga(project)?.epics || []) {
-      const state = epicState(epic)
-      rows.push(
-        fit(
-          [
-            text('      ' + GLYPH[state] + ' ', state),
-            text(epic.title, state === 'done' ? 'doneDim' : 'plain'),
-            text('  ' + epicNote(epic, state), 'dim'),
-          ],
-          width,
-        ),
-      )
-    }
-    for (const epic of project?.epics || []) {
-      const state = epicState(epic)
-      rows.push(fit([text('      ' + GLYPH[state] + ' ', state), text(epic.title), text('  ' + epicNote(epic, state), 'dim')], width))
-    }
-  })
-  return rows
-}
-
 /** The short words after an epic's title in the pane. */
 export function epicNote(epic, state) {
   if (state === 'done') return 'done'
@@ -480,44 +450,6 @@ export function epicNote(epic, state) {
   if (state === 'blocked') return 'blocked'
   if (state === 'running') return 'running'
   return 'waiting'
-}
-
-/** The rows of the pane's Needs you tab, with its buttons. */
-export function paneNeedsRows(questions, options = {}) {
-  const width = Math.max(20, options.width || 60)
-  const rows = []
-  const selected = options.selectedQuestion || 0
-  questions.forEach((q, i) => {
-    const isSelected = i === selected
-    rows.push(
-      fit(
-        [
-          text((isSelected ? ' \u25b8 ' : '   ') + GLYPH.needs + ' ', 'yellow'),
-          text(q.title || '', isSelected ? 'yellowBold' : 'plain'),
-        ],
-        width,
-      ),
-    )
-    const context = [q.project || '', q.attention_msg || (q.gate ? 'gate' : ''), 'since ' + hhmm(q.since, '?')].filter(Boolean)
-    rows.push(fit([text('     ' + context.join(' \u00b7 '), 'dim')], width))
-    rows.push(
-      fit(
-        [
-          { text: '[ Done ]', style: 'button', width: 8, button: { key: 'done-' + i, label: 'Done', kind: 'done', arg: i } },
-          text('  '),
-          {
-            text: '[ Ask orchestrator ]',
-            style: 'button',
-            width: 20,
-            button: { key: 'ask-' + i, label: 'Ask orchestrator', kind: 'ask', arg: i },
-          },
-        ],
-        width,
-      ),
-    )
-    rows.push(fit([text('')], width))
-  })
-  return rows
 }
 
 /** The header row of the pane's tabs. */
