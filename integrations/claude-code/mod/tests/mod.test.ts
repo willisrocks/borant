@@ -132,7 +132,7 @@ test('a new needs-you item raises one toast, and no more', async ($, on) => {
     title: 'Give boopmark a goal',
     status: 'needs_human',
     attention_msg: null,
-    since: '2026-10-26T14:40:00Z',
+    since: 1793025600000,
     gate: false,
   } as (typeof board)['collections'][0]['needs_you'][number])
   payload = next

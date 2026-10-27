@@ -94,10 +94,28 @@ export function fit(segments, width) {
   return out
 }
 
-/** `14:32` from an ISO timestamp, without the local time zone. */
+/** The instant of a board Timestamp, or null. The hub writes integer
+ * milliseconds; an older fixture may hold an ISO string, so both read. */
+function instant(at) {
+  const ms =
+    at instanceof Date ? at.getTime() : typeof at === 'string' && at.length >= 16 ? Date.parse(at) : at
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return null
+  const date = new Date(ms)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/** `14:32` in the local time of the session, from a board Timestamp. */
 export function hhmm(at, fallback = '--:--') {
-  if (typeof at !== 'string' || at.length < 16) return fallback
-  return at.slice(11, 16)
+  const date = instant(at)
+  if (!date) return fallback
+  const two = (n) => String(n).padStart(2, '0')
+  return two(date.getHours()) + ':' + two(date.getMinutes())
+}
+
+/** The milliseconds of a board Timestamp, or null. */
+function stamp(at) {
+  const date = instant(at)
+  return date ? date.getTime() : null
 }
 
 /** The filled cells and the label of a progress bar, as the mockup draws it. */
@@ -131,7 +149,7 @@ export function allQuestions(board) {
   return out.sort((a, b) => {
     const gate = Number(Boolean(b.gate)) - Number(Boolean(a.gate))
     if (gate !== 0) return gate
-    const since = String(a.since || '').localeCompare(String(b.since || ''))
+    const since = (stamp(a.since) ?? 0) - (stamp(b.since) ?? 0)
     if (since !== 0) return since
     return String(a.title || '').localeCompare(String(b.title || ''))
   })

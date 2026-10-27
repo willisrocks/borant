@@ -9,6 +9,7 @@ import {
   countNeedsYou,
   digest,
   epicState,
+  hhmm,
   progressBar,
   projectSummary,
   rowText,
@@ -39,6 +40,24 @@ test('an epic is done, needs you, blocked, running, or waiting', () => {
   expect(epicState({ status: 'open', counts: {} })).toBe('waiting')
 })
 
+test('an integer millisecond at and since draw HH:MM, not the fallback', () => {
+  // The hub writes `at` and `since` as Timestamps in integer milliseconds.
+  expect(hhmm(1793025120000)).toMatch(/^\d{2}:\d{2}$/)
+  // An older fixture still holds an ISO string, and still draws.
+  expect(hhmm('2026-10-26T14:32:00Z')).toMatch(/^\d{2}:\d{2}$/)
+  expect(hhmm(undefined)).toBe('--:--')
+  expect(hhmm(null)).toBe('--:--')
+  expect(hhmm('not a time')).toBe('--:--')
+
+  // The band header and the digest read the fixture's numbers.
+  const head = rowText(bandRows(board, { width: 120 })[0])
+  expect(head).toMatch(/updated \d{2}:\d{2}/)
+  expect(head).not.toContain('--:--')
+  const text = digest(board, { width: 96 })
+  expect(text).toMatch(/since \d{2}:\d{2}/)
+  expect(text).not.toContain('since ?')
+})
+
 test('the progress bar fills in ten cells, and in eight on a narrow terminal', () => {
   expect(progressBar(2, 5, 10).text).toBe('████░░░░░░ 2/5')
   expect(progressBar(2, 5, 8).text).toBe('███░░░░░ 2/5')
@@ -53,7 +72,7 @@ test('a gate comes first, then the oldest', () => {
   ])
   // The gate wins even when a plain question is older.
   const later = structuredClone(board)
-  later.collections[0].needs_you[0].since = '2026-10-26T15:10:00Z'
+  later.collections[0].needs_you[0].since = 1793027400000
   expect(allQuestions(later)[0].title).toBe('Create Hetzner bucket borant-hub-backup + 1Password item')
 })
 

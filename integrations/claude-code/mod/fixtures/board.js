@@ -1,10 +1,12 @@
 // The fixture board: the approved mockup of 2026-10-27, in the BoardView shape
 // of the sagas spec. `BORANT_COS_BOARD=fixture` draws this, so a chief session
 // without a hub still shows a board. It is a code module and not board.json
-// because a mod and its tests import only .js, .ts and their variants.
+// because a mod and its tests import only .js, .ts and their variants. `at`
+// and `since` are Timestamps in integer milliseconds, as `borant board --json`
+// writes them.
 
 export const board = {
-  "at": "2026-10-26T14:32:00Z",
+  "at": 1793025120000,
   "collections": [
     {
       "collection": "personal",
@@ -187,7 +189,7 @@ export const board = {
           "title": "Create Hetzner bucket borant-hub-backup + 1Password item",
           "status": "needs_human",
           "attention_msg": "blocks 2 epics",
-          "since": "2026-10-26T13:50:00Z",
+          "since": 1793022600000,
           "gate": true
         },
         {
@@ -197,7 +199,7 @@ export const board = {
           "title": "Revoke old willisrocks gh token?",
           "status": "needs_human",
           "attention_msg": "optional",
-          "since": "2026-10-26T14:20:00Z",
+          "since": 1793024400000,
           "gate": false
         }
       ]
