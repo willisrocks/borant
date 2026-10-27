@@ -13,7 +13,7 @@ the types, the rules, and one read view for both. It is a design only.
    small fix is a plain task.
 2. One channel per saga. The whole task graph of the saga lives in that
    channel. An epic in a saga is a parent task, and its children are its
-   sub-graph. The epic carries its branch, its PR, and an optional issue link.
+   sub-graph. The epic carries its stack of PRs and an optional issue link.
    A `blocked_by` edge can cross epics, because they share one channel.
 3. A channel has an explicit kind: `saga`, `epic` (a standalone epic with its
    own channel), or `project` (the plain channel of a project, for plain
@@ -31,6 +31,10 @@ the types, the rules, and one read view for both. It is a design only.
 7. Out of scope, but this design must serve them: the chief's Claude Code mod
    (mockup v0.0.1, approved), which reads its data from the hub, and then the
    mirror.
+8. Worker PRs of an epic form one stack with GitHub's native stacking
+   (`gh stack`), not merges into a plain epic branch. (2026-10-27)
+9. An epic added after the approval of its saga needs no new approval.
+   (2026-10-27)
 
 ## Goals
 
@@ -38,7 +42,7 @@ the types, the rules, and one read view for both. It is a design only.
    kind parses as today.
 2. The hub enforces the saga gate: no claim and no spawn in a saga before its
    approval.
-3. A worker of an epic starts on the branch of the epic.
+3. A worker of an epic starts on the top branch of the epic's stack.
 4. One read view, the board, gives a collection's projects, sagas, epics,
    progress, and the questions for a person, over MCP, the CLI, and HTTP.
 5. Every saga, epic, and task can carry an issue link, and the hub resolves
@@ -75,10 +79,11 @@ The issue link is a URL or a tracker key, such as a Linear issue key. The
 field is `issue`, not `linear`, because the repo rule forbids vendor names in
 core types and keys. The Linear adapter of the later mirror reads it.
 
-The branch and the PR of an epic stay the task properties `branch` and
-`pr_url`. Both are in the default schema of every channel, and the PR watch
-of phase 6 already reads `pr_url`. As a result, the owner hears when the epic
-PR is green and when it merges, with no new code. `kind` and `issue` are
+The epic keeps the task properties `branch` and `pr_url`. `branch` names the
+top branch of the epic's stack, and `pr_url` the top PR of the stack, whose
+page on GitHub links every PR of the stack. Both are in the default schema of every channel, and the PR watch
+of phase 6 already reads `pr_url`. As a result, the owner hears when the top
+PR of the stack is green and when it merges, with no new code. `kind` and `issue` are
 first-class fields, because the hub rules and the mirror read them, and a
 property would need a schema change in every old channel.
 
@@ -129,10 +134,11 @@ property would need a schema change in every old channel.
    orchestrator can still create every task before the first spawn. The
    claim check and the board counts use the same rule. (Orchestrator's call.)
 7. **Epic branch.** A spawn bound to a task starts on the `branch` property
-   of the task's epic, if the epic has one. Otherwise it starts on the channel
-   branch, as today. The hub computes it where it fills `LaunchOrder.branch`
-   (`crates/borant-hub/src/spawns.rs`). The branch must be on `origin` before
-   the spawn.
+   of the task's epic, if the epic has one. The orchestrator keeps it at the
+   top branch of the epic's stack (see "Epic stacks"). Otherwise it starts on
+   the channel branch, as today. The hub computes it where it fills
+   `LaunchOrder.branch` (`crates/borant-hub/src/spawns.rs`). The branch must
+   be on `origin` before the spawn.
 8. **Close an epic.** The rule of today applies: a parent with open children
    cannot close. When the root epic of an epic channel closes, the hub closes
    the channel.
@@ -183,6 +189,44 @@ ready. `needs_you` is the `borant inbox` list (`needs_human` and `stuck`)
 filtered to the collection, and `gate` is true for a saga gate. The "Done"
 button of the mod maps to the existing `borant answer`, or to a gate close.
 
+## Epic stacks
+
+The PRs of an epic's tasks form one linear stack (`gh stack`) on the base
+branch. The tasks of an epic form a DAG, so the orchestrator settles the order
+as follows. (Orchestrator's call, 2026-10-27.)
+
+1. **One owner of the stack.** `gh stack` keeps its metadata in the local
+   clone, so only the orchestrator runs it, in its own clone. Workers only
+   push a branch and open a PR.
+2. **Order.** A task enters the stack when the orchestrator accepts its PR.
+   The order of the stack is the order of acceptance. A task starts only
+   after its `blocked_by` tasks closed, and a task closes when its PR is in
+   the stack, so the order of acceptance is a topological order of the DAG.
+3. **Start.** When an epic becomes ready, the orchestrator runs
+   `gh stack init --base <base>` for it and sets `branch` on the epic task to
+   the base branch. A worker starts on the epic's `branch` (rule 7) and opens
+   its PR against that branch.
+4. **Accept.** On a worker's "ready", the orchestrator reviews the PR, adds
+   the worker's branch on top of the stack, runs `gh stack rebase` and then
+   `gh stack submit --auto`, which sets the base of each PR to the branch below
+   it and links the stack. It then sets the epic's `branch` and `pr_url` to
+   the new top, and closes the task.
+5. **Parallel tasks.** Two tasks that run at once both start on the same top.
+   The second one accepted is rebased onto the first by `gh stack rebase`. On
+   a conflict, the orchestrator aborts the rebase and sends the task back to
+   its worker, who rebases onto the new top and pushes again.
+6. **A change lower in the stack.** When a PR in the stack changes, for a
+   review fix, the orchestrator runs `gh stack rebase` and
+   `gh stack submit --auto`, so every PR above it is rebased.
+7. **Merge.** When every child of the epic is closed and the CI of every PR
+   is green, the orchestrator runs `gh stack merge --yes` up to the top PR,
+   which lands the stack in the base branch at once, and closes the epic.
+   Branch protection still applies.
+
+The hub does not run `gh stack`, and no core type names it. The hub sees only
+the epic's `branch` and `pr_url`. The host of an orchestrator needs the
+`gh-stack` extension of the GitHub CLI.
+
 ## Skills
 
 The orchestrate skill:
@@ -194,12 +238,7 @@ The orchestrate skill:
    gate to `needs_human`, and end the turn. After the approval, create the
    tasks of every epic, with `blocked_by` between epics for order, and spawn
    for the ready tasks.
-3. When an epic becomes ready: create the epic branch from the base branch,
-   push it, and set `branch` on the epic task. The branch then holds the
-   merged work of the epics before it. Workers open their PRs against the epic
-   branch, and the orchestrator merges them there. When the epic's children
-   are closed, the orchestrator opens the epic PR against the base branch,
-   sets `pr_url`, merges it when green, and closes the epic.
+3. Run each epic as a stack, as "Epic stacks" says.
 4. When the last epic of a saga closes, call `channel_close`.
 
 The chief-of-staff skill:
@@ -222,17 +261,6 @@ finishes in its current channel. There is no tool to convert a channel. A
 CLI or host of an older version ignores the new fields, and the host daemon
 needs no change, because the hub computes the launch branch.
 
-## Open questions for Chris
-
-1. Do worker PRs target the epic branch, with one epic PR into the base
-   branch? Default: yes. This spec assumes it from "the epic carries its
-   branch, its PR". The other choice is that workers merge straight into the
-   base branch and the epic only tracks them. Then the epic has no branch,
-   rule 7 goes, and a release can hold half an epic.
-2. Does an epic added after the approval of its saga need a new approval?
-   Default: no. The hub adds it with no gate, and the board shows it to the
-   chief (rule 4).
-
 ## Left to the builder
 
 - The text of the error messages, and the exact JSON names in `BoardView`
@@ -249,5 +277,4 @@ needs no change, because the hub computes the launch branch.
 - The chief's mod.
 - Deadlines and schedules on the board. The mockup shows them, and the mod can
   read them from the task and `borant schedules` until the board needs them.
-- A gate on epics added after the approval.
 - Conversion of an old channel to a saga or an epic.
