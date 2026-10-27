@@ -617,3 +617,24 @@ async fn paused_pinned_agent_is_not_relaunched() {
         );
     }
 }
+
+#[tokio::test]
+async fn pinned_session_report_from_before_the_expiry_keeps_the_pin() {
+    let fx = Fx::new();
+    let who = pinned_agent(&fx).await;
+    // The last heartbeat of the host reported the session, and then the host
+    // went quiet: that report is older than the expiry, so it says nothing
+    // about a session that may still run.
+    fx.heartbeat("h1", &[&who]).await;
+    fx.clock.advance(LEASE * 2);
+    fx.hub.tick().await.unwrap();
+    fx.clock.advance(GRACE * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+
+    let err = fx
+        .req(CtlRequest::RegisterSession(new_session_on(&who, "h1")))
+        .await
+        .unwrap_err();
+
+    assert!(err.message.contains("pinned"), "{err}");
+}
