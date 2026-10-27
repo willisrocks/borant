@@ -170,6 +170,15 @@ async fn fx(root: PathBuf, secrets: Option<HostSecrets>) -> Fx {
     .await
 }
 
+/// The clone of the launch, with a committer: a checkpoint is a commit, and a
+/// CI runner has no git identity of its own.
+fn launched_clone(fx: &Fx) -> PathBuf {
+    let work = fx.dir.path().join("work/w1/web");
+    git(&work, &["config", "user.email", "t@example.com"]);
+    git(&work, &["config", "user.name", "t"]);
+    work
+}
+
 /// Registers a session of the agent in `cwd`, as the harness of a launch does,
 /// and waits until it is attached: a checkpoint of a session that the hub has
 /// not registered yet is skipped, and a slow runner may still be retrying.
@@ -201,7 +210,7 @@ async fn the_checkpoint_of_a_launched_session_pushes_with_the_bundle_vars() {
     let fx = fx(root.path().join("agents"), Some(secrets(&vars(&dir)))).await;
     let remote = remote(fx.dir.path());
     fx.host.launch(order(&remote)).await.unwrap();
-    let work = fx.dir.path().join("work/w1/web");
+    let work = launched_clone(&fx);
     let session = register(&fx, &work).await;
     fx.host.event(session, LocalEvent::TurnEnd).await.unwrap();
     std::fs::write(work.join("b.txt"), "work in progress\n").unwrap();
@@ -226,7 +235,7 @@ async fn the_checkpoint_of_a_session_without_bundles_pushes_without_variables() 
     let fx = fx(root.path().join("agents"), None).await;
     let remote = remote(fx.dir.path());
     fx.host.launch(order(&remote)).await.unwrap();
-    let work = fx.dir.path().join("work/w1/web");
+    let work = launched_clone(&fx);
     let session = register(&fx, &work).await;
     fx.host.event(session, LocalEvent::TurnEnd).await.unwrap();
     std::fs::write(work.join("b.txt"), "work in progress\n").unwrap();
