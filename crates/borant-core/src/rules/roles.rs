@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{BundleName, CollectionName, RoleName, Tag};
-use crate::model::{Agent, GitAuthor, Harness, SandboxKind};
+use crate::model::{Agent, GitAuthor, Harness, Project, SandboxKind};
 
 /// One `[roles.<name>]` entry of `hub.toml`. Every field is optional except
 /// `spawns`, which defaults to empty.
@@ -54,6 +54,10 @@ pub struct RoleConfig {
     /// The cap of one session, in hours. At the cap the hub stops the agent.
     #[serde(default)]
     pub max_session_hours: Option<u32>,
+    /// Close a saga gate as `done` or `wontfix`. Only a role with this flag
+    /// approves a saga, besides a person.
+    #[serde(default)]
+    pub approves: bool,
 }
 
 /// One `[collections.<name>]` entry of `hub.toml`.
@@ -65,6 +69,10 @@ pub struct CollectionConfig {
     pub bundles: Vec<BundleName>,
     /// The author and committer of the commits in this collection.
     pub git_author: Option<GitAuthor>,
+    /// Copy the objects of this collection out to an issue tracker. A project
+    /// overrides it.
+    #[serde(default)]
+    pub mirror_issues: bool,
 }
 
 /// `one_per` of a role: one agent of the role in each collection or project.
@@ -234,6 +242,23 @@ pub fn git_author(collection: Option<&CollectionConfig>) -> Option<GitAuthor> {
     collection.and_then(|c| c.git_author.clone())
 }
 
+/// Whether a role approves a saga gate (rule 3). Only a role of `hub.toml`
+/// with `approves = true` does, and no role approves nothing.
+pub fn approves(role: Option<&RoleName>, roles: &BTreeMap<RoleName, RoleConfig>) -> bool {
+    role.and_then(|name| roles.get(name))
+        .map(|config| config.approves)
+        .unwrap_or(false)
+}
+
+/// Whether the objects of a project go out to an issue tracker: the project's
+/// override, else the setting of its collection, else off.
+pub fn mirror_issues(project: &Project, collection: Option<&CollectionConfig>) -> bool {
+    project
+        .mirror_issues
+        .or_else(|| collection.map(|c| c.mirror_issues))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +346,7 @@ mod tests {
             sandbox: None,
             max_turns_per_day: None,
             max_session_hours: None,
+            approves: false,
         };
         let table = roles(&[("worker", worker.clone())]);
         let parent = Agent {
@@ -424,6 +450,7 @@ mod tests {
                 name: "Chris".into(),
                 email: "you@work.example".into(),
             }),
+            ..CollectionConfig::default()
         };
         let role = RoleConfig {
             bundles: vec!["fast".parse().unwrap()],
@@ -446,5 +473,63 @@ mod tests {
         // nothing.
         assert!(launch_bundles(None, None, &[], &[]).is_empty());
         assert_eq!(git_author(None), None);
+    }
+
+    /// Rule 3: only a role with `approves = true` approves a saga gate.
+    #[test]
+    fn roles_approves_reads_the_flag() {
+        let chief = RoleConfig {
+            approves: true,
+            ..RoleConfig::default()
+        };
+        let table = roles(&[("chief", chief), ("worker", role(&[]))]);
+        let chief: RoleName = "chief".parse().unwrap();
+        let worker: RoleName = "worker".parse().unwrap();
+        assert!(approves(Some(&chief), &table));
+        assert!(!approves(Some(&worker), &table));
+        assert!(!approves(None, &table), "no role approves nothing");
+        assert!(
+            !approves(Some(&"missing".parse().unwrap()), &table),
+            "a role that hub.toml does not define approves nothing"
+        );
+    }
+
+    /// The project's `mirror_issues` wins over the collection's, and both
+    /// default to off.
+    #[test]
+    fn roles_mirror_issues_project_wins_over_collection() {
+        let project = Project {
+            name: "web".parse().unwrap(),
+            remote_url: "git://git/demo.git".into(),
+            default_branch: "main".into(),
+            checkpoint_remote: None,
+            setup: None,
+            test: None,
+            collection: None,
+            mirror_issues: None,
+        };
+        let off = CollectionConfig::default();
+        let on = CollectionConfig {
+            mirror_issues: true,
+            ..CollectionConfig::default()
+        };
+
+        assert!(!mirror_issues(&project, None));
+        assert!(!mirror_issues(&project, Some(&off)));
+        assert!(mirror_issues(&project, Some(&on)));
+
+        let decided = Project {
+            mirror_issues: Some(false),
+            ..project.clone()
+        };
+        assert!(
+            !mirror_issues(&decided, Some(&on)),
+            "the project wins over its collection"
+        );
+        let mirrored = Project {
+            mirror_issues: Some(true),
+            ..project
+        };
+        assert!(mirror_issues(&mirrored, Some(&off)));
     }
 }

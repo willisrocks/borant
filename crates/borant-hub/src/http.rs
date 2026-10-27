@@ -90,6 +90,7 @@ impl IntoResponse for Fail {
             | ApiErrorCode::StaleToken
             | ApiErrorCode::Internal
             | ApiErrorCode::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiErrorCode::SagaNotApproved => StatusCode::CONFLICT,
         };
         let body = serde_json::json!({ "error": self.0.message });
         (status, Json(body)).into_response()

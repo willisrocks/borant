@@ -6,8 +6,8 @@ mod common;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, Channel, Harness, Lease, LeaseState, Member, Session, SessionEvent, SessionEventBody,
-    Target, Task, TaskStatus,
+    Agent, Channel, ChannelKind, Harness, Lease, LeaseState, Member, Session, SessionEvent,
+    SessionEventBody, Target, Task, TaskKind, TaskStatus,
 };
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
 use borant_core::proto::ToolCall;
@@ -221,6 +221,8 @@ async fn prune_keeps_an_agent_with_a_claim() {
         max_attempts: None,
         blocked_by: Vec::new(),
         parent: None,
+        kind: TaskKind::Task,
+        issue: None,
         properties: Default::default(),
         created: Timestamp(1),
         updated: Timestamp(1),
@@ -247,6 +249,11 @@ async fn prune_keeps_a_channel_owner() {
         branch: None,
         collection: None,
         paused: false,
+        kind: ChannelKind::Project,
+        title: None,
+        issue: None,
+        gate: None,
+        root: None,
     };
     put(&fx, &keys::channel(&api()), &channel).await;
 

@@ -140,6 +140,7 @@ fn order(remote: &Path, setup: Option<&str>) -> LaunchOrder {
             setup: setup.map(str::to_owned),
             test: None,
             collection: None,
+            mirror_issues: None,
         }),
         members: BTreeMap::new(),
         bundles: vec![bundle_name("work")],

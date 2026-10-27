@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use borant_core::model::{
-    Agent, Channel, Harness, Lease, LeaseState, Member, RepoInfo, Session, Task, TaskStatus,
+    Agent, Channel, ChannelKind, Harness, Lease, LeaseState, Member, RepoInfo, Session, Task,
+    TaskKind, TaskStatus,
 };
 use borant_core::ports::{Change, Entry, PortResult, StateStore};
 use borant_core::proto::{CtlRequest, RegisterSession, ToolCall};
@@ -173,6 +174,11 @@ impl Fx {
                 branch: None,
                 collection: None,
                 paused: false,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
+                gate: None,
+                root: None,
             };
             put(&self.state, &keys::channel(&name), &chan).await;
             for m in 0..MEMBERS_PER_CHANNEL {
@@ -202,6 +208,8 @@ impl Fx {
                     max_attempts: None,
                     blocked_by: vec![],
                     parent: None,
+                    kind: TaskKind::Task,
+                    issue: None,
                     properties: Default::default(),
                     created: now,
                     updated: now,

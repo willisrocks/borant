@@ -374,6 +374,10 @@ pub enum ProjectCmd {
         /// The collection that holds the project and its channels.
         #[arg(long)]
         collection: Option<CollectionName>,
+        /// Copy the objects of the project out to an issue tracker. Overrides
+        /// the collection setting.
+        #[arg(long, action = clap::ArgAction::Set)]
+        mirror_issues: Option<bool>,
     },
     /// List all projects.
     List,
@@ -1332,6 +1336,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                     test,
                     checkpoint_remote,
                     collection,
+                    mirror_issues,
                 },
         } => {
             let (remote_url, default_branch) = if from_cwd {
@@ -1354,6 +1359,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 setup,
                 test,
                 collection,
+                mirror_issues,
             };
             pretty(&call(&c, ToolCall::ProjectAdd { project }).await?);
         }
@@ -1768,6 +1774,43 @@ mod tests {
             panic!("not a project add");
         };
         assert_eq!(collection, Some("work".parse().unwrap()));
+    }
+
+    #[test]
+    fn project_add_sets_mirror_issues() {
+        let cli = Cli::try_parse_from([
+            "borant",
+            "project",
+            "add",
+            "api",
+            "git@github.com:me/api.git",
+            "--mirror-issues",
+            "false",
+        ])
+        .unwrap();
+        let Command::Project {
+            cmd: ProjectCmd::Add { mirror_issues, .. },
+        } = cli.command
+        else {
+            panic!("not a project add");
+        };
+        assert_eq!(mirror_issues, Some(false), "the flag gives the override");
+
+        let cli = Cli::try_parse_from([
+            "borant",
+            "project",
+            "add",
+            "api",
+            "git@github.com:me/api.git",
+        ])
+        .unwrap();
+        let Command::Project {
+            cmd: ProjectCmd::Add { mirror_issues, .. },
+        } = cli.command
+        else {
+            panic!("not a project add");
+        };
+        assert_eq!(mirror_issues, None, "no flag leaves it to the collection");
     }
 
     #[test]

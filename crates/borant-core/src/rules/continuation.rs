@@ -170,7 +170,7 @@ pub fn check_spawn(
 mod tests {
     use super::*;
     use crate::ids::TaskId;
-    use crate::model::{ContinueState, Harness, PauseReason, Sender, TaskRef};
+    use crate::model::{ContinueState, Harness, PauseReason, Sender, TaskKind, TaskRef};
 
     fn agent() -> Agent {
         Agent {
@@ -207,6 +207,8 @@ mod tests {
             max_attempts: None,
             blocked_by: Vec::new(),
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),

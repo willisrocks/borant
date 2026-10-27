@@ -817,7 +817,7 @@ fn civil_month(days: i64) -> (i64, u32) {
 mod tests {
     use super::*;
     use borant_core::model::{
-        Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskStatus,
+        Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskKind, TaskStatus,
     };
     use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
@@ -1022,6 +1022,8 @@ mod tests {
                 max_attempts: None,
                 blocked_by: Vec::new(),
                 parent: None,
+                kind: TaskKind::Task,
+                issue: None,
                 properties: Default::default(),
                 created: NOW,
                 updated: NOW,

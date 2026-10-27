@@ -10,8 +10,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
-    Agent, AgentStatus, Channel, HostInfo, HostStats, HostStatus, HubLease, InboxStatus, Lease,
-    LeaseState, SwarmView, Task, TaskStatus,
+    Agent, AgentStatus, Channel, ChannelKind, HostInfo, HostStats, HostStatus, HubLease,
+    InboxStatus, Lease, LeaseState, SwarmView, Task, TaskKind, TaskStatus,
 };
 use borant_core::ports::{Change, Entry, EventLog, InboxStats, PortError, PortResult, StateStore};
 use borant_core::{AgentId, ChannelName, ManualClock, SessionId, TaskId, Timestamp, keys};
@@ -90,6 +90,8 @@ fn task(id: TaskId, status: TaskStatus, blocked_by: Vec<TaskId>) -> Task {
         max_attempts: None,
         blocked_by,
         parent: None,
+        kind: TaskKind::Task,
+        issue: None,
         properties: Default::default(),
         created: NOW,
         updated: NOW,
@@ -152,6 +154,11 @@ impl Fx {
                 branch: None,
                 collection: None,
                 paused: false,
+                kind: ChannelKind::Project,
+                title: None,
+                issue: None,
+                gate: None,
+                root: None,
             }),
         );
         state.seed(
@@ -307,6 +314,8 @@ fn metrics_tasks() -> Vec<(ChannelName, Task)> {
         max_attempts: None,
         blocked_by: Vec::new(),
         parent: None,
+        kind: TaskKind::Task,
+        issue: None,
         properties: Default::default(),
         created: NOW,
         updated: NOW,

@@ -34,6 +34,8 @@ pub enum ApiErrorCode {
     Internal,
     /// The role of the caller does not allow the request.
     Denied,
+    /// A saga waits for its approval: claim and spawn are refused.
+    SagaNotApproved,
     /// A kind that this build does not know, as it arrived on the wire.
     Other(String),
 }
@@ -49,6 +51,7 @@ impl ApiErrorCode {
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
             Self::Denied => "denied",
+            Self::SagaNotApproved => "saga_not_approved",
             Self::Other(name) => name,
         }
     }
@@ -77,6 +80,7 @@ impl<'de> Deserialize<'de> for ApiErrorCode {
             "unavailable" => Self::Unavailable,
             "internal" => Self::Internal,
             "denied" => Self::Denied,
+            "saga_not_approved" => Self::SagaNotApproved,
             _ => Self::Other(name),
         })
     }
@@ -123,7 +127,11 @@ impl From<CoreError> for ApiError {
         let code = match &e {
             CoreError::UnknownTask(_) => ApiErrorCode::NotFound,
             CoreError::StaleToken => ApiErrorCode::StaleToken,
-            CoreError::LeaseHeld { .. } | CoreError::Claimed(_) => ApiErrorCode::Conflict,
+            CoreError::LeaseHeld { .. }
+            | CoreError::Claimed(_)
+            | CoreError::ChannelClosed(_)
+            | CoreError::Blocked { .. } => ApiErrorCode::Conflict,
+            CoreError::SagaNotApproved(_) => ApiErrorCode::SagaNotApproved,
             _ => ApiErrorCode::Invalid,
         };
         Self::new(code, e.to_string())
@@ -909,6 +917,7 @@ mod tests {
             ("unavailable", ApiErrorCode::Unavailable),
             ("internal", ApiErrorCode::Internal),
             ("denied", ApiErrorCode::Denied),
+            ("saga_not_approved", ApiErrorCode::SagaNotApproved),
         ];
         for (name, code) in cases {
             let wire = serde_json::json!({"code": name, "message": "no"});

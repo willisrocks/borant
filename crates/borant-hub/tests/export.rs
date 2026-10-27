@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, Channel, Envelope, Harness, Member, SessionEvent, SessionEventBody, Target,
+    Agent, Channel, ChannelKind, Envelope, Harness, Member, SessionEvent, SessionEventBody, Target,
 };
 use borant_core::ports::{
     Change, Delivery, Entry, Incoming, MessageBus, PortError, PortResult, SessionStore, StateStore,
@@ -454,6 +454,11 @@ async fn export_import_sends_pending_only_to_its_agent() {
         branch: None,
         collection: None,
         paused: false,
+        kind: ChannelKind::Project,
+        title: None,
+        issue: None,
+        gate: None,
+        root: None,
     };
     put(&fx.state, &keys::channel(&channel), &owner).await;
     for agent in [&a, &b] {

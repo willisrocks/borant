@@ -133,6 +133,7 @@ fn components(edges: &BTreeMap<TaskId, Vec<TaskId>>) -> Vec<Vec<TaskId>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TaskKind;
     use crate::time::Timestamp;
 
     fn id(n: u128) -> TaskId {
@@ -154,6 +155,8 @@ mod tests {
             max_attempts: None,
             blocked_by: blocked_by.iter().map(|b| id(*b)).collect(),
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),

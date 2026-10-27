@@ -4,22 +4,53 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::CoreError;
 use crate::ids::TaskId;
-use crate::model::{CloseReason, Task, TaskStatus};
+use crate::model::{CloseReason, Task, TaskKind, TaskStatus};
 
 /// Open tasks whose prerequisites are all closed. An unknown prerequisite
-/// counts as not closed.
+/// counts as not closed, and so does the prerequisite of a parent: "epic 2 is
+/// blocked by epic 1" holds back every task of epic 2. An epic is never
+/// ready, because it is not work.
 pub fn ready(tasks: &[Task]) -> Vec<TaskId> {
-    let status: HashMap<TaskId, TaskStatus> = tasks.iter().map(|t| (t.id, t.status)).collect();
+    let by_id = by_id(tasks);
     tasks
         .iter()
-        .filter(|t| t.status == TaskStatus::Open)
-        .filter(|t| {
-            t.blocked_by
-                .iter()
-                .all(|b| status.get(b) == Some(&TaskStatus::Closed))
-        })
+        .filter(|t| t.status == TaskStatus::Open && t.kind != TaskKind::Epic)
+        .filter(|t| open_blockers_in(&by_id, t.id).is_empty())
         .map(|t| t.id)
         .collect()
+}
+
+/// Every `blocked_by` id of `task` and of each parent up the chain that is not
+/// a closed task. An unknown blocker counts as open. A parent cycle in old
+/// data ends on the seen set.
+pub fn open_blockers(tasks: &[Task], id: TaskId) -> Vec<TaskId> {
+    open_blockers_in(&by_id(tasks), id)
+}
+
+fn by_id(tasks: &[Task]) -> HashMap<TaskId, &Task> {
+    tasks.iter().map(|t| (t.id, t)).collect()
+}
+
+fn open_blockers_in(by_id: &HashMap<TaskId, &Task>, id: TaskId) -> Vec<TaskId> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut cursor = Some(id);
+    while let Some(current) = cursor {
+        if !seen.insert(current) {
+            break;
+        }
+        let Some(task) = by_id.get(&current) else {
+            break;
+        };
+        for blocker in &task.blocked_by {
+            let closed = by_id.get(blocker).map(|t| t.status) == Some(TaskStatus::Closed);
+            if !closed && !out.contains(blocker) {
+                out.push(*blocker);
+            }
+        }
+        cursor = task.parent;
+    }
+    out
 }
 
 /// Checks that `task` can have the prerequisites `blocked_by` without a
@@ -160,6 +191,8 @@ mod attempts {
             max_attempts: None,
             blocked_by: Vec::new(),
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),
@@ -241,6 +274,8 @@ mod close_tests {
             max_attempts: None,
             blocked_by: Vec::new(),
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),
@@ -295,6 +330,8 @@ mod tests {
             max_attempts: None,
             blocked_by,
             parent: None,
+            kind: TaskKind::Task,
+            issue: None,
             properties: Default::default(),
             created: Timestamp(0),
             updated: Timestamp(0),
@@ -312,6 +349,63 @@ mod tests {
         let f = task(TaskStatus::Open, vec![]);
         let got = ready(&[a, b, c.clone(), d, e, f.clone()]);
         assert_eq!(got, vec![c.id, f.id]);
+    }
+
+    fn at(
+        status: TaskStatus,
+        kind: TaskKind,
+        blocked_by: Vec<TaskId>,
+        parent: Option<TaskId>,
+    ) -> Task {
+        Task {
+            kind,
+            blocked_by,
+            parent,
+            ..task(status, Vec::new())
+        }
+    }
+
+    /// Rule 5: an epic is not work, so `ready` never returns one.
+    #[test]
+    fn ready_skips_epics() {
+        let epic = at(TaskStatus::Open, TaskKind::Epic, vec![], None);
+        let child = at(TaskStatus::Open, TaskKind::Task, vec![], Some(epic.id));
+        assert_eq!(ready(&[epic.clone(), child.clone()]), vec![child.id]);
+    }
+
+    /// Rule 6: the blockers of each parent hold back a child, so "epic 2 is
+    /// blocked by epic 1" holds back every task under epic 2, grandchildren
+    /// included.
+    #[test]
+    fn ready_waits_for_the_blockers_of_each_parent() {
+        let one = at(TaskStatus::Open, TaskKind::Epic, vec![], None);
+        let two = at(TaskStatus::Open, TaskKind::Epic, vec![one.id], None);
+        let child = at(TaskStatus::Open, TaskKind::Task, vec![], Some(two.id));
+        let grandchild = at(TaskStatus::Open, TaskKind::Task, vec![], Some(child.id));
+        let all = [one.clone(), two, child.clone(), grandchild.clone()];
+
+        assert_eq!(open_blockers(&all, grandchild.id), vec![one.id]);
+        assert!(ready(&all).is_empty(), "epic 1 holds back epic 2");
+
+        let mut done = one;
+        done.status = TaskStatus::Closed;
+        let all = [done, all[1].clone(), child.clone(), grandchild.clone()];
+        assert_eq!(ready(&all), vec![child.id, grandchild.id]);
+    }
+
+    /// Old data can hold a parent cycle; the walk ends on the seen set.
+    #[test]
+    fn ready_ends_on_a_parent_cycle() {
+        let first = at(TaskStatus::Open, TaskKind::Task, vec![], None);
+        let second = at(TaskStatus::Open, TaskKind::Task, vec![], Some(first.id));
+        let (mut first, mut second) = (first, second);
+        first.parent = Some(second.id);
+        // An unknown blocker counts as open, as it does today.
+        second.blocked_by = vec![TaskId::new()];
+        let all = [first.clone(), second.clone()];
+
+        assert_eq!(open_blockers(&all, first.id), second.blocked_by);
+        assert!(ready(&all).is_empty());
     }
 
     #[test]

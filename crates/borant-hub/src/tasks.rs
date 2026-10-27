@@ -5,7 +5,7 @@ use std::time::Duration;
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent, TaskEventKind,
-    TaskPatch, TaskStatus,
+    TaskKind, TaskPatch, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::{schema, tasks as rules};
@@ -102,6 +102,8 @@ impl Hub {
             max_attempts: new.max_attempts,
             blocked_by: new.blocked_by,
             parent: new.parent,
+            kind: TaskKind::Task,
+            issue: None,
             properties: new.properties,
             created: now,
             updated: now,
