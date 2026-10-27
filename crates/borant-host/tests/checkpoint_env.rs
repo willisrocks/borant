@@ -170,9 +170,12 @@ async fn fx(root: PathBuf, secrets: Option<HostSecrets>) -> Fx {
     .await
 }
 
-/// Registers a session of the agent in `cwd`, as the harness of a launch does.
+/// Registers a session of the agent in `cwd`, as the harness of a launch does,
+/// and waits until it is attached: a checkpoint of a session that the hub has
+/// not registered yet is skipped, and a slow runner may still be retrying.
 async fn register(fx: &Fx, cwd: &Path) -> SessionId {
-    fx.host
+    let session = fx
+        .host
         .register(LocalRegister {
             harness: Harness::Fake,
             cwd: cwd.to_string_lossy().into_owned(),
@@ -181,7 +184,13 @@ async fn register(fx: &Fx, cwd: &Path) -> SessionId {
         })
         .await
         .unwrap()
-        .session
+        .session;
+    common::eventually(
+        || async { fx.host.local_view(session).is_ok_and(|v| v.agent.is_some()) },
+        "the session to attach",
+    )
+    .await;
+    session
 }
 
 #[tokio::test]
