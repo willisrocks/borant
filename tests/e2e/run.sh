@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel continue sandbox pause"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel continue saga sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -1561,6 +1561,64 @@ CREATE continue limit" >/dev/null || return 1
   borant_on host-a cancel cont-boss >/dev/null 2>&1
   dc stop host-r >/dev/null 2>&1
   return 0
+}
+
+# The saga scenario (spec: sagas and epics, rules 2, 3, 5, and 9): a saga holds
+# its worker at the gate across hosts, a person approves it from a third host,
+# the child of the epic becomes ready, and its claim passes. Choice C11: the
+# board has its own tests, so this scenario checks the gate only.
+scenario_saga() {
+  local out gate e1 c1
+
+  wait_for "the live hub" continue_hub_up || return 1
+  borant_on host-a project add sagatest git://git/demo.git --branch main >/dev/null || return 1
+  start_agent host-a sboss
+  start_agent host-b sw1
+  wait_for "sboss registered" is_at sboss host-a || return 1
+  wait_for "sw1 registered" is_at sw1 host-b || return 1
+
+  # The orchestrator makes the saga, its epic, and one child of the epic.
+  borant_on host-a send sboss "SAGA sagatest sagatest" >/dev/null || return 1
+  wait_for "the saga" log_has host-a sboss "SAGA sagatest ok" || return 1
+  gate=$(log_of host-a sboss |
+    awk '$1=="SAGA" && $2=="sagatest" && $3=="ok" {sub("gate=","",$4); print $4}' | tail -1)
+  [ -n "$gate" ] || { echo "  the gate id of the saga" >&2; return 1; }
+  borant_on host-a send sboss "EPIC sagatest e1" >/dev/null || return 1
+  wait_for "the epic" log_has host-a sboss "CREATED .* e1" || return 1
+  e1=$(task_id host-a sboss e1)
+  [ -n "$e1" ] || { echo "  the epic id" >&2; return 1; }
+  borant_on host-a send sboss "CHILD sagatest $e1 c1" >/dev/null || return 1
+  wait_for "the child" log_has host-a sboss "CREATED .* c1" || return 1
+  c1=$(task_id host-a sboss c1)
+  [ -n "$c1" ] || { echo "  the child id" >&2; return 1; }
+
+  # Rule 2: before the approval nothing is ready, and a claim is refused.
+  out=$(borant_on host-a tasks sagatest --ready) || return 1
+  [ "$(printf '%s' "$out" | tr -d '[:space:]')" = "[]" ] \
+    || { echo "  ready tasks before the approval: $out" >&2; return 1; }
+  borant_on host-b send sw1 "CLAIM sagatest $c1" >/dev/null || return 1
+  wait_for "sw1 refused before the approval" \
+    log_has host-b sw1 "CLAIM $c1 failed" || return 1
+
+  # Rule 3: a person approves the gate from the third host.
+  out=$(borant_on host-c task close "sagatest/$gate" --reason done --message approved) || return 1
+  printf '%s' "$out" | jq -e '.status == "closed" and .close_reason == "done"' >/dev/null \
+    || { echo "  the gate close: $out" >&2; return 1; }
+
+  # Rules 2 and 6: the child of the epic is ready, and its claim passes.
+  wait_for "the child is ready" saga_ready "$c1" || return 1
+  borant_on host-b send sw1 "CLAIM sagatest $c1" >/dev/null || return 1
+  wait_for "sw1 claimed the child" log_has host-b sw1 "CLAIM $c1 ok" || return 1
+
+  borant_on host-a cancel sboss >/dev/null 2>&1
+  borant_on host-b cancel sw1 >/dev/null 2>&1
+  return 0
+}
+
+# True when the ready list of #sagatest holds the task.
+saga_ready() {
+  borant_on host-a tasks sagatest --ready 2>/dev/null \
+    | jq -e --arg t "$1" 'any(.[]; .id == $t)' >/dev/null
 }
 
 # The continues that an agent got: the hub's direct message is one line per

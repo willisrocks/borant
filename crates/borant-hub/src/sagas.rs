@@ -1,12 +1,15 @@
-//! The approval gate of a saga: who approves it, and the message to the
-//! approvers (spec: sagas and epics, rules 2 and 3).
+//! The approval gate of a saga: who approves it, the message to the
+//! approvers, and closing a channel (spec: sagas and epics, rules 2, 3, and 9).
 
 use borant_core::keys;
-use borant_core::model::{Agent, Channel, Sender, Task};
-use borant_core::proto::ApiError;
+use borant_core::model::{Agent, Channel, Sender, Task, TaskStatus};
+use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::roles;
+use borant_core::{ChannelName, CollectionName, TaskId};
 
 use crate::Hub;
+use crate::store::Doc;
+use crate::tasks::is_owner_or_person;
 
 impl Hub {
     /// Rule 3: a person approves, and so does an agent whose role has
@@ -54,5 +57,52 @@ impl Hub {
             told += 1;
         }
         Ok(told)
+    }
+
+    /// Rule 9: only the owner or a person closes a channel.
+    pub(crate) async fn channel_close(
+        &self,
+        by: &Sender,
+        mine: Option<&CollectionName>,
+        name: &ChannelName,
+    ) -> Result<Channel, ApiError> {
+        let doc = self.channel_for(mine, name).await?;
+        if !is_owner_or_person(&doc.value.owner, by) {
+            return Err(ApiError::denied(
+                "only the owner of the channel or a person closes it",
+            ));
+        }
+        self.close_channel(doc).await
+    }
+
+    /// Rule 9 and choice C8: a closed channel is returned unchanged, and an
+    /// open task holds the close with `conflict` and its ids.
+    pub(crate) async fn close_channel(&self, mut doc: Doc<Channel>) -> Result<Channel, ApiError> {
+        if doc.value.closed.is_some() {
+            return Ok(doc.value);
+        }
+        let open: Vec<TaskId> = self
+            .tasks(&doc.value.name)
+            .await?
+            .into_iter()
+            .filter(|t| t.status != TaskStatus::Closed)
+            .map(|t| t.id)
+            .collect();
+        if !open.is_empty() {
+            let ids = open
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("channel #{} holds open tasks: {ids}", doc.value.name),
+            ));
+        }
+        doc.value.closed = Some(self.now());
+        self.store
+            .put(&doc.key, &doc.value, Some(doc.revision))
+            .await?;
+        Ok(doc.value)
     }
 }

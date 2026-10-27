@@ -8,7 +8,10 @@
 //! - `READ <path>`: read a file, as a tool call, and append the result to
 //!   `reads.log` in the working directory (a sandbox test reads it outside)
 //! - `CHANNEL <name> [project]` and `JOIN <name>`: create or join a channel
+//! - `SAGA <name> <project>`: create a saga channel, and log its gate
 //! - `CREATE <channel> <title>`: create a task
+//! - `EPIC <channel> <title>`: create a task of kind epic
+//! - `CHILD <channel> <parent> <title>`: create a task under a parent
 //! - `AFTER <channel> <blocker> <title>`: create a task blocked by another
 //! - `CLAIM <channel> <task>` and `CLOSE <channel> <task>`
 //! - `WAITTASK <channel> <task>`: store a wait for the task to close
@@ -150,6 +153,41 @@ impl Fake {
                     "CREATED {} {}",
                     v["id"].as_str().unwrap_or("?"),
                     b
+                ));
+            }
+            "SAGA" => {
+                let r = self
+                    .call(
+                        json!({"tool": "channel_create", "name": a, "project": b, "kind": "saga"}),
+                    )
+                    .await;
+                match r {
+                    Ok(v) => self.line(&format!(
+                        "SAGA {a} ok gate={}",
+                        v["gate"].as_str().unwrap_or("?")
+                    )),
+                    Err(_) => self.line(&format!("SAGA {a} failed")),
+                }
+            }
+            "EPIC" => {
+                let v = self
+                    .call(json!({"tool": "task_create", "channel": a, "task": {"title": b, "kind": "epic"}}))
+                    .await?;
+                self.line(&format!(
+                    "CREATED {} {}",
+                    v["id"].as_str().unwrap_or("?"),
+                    b
+                ));
+            }
+            "CHILD" => {
+                let (parent, title) = b.split_once(' ').unwrap_or((b.as_str(), "task"));
+                let v = self
+                    .call(json!({"tool": "task_create", "channel": a, "task": {"title": title, "parent": parent}}))
+                    .await?;
+                self.line(&format!(
+                    "CREATED {} {}",
+                    v["id"].as_str().unwrap_or("?"),
+                    title
                 ));
             }
             "CHANNEL" => {

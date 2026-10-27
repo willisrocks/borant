@@ -370,6 +370,11 @@ pub enum ToolCall {
         name: ChannelName,
         to: AgentId,
     },
+    /// Set `closed` on a channel. Only the owner or a person closes it, and
+    /// only when every task of the channel is closed.
+    ChannelClose {
+        name: ChannelName,
+    },
     Members {
         name: ChannelName,
     },
@@ -1059,6 +1064,9 @@ mod tests {
             },
             ToolCall::Inbox,
             ToolCall::Schedules,
+            ToolCall::ChannelClose {
+                name: "api".parse().unwrap(),
+            },
             ToolCall::Answer {
                 channel: "api".parse().unwrap(),
                 task: TaskId::new(),

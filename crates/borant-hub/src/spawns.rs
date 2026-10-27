@@ -14,6 +14,7 @@ use borant_core::model::{
 use borant_core::proto::{ApiError, ApiErrorCode, MoveTarget};
 use borant_core::rules::lease;
 use borant_core::rules::roles::{self, OnePer, SpawnInput};
+use borant_core::rules::saga;
 use borant_core::rules::schedule;
 use borant_core::rules::spawn::{agent_name_from_key, spawn_key_matches};
 use borant_core::{AgentId, BundleName, ChannelName, FencingToken, HostName, RoleName, keys};
@@ -71,6 +72,10 @@ impl Hub {
         if ch.paused {
             return Err(crate::pause::channel_paused(&req.channel));
         }
+        // Rules 2 and 9: a closed channel takes no spawn, and a saga takes
+        // none before its gate closes as done.
+        let mut tasks = self.tasks(&req.channel).await?;
+        saga::check_spawn(&ch, &tasks, None)?;
         let parent = match &by {
             Sender::Agent(id) => Some(self.agent(id).await?.value),
             Sender::Human => None,
@@ -190,6 +195,16 @@ impl Hub {
             None => None,
             Some(TaskBinding::Existing { channel, id }) => {
                 let task = self.task(channel, id).await?;
+                // Rule 5 and choice C10: a bound task is neither an epic nor
+                // blocked, and its channel is neither closed nor a saga
+                // before its approval.
+                if channel == &req.channel {
+                    saga::check_spawn(&ch, &tasks, Some(&task.value))?;
+                } else {
+                    let bound = self.channel(channel).await?.value;
+                    let all = self.tasks(channel).await?;
+                    saga::check_spawn(&bound, &all, Some(&task.value))?;
+                }
                 Some(TaskRef {
                     channel: channel.clone(),
                     id: task.value.id,
@@ -210,6 +225,11 @@ impl Hub {
                         create_key,
                     )
                     .await?;
+                // The task create checked the rules of the channel; rule 7
+                // reads the epic of the new task from the channel's tasks.
+                if channel == &req.channel {
+                    tasks.push(created.clone());
+                }
                 Some(TaskRef {
                     channel: channel.clone(),
                     id: created.id,
@@ -223,8 +243,22 @@ impl Hub {
         let repo = match &ch.project {
             Some(p) => {
                 let project = self.project(p).await?;
+                // Rule 7 and choice C9: a spawn bound to a task of this
+                // channel starts on the branch of its epic, when the epic has
+                // one; otherwise on the channel branch.
+                let branch = match &task {
+                    Some(bound) if bound.channel == req.channel => {
+                        saga::epic_branch(&tasks, bound.id)
+                    }
+                    _ => None,
+                }
+                .unwrap_or_else(|| {
+                    ch.branch
+                        .clone()
+                        .unwrap_or_else(|| project.default_branch.clone())
+                });
                 Some(RepoInfo {
-                    branch: ch.branch.clone().unwrap_or(project.default_branch),
+                    branch,
                     remote_url: project.remote_url,
                     subdir: String::new(),
                 })
