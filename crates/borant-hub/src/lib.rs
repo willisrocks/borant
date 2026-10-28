@@ -18,6 +18,7 @@ mod inbox;
 mod join;
 mod leases;
 mod members;
+pub mod mirror;
 mod moves;
 mod park;
 mod pause;
@@ -37,6 +38,7 @@ mod waits;
 pub use changes::ChangeWatch;
 pub use elastic::ElasticConfig;
 pub use join::JoinToken;
+pub use mirror::IssueMirror;
 pub use schedules::{FireTask, ScheduleState};
 pub use secrets::{HubSecretConfig, HubSecrets};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -91,6 +93,8 @@ pub struct HubConfig {
     pub alerts: AlertsConfig,
     /// `[changes]` of `hub.toml`: the PR watch. `None` watches nothing.
     pub changes: Option<ChangeWatch>,
+    /// `[mirror]` of `hub.toml`: the issue mirror. `None` mirrors nothing.
+    pub mirror: Option<IssueMirror>,
     /// `[schedules.<name>]` of `hub.toml`, already parsed. Empty fires
     /// nothing.
     pub schedules: Vec<Schedule>,
@@ -117,6 +121,7 @@ impl Default for HubConfig {
             collections: BTreeMap::new(),
             alerts: AlertsConfig::default(),
             changes: None,
+            mirror: None,
             schedules: Vec::new(),
             member_rules: MemberRules::default(),
             http: HttpConfig::default(),
@@ -209,6 +214,8 @@ pub(crate) struct Memory {
     pub last_deadlines: Option<Timestamp>,
     /// The provisioner refusals that the alerts report, per pool.
     pub elastic_refused: BTreeMap<PoolName, borant_core::rules::alerts::Refusal>,
+    /// The tracker refusal that paused the issue mirror, until a restart.
+    pub mirror_refused: Option<String>,
     /// When a failed create lets the pool create again.
     pub elastic_backoff: BTreeMap<PoolName, Timestamp>,
     /// The capabilities of each provisioner, read once at the first pass.
@@ -508,12 +515,21 @@ impl Hub {
             tokio::spawn(async move { hub.change_loop(shutdown).await })
         };
 
+        // The issue mirror sweeps the sagas, epics, and tasks out to a
+        // tracker on its own task, outside the request lock.
+        let mirror = {
+            let hub = self.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { hub.mirror_loop(shutdown).await })
+        };
+
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 _ = lost.cancelled() => {
                     ticker.abort();
                     watcher.abort();
+                    mirror.abort();
                     anyhow::bail!("another hub took the hub lease");
                 }
                 next = requests.next() => {
@@ -534,6 +550,7 @@ impl Hub {
         }
         ticker.abort();
         watcher.abort();
+        mirror.abort();
         Ok(())
     }
 

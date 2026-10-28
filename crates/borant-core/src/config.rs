@@ -137,6 +137,51 @@ impl Default for ChangesConfig {
     }
 }
 
+/// `[mirror]` of `hub.toml`: the issue mirror. The hub copies sagas, epics,
+/// and tasks out to a tracker through this adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorConfig {
+    /// The adapter, for example `exec`.
+    #[serde(default)]
+    pub adapter: Option<String>,
+    /// The program of an exec adapter.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// The name of the credential that the program reads, a file in the
+    /// credentials directory of the hub unit.
+    #[serde(default)]
+    pub credential: Option<String>,
+    /// How often the hub sweeps, `60` seconds by default.
+    #[serde(default = "sixty_secs")]
+    pub every_secs: u64,
+    /// The most tracker calls of one sweep, `50` by default, so a backfill
+    /// stays well under the limits of a tracker.
+    #[serde(default = "fifty")]
+    pub max_writes: usize,
+    /// `[mirror.config]`: the settings that the program reads, passed with
+    /// every request.
+    #[serde(default)]
+    pub config: BTreeMap<String, serde_json::Value>,
+}
+
+fn fifty() -> usize {
+    50
+}
+
+impl Default for MirrorConfig {
+    fn default() -> Self {
+        Self {
+            adapter: None,
+            program: None,
+            credential: None,
+            every_secs: sixty_secs(),
+            max_writes: fifty(),
+            config: BTreeMap::new(),
+        }
+    }
+}
+
 /// One `[schedules.<name>]` entry of `hub.toml`: a cron rule in a time zone
 /// that the hub fires, making a task or sending a message.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

@@ -20,6 +20,7 @@ pub const HOST_DISK: &str = "host_disk";
 pub const MEMBERS_LIMITED: &str = "members_limited";
 pub const BUDGET_STOP: &str = "budget_stop";
 pub const PROVISIONER_REFUSED: &str = "provisioner_refused";
+pub const MIRROR_REFUSED: &str = "mirror_refused";
 
 /// One fact about an agent that the live view does not carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct AlertView {
     pub budget_blocked: Vec<PoolName>,
     /// The provisioner refusals still in force.
     pub refused: Vec<Refusal>,
+    /// The tracker refusal that paused the issue mirror, until a restart.
+    pub mirror_refused: Option<String>,
     /// True while the hub is in its restart grace. A host that has not sent a
     /// heartbeat yet is expected then, so `host_offline` stays quiet.
     pub restart_grace: bool,
@@ -242,6 +245,15 @@ pub fn active_alerts(
             )
             .with_priority(Priority::High)
             .with_tags([PROVISIONER_REFUSED.to_owned()]),
+        );
+    }
+    // One subject, the tracker: the mirror pauses as a whole on a refusal.
+    if let Some(message) = &view.mirror_refused {
+        active.insert(
+            key(MIRROR_REFUSED, "tracker"),
+            Notice::new("The issue tracker refused the mirror", message.clone())
+                .with_priority(Priority::High)
+                .with_tags([MIRROR_REFUSED.to_owned()]),
         );
     }
     active
@@ -639,6 +651,28 @@ mod tests {
         assert_eq!(
             resolved(&evaluate(&clear, &open, &cfg(), NOW)),
             vec!["provisioner_refused:workers"]
+        );
+    }
+
+    #[test]
+    fn mirror_refused_fires_and_resolves() {
+        let mut view = view_with(Vec::new());
+        view.mirror_refused = Some("denied: the key was revoked".into());
+        let actions = evaluate(&view, &BTreeSet::new(), &cfg(), NOW);
+        assert_eq!(fired(&actions), vec!["mirror_refused:tracker"]);
+        let AlertAction::Fire { notice, .. } = &actions[0] else {
+            panic!("a fire")
+        };
+        assert_eq!(notice.priority, Priority::High);
+        assert!(notice.body.contains("revoked"));
+
+        // The fact lasts until the hub restarts, so the alert resolves only
+        // when the view no longer carries it.
+        let clear = view_with(Vec::new());
+        let open = BTreeSet::from(["mirror_refused:tracker".to_owned()]);
+        assert_eq!(
+            resolved(&evaluate(&clear, &open, &cfg(), NOW)),
+            vec!["mirror_refused:tracker"]
         );
     }
 

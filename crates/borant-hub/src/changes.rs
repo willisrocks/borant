@@ -219,7 +219,7 @@ impl Hub {
 
     /// The channels of the swarm, oldest key shape first: `chan.<name>` and
     /// not the member or task keys under it.
-    async fn open_channels(&self) -> Result<Vec<Channel>, ApiError> {
+    pub(crate) async fn open_channels(&self) -> Result<Vec<Channel>, ApiError> {
         let mut out = Vec::new();
         for doc in self
             .store

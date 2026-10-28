@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use borant_core::config::{AlertsConfig, ChangesConfig, ChannelConfig, ScheduleConfig};
+use borant_core::config::{
+    AlertsConfig, ChangesConfig, ChannelConfig, MirrorConfig, ScheduleConfig,
+};
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
 use borant_core::ports::provision::Provisioner;
@@ -23,10 +25,11 @@ use borant_core::{
 };
 use borant_exec::ExecConfig;
 use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
+use borant_exec::issues::{ExecIssues, WRITE_TIMEOUT};
 use borant_exec::notify::ExecNotifier;
 use borant_exec::provision::ExecProvisioner;
 use borant_host::{HostConfig, SecretConfig};
-use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig, HubSecretConfig};
+use borant_hub::{ChangeWatch, ElasticConfig, HttpConfig, HubSecretConfig, IssueMirror};
 use borant_launch::harness::HarnessCommands;
 use borant_nats::NatsConfig;
 use borant_secrets::StoreConfig;
@@ -267,6 +270,9 @@ pub struct HubFile {
     #[serde(default)]
     #[allow(dead_code)] // The PR watch task reads it.
     pub changes: ChangesConfig,
+    /// `[mirror]`: the issue mirror.
+    #[serde(default)]
+    pub mirror: MirrorConfig,
     /// `[schedules.<name>]`: the recurring work of the hub.
     #[serde(default)]
     pub schedules: BTreeMap<String, ScheduleConfig>,
@@ -614,6 +620,57 @@ impl HubFile {
         Ok(Some(ChangeWatch {
             changes: Arc::new(changes),
             every: Duration::from_secs(self.changes.every_secs.max(1)),
+        }))
+    }
+
+    /// The issue mirror of `[mirror]`: the adapter that writes one issue and
+    /// how often the hub sweeps. `None` when the file names no adapter, and
+    /// also when the program is not an issue-tracker plugin: the hub then
+    /// serves as before, with a warn, instead of failing to start.
+    pub async fn mirror_tracker(&self) -> anyhow::Result<Option<IssueMirror>> {
+        let Some(adapter) = self.mirror.adapter.as_deref() else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            adapter == "exec",
+            "mirror: unknown adapter {adapter:?}, only \"exec\" exists"
+        );
+        let program = self
+            .mirror
+            .program
+            .clone()
+            .context("mirror: an exec adapter needs a program")?;
+        // The plugin reads its key from a file of the hub unit's credentials
+        // directory, as the provisioner plugins do.
+        let credential = match &self.mirror.credential {
+            None => None,
+            Some(c) => Some((
+                env("CREDENTIALS_DIRECTORY")
+                    .map(PathBuf::from)
+                    .context("mirror names a credential")?,
+                c.clone(),
+            )),
+        };
+        let exec = ExecConfig {
+            command: vec![program],
+            env: BTreeMap::new(),
+            credential,
+            timeout: WRITE_TIMEOUT,
+            // The plugin holds a personal key, and the runner does not know
+            // what it prints, so its stderr stays out of the log.
+            log_stderr: false,
+        };
+        let tracker = match ExecIssues::open(exec, self.mirror.config.clone()).await {
+            Ok(tracker) => tracker,
+            Err(e) => {
+                tracing::warn!("the issue mirror is off, the plugin did not answer: {e}");
+                return Ok(None);
+            }
+        };
+        Ok(Some(IssueMirror {
+            tracker: Arc::new(tracker),
+            every: Duration::from_secs(self.mirror.every_secs.max(1)),
+            max_writes: self.mirror.max_writes.max(1),
         }))
     }
 }
@@ -1941,6 +1998,94 @@ mod changes_tests {
         );
         let f = file("[changes]\nadapter = \"github\"\nprogram = \"x\"\n");
         assert!(f.changes_watch().await.is_err(), "only exec exists");
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    /// The file plugin of the repository root: the issues of one JSON file.
+    fn plugin() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/plugins/issues-file.sh")
+            .canonicalize()
+            .expect("the file plugin")
+    }
+
+    /// A file of its own per test, so the tests that run in parallel never
+    /// share one.
+    fn store(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("borant-mirror-{}-{name}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn file(toml: &str) -> HubFile {
+        toml::from_str(toml).expect("a hub file")
+    }
+
+    /// `[mirror]` with an exec adapter builds the tracker of the hub.
+    #[tokio::test]
+    async fn mirror_the_exec_adapter_builds_the_tracker() {
+        let data = store("build");
+        let f = file(&format!(
+            "[mirror]\nadapter = \"exec\"\nprogram = \"{}\"\nevery_secs = 30\n\
+             max_writes = 7\n\n[mirror.config]\nfile = \"{}\"\n",
+            plugin().display(),
+            data.display()
+        ));
+        let m = f.mirror_tracker().await.unwrap().expect("the mirror");
+        assert_eq!(m.every, Duration::from_secs(30));
+        assert_eq!(m.max_writes, 7);
+    }
+
+    /// A hub that names no adapter mirrors nothing, as before.
+    #[tokio::test]
+    async fn mirror_without_an_adapter_is_off() {
+        assert!(file("").mirror_tracker().await.unwrap().is_none());
+        assert!(
+            file("[mirror]\nevery_secs = 5\n")
+                .mirror_tracker()
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A credential names a file in the directory that systemd provides, as
+    /// the provisioner and the notifier plugins read theirs: without the
+    /// directory the mirror fails the start, not the first sweep.
+    #[tokio::test]
+    async fn mirror_a_credential_needs_the_directory_of_the_unit() {
+        let f = file(&format!(
+            "[mirror]\nadapter = \"exec\"\nprogram = \"{}\"\ncredential = \"issues-token\"\n",
+            plugin().display()
+        ));
+        assert_eq!(f.mirror.credential.as_deref(), Some("issues-token"));
+        if env("CREDENTIALS_DIRECTORY").is_none() {
+            assert!(
+                f.mirror_tracker().await.is_err(),
+                "a credential without its directory is a configuration error"
+            );
+        }
+    }
+
+    /// The spec table: `[mirror]` plus the collection that turns the mirror
+    /// on, with the defaults 60 and 50.
+    #[tokio::test]
+    async fn mirror_parses_the_spec_table() {
+        let f = file(
+            "[mirror]\nadapter = \"exec\"\nprogram = \"/nix/store/x/bin/borant-mirror\"\n\
+             credential = \"issues-token\"\n\n[collections.work]\nmirror_issues = true\n",
+        );
+        assert_eq!(f.mirror.adapter.as_deref(), Some("exec"));
+        assert_eq!(f.mirror.every_secs, 60);
+        assert_eq!(f.mirror.max_writes, 50);
+        assert!(f.mirror.config.is_empty());
+        let work = &f.collections[&"work".parse().unwrap()];
+        assert!(work.mirror_issues);
     }
 }
 
