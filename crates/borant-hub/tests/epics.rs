@@ -117,6 +117,7 @@ fn new_task(title: &str) -> NewTask {
         parent: None,
         kind: TaskKind::Task,
         issue: None,
+        issue_target: None,
         properties: Default::default(),
         deadline: None,
         max_attempts: None,

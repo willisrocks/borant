@@ -18,8 +18,8 @@ use crate::model::{
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
 use crate::ports::secrets::{Resolved, Secret, SecretCapabilities, SecretRef, SecretStore};
 use crate::ports::{
-    Change, ChangeRequests, ChangeStatus, EventLog, MessageBus, PortError, PortErrorKind,
-    PortResult, SessionStore, StateStore,
+    Change, ChangeRequests, ChangeStatus, EventLog, IssueState, IssueTracker, IssueWrite,
+    MessageBus, PortError, PortErrorKind, PortResult, SessionStore, StateStore,
 };
 use crate::time::Timestamp;
 
@@ -592,6 +592,68 @@ pub async fn change_requests_contract(
         .status("https://example.invalid/no-such-change/1")
         .await
         .expect_err("an unknown change is NotFound");
+    assert_eq!(err.kind, PortErrorKind::NotFound, "{err}");
+}
+
+/// The issue-tracker contract: a create with a team makes one issue, a second
+/// create with the same key is that issue, a child takes its parent's team, a
+/// create with neither is `Invalid`, an update by key or by URL is the same
+/// issue, and an unknown issue is `NotFound`.
+pub async fn issue_tracker_contract(tracker: &dyn IssueTracker, target: &str) {
+    let id = unique("mirror-");
+    let write = |suffix: &str, target: Option<&str>, parent: Option<&str>| IssueWrite {
+        key: crate::rules::mirror::issue_key(&format!("{id}/{suffix}")),
+        target: target.map(str::to_owned),
+        parent: parent.map(str::to_owned),
+        title: format!("Mirror the {suffix}"),
+        body: "The body.".to_owned(),
+        state: IssueState::Todo,
+    };
+
+    let first = tracker
+        .create(&write("root", Some(target), None))
+        .await
+        .expect("a create with a team");
+    assert!(!first.key.is_empty(), "a create returns a key");
+    assert!(!first.url.is_empty(), "a create returns a URL");
+
+    let again = tracker
+        .create(&write("root", Some(target), None))
+        .await
+        .expect("the same create");
+    assert_eq!(
+        again, first,
+        "a second create with the same key is one issue"
+    );
+
+    let child = tracker
+        .create(&write("child", None, Some(&first.key)))
+        .await
+        .expect("a child takes its parent's team");
+    assert!(!child.key.is_empty(), "a child has a key");
+    assert_ne!(child.key, first.key, "a child is a second issue");
+
+    let err = tracker
+        .create(&write("bare", None, None))
+        .await
+        .expect_err("a create needs a team or a parent");
+    assert_eq!(err.kind, PortErrorKind::Invalid, "{err}");
+
+    let by_key = tracker
+        .update(&first.key, &write("root", None, None), true)
+        .await
+        .expect("an update by key");
+    assert_eq!(by_key.key, first.key, "an update returns the issue");
+    let by_url = tracker
+        .update(&first.url, &write("root", None, None), false)
+        .await
+        .expect("an update by URL");
+    assert_eq!(by_url.key, first.key, "a URL names the same issue");
+
+    let err = tracker
+        .update("NOPE-999999", &write("root", None, None), true)
+        .await
+        .expect_err("an unknown issue is NotFound");
     assert_eq!(err.kind, PortErrorKind::NotFound, "{err}");
 }
 

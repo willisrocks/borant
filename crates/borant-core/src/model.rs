@@ -572,6 +572,10 @@ pub struct Task {
     /// The issue link of an epic or a task.
     #[serde(default)]
     pub issue: Option<String>,
+    /// The team of the issue tracker for this item and the items under it.
+    /// The core never reads it; the tracker adapter does.
+    #[serde(default)]
+    pub issue_target: Option<String>,
     #[serde(default)]
     pub properties: Map<String, Value>,
     pub created: Timestamp,
@@ -810,6 +814,10 @@ pub struct NewTask {
     /// The issue link of the new task.
     #[serde(default)]
     pub issue: Option<String>,
+    /// The team of the issue tracker for this item and the items under it.
+    /// The core never reads it; the tracker adapter does.
+    #[serde(default)]
+    pub issue_target: Option<String>,
     #[serde(default)]
     pub properties: Map<String, Value>,
     /// When the task is due.
@@ -839,6 +847,10 @@ pub struct TaskPatch {
     /// The issue link of the task.
     #[serde(default)]
     pub issue: Option<String>,
+    /// The team of the issue tracker for this item and the items under it.
+    /// The core never reads it; the tracker adapter does.
+    #[serde(default)]
+    pub issue_target: Option<String>,
     #[serde(default)]
     pub properties: Option<Map<String, Value>>,
     #[serde(default)]
@@ -1203,6 +1215,7 @@ mod tests {
             parent: None,
             kind: TaskKind::Task,
             issue: None,
+            issue_target: None,
             properties: Map::new(),
             created: Timestamp(1),
             updated: Timestamp(2),
@@ -1309,6 +1322,7 @@ mod tests {
         .unwrap();
         assert_eq!(task.kind, TaskKind::Task);
         assert_eq!(task.issue, None);
+        assert_eq!(task.issue_target, None);
 
         let project: Project = serde_json::from_value(serde_json::json!({
             "name": "web",
@@ -1325,10 +1339,12 @@ mod tests {
         let new: NewTask = serde_json::from_value(serde_json::json!({"title": "t"})).unwrap();
         assert_eq!(new.kind, TaskKind::Task);
         assert_eq!(new.issue, None);
+        assert_eq!(new.issue_target, None);
 
         let patch: TaskPatch =
             serde_json::from_value(serde_json::json!({"status": "stuck"})).unwrap();
         assert_eq!(patch.issue, None);
+        assert_eq!(patch.issue_target, None);
 
         let channel = Channel {
             kind: ChannelKind::Saga,
@@ -1345,6 +1361,7 @@ mod tests {
         let task = Task {
             kind: TaskKind::Epic,
             issue: Some("ENG-8".into()),
+            issue_target: Some("ENG".into()),
             ..task
         };
         let back: Task = serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
@@ -1361,6 +1378,7 @@ mod tests {
         let new = NewTask {
             kind: TaskKind::Epic,
             issue: Some("ENG-9".into()),
+            issue_target: Some("ENG".into()),
             ..new
         };
         let back: NewTask = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();
@@ -1368,6 +1386,7 @@ mod tests {
 
         let patch = TaskPatch {
             issue: Some("ENG-10".into()),
+            issue_target: Some("ENG".into()),
             ..patch
         };
         let back: TaskPatch =

@@ -4,7 +4,9 @@ use borant_core::ids::{PoolName, Tag};
 use borant_core::ports::provision::{HostSpec, ProviderHostId};
 use borant_core::ports::{ChangeState, ChangeStatus, CheckState, ReviewState};
 use borant_core::testing;
-use borant_memory::{MemoryBus, MemoryChanges, MemoryProvisioner, MemorySession, MemoryState};
+use borant_memory::{
+    MemoryBus, MemoryChanges, MemoryIssues, MemoryProvisioner, MemorySession, MemoryState,
+};
 
 #[tokio::test]
 async fn state_store_contract() {
@@ -53,6 +55,11 @@ async fn changes_contract() {
     };
     changes.set(url, status.clone());
     testing::change_requests_contract(&changes, url, status).await;
+}
+
+#[tokio::test]
+async fn issues_contract() {
+    testing::issue_tracker_contract(&MemoryIssues::new(), "T").await;
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ pub mod continuation;
 pub mod graph;
 pub mod lease;
 pub mod members;
+pub mod mirror;
 pub mod pool;
 pub mod redact;
 pub mod roles;

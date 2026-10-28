@@ -4,6 +4,7 @@
 mod bus;
 pub mod changes;
 mod events;
+pub mod issues;
 mod launch;
 mod notify;
 pub mod provision;
@@ -14,6 +15,7 @@ mod state;
 pub use bus::{Acker, Delivery, InboxStats, Incoming, MessageBus, Responder, subject_matches};
 pub use changes::{ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState};
 pub use events::EventLog;
+pub use issues::{IssueRef, IssueState, IssueTracker, IssueWrite};
 pub use launch::{LaunchHandle, LaunchSpec, Launcher};
 pub use notify::{Notice, Notifier, Priority};
 pub use provision::{
