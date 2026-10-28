@@ -392,6 +392,21 @@ differ.
   `task_get` and `task_list`. Task 3 adds `borant task update
   --issue-target`.
 
+## Amendments from the turn-on (2026-10-28)
+
+- **One owner per issue.** The first sweep over the work collection found
+  child items that link their parent's issue key. One case is the epics and
+  tasks of ROG-4199. Each of those items would have written its own state to
+  the same issue. Now one item owns each issue:
+  - The owner is a channel before a task, then the shallower item, then the
+    smaller Borant id.
+  - The others roll up into the owner's issue: no record, no write, no
+    create.
+  - Their mirrored children nest under the shared issue.
+- **Linking an approved saga.** A saga's link falls back to its gate task's
+  `issue`. A closed task takes a patch of only `issue` and `issue_target`, so
+  an approved saga can be linked after its create (#174).
+
 ## Not in this spec
 
 - Linear to Borant sync, comments, assignees, labels, and creating Borant

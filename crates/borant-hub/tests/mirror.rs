@@ -1097,3 +1097,49 @@ async fn mirror_loop_sweeps_on_its_tick() {
     handle.await.expect("the loop ends");
     assert_eq!(creates(&m.issues.calls()).len(), 1);
 }
+
+/// Two items that link the same issue: only the owner writes its state, so
+/// the issue never takes turns between their states. The other rolls up.
+#[tokio::test]
+async fn mirror_shared_link_writes_from_one_owner() {
+    let m = mirror(50);
+    web(&m);
+    m.issues.seed("T-9", "T");
+    let c = channel("work-web", ChannelKind::Project);
+    m.seed_channel(&c);
+    let owner = Task {
+        issue: Some("T-9".into()),
+        ..task(2, "the issue itself", TaskStatus::InProgress)
+    };
+    let sharer = Task {
+        issue: Some("T-9".into()),
+        ..task(3, "a part of it", TaskStatus::Open)
+    };
+    m.seed_task(&c.name, &owner);
+    m.seed_task(&c.name, &sharer);
+
+    assert_eq!(m.sweep().await, 1, "one write for one issue");
+    assert_eq!(states(&m.issues.calls(), "T-9"), vec![IssueState::Started]);
+    assert!(
+        m.record(&record_key(&c.name, Some(&owner.id)))
+            .await
+            .is_some()
+    );
+    assert!(
+        m.record(&record_key(&c.name, Some(&sharer.id)))
+            .await
+            .is_none(),
+        "the sharer keeps no record"
+    );
+
+    m.update(
+        &c.name,
+        &sharer.id,
+        TaskPatch {
+            status: Some(TaskStatus::InProgress),
+            ..TaskPatch::default()
+        },
+    )
+    .await;
+    assert_eq!(m.sweep().await, 0, "the sharer's change writes nothing");
+}
