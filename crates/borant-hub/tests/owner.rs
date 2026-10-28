@@ -34,6 +34,7 @@ async fn create_channel(fx: &Fx, who: &Registered, name: ChannelName) {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

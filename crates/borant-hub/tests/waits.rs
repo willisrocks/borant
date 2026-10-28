@@ -32,6 +32,7 @@ async fn setup(fx: &Fx) -> (Registered, Registered, TaskId) {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

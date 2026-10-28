@@ -77,6 +77,7 @@ async fn export_import_round_trip() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

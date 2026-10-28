@@ -145,6 +145,7 @@ async fn chief(fx: &Fx) -> Registered {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

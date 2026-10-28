@@ -76,6 +76,9 @@ pub struct ChannelCreate {
     pub title: Option<String>,
     /// The issue link of a saga.
     pub issue: Option<String>,
+    /// The issue tracker team for this item and the items under it, for
+    /// example ENG. An empty string clears it.
+    pub issue_target: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -113,6 +116,9 @@ pub struct TaskCreate {
     pub kind: Option<String>,
     /// The issue link of the task.
     pub issue: Option<String>,
+    /// The issue tracker team for this item and the items under it, for
+    /// example ENG. An empty string clears it.
+    pub issue_target: Option<String>,
     /// Properties that follow the task schema of the channel.
     pub properties: Option<Map<String, Value>>,
 }
@@ -143,6 +149,9 @@ pub struct TaskUpdate {
     pub blocked_by: Option<Vec<String>>,
     /// The issue link of the task.
     pub issue: Option<String>,
+    /// The issue tracker team for this item and the items under it, for
+    /// example ENG. An empty string clears it.
+    pub issue_target: Option<String>,
     /// Properties to merge. A null value removes a key.
     pub properties: Option<Map<String, Value>>,
 }
@@ -273,16 +282,26 @@ fn spawn_request(a: &Spawn) -> Result<Value, String> {
 /// The call that the MCP channel_create tool forwards.
 fn channel_create_call(a: &ChannelCreate) -> Value {
     strip_nulls(
-        json!({"tool": "channel_create", "name": a.name, "schema": a.schema, "project": a.project, "branch": a.branch, "kind": a.kind, "title": a.title, "issue": a.issue}),
+        json!({"tool": "channel_create", "name": a.name, "schema": a.schema, "project": a.project, "branch": a.branch, "kind": a.kind, "title": a.title, "issue": a.issue, "issue_target": a.issue_target}),
     )
 }
 
 /// The call that the MCP task_create tool forwards.
 fn task_create_call(a: TaskCreate) -> Value {
     let task = strip_nulls(
-        json!({"title": a.title, "body": a.body.unwrap_or_default(), "blocked_by": a.blocked_by.unwrap_or_default(), "parent": a.parent, "kind": a.kind, "issue": a.issue, "properties": a.properties.unwrap_or_default()}),
+        json!({"title": a.title, "body": a.body.unwrap_or_default(), "blocked_by": a.blocked_by.unwrap_or_default(), "parent": a.parent, "kind": a.kind, "issue": a.issue, "issue_target": a.issue_target, "properties": a.properties.unwrap_or_default()}),
     );
     json!({"tool": "task_create", "channel": a.channel, "task": task})
+}
+
+/// The call that the MCP task_update tool forwards.
+fn task_update_call(a: TaskUpdate) -> Value {
+    let patch = strip_nulls(json!({
+        "title": a.title, "body": a.body, "status": a.status, "attention_msg": a.attention_msg,
+        "blocked_by": a.blocked_by, "issue": a.issue, "issue_target": a.issue_target,
+        "properties": a.properties,
+    }));
+    json!({"tool": "task_update", "channel": a.channel, "id": a.id, "patch": patch})
 }
 
 fn strip_nulls(v: Value) -> Value {
@@ -458,17 +477,10 @@ impl BorantMcp {
     }
 
     #[tool(
-        description = "Change a task: title, body, status, attention message, prerequisites, or properties."
+        description = "Change a task: title, body, status, attention message, prerequisites, properties, or the issue link and team."
     )]
     async fn task_update(&self, Parameters(a): Parameters<TaskUpdate>) -> Result<String, String> {
-        let patch = strip_nulls(json!({
-            "title": a.title, "body": a.body, "status": a.status, "attention_msg": a.attention_msg,
-            "blocked_by": a.blocked_by, "issue": a.issue, "properties": a.properties,
-        }));
-        self.forward(
-            json!({"tool": "task_update", "channel": a.channel, "id": a.id, "patch": patch}),
-        )
-        .await
+        self.forward(task_update_call(a)).await
     }
 
     #[tool(description = "Claim a task so that you work on it. Fails if another agent holds it.")]
@@ -641,15 +653,21 @@ mod tests {
             kind: Some("saga".into()),
             title: Some("Elastic compute".into()),
             issue: Some("ENG-7".into()),
+            issue_target: Some("ENG".into()),
         };
         let call: ToolCall = serde_json::from_value(channel_create_call(&a)).unwrap();
         match call {
             ToolCall::ChannelCreate {
-                kind, title, issue, ..
+                kind,
+                title,
+                issue,
+                issue_target,
+                ..
             } => {
                 assert_eq!(kind, borant_core::model::ChannelKind::Saga);
                 assert_eq!(title.as_deref(), Some("Elastic compute"));
                 assert_eq!(issue.as_deref(), Some("ENG-7"));
+                assert_eq!(issue_target.as_deref(), Some("ENG"));
             }
             other => panic!("not a channel_create: {other:?}"),
         }
@@ -665,6 +683,7 @@ mod tests {
             parent: Some("01JABCDEFGHJKMNPQRSTVWXYZ0".into()),
             kind: Some("epic".into()),
             issue: Some("ENG-8".into()),
+            issue_target: Some("ENG".into()),
             properties: None,
         };
         let call: ToolCall = serde_json::from_value(task_create_call(a)).unwrap();
@@ -672,8 +691,33 @@ mod tests {
             ToolCall::TaskCreate { task, .. } => {
                 assert_eq!(task.kind, borant_core::model::TaskKind::Epic);
                 assert_eq!(task.issue.as_deref(), Some("ENG-8"));
+                assert_eq!(task.issue_target.as_deref(), Some("ENG"));
             }
             other => panic!("not a task_create: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_update_passes_issue_target() {
+        let a = TaskUpdate {
+            channel: "work-api".into(),
+            id: "01JABCDEFGHJKMNPQRSTVWXYZ0".into(),
+            title: None,
+            body: None,
+            status: None,
+            attention_msg: None,
+            blocked_by: None,
+            issue: None,
+            issue_target: Some("ENG".into()),
+            properties: None,
+        };
+        let call: ToolCall = serde_json::from_value(task_update_call(a)).unwrap();
+        match call {
+            ToolCall::TaskUpdate { patch, .. } => {
+                assert_eq!(patch.issue_target, Some("ENG".into()));
+                assert_eq!(patch.issue, None);
+            }
+            other => panic!("not a task_update: {other:?}"),
         }
     }
 

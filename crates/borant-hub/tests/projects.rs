@@ -46,6 +46,7 @@ async fn setup(fx: &Fx, project: Option<&str>, branch: Option<&str>) -> Register
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -141,6 +142,7 @@ async fn channel_create_with_unknown_project_fails() {
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await
@@ -267,6 +269,7 @@ async fn takeover_in_another_harness_drops_the_model() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

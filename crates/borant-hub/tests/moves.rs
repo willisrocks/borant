@@ -32,6 +32,7 @@ async fn setup(
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -232,6 +233,7 @@ async fn claims_return_to_open_after_claim_timeout() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -675,6 +677,7 @@ async fn claims_of_an_unmovable_agent_time_out() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

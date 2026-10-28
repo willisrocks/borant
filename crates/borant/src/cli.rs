@@ -6,7 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use borant_core::board::{BoardView, EpicLine, SagaState};
 use borant_core::model::{
-    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskStatus, UsageWindow,
+    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskStatus,
+    UsageWindow,
 };
 use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
@@ -349,6 +350,17 @@ pub enum TaskCmd {
         #[arg(long, default_value = "")]
         message: String,
     },
+    /// Change the issue link or the issue team of a task.
+    Update {
+        /// The task, as CHANNEL/ID.
+        task: String,
+        /// The issue tracker team, for example ENG. An empty string clears it.
+        #[arg(long)]
+        issue_target: Option<String>,
+        /// The issue key or URL. An empty string clears it.
+        #[arg(long)]
+        issue: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -688,6 +700,22 @@ fn task_ref(text: &str) -> anyhow::Result<(ChannelName, TaskId)> {
         .map_err(|e| anyhow!("{e}"))?;
     let id = id.trim().parse::<TaskId>().map_err(|e| anyhow!("{e}"))?;
     Ok((channel, id))
+}
+
+/// The patch of `borant task update`: it needs at least one of the two
+/// issue fields.
+fn task_update_patch(
+    issue: Option<String>,
+    issue_target: Option<String>,
+) -> anyhow::Result<TaskPatch> {
+    if issue.is_none() && issue_target.is_none() {
+        bail!("task update needs --issue-target or --issue");
+    }
+    Ok(TaskPatch {
+        issue,
+        issue_target,
+        ..Default::default()
+    })
 }
 
 /// The `--close-task` value: one of the four close reasons.
@@ -1104,9 +1132,10 @@ fn render_board(v: &BoardView) -> String {
             for saga in &project.sagas {
                 let _ = writeln!(
                     out,
-                    "  saga #{}  {}  {}  {}/{} epics",
+                    "  saga #{}  {}{}  {}  {}/{} epics",
                     saga.channel,
                     saga.title.as_deref().unwrap_or(saga.channel.as_str()),
+                    issue_suffix(saga.issue.as_deref()),
                     saga_state_word(saga.state),
                     saga.done,
                     saga.total,
@@ -1159,13 +1188,19 @@ fn render_board(v: &BoardView) -> String {
 /// One epic of the text board: its title, its status, and its counts.
 fn epic_text(epic: &EpicLine) -> String {
     format!(
-        "{}  {}  {} ready, {} running, {} done",
+        "{}{}  {}  {} ready, {} running, {} done",
         epic.title,
+        issue_suffix(epic.issue.as_deref()),
         status_word(epic.status),
         epic.counts.ready,
         epic.counts.running,
         epic.counts.done,
     )
+}
+
+/// The `  KEY` that follows a title on the board, or nothing when unset.
+fn issue_suffix(issue: Option<&str>) -> String {
+    issue.map(|key| format!("  {key}")).unwrap_or_default()
 }
 
 fn saga_state_word(state: SagaState) -> &'static str {
@@ -1415,6 +1450,15 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                     )
                     .await?,
                 );
+            }
+            TaskCmd::Update {
+                task,
+                issue_target,
+                issue,
+            } => {
+                let (channel, id) = task_ref(&task)?;
+                let patch = task_update_patch(issue, issue_target)?;
+                pretty(&call(&c, ToolCall::TaskUpdate { channel, id, patch }).await?);
             }
         },
         Command::Channel { cmd } => match cmd {
@@ -1832,6 +1876,7 @@ mod tests {
             "borant pin w1 --off",
             "borant tasks api --ready",
             "borant task close api/01M5S3PATRKMGFD9C0HB1CS4ZK --reason done --message shipped",
+            "borant task update api/01M5S3PATRKMGFD9C0HB1CS4ZK --issue-target ENG --issue ENG-9",
             "borant send #api ship it --urgent",
             "borant send w1 hello",
             "borant move w1 --host vps-1",
@@ -2031,6 +2076,35 @@ mod tests {
         assert!(
             Cli::try_parse_from(["borant", "task", "close", "api/x", "--reason", "maybe"]).is_err()
         );
+    }
+
+    #[test]
+    fn task_update_parses_issue_target() {
+        let cmd = cli_command(&format!(
+            "borant task update api/{TASK} --issue-target ENG --issue ENG-9"
+        ));
+        let Command::Task {
+            cmd:
+                TaskCmd::Update {
+                    task,
+                    issue_target,
+                    issue,
+                },
+        } = cmd
+        else {
+            panic!("not a task update");
+        };
+        assert_eq!(task, format!("api/{TASK}"));
+        assert_eq!(issue_target.as_deref(), Some("ENG"));
+        assert_eq!(issue.as_deref(), Some("ENG-9"));
+    }
+
+    #[test]
+    fn task_update_needs_a_flag() {
+        assert!(task_update_patch(None, None).is_err());
+        // An empty string still clears the value.
+        let patch = task_update_patch(Some(String::new()), None).unwrap();
+        assert_eq!(patch.issue, Some(String::new()));
     }
 
     #[test]
@@ -2626,7 +2700,7 @@ mod tests {
                     sagas: vec![SagaLine {
                         channel: "elastic".parse().unwrap(),
                         title: Some("Elastic compute".into()),
-                        issue: None,
+                        issue: Some("ENG-1".into()),
                         state: SagaState::Approved,
                         gate: Some(TaskId::new()),
                         epics: vec![
@@ -2635,7 +2709,7 @@ mod tests {
                                 task: epic,
                                 title: "the provisioner".into(),
                                 status: TaskStatus::InProgress,
-                                issue: None,
+                                issue: Some("ENG-12".into()),
                                 branch: None,
                                 pr_url: None,
                                 counts: Counts {
@@ -2722,8 +2796,8 @@ mod tests {
             format!(
                 "COLLECTION personal\n\
                  project borant  mirror=on  orchestrators: orchestrator (online), chief (offline)\n\
-                 \x20 saga #elastic  Elastic compute  approved  3/5 epics\n\
-                 \x20   the provisioner  in_progress  1 ready, 2 running, 4 done\n\
+                 \x20 saga #elastic  Elastic compute  ENG-1  approved  3/5 epics\n\
+                 \x20   the provisioner  ENG-12  in_progress  1 ready, 2 running, 4 done\n\
                  \x20   the client  open  0 ready, 0 running, 0 done\n\
                  \x20 epic #metrics  Metrics  open  1 ready, 0 running, 0 done\n\
                  \x20 tasks: 2 open, 1 ready, 1 running, 1 blocked, 1 stuck, 0 needs_human, 4 done\n\

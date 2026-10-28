@@ -76,6 +76,7 @@ async fn setup(fx: &Fx) -> Setup {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

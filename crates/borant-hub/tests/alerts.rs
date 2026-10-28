@@ -189,6 +189,7 @@ async fn task(fx: &Fx, reg: &Registered) -> Task {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await;

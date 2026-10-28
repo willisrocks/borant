@@ -189,6 +189,7 @@ impl Hub {
                 kind,
                 title,
                 issue,
+                issue_target,
             } => {
                 let me = me.ok_or_else(|| ApiError::invalid("needs a session"))?;
                 to_value(
@@ -203,6 +204,7 @@ impl Hub {
                             kind,
                             title,
                             issue,
+                            issue_target,
                         )
                         .await?,
                 )
@@ -584,6 +586,7 @@ impl Hub {
         kind: ChannelKind,
         title: Option<String>,
         issue: Option<String>,
+        issue_target: Option<String>,
     ) -> Result<Channel, ApiError> {
         let (collection, branch) = match &project {
             Some(p) => {
@@ -610,6 +613,12 @@ impl Hub {
             }
         }
         saga::check_channel(kind, project.as_ref())?;
+        let issue_target = issue_target.filter(|t| !t.is_empty());
+        if issue_target.is_some() && kind == ChannelKind::Project {
+            return Err(ApiError::invalid(
+                "issue_target needs a saga or an epic channel; set it on the task",
+            ));
+        }
         let schema = match s {
             Some(s) => {
                 schema::check_schema(&s)?;
@@ -645,7 +654,7 @@ impl Hub {
                 parent: None,
                 kind: TaskKind::Task,
                 issue: None,
-                issue_target: None,
+                issue_target: issue_target.clone(),
                 properties: Map::new(),
                 created: self.now(),
                 updated: self.now(),
@@ -667,7 +676,7 @@ impl Hub {
                 parent: None,
                 kind: TaskKind::Epic,
                 issue: issue.clone(),
-                issue_target: None,
+                issue_target: issue_target.clone(),
                 properties: Map::new(),
                 created: self.now(),
                 updated: self.now(),

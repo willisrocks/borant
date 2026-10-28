@@ -59,6 +59,7 @@ async fn setup(fx: &Fx) -> (Registered, Registered, TaskId) {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -431,6 +432,7 @@ async fn changes_publish_one_change_updated_event() {
         kind: ChannelKind::Project,
         title: None,
         issue: None,
+        issue_target: None,
     })
     .await;
     call(ToolCall::TaskCreate {

@@ -54,6 +54,7 @@ async fn setup(fx: &Fx, roles: &[(&str, RoleConfig)]) -> (Registered, Registered
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -280,6 +281,7 @@ async fn pause_of_a_sessionless_agent_persists_and_launches_nothing() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -668,6 +670,7 @@ async fn pause_channel_cap_queues_the_spawn() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

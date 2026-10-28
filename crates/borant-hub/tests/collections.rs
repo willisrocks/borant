@@ -47,6 +47,7 @@ async fn create_channel(
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await?;
@@ -217,6 +218,7 @@ async fn collections_launch_order_gets_the_bundles_and_git_author() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

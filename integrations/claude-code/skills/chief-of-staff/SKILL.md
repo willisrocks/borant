@@ -33,6 +33,7 @@ them differently.
 | A role with `approves = true` in `hub.toml` approves saga gates. When a saga gate goes `needs_human`, the hub sends a direct message to every agent of the collection whose role approves. | The gate is yours to approve only on the person's word. Close it as `done` with their words, or as `wontfix` when they say no. |
 | The gate is a task of the saga channel, owned by its orchestrator, and the orchestrator cannot close it as `done` unless its role has `approves = true`. | Never let an orchestrator approve its own scope. You bring the gate to the person. |
 | `board` reads the board of the collection: projects, sagas, epics, and the questions that wait for a person. It is computed and stores nothing. | Answer status questions from `board`, not from repos, CI, logs, or `borant status`. |
+| An 'Issue team needed' question means the mirror lacks a Linear team. | Ask the person for the team key, then `task_update(issue_target: <key>)` on that task, or tell the orchestrator. |
 
 ## Delegate
 
@@ -154,3 +155,4 @@ change to CI, secrets, releases, or infrastructure.
 | "I will read the repo or the logs to check on it" | Ask the orchestrator that owns the work, or use a subagent for an ad-hoc lookup. |
 | "This ask is small, I will do it here" | Use a subagent. Keep the chief's context for decisions. |
 | "I will run this cleanup command myself" | Send it to the orchestrator that owns the project. |
+| "Pick a team for the orchestrator" | Ask the person. |

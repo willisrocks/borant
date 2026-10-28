@@ -59,6 +59,7 @@ async fn owner(fx: &Fx) -> Registered {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -578,6 +579,7 @@ async fn spawns_one_per_counts_a_queued_record() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -676,6 +678,7 @@ async fn a_person_spawns_from_the_cli() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

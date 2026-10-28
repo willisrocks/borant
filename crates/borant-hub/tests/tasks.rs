@@ -3,7 +3,7 @@
 mod common;
 
 use borant_core::ChannelName;
-use borant_core::model::{ChannelKind, NewTask, Task};
+use borant_core::model::{ChannelKind, NewTask, Task, TaskPatch};
 use borant_core::ports::StateStore;
 use borant_core::proto::{CtlRequest, ToolCall};
 use common::Fx;
@@ -26,6 +26,7 @@ async fn fixture() -> (Fx, borant_core::proto::Registered) {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -165,4 +166,97 @@ async fn tasks_a_create_key_is_idempotent() {
         .await
         .unwrap();
     assert_eq!(all.as_array().map(Vec::len), Some(1));
+}
+
+/// The issue target is stored, changed, and cleared by an empty string; an
+/// empty issue link clears the link.
+#[tokio::test]
+async fn tasks_issue_target_is_stored_and_cleared() {
+    let (fx, owner) = fixture().await;
+    let created: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskCreate {
+                channel: api(),
+                task: NewTask {
+                    title: "ship it".into(),
+                    issue: Some("ENG-1".into()),
+                    issue_target: Some("ENG".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(created.issue_target.as_deref(), Some("ENG"));
+
+    let fetched: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskGet {
+                channel: api(),
+                id: created.id,
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fetched.issue_target.as_deref(), Some("ENG"));
+
+    let changed: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskUpdate {
+                channel: api(),
+                id: created.id,
+                patch: TaskPatch {
+                    issue_target: Some("OPS".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(changed.issue_target.as_deref(), Some("OPS"));
+
+    let cleared: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskUpdate {
+                channel: api(),
+                id: created.id,
+                patch: TaskPatch {
+                    issue_target: Some(String::new()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cleared.issue_target, None);
+
+    let unlinked: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskUpdate {
+                channel: api(),
+                id: created.id,
+                patch: TaskPatch {
+                    issue: Some(String::new()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unlinked.issue, None);
 }

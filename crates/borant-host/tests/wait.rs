@@ -51,6 +51,7 @@ async fn channel_and_task(fx: &Fx, channel: &str) -> (SessionId, TaskId) {
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await

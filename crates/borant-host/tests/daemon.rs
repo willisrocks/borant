@@ -129,6 +129,7 @@ async fn broadcast_is_delivered_on_next_event_not_wake() {
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await
@@ -578,6 +579,7 @@ async fn turn_end_events_do_not_take_messages() {
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await

@@ -358,6 +358,10 @@ pub enum ToolCall {
         /// The issue link of a saga.
         #[serde(default)]
         issue: Option<String>,
+        /// The issue tracker team of the anchor task of a saga or an epic
+        /// channel. The core never reads it; a tracker adapter does.
+        #[serde(default)]
+        issue_target: Option<String>,
     },
     ChannelJoin {
         name: ChannelName,

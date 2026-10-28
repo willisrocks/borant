@@ -144,6 +144,7 @@ impl World {
         kind: ChannelKind,
         title: Option<&str>,
         issue: Option<&str>,
+        issue_target: Option<&str>,
     ) -> Result<Value, ApiError> {
         self.fx
             .call(
@@ -156,6 +157,7 @@ impl World {
                     kind,
                     title: title.map(str::to_owned),
                     issue: issue.map(str::to_owned),
+                    issue_target: issue_target.map(str::to_owned),
                 },
             )
             .await
@@ -169,6 +171,7 @@ impl World {
             Some("web"),
             ChannelKind::Saga,
             Some("Elastic compute"),
+            None,
             None,
         )
         .await
@@ -309,7 +312,7 @@ async fn sagas_saga_and_epic_channels_need_a_project() {
     let w = world().await;
     for kind in [ChannelKind::Saga, ChannelKind::Epic] {
         let err = w
-            .create(&w.boss, "work-loose", None, kind, Some("Loose"), None)
+            .create(&w.boss, "work-loose", None, kind, Some("Loose"), None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code, ApiErrorCode::Invalid, "{err:?}");
@@ -328,6 +331,7 @@ async fn sagas_epic_channel_makes_the_root() {
             ChannelKind::Epic,
             Some("Standalone epic"),
             Some("LIN-7"),
+            None,
         )
         .await
         .unwrap();
@@ -365,6 +369,7 @@ async fn sagas_epic_channel_makes_the_root() {
             ChannelKind::Epic,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -379,6 +384,7 @@ async fn sagas_project_channel_refuses_an_epic() {
         "work-web",
         Some("web"),
         ChannelKind::Project,
+        None,
         None,
         None,
     )
@@ -637,6 +643,7 @@ async fn sagas_issue_is_stored() {
             ChannelKind::Saga,
             Some("Elastic compute"),
             Some("LIN-42"),
+            None,
         )
         .await
         .unwrap();
@@ -684,4 +691,67 @@ async fn sagas_issue_is_stored() {
     assert_eq!(saga["issue"], "LIN-42");
     assert_eq!(saga["gate"], gate.to_string());
     assert_eq!(saga["kind"], "saga");
+}
+
+#[tokio::test]
+async fn sagas_issue_target_goes_on_the_gate() {
+    let w = world().await;
+    let ch = w
+        .create(
+            &w.boss,
+            "work-saga",
+            Some("web"),
+            ChannelKind::Saga,
+            Some("Elastic compute"),
+            None,
+            Some("ENG"),
+        )
+        .await
+        .unwrap();
+    let gate = id_of(&ch["gate"]);
+    let task = w.get(&w.boss, "work-saga", gate).await;
+    assert_eq!(task["issue_target"], "ENG");
+}
+
+#[tokio::test]
+async fn sagas_issue_target_goes_on_the_epic_root() {
+    let w = world().await;
+    let ch = w
+        .create(
+            &w.boss,
+            "work-standalone",
+            Some("web"),
+            ChannelKind::Epic,
+            Some("Standalone epic"),
+            None,
+            Some("ENG"),
+        )
+        .await
+        .unwrap();
+    let root = id_of(&ch["root"]);
+    let task = w.get(&w.boss, "work-standalone", root).await;
+    assert_eq!(task["issue_target"], "ENG");
+}
+
+#[tokio::test]
+async fn sagas_issue_target_on_a_project_channel_is_invalid() {
+    let w = world().await;
+    let err = w
+        .create(
+            &w.boss,
+            "work-web",
+            Some("web"),
+            ChannelKind::Project,
+            None,
+            None,
+            Some("ENG"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Invalid, "{err:?}");
+    assert!(
+        err.message
+            .contains("issue_target needs a saga or an epic channel"),
+        "{err:?}"
+    );
 }
