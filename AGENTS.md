@@ -53,19 +53,7 @@ extension). Docker multi-host tests live in `docker/` and `tests/e2e/`.
 
 ## Mod and TUI changes need a real render
 
-Unit tests say what a tree contains; they do not paint it. A mod or TUI change
-needs a real Claude Code session in tmux at fixed sizes, driven with keys, with
-a color capture rendered to PNG and read back. Text captures without color hide
-highlights and focus rings.
-
-- `just cos-visual [plugin-dir] [out] [prefix]` runs the loop at 200x50 and
-  120x40: it opens the band with `/cos`, focuses it with `ctrl+x tab`, `tab`,
-  and `down`, opens the pane with `Enter`, moves with `j`, and writes
-  `<prefix>-<width>-<state>.txt` and `.png` for each step.
-- The board defaults to `BORANT_COS_BOARD=fixture`; for a live board use
-  `BORANT_COS_BOARD=cli` with `borant` on PATH.
-- Compare before and after: `git worktree add /tmp/before main`, run the same
-  command with `--plugin-dir /tmp/before/integrations/claude-code`, and attach
-  both sets to the PR.
-- `freeze` comes from `nix shell nixpkgs#charm-freeze` (the nixpkgs package is
-  `charm-freeze`, not `freeze`).
+Load the `tui-visual-qa` skill (`.agents/skills/tui-visual-qa/SKILL.md`)
+before you change the Claude Code mod or any Borant TUI. Unit tests do not
+paint: a change needs a real session in tmux, driven with real input, with
+PNGs that you read back and attach to the PR.
