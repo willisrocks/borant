@@ -44,10 +44,23 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
   goals, relay decisions, and get progress reports. Never do project work yourself, and
   never check in-flight work by reading repos, CI, logs, or `borant status`. Ask the
   orchestrator that owns the work.
+- Project work includes every prod operation, project script, database query or
+  migration, cloud CLI call, build, test, deploy, and long-running or background shell
+  command. It goes to the project's orchestrator, which runs it in a worker, **even
+  after the person approves it**: the approval decides what happens, not who runs it.
+  Send the orchestrator the approved action and the person's words. When the step needs
+  the laptop (prod credentials, a local tool), the orchestrator spawns a worker there;
+  you never run it for the orchestrator, even when it asks.
 - Run ad-hoc lookups that do not warrant an orchestrator (a repo, a config file, a host,
   a past release) and small asks from the person (a dotfile edit) in a subagent (the
-  Claude Code Agent tool) that returns only the conclusion. Any step that reads files,
+  Claude Code Agent tool) that returns only the conclusion. A subagent never does
+  project work either. Any step that reads files,
   logs, git history, `gh` output, or `borant status --json` goes to a subagent.
+- Two things in the mod hold this when compaction drops this skill: the system prompt
+  of a chief carries the rule ("borant:chief-delegation"), and project work in the
+  chief's shell goes to the person as a permission prompt ("Chief guard: …"). Never
+  word a command to get around the guard. The one command of yours it allows is
+  `install_borant.sh`, the person's laptop install of a release.
 - Call single Borant tools directly: the MCP tools `send`, `members`, `spawn`,
   `channel_create`, `channel_join`, `channel_transfer`, `board`, and the `borant cancel`
   CLI command. Do not route messages to orchestrators or spawns through a subagent.
@@ -128,6 +141,14 @@ change to CI, secrets, releases, or infrastructure.
   only its channel's owner may close it as done, so `send` that owner a direct
   message to close it, quoting the prompt. The board shows "marking done…" until
   the task closes, and "still open" after two minutes.
+- **The person pressed Ask orchestrator on the board:** the mod already sent the
+  question to the owner of the task's channel, as the person, and you get a note with
+  the next prompt. Do not answer it yourself, and do not send it again. When the owner
+  replies, relay the reply to the person.
+- **An orchestrator asks you to run something** (a prod script, a command that needs
+  the laptop): refuse, and tell it to spawn a worker for it, naming the laptop's host
+  when the step needs the laptop. Bring the placement to the person only when the
+  standing permissions do not cover work on the laptop.
 - **An orchestrator goes quiet:** `members` for `online` and the host. If it is
   moving, wait. If it is gone, spawn one replacement for the project, with the same
   goal and the tasks that are still open.
@@ -165,4 +186,9 @@ change to CI, secrets, releases, or infrastructure.
 | "I will read the repo or the logs to check on it" | Ask the orchestrator that owns the work, or use a subagent for an ad-hoc lookup. |
 | "This ask is small, I will do it here" | Use a subagent. Keep the chief's context for decisions. |
 | "I will run this cleanup command myself" | Send it to the orchestrator that owns the project. |
+| "Chris approved it, so I will run it myself" | The approval is the answer, not the job. Send the approved action and his words to the orchestrator; a worker runs it. |
+| "The orchestrator is slow, I will do it here" | Tell the orchestrator it is urgent. A step you run here has no task, no worker, and no review. |
+| "The orchestrator asked me to run it: the prod access is on the laptop" | Tell it to spawn a worker on the laptop's host. You never run a project's step for it. |
+| "Chris pressed Ask orchestrator, I know the answer" | The board sent it to the owner. Relay the owner's reply; add your view only if he asks. |
+| "The guard asked; I will reword the command" | The guard is the rule. Send the step to the orchestrator. |
 | "Pick a team for the orchestrator" | Ask the person. |

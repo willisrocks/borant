@@ -10,5 +10,7 @@ case "$1" in
   tasks) cat "$dir/tasks-$2.json" 2>/dev/null || echo '[]' ;;
   events) exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
   hook) exit 0 ;;
+  # The Ask button sends as the person; a test only records it.
+  send) exit 0 ;;
   *) echo "borant-stub: $*" >&2; exit 2 ;;
 esac

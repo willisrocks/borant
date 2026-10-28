@@ -250,6 +250,10 @@ export function needsRows(state, width, selection) {
     const segments = [text(GLYPH.needs + ' ', 'yellow')]
     if (mark && mark.state === 'pending') segments.push(text('marking done\u2026 ', 'yellow'))
     if (mark && mark.state === 'failed') segments.push(text('still open \u00b7 ', 'red'))
+    const asking = (state.asked || {})[questionKey(q)]
+    if (asking && asking.state === 'sending') segments.push(text('asking\u2026 ', 'dim'))
+    if (asking && asking.state === 'sent') segments.push(text('asked ' + asking.owner + ' \u00b7 ', 'dim'))
+    if (asking && asking.state === 'failed') segments.push(text('ask failed \u00b7 ', 'red'))
     segments.push(text(q.title || '', 'yellowBold'), text('  ' + context, 'dim'))
     out.push(
       nodeRow({

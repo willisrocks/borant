@@ -32,11 +32,13 @@ import {
   TABS,
   breadcrumb,
   channelsFor,
+  findProject,
   rowsFor,
   questionKey,
   viewKey,
 } from '../mod/nav.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
+import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
 
 /** The pane's id, and its tab label. */
 const PANE = 'cos'
@@ -72,6 +74,14 @@ let lastReadAt = 0
 let lastOkAt = null
 /** Done presses by `<channel>/<task>`: `{ state, at, title, reason }`. */
 let pending = {}
+/** Ask presses, by question: `{ state: 'sending' | 'sent' | 'failed', owner }`. */
+let asked = {}
+/**
+ * The rule is owed to the conversation: a session that was running when the
+ * mod loaded keeps the system prompt it started with, and a compaction can
+ * drop what it was told. The first turn after either gets the rule as a row.
+ */
+let ruleOwed = false
 /** A read the event stream asked for is waiting on its timer. */
 let pushQueued = false
 /** The needs-you items the last drawing saw; a new one raises a toast. */
@@ -102,7 +112,7 @@ let columns = 0
 export function register(on) {
   on('session.start', async ($, e, next) => {
     try {
-      await start($)
+      await ensureStarted($)
     } catch {
       // A mod must never keep a session from starting.
     }
@@ -111,6 +121,7 @@ export function register(on) {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     try {
+      await ensureStarted($)
       if (!isChief) return next(e)
       measure(e)
       if (!board) {
@@ -221,6 +232,7 @@ export function register(on) {
   })
 
   on('command.run', { command: 'cos' }, async ($, e) => {
+    await ensureStarted($).catch(() => {})
     try {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
       // A command runs from the prompt, which now has the keys.
@@ -255,8 +267,43 @@ export function register(on) {
     return next(e)
   })
 
+  // The chief's rule, in the system prompt, where compaction cannot drop it
+  // the way it drops a skill. A reload of the mod runs session.start again,
+  // so a long session gets it too.
+  on('prompt.compose', async ($, e, next) => {
+    await ensureStarted($).catch(() => {})
+    const out = await next(e)
+    if (!isChief) return out
+    return { ...out, sections: [...out.sections, { id: 'borant:chief-delegation', text: DELEGATION_RULE, scope: 'session' }] }
+  })
+
+  // Project work that reaches the chief's shell goes to the person as a
+  // permission prompt, in any mode. Reads, and the Borant CLI, pass.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    await ensureStarted($).catch(() => {})
+    const verdict = await next(e)
+    if (!isChief || verdict.decision === 'deny') return verdict
+    const why = projectWork(e.input)
+    return why ? { decision: 'ask', reason: guardReason(why) } : verdict
+  })
+
+  on('session.compact', async ($, e, next) => {
+    const out = await next(e)
+    if (isChief && !out?.skip) ruleOwed = true
+    return out
+  })
+
   // A turn starts when a Borant message arrives, so the board catches up then.
   on('turn.start', async ($, e, next) => {
+    try {
+      await ensureStarted($)
+      if (isChief && ruleOwed && e.agentId === undefined) {
+        ruleOwed = false
+        await tell($, DELEGATION_RULE)
+      }
+    } catch {
+      // The system prompt still carries the rule.
+    }
     try {
       if (isChief) {
         await refresh($)
@@ -270,6 +317,18 @@ export function register(on) {
   })
 }
 
+/**
+ * Starts the mod once per load. A reload does not always raise session.start
+ * (`/reload-plugins` loads the module and goes on), so the hooks a chief needs
+ * at once start it too.
+ */
+let started = false
+async function ensureStarted($) {
+  if (started) return
+  started = true
+  await start($)
+}
+
 /** The one cheap role check. A chief is started with BORANT_ROLE=chief. */
 async function start($) {
   let role
@@ -280,6 +339,7 @@ async function start($) {
   }
   if (role !== 'chief') return
   isChief = true
+  ruleOwed = true
 
   let mode = 'cli'
   try {
@@ -504,6 +564,7 @@ function rowsNow() {
     tasks: taskLists(),
     questions: allQuestions(board),
     pending,
+    asked,
     help: helpLines({ rows: rowCount() }),
     selection: selectionOf(),
     width: paneWidth,
@@ -1073,21 +1134,65 @@ function press($, button) {
       return selectTab($, 'help')
     case 'done':
       return markDone($, allQuestions(board)[button.arg])
-    case 'ask': {
-      const q = allQuestions(board)[button.arg]
-      if (!q) return redraw($)
-      const text = 'Chris asks the orchestrator: ' + q.title + ' (' + q.channel + '/' + q.task + ')'
-      // The prompt submits when the session is idle; a press must not wait.
-      try {
-        $.prompt.submit({ text }).catch(() => {})
-      } catch {
-        // Refused only while a turn is stopped; the item stays on the board.
-      }
-      return redraw($)
-    }
+    case 'ask':
+      return askOwner($, allQuestions(board)[button.arg])
     default:
       return redraw($)
   }
+}
+
+/**
+ * Tells the chief something without a turn: a user-role row the person does
+ * not see as typed, which the model reads with its next request.
+ */
+async function tell($, text) {
+  try {
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: '[borant chief mod] ' + text }] } })
+  } catch {
+    // Nothing to tell it with; the board still shows the ask.
+  }
+}
+
+/**
+ * Ask orchestrator: the mod sends the question to the owner of its channel
+ * itself, as the person, and the chief is only told, with a row and no turn.
+ * A prompt would have the chief answer it in its own session.
+ */
+async function askOwner($, q) {
+  if (!q) return redraw($)
+  const owner = q.owner || (findProject(board, q.project)?.orchestrators || [])[0]?.agent
+  const key = questionKey(q)
+  if (!owner) {
+    asked[key] = { state: 'failed', owner: '' }
+    toast($, 'ask: no orchestrator owns ' + q.channel)
+    return redraw($)
+  }
+  asked[key] = { state: 'sending', owner }
+  redraw($)
+  const text =
+    'Chris asks about ' + q.title + ' (' + q.channel + '/' + q.task + '), from the chief\'s board: ' +
+    'what does it need from him, and what do you recommend? Answer the chief, who relays it to Chris.'
+  let ok = false
+  let why = ''
+  try {
+    const run = await $.process.run(['borant', 'send', owner, text], { timeoutMs: 8000 })
+    ok = run.exitCode === 0
+    why = String(run.stderr || '').trim().split('\n')[0]
+  } catch (err) {
+    why = String(err?.message || err)
+  }
+  asked[key] = { state: ok ? 'sent' : 'failed', owner }
+  if (ok) {
+    await tell(
+      $,
+      'The person pressed "Ask orchestrator" on ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
+        'The board sent the question to ' + owner + ' as a direct message. Do not answer it yourself; relay ' + owner + '\'s reply.',
+    )
+    toast($, 'asked ' + owner + ': ' + truncate(q.title, 40))
+  } else {
+    toast($, 'ask failed' + (why ? ' (' + truncate(why, 40) + ')' : '') + ': ' + truncate(q.title, 40))
+  }
+  return redraw($)
 }
 
 /**
