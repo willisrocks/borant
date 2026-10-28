@@ -173,6 +173,39 @@ export function allProjects(board) {
   return out
 }
 
+/** The plain tasks of a project that are not done: open, running, or waiting on a person. */
+export function openTasks(project) {
+  const c = project?.tasks || {}
+  return (c.open || 0) + (c.running || 0) + (c.stuck || 0) + (c.needs_human || 0)
+}
+
+/** A project has work while a saga or an epic is open, or a plain task is. */
+export function isActive(project) {
+  if ((project?.sagas || []).some((s) => s.state !== 'closed')) return true
+  const epics = [...(project?.epics || []), ...(project?.sagas || []).flatMap((s) => s.epics || [])]
+  if (epics.some((e) => e.status !== 'closed')) return true
+  return openTasks(project) > 0
+}
+
+/** The projects the band, the digest, and the Projects tab list: those with work. */
+export function activeProjects(board) {
+  return allProjects(board).filter(isActive)
+}
+
+/** The project count of a header: `4 active · 3 idle`, or `2 projects` when none is idle. */
+export function projectCount(board) {
+  const all = allProjects(board).length
+  const active = activeProjects(board).length
+  if (active === all) return all + (all === 1 ? ' project' : ' projects')
+  return active + ' active \u00b7 ' + (all - active) + ' idle'
+}
+
+/** What a project without a saga or an epic shows: `3 open tasks`. */
+export function openTasksLabel(project) {
+  const n = openTasks(project)
+  return n + (n === 1 ? ' open task' : ' open tasks')
+}
+
 /** Every needs-you question, gates first and then the oldest. */
 export function allQuestions(board) {
   const out = []
@@ -229,7 +262,9 @@ export function projectSummary(project, cells = 10) {
   const counts = project?.tasks || {}
   return {
     project: project?.project || '?',
-    saga: saga ? saga.title : 'no saga',
+    // A project with no saga and no epic has only plain tasks: name them.
+    plain: !saga && totalEpics(project) === 0,
+    saga: saga ? saga.title : totalEpics(project) ? 'no saga' : 'plain tasks',
     bar: progressBar(done, total, cells),
     running: counts.running || 0,
     blocked: counts.blocked || 0,
@@ -458,12 +493,25 @@ export function needsRow(questions, width, narrow, digit = 1, columns = { projec
   )
 }
 
+/** The state of a project's plain tasks, for a project with no epic. */
+export function plainState(project) {
+  const c = project?.tasks || {}
+  if ((c.needs_human || 0) + (c.stuck || 0) > 0) return 'needs'
+  if ((c.running || 0) > 0) return 'running'
+  if ((c.blocked || 0) > 0 && !(c.ready || 0)) return 'blocked'
+  return 'waiting'
+}
+
 /** One row for one project. */
 export function projectRow(project, width, narrow, digit, index = 0, columns = { project: 11, saga: 17 }) {
   const s = projectSummary(project, narrow ? 8 : 10)
   const current = currentEpic(project)
-  const epicTitle = current ? current.epic.title : 'no epic yet'
-  const state = current ? current.state : 'waiting'
+  const epicTitle = current ? current.epic.title : s.plain ? openTasksLabel(project) : 'no epic yet'
+  const state = current ? current.state : s.plain ? plainState(project) : 'waiting'
+  // A project of plain tasks has no epics to count, so its bar is blank.
+  const bar = s.plain
+    ? { filled: '', empty: ' '.repeat(s.bar.filled.length + s.bar.empty.length), label: '' }
+    : s.bar
   if (narrow) {
     const head = [
       hotkey(digit, 'project', project?.project, 'project-' + index),
@@ -473,9 +521,7 @@ export function projectRow(project, width, narrow, digit, index = 0, columns = {
     ]
     const prefixWidth = head.reduce((n, s) => n + Array.from(s.text).length, 0)
     const stats = [
-      text(' ' + s.bar.filled, 'green'),
-      text(s.bar.empty, 'faint'),
-      text(' ' + s.bar.label),
+      ...(s.plain ? [] : [text(' ' + s.bar.filled, 'green'), text(s.bar.empty, 'faint'), text(' ' + s.bar.label)]),
       s.blocked ? text(' ' + GLYPH.blocked + ' ' + s.blocked, 'red') : null,
       s.needs ? text(' ' + GLYPH.needs + ' ' + s.needs, 'yellow') : null,
     ].filter(Boolean)
@@ -499,9 +545,9 @@ export function projectRow(project, width, narrow, digit, index = 0, columns = {
         { text: ' ', width: 1 },
         { text: GLYPH[state], style: state, width: 2 },
         { text: epicTitle, flex: 1 },
-        { text: s.bar.filled, style: 'green', width: s.bar.filled.length },
-        { text: s.bar.empty, style: 'faint', width: s.bar.empty.length },
-        { text: ' ' + s.bar.label + ' ', style: 'plain', width: 5 },
+        { text: bar.filled, style: 'green', width: bar.filled.length },
+        { text: bar.empty, style: 'faint', width: bar.empty.length },
+        { text: ' ' + bar.label + ' ', style: 'plain', width: 5 },
         { text: s.running + ' running', style: s.running ? 'plain' : 'dim', width: 11 },
         { text: s.blocked + ' blocked', style: s.blocked ? 'red' : 'dim', width: 11 },
         { text: s.needs + ' needs you', style: s.needs ? 'yellow' : 'dim', width: 13 },
@@ -524,11 +570,11 @@ export function condensedRow(board, options = {}) {
   } else {
     parts.push(text(GLYPH.done + ' all clear', 'green'))
   }
-  allProjects(board).forEach((project, i) => {
+  activeProjects(board).forEach((project, i) => {
     const s = projectSummary(project, 10)
     parts.push(text('  ' + BRANCH + '  ', 'faint'))
     parts.push(text(badge(project), badgeStyle(project, i)))
-    parts.push(text(' ' + s.bar.label + (s.blocked ? ' ' + GLYPH.blocked + ' ' + s.blocked + ' blocked' : ''), s.blocked ? 'red' : 'plain'))
+    parts.push(text(' ' + (s.plain ? openTasksLabel(project) : s.bar.label) + (s.blocked ? ' ' + GLYPH.blocked + ' ' + s.blocked + ' blocked' : ''), s.blocked ? 'red' : 'plain'))
     if (s.needs === 0 && s.blocked === 0) parts.push(text(' ' + GLYPH.done + ' idle', 'dim'))
   })
   if (updated) parts.push(text('  ' + BRANCH + '  ' + updated, 'dim'))
@@ -546,11 +592,11 @@ export function bandRows(board, options = {}) {
   if (maxRows <= 1) return [condensedRow(board, { width, updated })]
 
   const questions = allQuestions(board)
-  const projects = allProjects(board)
+  // A project with no open work stays off the band; the header counts it as idle.
+  const projects = activeProjects(board)
   const narrow = width < 110
   const columns = narrow ? null : bandColumns(projects, width)
-  const plural = projects.length === 1 ? 'project' : 'projects'
-  const right = ' ' + projects.length + ' ' + plural + ' \u00b7 updated ' + updated + ' '
+  const right = ' ' + projectCount(board) + ' \u00b7 updated ' + updated + ' '
   // The band numbers one row for what needs you, then one row per project.
   const rowCount = (questions.length ? 1 : 0) + projects.length
   const name = 'chief of staff'
@@ -600,21 +646,39 @@ export function epicNote(epic, state) {
   return 'waiting'
 }
 
-/** The header row of the pane's tabs. */
-export function paneTabs(tab, questions) {
-  return [
-    {
-      text: '[ Needs you (' + questions.length + ') ]',
-      style: 'button',
-      width: 20,
-      button: { key: 'tab-needs', label: 'Needs you (' + questions.length + ')', kind: 'tab-needs' },
-    },
-    text('  '),
-    { text: '[ Projects ]', style: 'button', width: 12, button: { key: 'tab-projects', label: 'Projects', kind: 'tab-projects' } },
-    text('  '),
-    { text: '[ Help ]', style: 'button', width: 8, button: { key: 'tab-help', label: 'Help', kind: 'tab-help' } },
-    text(tab === 'needs' ? '   needs you' : tab === 'projects' ? '   projects' : '   help', 'dim'),
+/**
+ * The pane's tab row, fitted to `width`: every tab stays, with shorter
+ * labels and then without brackets when room runs out. The open tab is the
+ * primary Button and the others are dim, so the row says which one is open.
+ */
+export function paneTabs(tab, questions, width = Infinity) {
+  const n = questions.length
+  const forms = [
+    { labels: ['Needs you (' + n + ')', 'Projects', 'Help'], gap: '  ' },
+    { labels: ['Needs (' + n + ')', 'Projects', 'Help'], gap: ' ' },
+    { labels: ['Needs ' + n, 'Proj', 'Help'], gap: ' ' },
+    { labels: ['Needs ' + n, 'Proj', 'Help'], gap: ' \u00b7 ', plain: true },
   ]
+  const kinds = ['needs', 'projects', 'help']
+  const build = (form) => {
+    const out = []
+    form.labels.forEach((label, i) => {
+      if (i > 0) out.push(text(form.gap, 'dim'))
+      out.push({
+        // A plain Button draws no variant, so the open tab wears brackets there.
+        text: form.plain ? (tab === kinds[i] ? '[' + label + ']' : label) : '[ ' + label + ' ]',
+        style: 'button',
+        button: { key: 'tab-' + kinds[i], label: form.plain && tab === kinds[i] ? '[' + label + ']' : label, kind: 'tab-' + kinds[i], active: tab === kinds[i], plain: form.plain },
+      })
+    })
+    return out
+  }
+  const cellsWidth = (cells) => cells.reduce((sum, c) => sum + Array.from(c.text).length, 0)
+  for (const form of forms) {
+    const cells = build(form)
+    if (cellsWidth(cells) <= width) return cells
+  }
+  return build(forms[forms.length - 1])
 }
 
 /**
@@ -638,9 +702,10 @@ export function digest(board, options = {}) {
   const width = Math.max(48, options.width || 96)
   const only = options.project || null
   const questions = allQuestions(board)
-  const projects = allProjects(board).filter((p) => !only || p.project === only)
+  // One named project shows even when it is idle; the whole board lists only the active ones.
+  const projects = only ? allProjects(board).filter((p) => p.project === only) : activeProjects(board)
   const lines = []
-  const head = only ? 'cos \u00b7 ' + only : 'cos \u00b7 ' + questions.length + ' need you \u00b7 ' + allProjects(board).length + ' projects'
+  const head = only ? 'cos \u00b7 ' + only : 'cos \u00b7 ' + questions.length + ' need you \u00b7 ' + projectCount(board)
   lines.push('\u256d\u2500 ' + head + ' ' + RULE.repeat(Math.max(0, width - head.length - 5)))
   lines.push(BRANCH)
   if (!only && questions.length) {
@@ -654,7 +719,7 @@ export function digest(board, options = {}) {
   const columns = digestColumns(projects, width)
   for (const project of projects) {
     const s = projectSummary(project, 10)
-    const left = BRANCH + '  ' + pad(s.project, columns.project) + ' ' + pad(s.saga, columns.saga) + ' ' + s.bar.text
+    const left = BRANCH + '  ' + pad(s.project, columns.project) + ' ' + pad(s.saga, columns.saga) + ' ' + (s.plain ? openTasksLabel(project) : s.bar.text)
     const room = Math.max(0, width - Array.from(left).length)
     let tail = ''
     if (room >= 4) tail = ' \u00b7 ' + truncate(orchestratorLine(project), room - 3)
@@ -670,7 +735,7 @@ export function digest(board, options = {}) {
         lines.push(BRANCH + '   ' + GLYPH[state] + ' ' + epic.title + '  ' + epicNote(epic, state))
       }
     }
-    if (s.needs === 0 && s.blocked === 0 && s.running === 0) lines.push(BRANCH + '   ' + GLYPH.waiting + ' Waiting for a goal')
+    if (!s.plain && s.needs === 0 && s.blocked === 0 && s.running === 0) lines.push(BRANCH + '   ' + GLYPH.waiting + ' Waiting for a goal')
     lines.push(BRANCH)
   }
   if (only && projects.length === 0) lines.push(BRANCH + '  no project ' + truncate(only, 30))

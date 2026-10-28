@@ -348,13 +348,13 @@ test('j, k, and a focus move select the row in every view', async ($, on) => {
   expect(up?.props.hotkey).toBe('k')
   expect(leftKey?.props.hotkey).toBe('h')
   expect(rightKey?.props.hotkey).toBe('l')
-  expect(JSON.stringify(await ui.find({ key: 'row-0' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-0' })).includes('\u258c')).toBe(true)
 
   // j and k in the Needs you list.
   await ui.press({ key: 'nav-down' })
-  expect(JSON.stringify(await ui.find({ key: 'row-1' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-1' })).includes('\u258c')).toBe(true)
   await ui.press({ key: 'nav-up' })
-  expect(JSON.stringify(await ui.find({ key: 'row-0' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-0' })).includes('\u258c')).toBe(true)
 
   // When the engine moves the ring (Tab, a click, an arrow where the surface
   // grants one), its ui.focus names the row and the selection follows.
@@ -365,18 +365,18 @@ test('j, k, and a focus move select the row in every view', async ($, on) => {
     element: 'row-1',
     origin: { kind: 'person' },
   })
-  expect(JSON.stringify(await ui.find({ key: 'row-1' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-1' })).includes('\u258c')).toBe(true)
 
   // The same keys in the Projects tree.
   await ui.press({ key: 'tab-projects' })
-  expect(JSON.stringify(await ui.find({ key: 'row-0' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-0' })).includes('\u258c')).toBe(true)
   await ui.press({ key: 'nav-down' })
-  expect(JSON.stringify(await ui.find({ key: 'row-1' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-1' })).includes('\u258c')).toBe(true)
 
   // And in the help view.
   await ui.press({ key: 'tab-help' })
   await ui.press({ key: 'nav-down' })
-  expect(JSON.stringify(await ui.find({ key: 'row-1' })).includes('\u258c')).toBe(true)
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-1' })).includes('\u258c')).toBe(true)
   await ui.unmount()
 })
 
@@ -388,21 +388,27 @@ test('h and l fold a node, open it, and switch tabs', async ($, on) => {
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-projects' })
-  // The first project is boopmark, open, with its one epic under it.
-  expect(await ui.find({ type: 'Text', text: /Move production to Fly\.io/ })).toBeDefined()
+  // The first project is borant, open, with its epics under it. The idle
+  // boopmark is not listed.
+  expect(await ui.find({ type: 'Text', text: /Hub backup to object storage/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /boopmark/ })).toBeUndefined()
   await ui.press({ key: 'nav-left' })
-  expect(await ui.find({ type: 'Text', text: /Move production to Fly\.io/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Hub backup to object storage/ })).toBeUndefined()
   await ui.press({ key: 'nav-right' })
-  expect(await ui.find({ type: 'Text', text: /Move production to Fly\.io/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Hub backup to object storage/ })).toBeDefined()
 
   // l on an open project opens it: its view lists its epic and its plain tasks.
   await ui.press({ key: 'nav-right' })
-  expect(opened).toEqual(['borant', 'borant \u203a boopmark'])
-  expect(await ui.find({ type: 'Text', text: /plain tasks/ })).toBeDefined()
+  // The borant project's title is the root's own name, so the view shows it.
+  expect(await ui.find({ type: 'Text', text: /plain tasks  3 open/ })).toBeDefined()
 
-  // h at the top of the view goes back, and at the root switches tabs.
+  // h on the open saga at the top folds it, h again goes back, and at the
+  // root h switches tabs.
   await ui.press({ key: 'nav-left' })
-  expect(opened).toEqual(['borant', 'borant \u203a boopmark', 'borant'])
+  expect(await ui.find({ type: 'Text', text: /Hub backup to object storage/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /1 idle project/ })).toBeUndefined()
+  await ui.press({ key: 'nav-left' })
+  expect(await ui.find({ type: 'Text', text: /1 idle project/ })).toBeDefined()
   await ui.press({ key: 'tab-help' })
   await ui.press({ key: 'nav-right' })
   expect(await ui.find({ type: 'Text', text: /ctrl\+x ctrl\+a/ })).toBeUndefined()
@@ -422,14 +428,15 @@ test('Enter walks project, epic, and task detail, and esc walks back to close', 
   await ui.press({ key: 'tab-projects' })
   // Enter on the selected project opens it.
   await ui.press({ key: 'row-0' })
-  expect(opened).toContain('borant \u203a boopmark')
-  // Enter on its epic opens the epic's child tasks.
-  await ui.press({ key: 'row-0' })
-  expect(opened).toContain('borant \u203a boopmark \u203a Move production to Fly.io')
-  expect(await ui.find({ type: 'Text', text: /The fly\.toml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /plain tasks  3 open/ })).toBeDefined()
+  // Enter on an epic opens the epic's child tasks: select it, then Enter.
+  await ui.press({ key: 'row-2' })
+  await ui.press({ key: 'row-2' })
+  expect(opened).toContain('borant \u203a Elastic compute \u203a Delete borant-2')
+  expect(await ui.find({ type: 'Text', text: /The retire of borant-2/ })).toBeDefined()
   // Enter on a child task opens its detail.
   await ui.press({ key: 'row-0' })
-  expect(await ui.find({ type: 'Text', text: /The fly\.toml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The retire of borant-2/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /unclaimed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /updated/ })).toBeDefined()
 
@@ -452,17 +459,18 @@ test('a click selects a row, and a second click opens it', async ($, on) => {
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-projects' })
-  // The rows are boopmark, its epic, borant: a first click only selects.
-  await ui.press({ key: 'row-2' })
-  expect(JSON.stringify(await ui.find({ key: 'row-2' })).includes('\u258c')).toBe(true)
+  // The rows are borant, its five epics, notes: a first click only selects.
+  await ui.press({ key: 'row-6' })
+  expect(JSON.stringify(await ui.find({ key: 'gap-row-6' })).includes('\u258c')).toBe(true)
   expect(opened).toEqual(['borant'])
-  // A second click opens it: its view has the saga's plain tasks line.
-  await ui.press({ key: 'row-2' })
-  expect(await ui.find({ type: 'Text', text: /plain tasks  3 open/ })).toBeDefined()
+  // A second click opens it: its view has the plain tasks line and the tasks.
+  await ui.press({ key: 'row-6' })
+  expect(await ui.find({ type: 'Text', text: /plain tasks  2 open/ })).toBeDefined()
+  expect(opened).toContain('borant \u203a notes')
 
   // The ▸ of a row opens it in one press.
   await ui.press({ key: 'tab-projects' })
-  await ui.press({ key: 'open-3' })
+  await ui.press({ key: 'open-1' })
   expect(opened).toContain('borant \u203a Elastic compute \u203a Hub backup to object storage')
   await ui.unmount()
 })
@@ -475,8 +483,7 @@ test('the task detail shows the owner, the blockers, the PR link, and the last u
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-projects' })
   // borant › Elastic compute › Hub backup › The backup job
-  await ui.press({ key: 'row-2' })
-  await ui.press({ key: 'row-2' })
+  await ui.press({ key: 'row-0' })
   await ui.press({ key: 'row-1' })
   await ui.press({ key: 'row-1' })
   await ui.press({ key: 'row-2' })
@@ -515,8 +522,7 @@ test('a failing borant tasks shows "tasks unavailable" without a throw', async (
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-projects' })
   // The borant project, its saga's first epic, which has no task list.
-  await ui.press({ key: 'row-2' })
-  await ui.press({ key: 'row-2' })
+  await ui.press({ key: 'row-0' })
   await ui.press({ key: 'row-1' })
   await ui.press({ key: 'row-1' })
   expect(await ui.find({ type: 'Text', text: /tasks unavailable/ })).toBeDefined()
@@ -574,8 +580,7 @@ test('a channel is read once, and again on the tick only while its view is open'
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-projects' })
   // The borant project names one channel: personal-borant.
-  await ui.press({ key: 'row-2' })
-  await ui.press({ key: 'row-2' })
+  await ui.press({ key: 'row-0' })
   expect(reads).toEqual(['personal-borant'])
   // Its epic lives in the same channel, so the cache answers.
   await ui.press({ key: 'row-1' })
@@ -602,12 +607,12 @@ test('the band highlights the whole focused row, not only its chip', async ($, o
     component: 'AbovePrompt',
     requestId: 'above-prompt',
     plugin: 'borant',
-    element: 'project-1',
+    element: 'project-0',
     origin: { kind: 'person' },
   })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBe('promptBorder')
-  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBeUndefined()
+  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBeUndefined()
   // Every cell on the selection background takes a contrasting foreground,
   // including the dim stats and the colored ones.
   const saga = await ui.find({ type: 'Text', text: /Elastic compute/ })
@@ -629,7 +634,7 @@ test('the band highlights the whole focused row, not only its chip', async ($, o
     element: 'row-0',
     origin: { kind: 'person' },
   })
-  expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBeUndefined()
+  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBeUndefined()
   await ui.unmount()
 })
 
@@ -651,16 +656,16 @@ test('a band press hands the keyboard to the pane it opens', async ($, on) => {
 
   await $.session.start({ ...SESSION })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await band.press({ key: 'project-0' })
+  await band.press({ key: 'project-1' })
   // The press opens the pane; the handoff asks for its keyboard once the
   // band has let go, then draws the band's controls again.
-  expect(opens[0]).toEqual({ title: 'borant \u203a boopmark', focus: true })
+  expect(opens[0]).toEqual({ title: 'borant \u203a notes', focus: true })
   // The pane draws focused, so one ask is enough.
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   for (let i = 0; i < 4; i += 1) await clock.advance(200)
   expect(opens).toHaveLength(2)
-  expect(opens[1]).toEqual({ title: 'borant \u203a boopmark', focus: true })
-  expect(await band.find({ type: 'Button', key: 'project-0' })).toBeDefined()
+  expect(opens[1]).toEqual({ title: 'borant \u203a notes', focus: true })
+  expect(await band.find({ type: 'Button', key: 'project-1' })).toBeDefined()
   await pane.unmount()
 
   // A pane that draws without the keyboard is asked again, three times in all.

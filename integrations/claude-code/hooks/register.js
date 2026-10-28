@@ -18,7 +18,7 @@ import {
   bandRowKeys,
   bandRows,
   allQuestions,
-  allProjects,
+  activeProjects,
   digest,
   helpLines,
   hhmm,
@@ -28,6 +28,7 @@ import {
   truncate,
 } from '../mod/board.js'
 import {
+  SELECTED,
   TABS,
   breadcrumb,
   channelsFor,
@@ -792,7 +793,7 @@ async function pressRow($, row) {
 
 /** The rows the band numbers: the needs-you row, then one per project. */
 function rowCount() {
-  return (allQuestions(board).length ? 1 : 0) + allProjects(board).length
+  return (allQuestions(board).length ? 1 : 0) + activeProjects(board).length
 }
 
 /** The help view as the transcript shows it, the same text as the pane tab. */
@@ -916,11 +917,12 @@ function paneBody($, e, width) {
       flexDirection: 'row',
       children: tabCells($, e, width).map((s, i) => {
         if (s.button) {
-          return Button({
-            key: s.button.key,
-            label: s.button.label,
-            onPress: () => press($, s.button),
-          })
+          const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
+          // The open tab is the primary Button; the others are dim.
+          if (s.button.active) props.variant = 'primary'
+          else props.dimColor = true
+          if (s.button.plain) props.plain = true
+          return Button(props)
         }
         return Text({ key: 'tab-gap-' + i, children: [s.text], ...styleProps(s.style) })
       }),
@@ -946,7 +948,13 @@ function paneBody($, e, width) {
     } else {
       cells.push(Text({ key: 'mark-' + i, children: [r.marker] }))
     }
-    cells.push(Text({ key: 'mark-gap-' + i, children: [' '] }))
+    // The selection mark takes the gap's one cell, so the row's text stays put.
+    cells.push(
+      Box({
+        key: r.selectable ? 'gap-' + r.key : 'mark-gap-' + i,
+        children: [Text({ children: [r.selected ? SELECTED : ' '], ...(r.selected ? styleProps('select') : {}) })],
+      }),
+    )
     if (r.selectable) {
       const props = {
         key: r.key,
@@ -995,20 +1003,7 @@ function paneBody($, e, width) {
 
 /** The pane's tab row, fitted to the pane's width. */
 function tabCells($, e, width) {
-  const cells = paneTabs(tab, allQuestions(board))
-  const out = []
-  let used = 0
-  for (const cell of cells) {
-    const room = Math.max(0, width - used)
-    if (room === 0) break
-    const length = Array.from(cell.text).length
-    // A tab or its label is drawn whole or left out; a cut header reads worse
-    // than a missing one.
-    if (length > room) break
-    out.push(cell)
-    used += length
-  }
-  return out
+  return paneTabs(tab, allQuestions(board), width)
 }
 
 /**

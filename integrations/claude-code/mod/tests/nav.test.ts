@@ -48,6 +48,7 @@ test('the fixture tasks hold every task of the fixture board channels', () => {
     'personal-borant-tasks',
     'personal-boopmark',
     'personal-boopmark-tasks',
+    'personal-notes-tasks',
   ])
   // The saga channel: the closed gate, five epics, and their children.
   expect((tasks as Record<string, { id: string }[]>)['personal-borant']).toHaveLength(18)
@@ -62,15 +63,18 @@ test('the fixture tasks hold every task of the fixture board channels', () => {
 test('the Projects tab draws a project tree, and folds a project', () => {
   const open = rowsFor(state()) as { key: string; marker: string; segments: { text: string }[] }[]
   const lines = open.map(rowLine)
-  expect(lines.some((l: string) => l.includes('no saga'))).toBe(true)
+  // The idle boopmark is not in the tree; a line counts it.
+  expect(lines.some((l: string) => l.includes('boopmark'))).toBe(false)
+  expect(lines[lines.length - 1]).toContain('1 idle project, no open work')
+  expect(lines.some((l: string) => l.includes('notes') && l.includes('3 open tasks'))).toBe(true)
   expect(lines.some((l: string) => l.includes('Elastic compute'))).toBe(true)
   expect(lines.some((l: string) => l.includes('Hub backup to object storage'))).toBe(true)
-  expect(open.filter((r) => r.key).length).toBe(8)
+  expect(open.filter((r) => r.key).length).toBe(7)
   expect(open[0].marker).toBe('\u25be')
 
   const folded = rowsFor(state({ folds: { [foldKey(projectBorant)]: false } })) as typeof open
   expect(folded.map(rowLine).some((l: string) => l.includes('Hub backup to object storage'))).toBe(false)
-  expect(folded[2].marker).toBe('\u25b8')
+  expect(folded[0].marker).toBe('\u25b8')
 })
 
 test('a project view lists its saga and epics, and folds the saga', () => {
@@ -175,9 +179,20 @@ test('a blocker the channel does not list shows its id and a question mark', () 
 })
 
 test('a pane row that does not fit loses its tail with an ellipsis', () => {
-  const rows = rowsFor(state({ path: [projectBorant], width: 40 })) as { segments: { text: string }[] }[]
+  const rows = rowsFor(state({ path: [projectBorant], width: 30 })) as { segments: { text: string }[] }[]
   const line = rows.map(rowLine).find((l: string) => l.includes('Elastic compute'))
   expect(line).toBeDefined()
   expect(line).toContain('\u2026')
   expect(line?.endsWith('\u2026')).toBe(true)
+})
+
+test('the selected row keeps its text where it was: the mark is a flag, not a prefix', () => {
+  const at = (selection: number) =>
+    (rowsFor(state({ path: [projectBorant], width: 60, selection })) as { selected?: boolean; segments: { text: string }[] }[])
+      .filter((r) => r.selected !== undefined)
+  const unselected = at(1)[0]
+  const selected = at(0)[0]
+  expect(selected.selected).toBe(true)
+  expect(unselected.selected).toBe(false)
+  expect(rowLine(selected)).toBe(rowLine(at(1)[0]))
 })
