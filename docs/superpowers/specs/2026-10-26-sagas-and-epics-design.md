@@ -166,7 +166,10 @@ property would need a schema change in every old channel.
 The board is the read that the mod needs. The mod can call `borant board
 --json` through the local host, or the HTTP route on the tailnet, and follow
 `/api/events` for changes. The CLI names the session that it runs inside, so a
-chief's read is the chief's own collection. Its shape:
+chief's read is the chief's own collection. A session that carries
+`BORANT_AGENT` and does not resolve is an error, never the person's read: a
+board that fell back to the person would list another collection's projects.
+The mod draws that error as an empty board with its message. Its shape:
 
 ```
 BoardView { at, collections: [CollectionBoard] }

@@ -20,6 +20,14 @@ function reasonOf(error) {
   return message.slice(0, 120)
 }
 
+/** The first line of a program's stderr, for a reason that a person can read. */
+function firstLine(text) {
+  const line = String(text || '')
+    .trim()
+    .split('\n')[0]
+  return line.slice(0, 120)
+}
+
 /** Parse and check a BoardView. */
 export function parseBoard(text) {
   let value
@@ -44,7 +52,11 @@ export async function readBoard($, options = {}) {
   try {
     const run = await $.process.run(['borant', 'board', '--json'], { timeoutMs: 8000 })
     if (!run || run.exitCode !== 0) {
-      return { board: null, reason: 'borant board exited ' + (run ? run.exitCode : '?') }
+      const why = firstLine(run && run.stderr)
+      return {
+        board: null,
+        reason: 'borant board exited ' + (run ? run.exitCode : '?') + (why ? ': ' + why : ''),
+      }
     }
     return parseBoard(run.stdout || '')
   } catch (error) {

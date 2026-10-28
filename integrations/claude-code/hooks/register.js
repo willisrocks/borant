@@ -23,6 +23,7 @@ import {
   hhmm,
   paneTabs,
   text as seg,
+  truncate,
 } from '../mod/board.js'
 import {
   TABS,
@@ -46,6 +47,8 @@ let isChief = false
 let config = null
 let board = null
 let unavailable = false
+/** The reason of the last failed read, for a person to see. */
+let reason = ''
 let updated = ''
 let lastReadAt = 0
 /** The needs-you items the last drawing saw; a new one raises a toast. */
@@ -83,7 +86,11 @@ export function register(on) {
       measure(e)
       if (!board) {
         if (!unavailable) return next(e)
-        return tree($, e, [[seg('cos  ', 'dim'), seg('board unavailable', 'faint')]], 'band')
+        const width = widthOf(e)
+        const room = Math.max(8, width - 'cos  board unavailable'.length - 4)
+        const detail = reason ? ' \u00b7 ' + truncate(reason, room) : ''
+        const row = [seg('cos  ', 'dim'), seg('board unavailable', 'faint'), seg(detail, 'dim')]
+        return tree($, e, [row], 'band')
       }
       const width = widthOf(e)
       const rows = bandRows(board, { width, maxRows: e.props?.maxRows, updated })
@@ -160,10 +167,10 @@ export function register(on) {
       const args = String(e.args || '').trim()
       if (args === 'help') return { text: helpText() }
       if (args === 'pane') return openPane($)
-      if (!board) return { text: 'cos: board unavailable' }
+      if (!board) return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
       return { text: digest(board, { project: args || null, width: columns || 96 }) }
     } catch {
-      return { text: 'cos: board unavailable' }
+      return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
     }
   })
 
@@ -242,12 +249,17 @@ async function refresh($, force = false) {
   lastReadAt = now
   const result = await readBoard($, config)
   if (!result.board) {
-    unavailable = board === null
+    // A failed read draws an empty board with the reason, never the stale one:
+    // a session that refuses to read as the person must say so.
+    board = null
+    unavailable = true
+    reason = result.reason || ''
     return
   }
   board = result.board
   updated = hhmm(board.at, updated)
   unavailable = false
+  reason = ''
   announceNew($)
 }
 
