@@ -15,12 +15,16 @@
 
 import {
   GLYPH,
+  activeProjects,
+  allProjects,
   badge,
   badgeStyle,
   epicNote,
   epicState,
   fitEllipsis,
   hhmm,
+  isActive,
+  openTasksLabel,
   pad,
   projectSummary,
   text,
@@ -34,7 +38,9 @@ export const TABS = ['needs', 'projects', 'help']
 export const ROOT = 'borant'
 
 const SEP = ' \u203a '
-const SELECTED = '\u258c '
+/** The selected row's mark, drawn in the gap after its \u25b8, so the row's text
+ * does not move. */
+export const SELECTED = '\u258c'
 
 /** The key that remembers a node's fold: a project, a saga, or an epic. */
 export function foldKey(node) {
@@ -202,7 +208,7 @@ function finish(rows, selection) {
     let segments = r.segments
     if (r.selectable) {
       r.key = 'row-' + index
-      if (index === selection) segments = [text(SELECTED, 'select'), ...segments]
+      r.selected = index === selection
       index += 1
     }
     // A link row draws its label and then the Link itself, not a padded cell.
@@ -275,14 +281,16 @@ export function helpRows(state, width, selection) {
   )
 }
 
-/** The Projects tab at the root: every project, open by default. */
+/** The Projects tab at the root: every project with open work, open by default. */
 export function projectsRows(state, width, selection) {
   const out = []
   for (const collection of state.board?.collections || []) {
     for (const project of collection.projects || []) {
-      out.push(...projectTree(state, project, 0, width))
+      if (isActive(project)) out.push(...projectTree(state, project, 0, width))
     }
   }
+  const idle = allProjects(state.board).length - activeProjects(state.board).length
+  if (idle) out.push(row({ segments: [text(idle + (idle === 1 ? ' idle project' : ' idle projects') + ', no open work', 'faint')] }))
   return finish(finishWidth(out, width), selection)
 }
 
@@ -300,9 +308,9 @@ function projectTree(state, project, depth, width) {
         text(indent(depth)),
         text(badge(project), badgeStyle(project, 0)),
         text('  ' + truncate(s.saga, 17) + '  ', 'white'),
-        text(s.bar.filled, 'green'),
-        text(s.bar.empty, 'faint'),
-        text(' ' + s.bar.label + ' epics', 'plain'),
+        ...(s.plain
+          ? [text(openTasksLabel(project), 'plain')]
+          : [text(s.bar.filled, 'green'), text(s.bar.empty, 'faint'), text(' ' + s.bar.label + ' epics', 'plain')]),
       ],
     }),
   ]

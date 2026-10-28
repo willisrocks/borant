@@ -2,6 +2,7 @@
 import { expect, test } from 'claude-code/testing'
 import board from '../fixtures/board.js'
 import {
+  activeProjects,
   allProjects,
   allQuestions,
   bandRowKeys,
@@ -12,8 +13,12 @@ import {
   epicState,
   helpLines,
   hhmm,
+  isActive,
+  openTasksLabel,
   paneHelpRows,
+  paneTabs,
   progressBar,
+  projectCount,
   projectSummary,
   rowText,
   stepKey,
@@ -30,7 +35,11 @@ function projectOf(name: string) {
 
 test('the board counts what the mockup shows', () => {
   expect(countNeedsYou(board)).toBe(2)
-  expect(allProjects(board).map((p) => p.project)).toEqual(['boopmark', 'borant'])
+  expect(allProjects(board).map((p) => p.project)).toEqual(['boopmark', 'borant', 'notes'])
+  // boopmark's one epic is done and it has no open task: it is idle.
+  expect(activeProjects(board).map((p) => p.project)).toEqual(['borant', 'notes'])
+  expect(isActive(projectOf('boopmark'))).toBe(false)
+  expect(projectCount(board)).toBe('2 active \u00b7 1 idle')
   const first = projectSummary(projectOf('borant'))
   expect(first.saga).toBe('Elastic compute')
   expect(first.bar.text).toBe('████░░░░░░ 2/5')
@@ -41,6 +50,23 @@ test('the board counts what the mockup shows', () => {
   expect(second.saga).toBe('no saga')
   expect(second.bar.text).toBe('██████████ 1/1')
   expect(second.needs).toBe(0)
+  const third = projectSummary(projectOf('notes'))
+  expect(third.saga).toBe('plain tasks')
+  expect(third.plain).toBe(true)
+  expect(openTasksLabel(projectOf('notes'))).toBe('3 open tasks')
+})
+
+test('a project is active while a saga, an epic, or a plain task is open', () => {
+  const p = structuredClone(projectOf('boopmark'))
+  expect(isActive(p)).toBe(false)
+  p.tasks.needs_human = 1
+  expect(isActive(p)).toBe(true)
+  p.tasks.needs_human = 0
+  p.epics[0].status = 'in_progress'
+  expect(isActive(p)).toBe(true)
+  const all = structuredClone(board)
+  all.collections[0].projects = [projectOf('borant')] as (typeof all.collections)[0]['projects']
+  expect(projectCount(all)).toBe('1 project')
 })
 
 test('an epic is done, needs you, blocked, running, or waiting', () => {
@@ -88,17 +114,20 @@ test('the progress bar fills in ten cells, and in eight on a narrow terminal', (
   expect(progressBar(0, 0, 10).empty).not.toContain('\u2591')
 })
 
-test('a project with no epics shows a dash and no grey bar', () => {
-  const fresh = structuredClone(projectOf('boopmark'))
-  fresh.sagas = []
-  fresh.epics = []
-  expect(projectSummary(fresh).bar.text).toBe('\u2014')
+test('a project of plain tasks shows its open tasks, not filler or a grey bar', () => {
+  expect(projectSummary(projectOf('notes')).bar.text).toBe('\u2014')
   const calm = structuredClone(board)
   calm.collections[0].needs_you = []
-  calm.collections[0].projects = [fresh] as (typeof calm.collections)[0]['projects']
-  const row = rowText(bandRows(calm, { width: 120, updated })[1])
-  expect(row).toContain('\u2014')
-  expect(row).not.toContain('\u2591')
+  calm.collections[0].projects = [projectOf('notes')] as (typeof calm.collections)[0]['projects']
+  for (const width of [120, 80]) {
+    const row = rowText(bandRows(calm, { width, updated })[1])
+    expect(row).toContain('plain tasks')
+    expect(row).toContain('\u25cf 3 open tasks')
+    expect(row).not.toContain('no saga')
+    expect(row).not.toContain('no epic yet')
+    expect(row).not.toContain('\u2591')
+    expect(row).not.toContain('\u2014')
+  }
 })
 
 test('rows past nine carry no second [ 9 ]', () => {
@@ -143,27 +172,30 @@ test('the expanded band has the title rule, the needs-you row, and one row per p
   const rows = bandRows(board, { width: 120, updated }).map(rowText)
   expect(rows).toHaveLength(4)
   expect(rows[0]).toContain('chief of staff')
-  expect(rows[0]).toContain('2 projects · updated 14:32')
+  expect(rows[0]).toContain('2 active · 1 idle · updated 14:32')
   expect(rows[1]).toContain('[ 1 ]')
   expect(rows[1]).toContain('▲ Needs you (2)')
   expect(rows[1]).toContain('Create Hetzner bucket borant-hub-backup + 1Password item')
   expect(rows[1]).toContain('borant')
   expect(rows[1]).toContain('+1 more')
+  // The idle boopmark has no row.
+  expect(rows.join('\n')).not.toContain('boopmark')
   expect(rows[2]).toContain('[ 2 ]')
-  expect(rows[2]).toContain('no saga')
-  expect(rows[2]).toContain('1/1')
+  expect(rows[2]).toContain('Elastic compute')
+  expect(rows[2]).toContain('████░░░░░░ 2/5')
+  expect(rows[2]).toContain('2 blocked')
+  expect(rows[2]).toContain('0 needs you')
   expect(rows[3]).toContain('[ 3 ]')
-  expect(rows[3]).toContain('Elastic compute')
-  expect(rows[3]).toContain('████░░░░░░ 2/5')
-  expect(rows[3]).toContain('2 blocked')
-  expect(rows[3]).toContain('0 needs you')
+  expect(rows[3]).toContain('notes')
+  expect(rows[3]).toContain('3 open tasks')
+  expect(rows[3]).toContain('1 running')
 })
 
 test('the band collapsed to one row is one condensed row', () => {
   const rows = bandRows(board, { width: 120, maxRows: 1, updated })
   expect(rows).toHaveLength(1)
   expect(rowText(rows[0]).trimEnd()).toBe(
-    'cos  [ 1 ] ▲ 2 need you  │   boopmark  1/1 ✓ idle  │   borant  2/5 ■ 2 blocked  │  14:32',
+    'cos  [ 1 ] ▲ 2 need you  │   borant  2/5 ■ 2 blocked  │   notes  3 open tasks ■ 1 blocked  │  14:32',
   )
   expect(rowText(condensedRow(board, { width: 120, updated })).trimEnd()).toBe(rowText(rows[0]).trimEnd())
 })
@@ -185,12 +217,12 @@ test('every row fits the terminal at any width', () => {
 
 test('a narrow band drops the padded columns and the ten-cell bar', () => {
   const rows = bandRows(board, { width: 100, updated }).map(rowText)
-  expect(rows[2]).toContain('1/1')
-  expect(rows[3]).toContain('███░░░░░ 2/5')
-  expect(rows[3]).toContain('■ 2')
+  expect(rows[2]).toContain('███░░░░░ 2/5')
+  expect(rows[2]).toContain('■ 2')
   // The ▲ is the state glyph of the current epic; the needs count is 0.
-  expect(rows[3]).not.toContain('▲ 0')
-  expect(rows[3]).not.toContain('running')
+  expect(rows[2]).not.toContain('▲ 0')
+  expect(rows[2]).not.toContain('running')
+  expect(rows[3]).toContain('3 open tasks')
   expect(rows[1]).toContain('Needs you (2)')
 })
 
@@ -245,7 +277,7 @@ test('the help view names every key, every command, and both buttons', () => {
 
 test('the digest lists needs you, then each project with its epics', () => {
   const lines = digest(board, { width: 96 }).split('\n')
-  expect(lines[0]).toContain('cos · 2 need you · 2 projects')
+  expect(lines[0]).toContain('cos · 2 need you · 2 active · 1 idle')
   const needs = lines.findIndex((l) => l.includes('Needs you (2)'))
   const borant = lines.findIndex((l) => l.includes('borant') && l.includes('Elastic compute'))
   expect(needs).toBeGreaterThan(0)
@@ -254,8 +286,8 @@ test('the digest lists needs you, then each project with its epics', () => {
   expect(lines.join('\n')).toContain('2  Revoke old willisrocks gh token?')
   expect(lines.join('\n')).toContain('✓ Golden image')
   expect(lines.join('\n')).toContain('▲ Hub backup to object storage  waits on you')
-  expect(lines.join('\n')).toContain('boopmark')
-  expect(lines.join('\n')).toContain('○ Waiting for a goal')
+  expect(lines.join('\n')).not.toContain('boopmark')
+  expect(lines.join('\n')).toMatch(/notes +plain tasks +3 open tasks/)
 })
 
 test('the digest of one project holds only that project', () => {
@@ -263,6 +295,8 @@ test('the digest of one project holds only that project', () => {
   expect(text).toContain('Elastic compute')
   expect(text).not.toContain('boopmark')
   expect(digest(board, { project: 'nope', width: 96 })).toContain('no project nope')
+  // A project named on its own shows even when it is idle.
+  expect(digest(board, { project: 'boopmark', width: 96 })).toContain('Move production to Fly.io')
 })
 
 test('the project and saga columns take their text before the terminal runs out', () => {
@@ -271,20 +305,20 @@ test('the project and saga columns take their text before the terminal runs out'
   project.project = 'roger-docs'
   project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
   const wide = bandRows(long, { width: 200, updated }).map(rowText)
-  expect(wide[3]).toContain('roger-docs')
-  expect(wide[3]).toContain('ROG-4199: LiteLLM proxy rollout')
-  expect(wide[3]).toContain('rollout \u25b2')
+  expect(wide[2]).toContain('roger-docs')
+  expect(wide[2]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(wide[2]).toContain('rollout \u25b2')
 
   // At 120 the full name and saga still fit; the epic gives way first.
   const narrow = bandRows(long, { width: 120, updated }).map(rowText)
-  expect(narrow[3]).toContain('roger-docs')
-  expect(narrow[3]).toContain('ROG-4199: LiteLLM proxy rollout')
-  expect(Array.from(narrow[3]).length).toBe(120)
+  expect(narrow[2]).toContain('roger-docs')
+  expect(narrow[2]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(Array.from(narrow[2]).length).toBe(120)
 
   // At the wide layout's floor the saga is cut with an ellipsis, not the name.
   const tight = bandRows(long, { width: 110, updated }).map(rowText)
-  expect(tight[3]).toContain('roger-docs')
-  expect(tight[3]).toContain('\u2026')
+  expect(tight[2]).toContain('roger-docs')
+  expect(tight[2]).toContain('\u2026')
   for (const row of tight) expect(Array.from(row).length).toBeLessThanOrEqual(110)
 })
 
@@ -314,7 +348,7 @@ test('the digest sizes its columns like the band and keeps the saga title', () =
 test('a narrow project row drops its stats whole and keeps an ellipsis', () => {
   // At 55 cells the prefix and the stats cannot both fit; the stats go whole
   // and the epic title is what gives way, with an ellipsis.
-  const row = rowText(bandRows(board, { width: 55, updated })[3])
+  const row = rowText(bandRows(board, { width: 55, updated })[2])
   expect(row).toContain('\u2026')
   expect(row).not.toContain('\u2588')
   expect(row).not.toContain('\u2591')
@@ -356,4 +390,17 @@ test('band j and k walk the row chips, wrap, and start from the help button', ()
   expect(rowText(docked)).toContain(updated)
   expect(docked.filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).length).toBe(3)
   expect(Array.from(rowText(docked)).length).toBe(60)
+})
+
+test('the pane tabs keep all three at every width and mark the open one', () => {
+  const questions = allQuestions(board)
+  for (const width of [80, 40, 30, 24]) {
+    const cells = paneTabs('projects', questions, width)
+    const buttons = cells.filter((c: { button?: unknown }) => c.button) as { text: string; button: { kind: string; active: boolean } }[]
+    expect(buttons.map((b) => b.button.kind)).toEqual(['tab-needs', 'tab-projects', 'tab-help'])
+    expect(buttons.filter((b) => b.button.active).map((b) => b.button.kind)).toEqual(['tab-projects'])
+    expect(Array.from(rowText(cells)).length).toBeLessThanOrEqual(width)
+  }
+  expect(rowText(paneTabs('help', questions, 80))).toBe('[ Needs you (2) ]  [ Projects ]  [ Help ]')
+  expect(rowText(paneTabs('help', questions, 24))).toBe('Needs 2 · Proj · [Help]')
 })

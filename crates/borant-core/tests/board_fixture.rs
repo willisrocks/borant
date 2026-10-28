@@ -171,7 +171,11 @@ struct Records {
 }
 
 fn mockup() -> Records {
-    let projects = vec![project("borant", None), project("boopmark", Some(false))];
+    let projects = vec![
+        project("borant", None),
+        project("boopmark", Some(false)),
+        project("notes", None),
+    ];
 
     let mut saga = channel(
         "personal-borant",
@@ -201,7 +205,20 @@ fn mockup() -> Records {
         "boopmark",
         Some("orch-boopmark-2"),
     );
-    let channels = vec![saga, borant_tasks, boopmark_epic, boopmark_tasks];
+    // A project with plain tasks only: no saga and no epic.
+    let notes_tasks = channel(
+        "personal-notes-tasks",
+        ChannelKind::Project,
+        "notes",
+        Some("orch-notes"),
+    );
+    let channels = vec![
+        saga,
+        borant_tasks,
+        boopmark_epic,
+        boopmark_tasks,
+        notes_tasks,
+    ];
 
     let elastic = chan("personal-borant");
     let mut tasks: Vec<(ChannelName, Task)> = Vec::new();
@@ -345,9 +362,39 @@ fn mockup() -> Records {
         )),
     ));
 
+    let notes = chan("personal-notes-tasks");
+    tasks.push((
+        notes.clone(),
+        Task {
+            claimed_by: Some(agent("orch-notes")),
+            ..task(
+                37,
+                "Weekly digest",
+                TaskStatus::InProgress,
+                1_793_020_000_000,
+            )
+        },
+    ));
+    tasks.push((
+        notes.clone(),
+        task(38, "Tag the old notes", TaskStatus::Open, 1_793_021_000_000),
+    ));
+    tasks.push((
+        notes.clone(),
+        Task {
+            blocked_by: vec![id(38)],
+            ..task(39, "Archive 2025", TaskStatus::Open, 1_793_022_000_000)
+        },
+    ));
+    tasks.push((
+        notes,
+        closed(task(40, "The import", TaskStatus::Open, 1_792_900_000_000)),
+    ));
+
     let agents = vec![
         agent_line("orchestrator", Some("macbook")),
         agent_line("orch-boopmark-2", None),
+        agent_line("orch-notes", Some("borant-1")),
     ];
     Records {
         projects,

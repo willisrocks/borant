@@ -176,6 +176,12 @@ while the prompt is empty), a toast when a new item needs the person, and
 `/cos` for the digest as text, with `/cos <project>` for one project. Every
 other session registers no timer, no command, and draws nothing.
 
+The band, `/cos`, and the Projects tab list only the projects with open work:
+an open saga, an open epic, or an open plain task. The header counts the rest
+as idle ("2 active · 1 idle"), and `/cos <project>` still shows an idle
+project. A project with plain tasks and no saga or epic shows its count of
+open tasks ("3 open tasks") in place of the saga and epic.
+
 The band's title row carries a dim hint of the keys and a `[ ? ]` button. The
 help view, a third tab beside Needs you and Projects, opens from that button
 and from `/cos help`, which prints the same text in the transcript without

@@ -180,6 +180,29 @@ export const board = {
             "needs_human": 0,
             "done": 12
           }
+        },
+        {
+          "project": "notes",
+          "mirror_issues": true,
+          "orchestrators": [
+            {
+              "agent": "orch-notes",
+              "online": true,
+              "busy": false,
+              "host": "borant-1"
+            }
+          ],
+          "sagas": [],
+          "epics": [],
+          "tasks": {
+            "open": 2,
+            "ready": 1,
+            "running": 1,
+            "blocked": 1,
+            "stuck": 0,
+            "needs_human": 0,
+            "done": 1
+          }
         }
       ],
       "needs_you": [
