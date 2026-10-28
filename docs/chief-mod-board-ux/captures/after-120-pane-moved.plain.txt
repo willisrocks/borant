@@ -1,0 +1,40 @@
+                                                                      │                                               ✕
+ ▐▛███▛█   Claude Code v2.1.310                                       │[ Needs you (2) ]  [ Projects ]  [ Help ]
+▝▜██████▀  Opus 5.5 · Claude Max                                      │  borant › roger-docs
+ ▝▝   ▝▝   /tmp/tmp.7OTezeM9Z7                                        │
+                                                                      │▾ ✓ ROG-4199: LiteLLM proxy rollout  approved  2…
+                                                                      │▸ ▌   ▲ Hub backup to object storage  waits on y…
+❯ /cos                                                                │▸   ■ Delete borant-2  blocked
+  ⎿  borant: ╭─ cos · 2 need you · 2 projects                         │▸   ○ Hub move to borant-hub  waiting
+     ───────────────────────────────                                  │▸   ✓ Golden image  done
+     │                                                                │▸   ✓ Hub join for pool boxes  done
+     │ ▲ Needs you (2)                                                │  plain tasks  4 open · 2 blocked · 1 need you ·…
+     │   1  Create Hetzner bucket borant-hub-bac…  borant · blocks 2 …│
+     │   2  Revoke old willisrocks gh token?  borant · optional · sin…│j: ↓  k: ↑  h: ←  l: →  esc  enter open · tab
+     │                                                                │                             next · esc back
+     │  roger-docs ROG-4199: LiteLLM proxy rollout   ████░░░░░░ 2/5 … │
+     │   ▲ Hub backup to object storage  waits on you                 │
+     │   ■ Delete borant-2  blocked                                   │
+     │   ○ Hub move to borant-hub  waiting                            │
+     │   ✓ Golden image  done                                         │
+     │   ✓ Hub join for pool boxes  done                              │
+     │                                                                │
+     │  borant     Chief board UX: columns and focus ████░░░░░░ 2/5 … │
+     │   ▲ Hub backup to object storage  waits on you                 │
+     │   ■ Delete borant-2  blocked                                   │
+     │   ○ Hub move to borant-hub  waiting                            │
+     │   ✓ Golden image  done                                         │
+     │   ✓ Hub join for pool boxes  done                              │
+     │                                                                │
+     ╰─ /cos <project> for one project · /cos pane for the pane ──────│
+                                                                      │
+                                                                      │
+── chief of staff ────────── 2 projects · updated 05:17  [ ? ] ── [-] │
+[ 1 ]▲Needs you (2) Create Hetzner bucket borant-hub-b… borant +1     │
+[ 2 ] roger-docs  ROG-4199: LiteLLM proxy rollout ▲ Hub backup t…     │
+[ 3 ] borant  Chief board UX: columns and focus ▲ Hub backup to …     │
+  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' …  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

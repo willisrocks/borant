@@ -19,7 +19,7 @@ import {
   badgeStyle,
   epicNote,
   epicState,
-  fit,
+  fitEllipsis,
   hhmm,
   pad,
   projectSummary,
@@ -201,7 +201,7 @@ function finish(rows, selection) {
       index += 1
     }
     // A link row draws its label and then the Link itself, not a padded cell.
-    const fitted = r.link ? segments : fit(segments, Math.max(1, r.width || 1))
+    const fitted = r.link ? segments : fitEllipsis(segments, Math.max(1, r.width || 1))
     return { ...r, segments: fitted }
   })
 }

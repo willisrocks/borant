@@ -262,3 +262,71 @@ test('the digest of one project holds only that project', () => {
   expect(text).not.toContain('boopmark')
   expect(digest(board, { project: 'nope', width: 96 })).toContain('no project nope')
 })
+
+test('the project and saga columns take their text before the terminal runs out', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  const wide = bandRows(long, { width: 200, updated }).map(rowText)
+  expect(wide[3]).toContain('roger-docs')
+  expect(wide[3]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(wide[3]).toContain('rollout \u25b2')
+
+  // At 120 the full name and saga still fit; the epic gives way first.
+  const narrow = bandRows(long, { width: 120, updated }).map(rowText)
+  expect(narrow[3]).toContain('roger-docs')
+  expect(narrow[3]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(Array.from(narrow[3]).length).toBe(120)
+
+  // At the wide layout's floor the saga is cut with an ellipsis, not the name.
+  const tight = bandRows(long, { width: 110, updated }).map(rowText)
+  expect(tight[3]).toContain('roger-docs')
+  expect(tight[3]).toContain('\u2026')
+  for (const row of tight) expect(Array.from(row).length).toBeLessThanOrEqual(110)
+})
+
+test('a needs-you title truncates with an ellipsis before its right block', () => {
+  // 120 terminal columns leave the band 115 cells, as the engine's `[-]` mark
+  // takes five; the title used to run into the project badge there.
+  const long = structuredClone(board)
+  long.collections[0].projects[1].project = 'roger-docs'
+  const row = rowText(bandRows(long, { width: 115, updated })[1])
+  expect(row).toContain('\u2026')
+  expect(row).toMatch(/\u2026\s+borant/)
+  expect(row).not.toContain('item borant')
+})
+
+test('the digest sizes its columns like the band and keeps the saga title', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  for (const width of [200, 120, 96]) {
+    const text = digest(long, { width })
+    expect(text).toContain('ROG-4199: LiteLLM proxy rollout')
+    expect(text).not.toContain('LiteLL\u2026')
+  }
+})
+
+test('a narrow project row drops its stats whole and keeps an ellipsis', () => {
+  // At 55 cells the prefix and the stats cannot both fit; the stats go whole
+  // and the epic title is what gives way, with an ellipsis.
+  const row = rowText(bandRows(board, { width: 55, updated })[3])
+  expect(row).toContain('\u2026')
+  expect(row).not.toContain('\u2588')
+  expect(row).not.toContain('\u2591')
+  expect(row).not.toContain('2/5')
+})
+
+test('a digest line never wraps, even when the transcript is narrow', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  for (const width of [108, 64, 50]) {
+    for (const line of digest(long, { width }).split('\n')) {
+      expect(Array.from(line).length).toBeLessThanOrEqual(width)
+    }
+  }
+})

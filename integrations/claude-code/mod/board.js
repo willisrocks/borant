@@ -89,6 +89,27 @@ export function layout(cells, width, gap = 0) {
   return out
 }
 
+/** Like `fit`, but a row that does not fit loses its tail with an ellipsis. */
+export function fitEllipsis(segments, width) {
+  const total = segments.reduce((n, s) => n + Array.from(s.text).length, 0)
+  if (total <= width) return fit(segments, width)
+  const room = Math.max(0, width - 1)
+  const out = []
+  let used = 0
+  for (const s of segments) {
+    if (used >= room) break
+    const take = Array.from(s.text).slice(0, room - used).join('')
+    if (take) {
+      out.push({ ...s, text: take })
+      used += Array.from(take).length
+    }
+  }
+  out.push(text('\u2026', out.length ? out[out.length - 1].style : 'plain'))
+  used += 1
+  if (used < width) out.push(text(' '.repeat(width - used)))
+  return out
+}
+
 /** Trim segments to `width` cells and pad the row to full width. */
 export function fit(segments, width) {
   const out = []
@@ -326,8 +347,28 @@ function ruleCell(label, right, width, hint = '') {
   return hint && full.dashes < 4 ? build('').out : full.out
 }
 
+/**
+ * The widths of the project and saga columns of a wide band. Each column
+ * starts from the longest text it holds, so a name or a saga title is not cut
+ * while room is free, then narrows to what the terminal leaves after the
+ * hotkey, the state glyph, the bar, and the stats. The project keeps 11 cells
+ * and the saga 17, with one blank cell before the glyph; the epic title gets
+ * at least eight when the width allows.
+ */
+export function bandColumns(projects, width) {
+  const project = Math.max(11, ...projects.map((p) => Array.from(badge(p)).length))
+  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
+  // hotkey 6, saga gap 1, glyph 2, bar 10, ratio 5, stats 11, 11, 13.
+  const reserved = 6 + 1 + 2 + 10 + 5 + 11 + 11 + 13
+  const room = Math.max(11 + 17, width - reserved - 8)
+  if (project + saga <= room) return { project, saga }
+  // The project name comes first: it names the row. The saga gives way after.
+  const projectWidth = Math.max(11, Math.min(project, room - 17))
+  return { project: projectWidth, saga: Math.max(17, room - projectWidth) }
+}
+
 /** The row of the band that shows what waits on the person. */
-export function needsRow(questions, width, narrow, digit = 1) {
+export function needsRow(questions, width, narrow, digit = 1, columns = { project: 11, saga: 17 }) {
   const first = questions[0]
   const extra = questions.length - 1
   const context = []
@@ -335,15 +376,26 @@ export function needsRow(questions, width, narrow, digit = 1) {
   if (extra > 0) context.push('+' + extra + ' more')
   const contextText = context.join(' \u00b7 ')
   if (narrow) {
-    const head = [
+    const prefix = [
       hotkey(digit, 'needs', 0),
       text(GLYPH.needs, 'yellow'),
       text('Needs you (' + questions.length + ')', 'yellowBold'),
-      text(' ' + truncate(first?.title || '', Math.max(8, width - 34))),
-      text(' ' + (first?.project || ''), 'bold'),
-      text(extra > 0 ? ' +' + extra : '', 'dim'),
     ]
-    return fit(head, width)
+    const prefixWidth = prefix.reduce((n, s) => n + Array.from(s.text).length, 0)
+    const extraParts = []
+    if (first?.project) extraParts.push(text(' ' + first.project, 'bold'))
+    if (extra > 0) extraParts.push(text(' +' + extra, 'dim'))
+    let extraWidth = extraParts.reduce((n, s) => n + Array.from(s.text).length, 0)
+    if (width - prefixWidth - extraWidth < 9) {
+      // The project and the "+n" are one block: drop both or keep both.
+      extraParts.length = 0
+      extraWidth = 0
+    }
+    const titleWidth = Math.max(0, width - prefixWidth - extraWidth - 1)
+    const head = [...prefix]
+    if (titleWidth > 0) head.push(text(' ' + truncate(first?.title || '', titleWidth)))
+    head.push(...extraParts)
+    return fitEllipsis(head, width)
   }
   return fit(
     layout(
@@ -352,7 +404,10 @@ export function needsRow(questions, width, narrow, digit = 1) {
         { text: GLYPH.needs, style: 'yellow', width: 2 },
         { text: 'Needs you (' + questions.length + ')', style: 'yellowBold', width: 15 },
         { text: first?.title || '', flex: 1 },
-        { text: badge(first?.project), style: badgeStyle(first?.project, 0), width: 11 },
+        // One blank cell, so a full title truncates with an ellipsis before the
+        // badge instead of running into it.
+        { text: '', width: 1 },
+        { text: badge(first?.project), style: badgeStyle(first?.project, 0), width: columns.project },
         { text: ' ' + contextText, style: 'dim' },
       ],
       width,
@@ -362,25 +417,33 @@ export function needsRow(questions, width, narrow, digit = 1) {
 }
 
 /** One row for one project. */
-export function projectRow(project, width, narrow, digit, index = 0) {
+export function projectRow(project, width, narrow, digit, index = 0, columns = { project: 11, saga: 17 }) {
   const s = projectSummary(project, narrow ? 8 : 10)
   const current = currentEpic(project)
   const epicTitle = current ? current.epic.title : 'no epic yet'
   const state = current ? current.state : 'waiting'
   if (narrow) {
-    return fit(
-      [
-        hotkey(digit, 'project', project?.project, 'project-' + index),
-        text(badge(project), badgeStyle(project, index)),
-        text(' ' + s.saga + ' '),
-        text(GLYPH[state] + ' ', state),
-        text(truncate(epicTitle, Math.max(8, width - 46))),
-        text(' ' + s.bar.filled, 'green'),
-        text(s.bar.empty, 'faint'),
-        text(' ' + s.bar.label),
-        s.blocked ? text(' ' + GLYPH.blocked + ' ' + s.blocked, 'red') : text(''),
-        s.needs ? text(' ' + GLYPH.needs + ' ' + s.needs, 'yellow') : text(''),
-      ],
+    const head = [
+      hotkey(digit, 'project', project?.project, 'project-' + index),
+      text(badge(project), badgeStyle(project, index)),
+      text(' ' + s.saga + ' '),
+      text(GLYPH[state] + ' ', state),
+    ]
+    const prefixWidth = head.reduce((n, s) => n + Array.from(s.text).length, 0)
+    const stats = [
+      text(' ' + s.bar.filled, 'green'),
+      text(s.bar.empty, 'faint'),
+      text(' ' + s.bar.label),
+      s.blocked ? text(' ' + GLYPH.blocked + ' ' + s.blocked, 'red') : null,
+      s.needs ? text(' ' + GLYPH.needs + ' ' + s.needs, 'yellow') : null,
+    ].filter(Boolean)
+    const statsWidth = stats.reduce((n, s) => n + Array.from(s.text).length, 0)
+    // The stats are one block: keep them whole and leave the epic at least
+    // eight cells, or drop them and give the epic the room.
+    const keepStats = prefixWidth + statsWidth + 8 <= width
+    const epicWidth = Math.max(0, width - prefixWidth - (keepStats ? statsWidth : 0))
+    return fitEllipsis(
+      [...head, text(truncate(epicTitle, epicWidth)), ...(keepStats ? stats : [])],
       width,
     )
   }
@@ -388,8 +451,10 @@ export function projectRow(project, width, narrow, digit, index = 0) {
     layout(
       [
         { ...hotkey(digit, 'project', project?.project, 'project-' + index), width: 6 },
-        { text: badge(project), style: badgeStyle(project, index), width: 11 },
-        { text: s.saga, style: 'bold', width: 17 },
+        { text: badge(project), style: badgeStyle(project, index), width: columns.project },
+        { text: s.saga, style: 'bold', width: columns.saga },
+        // The state glyph never touches the saga title, even when it is cut.
+        { text: ' ', width: 1 },
         { text: GLYPH[state], style: state, width: 2 },
         { text: epicTitle, flex: 1 },
         { text: s.bar.filled, style: 'green', width: s.bar.filled.length },
@@ -441,6 +506,7 @@ export function bandRows(board, options = {}) {
   const questions = allQuestions(board)
   const projects = allProjects(board)
   const narrow = width < 110
+  const columns = narrow ? null : bandColumns(projects, width)
   const plural = projects.length === 1 ? 'project' : 'projects'
   const right = ' ' + projects.length + ' ' + plural + ' \u00b7 updated ' + updated + ' '
   // The band numbers one row for what needs you, then one row per project.
@@ -448,12 +514,12 @@ export function bandRows(board, options = {}) {
   const hint = narrow ? '' : keyHint(rowCount)
   const rows = [fit(ruleCell('chief of staff', right, width, hint), width)]
 
-  if (questions.length) rows.push(needsRow(questions, width, narrow, 1))
+  if (questions.length) rows.push(needsRow(questions, width, narrow, 1, columns))
   const base = questions.length ? 2 : 1
   projects.forEach((project, i) => {
     // The digits run 1 to 9; a tenth row keeps its place and loses its digit.
     const ordinal = base + i
-    rows.push(projectRow(project, width, narrow, ordinal <= 9 ? ordinal : '', i))
+    rows.push(projectRow(project, width, narrow, ordinal <= 9 ? ordinal : '', i, columns))
   })
   return rows.slice(0, maxRows === Infinity ? rows.length : maxRows)
 }
@@ -484,9 +550,25 @@ export function paneTabs(tab, questions) {
   ]
 }
 
+/**
+ * The project and saga columns of the `/cos` digest, sized like the band:
+ * the longest text first, then narrowed to what the width leaves after the
+ * prefix, the bar, and an eight-cell orchestrator line.
+ */
+export function digestColumns(projects, width) {
+  const project = Math.max(10, ...projects.map((p) => Array.from(String(p?.project || '?')).length))
+  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
+  // The orchestrator line is the tail: it takes what is left, and the
+  // project and saga columns get the rest first.
+  const budget = width - (3 + 1 + 1 + 14 + 3)
+  if (project + saga <= budget) return { project, saga }
+  const projectWidth = Math.max(10, Math.min(project, budget - 17))
+  return { project: projectWidth, saga: Math.max(17, budget - projectWidth) }
+}
+
 /** The `/cos` digest: the board in text, as artboard 5 draws it. */
 export function digest(board, options = {}) {
-  const width = Math.max(48, Math.min(96, options.width || 96))
+  const width = Math.max(48, options.width || 96)
   const only = options.project || null
   const questions = allQuestions(board)
   const projects = allProjects(board).filter((p) => !only || p.project === only)
@@ -502,9 +584,15 @@ export function digest(board, options = {}) {
     })
     lines.push(BRANCH)
   }
+  const columns = digestColumns(projects, width)
   for (const project of projects) {
     const s = projectSummary(project, 10)
-    lines.push(BRANCH + '  ' + pad(s.project, 10) + ' ' + pad(s.saga, 17) + ' ' + s.bar.text + ' \u00b7 ' + orchestratorLine(project))
+    const left = BRANCH + '  ' + pad(s.project, columns.project) + ' ' + pad(s.saga, columns.saga) + ' ' + s.bar.text
+    const room = Math.max(0, width - Array.from(left).length)
+    let tail = ''
+    if (room >= 4) tail = ' \u00b7 ' + truncate(orchestratorLine(project), room - 3)
+    else if (room >= 2) tail = ' \u2026'
+    lines.push(left + tail)
     for (const epic of activeSaga(project)?.epics || []) {
       const state = epicState(epic)
       lines.push(BRANCH + '   ' + GLYPH[state] + ' ' + epic.title + '  ' + epicNote(epic, state))
@@ -521,5 +609,8 @@ export function digest(board, options = {}) {
   if (only && projects.length === 0) lines.push(BRANCH + '  no project ' + truncate(only, 30))
   const foot = only ? '/cos pane for the pane' : '/cos <project> for one project \u00b7 /cos pane for the pane'
   lines.push('\u2570\u2500 ' + foot + ' ' + RULE.repeat(Math.max(0, width - foot.length - 4)))
-  return lines.join('\n')
+  // A transcript can be narrower than the command's terminal once a pane is
+  // docked; a line that does not fit loses its tail with an ellipsis, never
+  // wraps outside the tree.
+  return lines.map((line) => truncate(line, width)).join('\n')
 }

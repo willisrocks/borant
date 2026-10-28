@@ -37,6 +37,8 @@ import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 /** The pane's id, and its tab label. */
 const PANE = 'cos'
 const PANE_TITLE = 'Chief of staff'
+/** The band's render instance, as its ui.focus events name it. */
+const BAND = 'above-prompt'
 /** How often the board is read while the session is the chief. */
 const REFRESH_MS = 15000
 /** A read arriving sooner than this after the last one is skipped. */
@@ -65,6 +67,10 @@ let taskCache = new Map()
 let paneOpen = false
 let paneTitle = ''
 let paneWidth = 60
+/** The band Button that holds the keyboard, so its whole row draws selected. */
+let bandKey = null
+/** True for the frame that hands the band's keyboard to the pane. */
+let bandHidden = false
 /** The row a mouse click just focused, so the click selects instead of opening. */
 let clickMark = null
 /** The terminal's width, as last measured while drawing the band. */
@@ -112,11 +118,35 @@ export function register(on) {
     }
   })
 
+  // The band's ring names the row Button it is on. The whole row draws
+  // selected, not only the `[ n ]` chip, and the row clears when the ring
+  // leaves the band's elements.
+  on('ui.focus', { requestId: BAND }, async ($, e, next) => {
+    try {
+      if (isChief) {
+        const key = typeof e.element === 'string' ? e.element : null
+        if (key !== bandKey) {
+          bandKey = key
+          redraw($)
+        }
+      }
+    } catch {
+      // A focus move is never worth an error.
+    }
+    return next(e)
+  })
+
   // The engine moves the focus ring with Tab, the arrows, and a click; a row
   // taking it is the selection, and a click that is about to press the same
   // row is marked so it selects rather than opens.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     try {
+      if (isChief && bandKey) {
+        // The band no longer has the keys, so its row is not selected; its
+        // normal colors read better than a frozen highlight.
+        bandKey = null
+        redraw($)
+      }
       if (isChief && typeof e.element === 'string') {
         const key = e.element
         if (key.startsWith('row-')) {
@@ -153,7 +183,13 @@ export function register(on) {
         await back($)
         return { deny: 'back one level' }
       }
-      if (e.id === PANE) paneOpen = false
+      if (e.id === PANE) {
+        paneOpen = false
+        if (bandKey) {
+          bandKey = null
+          redraw($)
+        }
+      }
     } catch {
       // Fall through: the pane closes.
     }
@@ -163,15 +199,36 @@ export function register(on) {
   on('command.run', { command: 'cos' }, async ($, e) => {
     try {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
+      // A command runs from the prompt, which now has the keys.
+      if (bandKey) {
+        bandKey = null
+        redraw($)
+      }
       await refresh($, true)
       const args = String(e.args || '').trim()
       if (args === 'help') return { text: helpText() }
       if (args === 'pane') return openPane($)
       if (!board) return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
-      return { text: digest(board, { project: args || null, width: columns || 96 }) }
+      // A docked pane can take up to 45% of the terminal; keep the digest
+      // inside the transcript column it leaves, so it never wraps.
+      const width = Math.max(48, Math.floor((columns || 96) * 0.55) - 1)
+      return { text: digest(board, { project: args || null, width }) }
     } catch {
       return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
     }
+  })
+
+  // Typing means the prompt has the keys; the band's ring is no longer there.
+  on('prompt.edit', async ($, e, next) => {
+    try {
+      if (isChief && bandKey) {
+        bandKey = null
+        redraw($)
+      }
+    } catch {
+      // An edit is never worth an error.
+    }
+    return next(e)
   })
 
   // A turn starts when a Borant message arrives, so the board catches up then.
@@ -380,6 +437,51 @@ async function openPane($) {
   }
 }
 
+/**
+ * Open the pane from a band press. The band holds the keyboard while its
+ * Button runs, and the engine refuses a pane's `focus` then. Draw the band
+ * without its controls for one frame, so the keys fall back to the empty
+ * composer, then open the pane for real and draw the controls again.
+ */
+async function openFromBand($) {
+  const answer = await openPane($)
+  try {
+    $.clock.after(50, () => {
+      handoff($).catch(() => {})
+    })
+  } catch {
+    // No clock: the pane opens without the keyboard, and ctrl+x tab reaches it.
+  }
+  return answer
+}
+
+/** Drop the band's keys, focus the pane, then draw the band's controls again. */
+async function handoff($) {
+  try {
+    bandHidden = true
+    redraw($)
+    await $.clock.sleep(50)
+    if (await takePaneFocus($)) await focusRow($, selectionOf())
+  } finally {
+    bandHidden = false
+    redraw($)
+  }
+}
+
+/** Ask the engine for the pane's keyboard, and say whether it took. */
+async function takePaneFocus($) {
+  try {
+    const title = breadcrumb(path)
+    const opened = await $.ui.open({ id: PANE, title, focus: true, closeOnEscape: true })
+    if (opened && opened.isPlaced === false) return false
+    paneOpen = true
+    paneTitle = title
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Move the selection one row, as j, k, and the arrows do. */
 async function move($, delta) {
   const rows = rowsNow()
@@ -579,23 +681,37 @@ function styleProps(style) {
 /** The band: rows of segments, a Button where a segment names one. */
 function tree($, e, rows, prefix) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  const element = (s, key) => {
+  const element = (s, key, selected) => {
+    if (s.button && bandHidden) return Text({ key, children: [s.text], ...styleProps(s.style) })
     if (s.button) {
       const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
       if (s.button.hotkey) props.hotkey = s.button.hotkey
       return Button(props)
     }
-    return Text({ key, children: [s.text], ...styleProps(s.style) })
+    const props = { key, children: [s.text], ...styleProps(s.style) }
+    if (selected) {
+      // On the selection background every cell takes the inverse text color,
+      // so dim and colored cells stay readable. Chips keep their background,
+      // and the bar keeps its green fill.
+      if (s.style !== 'green' && s.style !== 'done') props.color = 'inverseText'
+      props.dimColor = false
+    }
+    return Text(props)
   }
   return Box({
     flexDirection: 'column',
-    children: rows.map((row, i) =>
-      Box({
+    children: rows.map((row, i) => {
+      // The row's chip names the row. A row with the keyboard draws on the
+      // selected background, not only the chip the engine's ring marks.
+      const chip = row.find((s) => s.button && (s.button.kind === 'project' || s.button.kind === 'needs'))
+      const selected = Boolean(chip && bandKey === chip.button.key)
+      return Box({
         key: prefix + '-row-' + i,
         flexDirection: 'row',
-        children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j)),
-      }),
-    ),
+        ...(selected ? { backgroundColor: 'promptBorder' } : {}),
+        children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j, selected)),
+      })
+    }),
   })
 }
 
@@ -695,13 +811,11 @@ function tabCells($, e, width) {
     const room = Math.max(0, width - used)
     if (room === 0) break
     const length = Array.from(cell.text).length
-    if (length <= room) {
-      out.push(cell)
-      used += length
-    } else {
-      out.push({ ...cell, text: Array.from(cell.text).slice(0, room).join('') })
-      used = width
-    }
+    // A tab or its label is drawn whole or left out; a cut header reads worse
+    // than a missing one.
+    if (length > room) break
+    out.push(cell)
+    used += length
   }
   return out
 }
@@ -730,15 +844,15 @@ function press($, button) {
     case 'needs':
       tab = 'needs'
       path = []
-      return openPane($)
+      return openFromBand($)
     case 'project':
       tab = 'projects'
       path = [{ kind: 'project', project: button.arg }]
-      return openPane($)
+      return openFromBand($)
     case 'help':
       tab = 'help'
       path = []
-      return openPane($)
+      return openFromBand($)
     case 'tab-needs':
       return selectTab($, 'needs')
     case 'tab-projects':
