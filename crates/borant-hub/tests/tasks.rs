@@ -260,3 +260,61 @@ async fn tasks_issue_target_is_stored_and_cleared() {
     .unwrap();
     assert_eq!(unlinked.issue, None);
 }
+
+/// A closed task takes a patch of only its issue link and issue team, so an
+/// approved saga (through its closed gate) or a finished task can be linked
+/// to the issue that tracks it. Any other field stays refused.
+#[tokio::test]
+async fn tasks_issue_target_and_link_on_a_closed_task() {
+    let (fx, owner) = fixture().await;
+    let task = create(&fx, &owner, "ship it").await;
+    close(&fx, &owner, task.id, borant_core::model::CloseReason::Done)
+        .await
+        .expect("the close");
+
+    let update = |patch: TaskPatch| {
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskUpdate {
+                channel: api(),
+                id: task.id,
+                patch,
+            },
+        )
+    };
+    let linked: Task = serde_json::from_value(
+        update(TaskPatch {
+            issue: Some("ENG-7".into()),
+            issue_target: Some("ENG".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("a link-only patch on a closed task"),
+    )
+    .unwrap();
+    assert_eq!(linked.issue.as_deref(), Some("ENG-7"));
+    assert_eq!(linked.issue_target.as_deref(), Some("ENG"));
+    assert_eq!(linked.status, borant_core::model::TaskStatus::Closed);
+
+    for patch in [
+        TaskPatch {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+        TaskPatch {
+            issue: Some("ENG-8".into()),
+            body: Some("more".into()),
+            ..Default::default()
+        },
+        TaskPatch::default(),
+    ] {
+        let err = update(patch.clone())
+            .await
+            .expect_err("a closed task refuses other fields");
+        assert_eq!(
+            err.code,
+            borant_core::proto::ApiErrorCode::Invalid,
+            "{patch:?}"
+        );
+    }
+}

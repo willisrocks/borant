@@ -140,7 +140,16 @@ impl Hub {
         let mut doc = self.task(channel, id).await?;
         let before = doc.value.clone();
         let t = &mut doc.value;
-        if t.status == TaskStatus::Closed {
+        // A closed task takes only its issue link and its issue team, so a
+        // person can link an approved saga (through its closed gate) or a
+        // finished task to the issue that already tracks it.
+        let link_only = (patch.issue.is_some() || patch.issue_target.is_some())
+            && TaskPatch {
+                issue: None,
+                issue_target: None,
+                ..patch.clone()
+            } == TaskPatch::default();
+        if t.status == TaskStatus::Closed && !link_only {
             return Err(CoreError::TaskClosed.into());
         }
         if let Some(title) = patch.title {
