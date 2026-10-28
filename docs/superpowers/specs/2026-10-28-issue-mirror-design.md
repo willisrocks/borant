@@ -18,131 +18,183 @@ uses them. It is the smallest thing that works.
 
 ## Shape
 
-The mirror copies Linear's shape from the PR watch (`crates/borant-hub/src/changes.rs`).
+The shape copies the PR watch (`crates/borant-hub/src/changes.rs`).
 
-- **A port.** `borant-core::ports::issues::IssueTracker` has neutral types
-  and no vendor name. It also has an in-memory adapter in `borant-memory` and
-  a contract suite in `borant-core::testing`.
+- **A port.** `borant-core::ports::issues::IssueTracker`, with neutral types,
+  an in-memory adapter in `borant-memory`, and a contract suite in
+  `borant-core::testing`.
 - **An exec adapter.** `borant-exec::issues` speaks the exec plugin protocol
-  (`kind: "issues"`).
-- **A hub loop.** `Hub::mirror_loop` runs on its own task, outside the request
-  lock, every `every_secs`. It is wired from `[mirror]` in `hub.toml`.
-- **A private plugin.** `borant-mirror-linear` lives in `borant-infra`
-  (`pkgs/borant-mirror-linear.sh`, curl and jq against Linear's GraphQL API).
-  The repo rule keeps vendor code out of this repo.
+  with `kind: "issues"`.
+- **A hub loop.** `Hub::mirror_loop` runs on its own task, outside the
+  request lock, every `every_secs`. `[mirror]` in `hub.toml` wires it, through
+  a `mirror_tracker()` in `config.rs` next to `changes_watch()`.
+- **A private plugin.** `borant-mirror-linear` is in `borant-infra`, as
+  `pkgs/borant-mirror-linear.sh`. It uses curl and jq against Linear's
+  GraphQL API. The repo rule keeps vendor code out of this repo.
+- **New field `issue_target: Option<String>`.** It goes on `CollectionConfig`,
+  `Project`, `borant project add --issue-target`, the proto, and the board
+  project line. `roles::issue_target(project, collection)` resolves it the
+  same way as `roles::mirror_issues`: the project wins. The core does not read
+  it. It passes it to the plugin as the Linear team key, such as `ENG`.
+  `CollectionConfig` has `deny_unknown_fields`, so this field must ship before
+  `borant-infra` sets it.
 
 ## What maps to what
+
+An item is mirrored when its project resolves `mirror_issues` to true.
 
 | Borant | Linear | Parent |
 |---|---|---|
 | Saga channel | Issue | none |
 | Epic task in a saga | Sub-issue | the saga's issue |
-| Standalone epic channel | Issue | none |
-| Task under an epic | Sub-issue | the epic's issue |
-| Plain task of a project channel | Not mirrored, unless it has an `issue` link | none |
+| Standalone epic channel | Issue, held by the channel | none |
+| Root epic task of a standalone epic channel | Not mirrored. The channel's issue stands for it. | — |
+| Task under an epic, at any depth | Sub-issue | the nearest mirrored ancestor's issue |
+| The gate task "Approve the scope and the epics" | Not mirrored | — |
+| Plain task of a project channel | Only when it has an `issue` link | none |
 
-One Linear team receives the issues of a project. The team is a string that
-the core does not read: `issue_target` on the collection, with an override on
-the project. The plugin reads it as a Linear team key, such as `ENG`.
+Nested tasks stay flat under their epic's issue unless the parent task itself
+is mirrored. Under that rule, every task under an epic is mirrored, so the
+parent is always the closest one.
 
 ### Fields the mirror writes
 
-- The title.
-- The description: the Borant body, then a footer: "Mirrored from Borant
-  (`<channel>/<task>`). Edits here do not flow back." The footer also carries
-  the PR link when the task has a `pr_url`.
-- The state.
-- The parent.
+- **Title.** The task title, or the channel `title`, falling back to the name.
+- **Description.**
+  - For a task, its body.
+  - For a saga, the body of its gate task, which holds the scope.
+  - For a standalone epic channel, the body of its root epic task.
+  - Then a footer: "Mirrored from Borant (`<channel>/<task>`). Edits here do
+    not flow back." The footer adds the PR link when the task's
+    `properties.pr_url` is set.
+- **State.**
+- **Parent.**
 
 The mirror writes no assignee, label, priority, estimate, cycle, or comment.
 
 ### States
 
 The core sends a neutral state. The plugin picks the team's first workflow
-state of the matching Linear state type, so a team with custom states still
-works.
+state of the matching Linear state type, so teams with custom states work.
 
-| Borant | Neutral state | Linear state type |
+**A plain task, by its own status:**
+
+| Task | Neutral | Linear type |
 |---|---|---|
-| Saga, gate not done (proposed) | `backlog` | backlog |
-| Task `open`; saga or epic channel with nothing started | `todo` | unstarted |
-| Task `in_progress`, `needs_human`, or `stuck`; saga or epic channel with a started epic or task | `started` | started |
-| Task closed `done`; saga or epic channel closed | `done` | completed |
-| Task closed `wontfix`, `duplicate`, or `superseded` | `canceled` | canceled |
+| `open` | `todo` | unstarted |
+| `in_progress`, `needs_human`, `stuck` | `started` | started |
+| closed `done` | `done` | completed |
+| closed `wontfix`, `duplicate`, `superseded` | `canceled` | canceled |
 
-`needs_human` and `stuck` stay `started`. Linear has no blocked state type,
-and the board already shows the question.
+`needs_human` and `stuck` stay `started`. Linear has no blocked type, and the
+board already shows the question.
+
+**A container: a saga, an epic task, or a standalone epic channel.** The
+first rule that matches wins.
+
+1. Closed, meaning a closed channel or a closed epic task: `done` if it closed
+   `done` or as a channel, else `canceled`.
+2. A saga whose gate task is not closed `done`: `backlog`.
+3. Any child that is not open and not canceled: `started`. A child here is any
+   task under the container, the gate excluded. `in_progress`,
+   `needs_human`, `stuck`, and closed `done` all count.
+4. Otherwise: `todo`.
+
+Epic tasks are never claimed, so a container's state comes from its children
+and never from its own status.
 
 ## When the mirror writes
 
-The mirror writes when an item changes. A sweep finds the change:
+The mirror writes when an item changes. A sweep finds the change.
 
-1. Every `every_secs` (default 60), the loop lists the open items of each
-   project where `mirror_issues` resolves to true.
-2. It also lists the items that closed since the last sweep.
-3. For each item, it builds the record that it would write (title,
-   description, state, parent).
-4. It compares the hash of that record with the hash that it last wrote. The
-   hub keeps that hash in the KV key `mirror.<channel>.<task>`, or
-   `mirror.<channel>` for a saga or epic channel.
-5. It calls the plugin only when the hashes differ.
+1. Every `every_secs` (default 60), the loop takes every channel from
+   `open_channels()`, which includes closed ones, and their tasks, in mirrored
+   projects.
+2. For each item, it builds the record that it would write: title,
+   description, parent key, and state.
+3. It hashes the record and compares that hash with the KV record of the item.
+4. **An item with no KV record:**
+   - An open item gets a new issue. A closed item is left alone, so closed
+     history is not backfilled.
+   - An item that already has an `issue` link is adopted (see below).
+5. **An item with a KV record:** the mirror writes only when the hash differs,
+   and also when the item is closed, so its last state goes out.
+6. It writes at most `max_writes` per sweep (default 50). Parents go before
+   children, and items are sorted by `updated`, oldest first. A channel uses
+   its `created`.
 
-A sweep survives a hub restart and a Linear outage with no event log, and an
-unchanged item costs no API call. One minute of lag is fine for a tracker.
-The loop writes at most `max_writes` (default 50) per sweep, oldest change
-first. That keeps a backfill well under Linear's API limits.
+An unchanged item costs no API call. The sweep survives a hub restart and a
+Linear outage with no event log. One minute of lag is fine for a tracker. The
+cap keeps a backfill well under Linear's API limits.
 
 The mirror compares with what it wrote, not with what Linear shows. A person
-who moves an issue in Linear keeps that edit until the Borant item changes
+who moves an issue in Linear keeps that move until the Borant item changes
 again.
+
+### The KV record
+
+The key is `mirror.<channel>.<task>`, or `mirror.<channel>` for a channel.
+
+```json
+{"issue": "ENG-123", "hash": "<sha256 of the record>", "owned": true, "stopped": null}
+```
+
+`stopped` is `null`, `"not_found"`, or `"unlinked"`. A stopped item gets no
+writes.
 
 ### The link
 
 When the plugin creates an issue, the hub sets the item's `issue` to the
-returned key, such as `ENG-123`. The hub writes the key, because only the hub
-writes control-plane keys. A create is idempotent:
+returned key, such as `ENG-123`. The hub writes it, because only the hub
+writes control-plane keys. The loop runs outside the request lock, so it
+writes with a revision check and a retry, as `close_channel` does. It changes
+only `issue`.
 
-1. The hub sends `key`, a UUIDv5 of the Borant id.
+A create is idempotent:
+
+1. The hub sends `key`, a UUID with the version 4 bits set, built from a hash
+   of the Borant id.
 2. The plugin passes it as the `id` of `issueCreate`.
-3. A retry after a crash finds the existing issue and does not make a second
-   one.
+3. On a create error, the plugin first looks the issue up by that id. If the
+   issue exists, it returns it.
+
+A crash between the create and the link therefore makes no second issue.
 
 ### Errors
 
-The plugin answers with the exec protocol codes:
+These are the exec protocol codes, plus the runner's timeout.
 
-- `unavailable`, `timeout`: the loop retries on the next sweep.
-- `not_found`: the linked issue is gone. The hub tells the channel owner
-  once, keeps the link, and stops writing to that issue.
-- `denied`: the key is wrong or lacks access. The hub logs it, raises a
-  `mirror_denied` alert to the notifier once, and pauses the mirror until
-  the next hub start.
-- `invalid`: the hub tells the owner once and skips the item.
+- **`unavailable`, a timeout, or `internal`:** the mirror logs a warning and
+  retries on the next sweep.
+- **`not_found`:** the linked issue is gone. The hub tells the channel owner
+  once and sets `stopped: "not_found"`.
+- **`invalid`:** the hub tells the owner once and skips the item until its
+  hash changes.
+- **`denied`:** the key is wrong or lacks access.
+  - The mirror pauses until the next hub start.
+  - The hub keeps a `mirror_refused` fact in memory, plus an `AlertView`
+    field and an alert rule, the same pattern as `provisioner_refused`. The
+    notifier tells Chris once.
 
 ## An item already linked to a Linear issue
 
 An orchestrator or a person can set `issue` to an existing issue. The mirror
-then adopts that issue but does not own it:
+adopts that issue but does not own it:
 
-- It writes the **state only**. It never changes the title, description, or
-  parent of an issue it did not create, and it never deletes or re-parents
-  one.
-- The KV record holds `owned: false`, so the rule survives restarts.
-- An item that the mirror created holds `owned: true`. For that item, the
-  mirror writes all four fields.
-- An `issue` value can be a key (`ENG-42`) or a Linear URL. The plugin
-  accepts both.
-- Clearing `issue` on a task stops the mirror for that item and leaves the
-  Linear issue as it is. The next sweep does not create a new one, because
-  the KV record remembers the item.
+- **State only.** It writes the state and nothing else. It never changes the
+  title, the description, or the parent of an issue it did not create, and
+  it never re-parents one.
+- **`owned: false`.** The KV record keeps this rule across restarts. An item
+  that the mirror created has `owned: true`, and the mirror writes all four
+  fields for it.
+- **Key or URL.** `issue` can be a key such as `ENG-42` or a Linear URL. The
+  plugin accepts both.
+- **Clearing the link.** Clearing `issue` on an item sets
+  `stopped: "unlinked"`. The mirror then stops for that item and leaves the
+  Linear issue as it is.
 
 The mirror never deletes a Linear issue. When a mirror turns off, its issues
 stay as they are.
-
-## Turning it on
-
-The first sweep after a project turns on backfills its open sagas, epics, and
-epic tasks. Closed items are not backfilled.
 
 ## The port
 
@@ -150,7 +202,7 @@ epic tasks. Closed items are not backfilled.
 pub enum IssueState { Backlog, Todo, Started, Done, Canceled }
 
 pub struct IssueWrite {
-    pub key: String,              // stable id for an idempotent create
+    pub key: String,              // a v4-shaped UUID, for an idempotent create
     pub target: String,           // the issue_target, opaque to the core
     pub parent: Option<String>,   // the parent issue's key
     pub title: String,
@@ -168,26 +220,35 @@ pub trait IssueTracker {
 }
 ```
 
-The exec ops are `describe`, `create`, and `update`, with `config` from
-`[mirror.config]`, the same as for the provisioner.
+The exec ops are `describe`, `create`, and `update`. Each request carries
+`config` from `[mirror.config]`, the same as for a provisioner.
+
+The plugin translates between Borant and Linear:
+
+- It resolves `target` (the team key) to the team's UUID.
+- It resolves `parent` and `issue` (a key or a URL) to issue UUIDs.
+  `issue(id:)` accepts a key.
+- It caches the team's workflow states for each run.
 
 ## Linear auth and where the key lives
 
-- **The key.** One Linear personal API key, restricted to the work teams if
-  Linear's key scopes allow it, with access to create and edit issues. Issues
-  show the key's user as their creator.
+- **The key.** One Linear personal API key. Linear lets a key be limited to
+  chosen teams and permissions: Create issues and Write. Limit it to the work
+  team. Issues show the key's user as their creator.
 - **Where it lives.** It lives in the Borant vault, because only Chris can
-  write to 1Password, and the boxes read only that vault. Chris creates item
-  `linear-mirror` with field `credential`.
-- **How it reaches the hub.** No bundle names the item, so no agent ever
-  gets it. A new recipe, `just hub-linear-credential`, reads it through the
-  box store over SSH, as `hub-backup-credential` does. The recipe writes it to
-  `/var/lib/borant/credentials/linear-token` (root, 0400). The `borant-hub`
-  unit loads it with `LoadCredential`, and the plugin reads
-  `$BORANT_CREDENTIALS_DIRECTORY/linear-token`.
-- **Rotation.** A rotation means a new push and a hub restart.
+  write to 1Password and the boxes read only that vault. Chris creates the
+  item `linear-mirror` with the field `credential`.
+- **No agent gets it.** No bundle names the item.
+- **How it reaches the hub.**
+  1. The new recipe `just hub-linear-credential` reads the item through the
+     box store over SSH, as `hub-backup-credential` does.
+  2. It writes the key to `/var/lib/borant/credentials/linear-token` (root,
+     0400).
+  3. The `borant-hub` unit loads that file with `LoadCredential`.
+  4. The plugin reads `$BORANT_CREDENTIALS_DIRECTORY/linear-token`.
+- **Rotation.** A new push and a hub restart.
 - **Risk.** A host that holds the store token can read the item, as it can
-  read the S3 key today. A key scoped to the work teams limits the damage.
+  read the S3 key today. The team-limited key limits the damage.
 
 ## Config
 
@@ -207,32 +268,40 @@ issue_target = "ENG"      # the Linear team key
 ```
 
 `borant-infra` adds the `[mirror]` table to the hub module, behind
-`hub.mirror.enable`, and sets `mirror_issues` and `issue_target` on the work
-collection. The personal collection stays off. Turning it on for work takes
-these steps:
+`hub.mirror.enable`. It also sets `mirror_issues` and `issue_target` on the
+work collection. Personal stays off.
+
+Turning it on for work takes three steps:
 
 1. Chris creates the vault item.
 2. Run `just hub-linear-credential`.
-3. Set `hub.mirror.enable = true` and deploy borant-1.
+3. Set `hub.mirror.enable = true` and deploy borant-1. This needs a Borant
+   release that has `issue_target`.
 
 `borant board` already shows the resolved `mirror_issues`. A saga or task
-line shows its `issue` key once the mirror sets it.
+line shows its `issue` key once the mirror has set it.
 
 ## Tests
 
-- **Core.** The state mapping rules and the record hash, unit tested in
-  `borant-core`.
-- **Hub, against the in-memory tracker.** Create once, then update only on a
-  change. Adopted issues get the state only. A crash between the create and
-  the link makes no duplicate. A `not_found` is told once. `max_writes` caps a
-  sweep. A project with the mirror off makes no calls.
-- **Exec adapter.** The protocol, against a stub script, as in the
-  `borant-exec` changes tests.
-- **Plugin.** `borant-infra` tests it by hand against a scratch Linear team.
+- **`borant-core`:** unit tests for the container state rule, the record hash,
+  `issue_target` resolution, and the v4-shaped key.
+- **The hub, against the in-memory tracker:**
+  - It creates an issue once, then updates only on a change.
+  - It writes only the state of an adopted issue.
+  - A crash between the create and the link makes no duplicate.
+  - A `not_found` is told once.
+  - `max_writes` caps a sweep, with parents first.
+  - A closed item with no KV record makes no call.
+  - A project with the mirror off makes no calls.
+  - A link write that loses a revision race retries.
+- **`borant-exec`:** the protocol, against a stub script, as in the changes
+  tests.
+- **The plugin:** `borant-infra` tests it by hand against a scratch Linear
+  team.
 
 ## Not in this spec
 
-- Linear to Borant sync, comments, assignees, labels, and the creation of
-  Borant items from Linear.
+- Sync from Linear to Borant, comments, assignees, labels, and creating Borant
+  items from Linear.
 - Mirroring to more than one tracker at a time.
 - Event-driven writes. The sweep is enough until it is not.
