@@ -364,15 +364,13 @@ fn container_item(channel: &Channel, tasks: &[Task]) -> Option<Item> {
     }
     let anchor_task = by_id(tasks, ask);
     let id = ItemId::Channel(channel.name.clone());
-    let link = match channel.kind {
-        // The hub writes the root of an epic channel with the channel's
-        // issue, so the root's is the fallback of the channel's.
-        ChannelKind::Epic => channel
-            .issue
-            .clone()
-            .or_else(|| anchor_task.and_then(|task| task.issue.clone())),
-        _ => channel.issue.clone(),
-    };
+    // The channel's own issue, else its anchor's: the hub writes the root of
+    // an epic channel with the channel's issue, and a saga's link can only be
+    // set after its create through its gate task.
+    let link = channel
+        .issue
+        .clone()
+        .or_else(|| anchor_task.and_then(|task| task.issue.clone()));
     let closed = match channel.kind {
         ChannelKind::Epic => {
             channel.closed.is_some()
@@ -697,6 +695,23 @@ mod tests {
         let mut closed = stand_alone.clone();
         closed.closed = Some(Timestamp(30));
         assert_eq!(container_state(&closed, &tasks, None), IssueState::Done);
+    }
+
+    /// A saga made without an issue takes the link of its gate task, which a
+    /// person can set after the create; its own issue still wins.
+    #[test]
+    fn mirror_saga_link_falls_back_to_its_gate() {
+        let mut saga = channel("work-saga", ChannelKind::Saga);
+        let mut gate = task("gate", TaskStatus::Closed, None);
+        gate.close_reason = Some(CloseReason::Done);
+        gate.issue = Some("ENG-7".into());
+        saga.gate = Some(gate.id);
+        let got = items(&saga, std::slice::from_ref(&gate));
+        assert_eq!(got[0].link, Some("ENG-7".into()));
+
+        saga.issue = Some("ENG-1".into());
+        let got = items(&saga, &[gate]);
+        assert_eq!(got[0].link, Some("ENG-1".into()), "the channel's own wins");
     }
 
     /// Every item of a saga: the channel, the epics, the tasks with a change

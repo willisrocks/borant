@@ -14,6 +14,14 @@ pub mod sandbox;
 mod secrets;
 mod sessions;
 
+/// The version that the host reports in its stats, the one of
+/// `borant --version`: a release build sets `BORANT_RELEASE_VERSION`, because
+/// the crate version on the released commit is still the previous release's.
+pub const VERSION: &str = match option_env!("BORANT_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -680,7 +688,7 @@ impl Host {
                 .collect()
         };
         HostStats {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: VERSION.to_owned(),
             started: Some(self.inner.started),
             load1: load.one,
             cpus,
