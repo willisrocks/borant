@@ -27,12 +27,21 @@ export function text(text, style = 'plain') {
   return { text: String(text), style }
 }
 
-/** A digit hotkey cell, drawn by the renderer as a Button. */
-export function hotkey(digit, kind, arg) {
+/**
+ * A hotkey cell, drawn by the renderer as a Button. Rows past nine have no
+ * hotkey, so the cell is blank and the row stays clickable; `key` keeps the
+ * Buttons of a band unique when two rows show the same digit.
+ */
+export function hotkey(digit, kind, arg, key) {
+  const shown = digit === null || digit === undefined ? '' : String(digit)
+  // The engine draws a hotkey chip as `[ 9 ]`; a row with no hotkey keeps the
+  // chip's five cells blank, so the columns of the other rows stay put.
+  const button = { key: key || kind + '-' + (shown || 'row'), label: shown || '     ', kind, arg }
+  if (shown) button.hotkey = shown
   return {
-    text: '[ ' + digit + ' ]',
+    text: shown ? '[ ' + shown + ' ]' : ' '.repeat(5),
     style: 'hotkey',
-    button: { key: kind + '-' + digit, label: String(digit), hotkey: String(digit), kind, arg },
+    button,
   }
 }
 
@@ -122,7 +131,10 @@ function stamp(at) {
 export function progressBar(done, total, cells = 10) {
   const d = Math.max(0, Number(done) || 0)
   const t = Math.max(0, Number(total) || 0)
-  const filled = t === 0 ? 0 : Math.max(0, Math.min(cells, Math.round((d / t) * cells)))
+  // A project with no epics has nothing to fill: no bar, and a dash for the
+  // count. The blank cells keep the columns of the rows beside it in place.
+  if (t === 0) return { filled: '', empty: ' '.repeat(cells), label: '\u2014', text: '\u2014' }
+  const filled = Math.max(0, Math.min(cells, Math.round((d / t) * cells)))
   return {
     filled: '\u2588'.repeat(filled),
     empty: '\u2591'.repeat(cells - filled),
@@ -358,7 +370,7 @@ export function projectRow(project, width, narrow, digit, index = 0) {
   if (narrow) {
     return fit(
       [
-        hotkey(digit, 'project', project?.project),
+        hotkey(digit, 'project', project?.project, 'project-' + index),
         text(badge(project), badgeStyle(project, index)),
         text(' ' + s.saga + ' '),
         text(GLYPH[state] + ' ', state),
@@ -375,7 +387,7 @@ export function projectRow(project, width, narrow, digit, index = 0) {
   return fit(
     layout(
       [
-        { ...hotkey(digit, 'project', project?.project), width: 6 },
+        { ...hotkey(digit, 'project', project?.project, 'project-' + index), width: 6 },
         { text: badge(project), style: badgeStyle(project, index), width: 11 },
         { text: s.saga, style: 'bold', width: 17 },
         { text: GLYPH[state], style: state, width: 2 },
@@ -439,7 +451,9 @@ export function bandRows(board, options = {}) {
   if (questions.length) rows.push(needsRow(questions, width, narrow, 1))
   const base = questions.length ? 2 : 1
   projects.forEach((project, i) => {
-    rows.push(projectRow(project, width, narrow, Math.min(9, base + i), i))
+    // The digits run 1 to 9; a tenth row keeps its place and loses its digit.
+    const ordinal = base + i
+    rows.push(projectRow(project, width, narrow, ordinal <= 9 ? ordinal : '', i))
   })
   return rows.slice(0, maxRows === Infinity ? rows.length : maxRows)
 }
