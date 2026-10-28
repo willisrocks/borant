@@ -57,6 +57,55 @@ pub struct Item {
     pub ask: TaskId,
 }
 
+/// The items that share an issue link with another item and do not own it.
+/// One issue gets its state from one item only, or every sharer would write
+/// its own state to it. The owner is a channel before a task, then the
+/// shallower item, then the smaller Borant id, which is the older task of a
+/// channel. The order is stable from sweep to sweep. The others roll up into
+/// the owner's issue: the mirror writes nothing for them.
+pub fn shared_link_losers(items: &[Item]) -> HashSet<ItemId> {
+    let mut owner: std::collections::HashMap<String, &Item> = std::collections::HashMap::new();
+    let rank = |item: &Item| {
+        (
+            !matches!(item.id, ItemId::Channel(_)),
+            item.depth,
+            item.id.borant_id(),
+        )
+    };
+    for item in items {
+        let Some(key) = item.link.as_deref().map(link_key) else {
+            continue;
+        };
+        match owner.get(&key) {
+            Some(held) if rank(held) <= rank(item) => {}
+            _ => {
+                owner.insert(key, item);
+            }
+        }
+    }
+    items
+        .iter()
+        .filter(|item| {
+            item.link
+                .as_deref()
+                .map(link_key)
+                .is_some_and(|key| owner.get(&key).is_some_and(|o| o.id != item.id))
+        })
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+/// The comparable form of an issue link: the last path segment of a URL
+/// that names an issue, or the key itself, in upper case.
+fn link_key(link: &str) -> String {
+    let link = link.trim().trim_end_matches('/');
+    let key = match link.split_once("/issue/") {
+        Some((_, rest)) => rest.split('/').next().unwrap_or(rest),
+        None => link,
+    };
+    key.to_ascii_uppercase()
+}
+
 /// The scope question of a saga, the root of an epic channel, or nothing.
 pub fn anchor(channel: &Channel) -> Option<TaskId> {
     match channel.kind {
@@ -695,6 +744,62 @@ mod tests {
         let mut closed = stand_alone.clone();
         closed.closed = Some(Timestamp(30));
         assert_eq!(container_state(&closed, &tasks, None), IssueState::Done);
+    }
+
+    /// Items that share a link: the channel owns it before any task, a
+    /// shallower task before a deeper one, and the smaller id breaks a tie. A
+    /// URL and a key of the same issue are one link, and unlinked items never
+    /// lose.
+    #[test]
+    fn mirror_shared_link_has_one_owner() {
+        let item = |id: ItemId, depth: u32, link: Option<&str>| Item {
+            id,
+            parent: None,
+            depth,
+            title: String::new(),
+            body: String::new(),
+            state: IssueState::Todo,
+            target: None,
+            link: link.map(str::to_owned),
+            closed: false,
+            order: Timestamp(0),
+            ask: TaskId::new(),
+        };
+        let saga: ChannelName = "work-saga".parse().unwrap();
+        let plain: ChannelName = "work-plain".parse().unwrap();
+        let (a, b, c) = (TaskId::new(), TaskId::new(), TaskId::new());
+        let items = vec![
+            item(ItemId::Task(saga.clone(), a), 1, Some("ENG-1")),
+            item(ItemId::Channel(saga.clone()), 0, Some("ENG-1")),
+            item(
+                ItemId::Task(plain.clone(), b),
+                0,
+                Some("https://tracker.example/w/issue/eng-1/slug"),
+            ),
+            item(ItemId::Task(plain.clone(), c), 0, Some("ENG-2")),
+            item(ItemId::Task(saga.clone(), c), 2, Some("ENG-2")),
+            item(ItemId::Task(saga.clone(), b), 1, None),
+        ];
+        let losers = shared_link_losers(&items);
+        assert!(
+            !losers.contains(&ItemId::Channel(saga.clone())),
+            "the channel owns ENG-1"
+        );
+        assert!(losers.contains(&ItemId::Task(saga.clone(), a)));
+        assert!(
+            losers.contains(&ItemId::Task(plain.clone(), b)),
+            "the URL is the same issue"
+        );
+        assert!(
+            !losers.contains(&ItemId::Task(plain.clone(), c)),
+            "the shallower task owns ENG-2"
+        );
+        assert!(losers.contains(&ItemId::Task(saga.clone(), c)));
+        assert!(
+            !losers.contains(&ItemId::Task(saga.clone(), b)),
+            "no link, no loss"
+        );
+        assert_eq!(losers.len(), 3);
     }
 
     /// A saga made without an issue takes the link of its gate task, which a

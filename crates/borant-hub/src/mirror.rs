@@ -136,6 +136,8 @@ impl Hub {
         }
         // Parents before children, the oldest first.
         all.sort_by_key(|item| (item.depth, item.order));
+        // An issue that several items link to gets its state from one of them.
+        let losers = mirror::shared_link_losers(&all);
 
         // One read per record, and the issue key of every item that has one,
         // so a child sees the issue of its parent.
@@ -146,6 +148,12 @@ impl Hub {
             let rec = self.store.get::<MirrorRecord>(&key).await?;
             if let Some(issue) = rec.as_ref().and_then(|d| d.value.issue.clone()) {
                 known.insert(item.id.clone(), issue);
+            } else if losers.contains(&item.id)
+                && let Some(link) = item.link.clone()
+            {
+                // A rolled-up item writes nothing, but its children nest
+                // under the issue that it shares.
+                known.insert(item.id.clone(), link);
             }
             records.insert(item.id.clone(), rec.map(|d| d.value));
         }
@@ -154,6 +162,9 @@ impl Hub {
         for item in &all {
             if calls >= m.max_writes {
                 break;
+            }
+            if losers.contains(&item.id) {
+                continue;
             }
             let rec = records.get(&item.id).cloned().flatten();
             let owner = channels.get(channel_of(&item.id)).cloned().flatten();

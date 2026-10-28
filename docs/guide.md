@@ -376,6 +376,13 @@ Setting `issue` adopts an existing issue: the mirror writes the state only,
 and never the title, the body, or the parent. Setting `issue` to `""` stops
 the mirror for that item.
 
+When several items link the same issue, one of them owns it, and only the
+owner writes its state. The owner is a saga or epic channel before a task,
+then the shallower item, then the older task. The other items roll up into
+that issue: the mirror writes nothing for them, and their mirrored children
+become sub-issues of it. To give such a child its own issue, clear its
+`issue`.
+
 The KV record is `mirror.<channel>` for a container and
 `mirror.<channel>.<task>` for a task. It holds `issue` (the key), `hash`
 (what the mirror last wrote), `was` (the state from before the mirror raised
