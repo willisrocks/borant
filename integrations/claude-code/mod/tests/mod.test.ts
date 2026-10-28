@@ -279,6 +279,11 @@ test('the pane has its tabs, and its buttons submit a prompt instead of calling 
 
   // The Needs you tab opens on the gate, and Done submits its title and ids.
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
+  // The buttons sit under the title, not at the pane's edge.
+  expect((await ui.find({ key: 'pane-buttons-1' }))?.props.paddingLeft).toBe(4)
+  // and right under it: the buttons row draws no blank text line of its own.
+  expect(await ui.find({ key: 'pane-line-1' })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'nav-back' }))?.props.label).toBe('esc: back')
   await ui.press({ key: 'done-0' })
   expect(prompts).toHaveLength(1)
   expect(prompts[0]).toContain(

@@ -186,8 +186,10 @@ export function rowsFor(state) {
   const selection = Number(state.selection) || 0
   const tab = state.tab || 'needs'
   if (tab === 'help') return helpRows(state, width, selection)
-  if (tab === 'needs') return needsRows(state, width, selection)
   const last = (state.path || [])[(state.path || []).length - 1]
+  // Enter on a question opens its task, as in the Projects tab, so the
+  // breadcrumb names the view that shows.
+  if (tab === 'needs') return last && last.kind === 'task' ? detailRows(state, last, width) : needsRows(state, width, selection)
   if (last && last.kind === 'task') return detailRows(state, last, width)
   if (last && last.kind === 'epic') return epicRows(state, last, width, selection)
   if (last && last.kind === 'project') return projectRows(state, last, width, selection)
@@ -226,6 +228,9 @@ function indent(depth) {
   return '  '.repeat(depth)
 }
 
+/** The cells before a question's title: the ▸, the selection gap, and the ▲. */
+export const BUTTON_INDENT = 4
+
 /** The Needs you tab: one selectable row per question, then its buttons. */
 export function needsRows(state, width, selection) {
   const questions = state.questions || []
@@ -259,7 +264,9 @@ export function needsRows(state, width, selection) {
     if (!mark || mark.state !== 'pending') {
       buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
     }
-    out.push(row({ buttons }))
+    // The buttons sit under the title, after the ▸ and the ▲, so they read as
+    // the question's own; a blank row then ends the group.
+    out.push(row({ buttons, buttonIndent: BUTTON_INDENT }))
     out.push(row({ segments: [text(' ')] }))
   })
   return finish(finishWidth(out, width), selection)
