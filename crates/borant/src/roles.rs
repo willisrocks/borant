@@ -52,6 +52,9 @@ async fn hub_parts(
     // The PR watch of `[changes]`: None names no adapter, or a program that is
     // not a change-request plugin (a warn, not a failed start).
     let changes = file.changes_watch().await?;
+    // The issue mirror of `[mirror]`: None names no adapter, or a program
+    // that is not an issue-tracker plugin (a warn, not a failed start).
+    let mirror = file.mirror_tracker().await?;
     // The hub opens its `[secrets]` stores, as a host does. A store that
     // fails is logged and leaves join off; the hub still runs.
     let secrets = match file.secrets.config() {
@@ -65,6 +68,7 @@ async fn hub_parts(
         collections: file.collections,
         alerts: file.alerts.to_config(),
         changes,
+        mirror,
         schedules,
         member_rules: file.secrets.members,
         http: file.http,

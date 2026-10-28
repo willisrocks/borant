@@ -202,6 +202,10 @@ impl Hub {
             let mem = self.mem.lock().await;
             mem.elastic_refused.values().cloned().collect()
         };
+        let mirror_refused = {
+            let mem = self.mem.lock().await;
+            mem.mirror_refused.clone()
+        };
         let view = AlertView {
             swarm,
             agents,
@@ -209,6 +213,7 @@ impl Hub {
             limited_bundles: self.limited_bundles(now).await?,
             budget_blocked: self.budget_blocked().await?,
             refused,
+            mirror_refused,
             restart_grace,
         };
         Ok((view, tasks))
