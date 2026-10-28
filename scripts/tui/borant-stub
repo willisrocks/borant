@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# A stand-in `borant` for the chief mod's visual tests. It serves the board
+# and task lists from files that a test changes, and follows events.jsonl as
+# `borant events --follow --json` would. Put its folder first on PATH and set
+# BORANT_STUB_DIR. Every call goes to calls.log with a timestamp.
+dir="${BORANT_STUB_DIR:?set BORANT_STUB_DIR}"
+echo "$(date +%s.%N) $*" >>"$dir/calls.log"
+case "$1" in
+  board) cat "$dir/board.json" ;;
+  tasks) cat "$dir/tasks-$2.json" 2>/dev/null || echo '[]' ;;
+  events) exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
+  hook) exit 0 ;;
+  *) echo "borant-stub: $*" >&2; exit 2 ;;
+esac
