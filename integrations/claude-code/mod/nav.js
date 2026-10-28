@@ -57,6 +57,11 @@ export function viewKey(state) {
   return (state.tab || 'needs') + (path ? '/' + path : '')
 }
 
+/** A needs-you item's name, `<channel>/<task>`, which keys a pending Done. */
+export function questionKey(q) {
+  return String(q && q.channel) + '/' + String(q && q.task)
+}
+
 /** The breadcrumb the pane's title and its dim top line show. */
 export function breadcrumb(path) {
   const parts = [ROOT]
@@ -222,25 +227,33 @@ export function needsRows(state, width, selection) {
   if (questions.length === 0) {
     out.push(row({ segments: [text('  nothing waits on you', 'green')] }))
   }
+  const pending = state.pending || {}
   questions.forEach((q, i) => {
     const context = [q.project || '', q.attention_msg || (q.gate ? 'gate' : ''), 'since ' + hhmm(q.since, '?')]
       .filter(Boolean)
       .join(' \u00b7 ')
+    // A Done the person pressed: pending until the hub closes the task, then
+    // the row goes; failed when the task stayed open, and Done comes back.
+    const mark = pending[questionKey(q)]
+    // The mark goes before the title, so a narrow pane does not cut it off.
+    const segments = [text(GLYPH.needs + ' ', 'yellow')]
+    if (mark && mark.state === 'pending') segments.push(text('marking done\u2026 ', 'yellow'))
+    if (mark && mark.state === 'failed') segments.push(text('still open \u00b7 ', 'red'))
+    segments.push(text(q.title || '', 'yellowBold'), text('  ' + context, 'dim'))
     out.push(
       nodeRow({
         marker: '\u25b8',
         open: { kind: 'drill', node: { kind: 'task', channel: q.channel, id: q.task, title: q.title, project: q.project } },
-        segments: [text(GLYPH.needs + ' ', 'yellow'), text(q.title || '', 'yellowBold'), text('  ' + context, 'dim')],
+        segments,
       }),
     )
-    out.push(
-      row({
-        buttons: [
-          { key: 'done-' + i, label: 'Done', kind: 'done', arg: i },
-          { key: 'ask-' + i, label: 'Ask orchestrator', kind: 'ask', arg: i },
-        ],
-      }),
-    )
+    // A narrow pane cannot cut a Button, so the label shortens instead.
+    const ask = width < 40 ? 'Ask' : 'Ask orchestrator'
+    const buttons = [{ key: 'ask-' + i, label: ask, kind: 'ask', arg: i }]
+    if (!mark || mark.state !== 'pending') {
+      buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
+    }
+    out.push(row({ buttons }))
     out.push(row({ segments: [text(' ')] }))
   })
   return finish(finishWidth(out, width), selection)
@@ -286,7 +299,7 @@ function projectTree(state, project, depth, width) {
       segments: [
         text(indent(depth)),
         text(badge(project), badgeStyle(project, 0)),
-        text('  ' + truncate(s.saga, 17) + '  ', 'bold'),
+        text('  ' + truncate(s.saga, 17) + '  ', 'white'),
         text(s.bar.filled, 'green'),
         text(s.bar.empty, 'faint'),
         text(' ' + s.bar.label + ' epics', 'plain'),

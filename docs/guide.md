@@ -186,10 +186,12 @@ bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json` can change:
 
 |Key|What it does|
 |---|---|
-|`1`–`9`|open the band's rows: `1` is what needs you, then one per project|
-|Ctrl+X Tab|focus the band, then each pane, then back to the prompt|
+|`1`–`9`|open the band's rows: `1` is what needs you, then one per project; the pane takes the keyboard|
+|`0`|give the pane the keyboard, and open it if it is closed|
+|Ctrl+X Tab|focus the band, then each pane, then back to the prompt; Tab must follow within 3 s|
 |Ctrl+X Ctrl+A|collapse the band to one row, and expand it again|
-|`j` `k`|move the selection through the rows|
+|`j` `k`|move the selection through the rows, in the band and in the pane|
+|Ctrl+X ← →|widen or narrow the docked pane; dragging its edge works too|
 |`h` `l`|switch tabs; fold or unfold the selected node; `l` also opens a collapsed node or a leaf|
 |Enter|open the selected project, saga, epic, or task: a task opens its detail|
 |Esc|go back one level, and at the top close the pane|
@@ -205,6 +207,15 @@ selection. Project, epic, and task views read the channel with
 `borant tasks <channel>`; when that read fails the pane says `tasks unavailable`
 quietly. (The board itself names no channel for a project's plain tasks, so
 those appear only in the counts line unless the board names their channel.)
+
+The band and the pane follow `borant events --follow`: a task's status, a
+lease, an agent, a spawn, or a move reads the board again within about a
+second. A read every 5 s catches what sends no event, such as a new task. The
+title row says how old the board is (`updated just now`, `updated 12s ago`).
+Done on a needs-you item marks the row `marking done…` at once and submits
+"Chris marked done: …" to the chief, which closes a saga gate itself and asks
+the channel's owner to close anything else. The row goes when the task
+closes, and shows `still open` after two minutes.
 
 The band reads `borant board --json`. A call from inside an agent's session is
 the agent's read, so the band of a chief shows only its own collection; a
