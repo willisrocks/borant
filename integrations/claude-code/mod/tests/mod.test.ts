@@ -596,6 +596,24 @@ test('the band highlights the whole focused row, not only its chip', async ($, o
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBe('promptBorder')
   expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBeUndefined()
+  // Every cell on the selection background takes a contrasting foreground,
+  // including the dim stats and the colored ones.
+  const saga = await ui.find({ type: 'Text', text: /Elastic compute/ })
+  expect(saga?.props.color).toBe('inverseText')
+  expect(saga?.props.dimColor).toBe(false)
+  const blocked = await ui.find({ type: 'Text', text: /^2 blocked/ })
+  expect(blocked?.props.color).toBe('inverseText')
+
+  // When the pane takes the keys the band no longer has them, so its row goes
+  // back to normal colors instead of keeping a gray highlight.
+  await $.ui.focus({
+    component: 'Pane',
+    requestId: 'cos',
+    plugin: 'borant',
+    element: 'row-0',
+    origin: { kind: 'person' },
+  })
+  expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBeUndefined()
   await ui.unmount()
 })
 

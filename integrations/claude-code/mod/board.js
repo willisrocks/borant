@@ -372,6 +372,9 @@ export function needsRow(questions, width, narrow, digit = 1, columns = { projec
         { text: GLYPH.needs, style: 'yellow', width: 2 },
         { text: 'Needs you (' + questions.length + ')', style: 'yellowBold', width: 15 },
         { text: first?.title || '', flex: 1 },
+        // One blank cell, so a full title truncates with an ellipsis before the
+        // badge instead of running into it.
+        { text: '', width: 1 },
         { text: badge(first?.project), style: badgeStyle(first?.project, 0), width: columns.project },
         { text: ' ' + contextText, style: 'dim' },
       ],
@@ -505,9 +508,23 @@ export function paneTabs(tab, questions) {
   ]
 }
 
+/**
+ * The project and saga columns of the `/cos` digest, sized like the band:
+ * the longest text first, then narrowed to what the width leaves after the
+ * prefix, the bar, and an eight-cell orchestrator line.
+ */
+export function digestColumns(projects, width) {
+  const project = Math.max(10, ...projects.map((p) => Array.from(String(p?.project || '?')).length))
+  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
+  const budget = width - (3 + 1 + 1 + 14 + 3 + 8)
+  if (project + saga <= budget) return { project, saga }
+  const projectWidth = Math.max(10, Math.min(project, budget - 17))
+  return { project: projectWidth, saga: Math.max(17, budget - projectWidth) }
+}
+
 /** The `/cos` digest: the board in text, as artboard 5 draws it. */
 export function digest(board, options = {}) {
-  const width = Math.max(48, Math.min(96, options.width || 96))
+  const width = Math.max(48, options.width || 96)
   const only = options.project || null
   const questions = allQuestions(board)
   const projects = allProjects(board).filter((p) => !only || p.project === only)
@@ -523,9 +540,13 @@ export function digest(board, options = {}) {
     })
     lines.push(BRANCH)
   }
+  const columns = digestColumns(projects, width)
   for (const project of projects) {
     const s = projectSummary(project, 10)
-    lines.push(BRANCH + '  ' + pad(s.project, 10) + ' ' + pad(s.saga, 17) + ' ' + s.bar.text + ' \u00b7 ' + orchestratorLine(project))
+    const left = BRANCH + '  ' + pad(s.project, columns.project) + ' ' + pad(s.saga, columns.saga) + ' ' + s.bar.text
+    const room = Math.max(0, width - Array.from(left).length - 3)
+    const orch = room > 0 ? truncate(orchestratorLine(project), room) : ''
+    lines.push(left + (orch ? ' \u00b7 ' + orch : ''))
     for (const epic of activeSaga(project)?.epics || []) {
       const state = epicState(epic)
       lines.push(BRANCH + '   ' + GLYPH[state] + ' ' + epic.title + '  ' + epicNote(epic, state))

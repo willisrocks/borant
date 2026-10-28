@@ -141,6 +141,12 @@ export function register(on) {
   // row is marked so it selects rather than opens.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     try {
+      if (isChief && bandKey) {
+        // The band no longer has the keys, so its row is not selected; its
+        // normal colors read better than a frozen highlight.
+        bandKey = null
+        redraw($)
+      }
       if (isChief && typeof e.element === 'string') {
         const key = e.element
         if (key.startsWith('row-')) {
@@ -177,7 +183,13 @@ export function register(on) {
         await back($)
         return { deny: 'back one level' }
       }
-      if (e.id === PANE) paneOpen = false
+      if (e.id === PANE) {
+        paneOpen = false
+        if (bandKey) {
+          bandKey = null
+          redraw($)
+        }
+      }
     } catch {
       // Fall through: the pane closes.
     }
@@ -187,6 +199,11 @@ export function register(on) {
   on('command.run', { command: 'cos' }, async ($, e) => {
     try {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
+      // A command runs from the prompt, which now has the keys.
+      if (bandKey) {
+        bandKey = null
+        redraw($)
+      }
       await refresh($, true)
       const args = String(e.args || '').trim()
       if (args === 'help') return { text: helpText() }
@@ -196,6 +213,19 @@ export function register(on) {
     } catch {
       return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
     }
+  })
+
+  // Typing means the prompt has the keys; the band's ring is no longer there.
+  on('prompt.edit', async ($, e, next) => {
+    try {
+      if (isChief && bandKey) {
+        bandKey = null
+        redraw($)
+      }
+    } catch {
+      // An edit is never worth an error.
+    }
+    return next(e)
   })
 
   // A turn starts when a Borant message arrives, so the board catches up then.
@@ -648,14 +678,21 @@ function styleProps(style) {
 /** The band: rows of segments, a Button where a segment names one. */
 function tree($, e, rows, prefix) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  const element = (s, key) => {
+  const element = (s, key, selected) => {
     if (s.button && bandHidden) return Text({ key, children: [s.text], ...styleProps(s.style) })
     if (s.button) {
       const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
       if (s.button.hotkey) props.hotkey = s.button.hotkey
       return Button(props)
     }
-    return Text({ key, children: [s.text], ...styleProps(s.style) })
+    const props = { key, children: [s.text], ...styleProps(s.style) }
+    if (selected) {
+      // On the selection background every cell takes the inverse text color,
+      // so dim and colored cells stay readable. Chips keep their background.
+      props.color = 'inverseText'
+      props.dimColor = false
+    }
+    return Text(props)
   }
   return Box({
     flexDirection: 'column',
@@ -668,7 +705,7 @@ function tree($, e, rows, prefix) {
         key: prefix + '-row-' + i,
         flexDirection: 'row',
         ...(selected ? { backgroundColor: 'promptBorder' } : {}),
-        children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j)),
+        children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j, selected)),
       })
     }),
   })

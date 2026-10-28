@@ -75,6 +75,7 @@ for size in 200x50 120x40; do
   tmux_send -l '/cos'
   tmux_send Enter
   wait_for 'chief of staff'
+  wait_for 'cos · 2 need you'
 
   shot band
 

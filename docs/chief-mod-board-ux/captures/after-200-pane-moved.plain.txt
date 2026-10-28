@@ -1,33 +1,33 @@
                                                                                                               │                                                                                       ✕
  ▐▛███▛█   Claude Code v2.1.310                                                                               │[ Needs you (2) ]  [ Projects ]  [ Help ]   projects
 ▝▜██████▀  Opus 5.5 · Claude Max                                                                              │  borant › roger-docs
- ▝▝   ▝▝   /tmp/tmp.FrI4yZ7TmT                                                                                │
+ ▝▝   ▝▝   /tmp/tmp.fg8v2G83cX                                                                                │
                                                                                                               │▾ ✓ ROG-4199: LiteLLM proxy rollout  approved  2/5 epics
                                                                                                               │▸ ▌   ▲ Hub backup to object storage  waits on you
 ❯ /cos                                                                                                        │▸   ■ Delete borant-2  blocked
-  ⎿  borant: ╭─ cos · 2 need you · 2 projects ──────────────────────────────────────────────────────────────  │▸   ○ Hub move to borant-hub  waiting
-     │                                                                                                        │▸   ✓ Golden image  done
-     │ ▲ Needs you (2)                                                                                        │▸   ✓ Hub join for pool boxes  done
-     │   1  Create Hetzner bucket borant-hub-backup + 1Password item  borant · blocks 2 epics · since 13:50   │  plain tasks  4 open · 2 blocked · 1 need you · 7 done
-     │   2  Revoke old willisrocks gh token?  borant · optional · since 14:20                                 │
-     │                                                                                                        │j: ↓  k: ↑  h: ←  l: →  esc  enter open · tab next · esc back
-     │  roger-docs ROG-4199: LiteLL… ████░░░░░░ 2/5 · ● orch-roger-docs · online · macbook                    │
+  ⎿  borant: ╭─ cos · 2 need you · 2 projects ────────────────────────────────────────────────────────────────│▸   ○ Hub move to borant-hub  waiting
+     ──────────────────────────────────────────────────────────────────────────────────────────────────────   │▸   ✓ Golden image  done
+     │                                                                                                        │▸   ✓ Hub join for pool boxes  done
+     │ ▲ Needs you (2)                                                                                        │  plain tasks  4 open · 2 blocked · 1 need you · 7 done
+     │   1  Create Hetzner bucket borant-hub-backup + 1Password item  borant · blocks 2 epics · since 13:50   │
+     │   2  Revoke old willisrocks gh token?  borant · optional · since 14:20                                 │j: ↓  k: ↑  h: ←  l: →  esc  enter open · tab next · esc back
+     │                                                                                                        │
+     │  roger-docs ROG-4199: LiteLLM proxy rollout   ████░░░░░░ 2/5 · ● orch-roger-docs · online · macbook    │
      │   ▲ Hub backup to object storage  waits on you                                                         │
      │   ■ Delete borant-2  blocked                                                                           │
      │   ○ Hub move to borant-hub  waiting                                                                    │
      │   ✓ Golden image  done                                                                                 │
      │   ✓ Hub join for pool boxes  done                                                                      │
      │                                                                                                        │
-     │  borant     Chief board UX: … ████░░░░░░ 2/5 · ● orchestrator · online · macbook                       │
+     │  borant     Chief board UX: columns and focus ████░░░░░░ 2/5 · ● orchestrator · online · macbook       │
      │   ▲ Hub backup to object storage  waits on you                                                         │
      │   ■ Delete borant-2  blocked                                                                           │
      │   ○ Hub move to borant-hub  waiting                                                                    │
      │   ✓ Golden image  done                                                                                 │
      │   ✓ Hub join for pool boxes  done                                                                      │
      │                                                                                                        │
-     ╰─ /cos <project> for one project · /cos pane for the pane ─────────────────────────────────────         │
-                                                                                                              │
-                                                                                                              │
+     ╰─ /cos <project> for one project · /cos pane for the pane ──────────────────────────────────────────────│
+     ───────────────────────────────────────────────────────────────────────────────────────────────          │
                                                                                                               │
                                                                                                               │
                                                                                                               │

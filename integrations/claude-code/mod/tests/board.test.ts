@@ -285,3 +285,26 @@ test('the project and saga columns take their text before the terminal runs out'
   expect(tight[3]).toContain('\u2026')
   for (const row of tight) expect(Array.from(row).length).toBeLessThanOrEqual(110)
 })
+
+test('a needs-you title truncates with an ellipsis before its right block', () => {
+  // 120 terminal columns leave the band 115 cells, as the engine's `[-]` mark
+  // takes five; the title used to run into the project badge there.
+  const long = structuredClone(board)
+  long.collections[0].projects[1].project = 'roger-docs'
+  const row = rowText(bandRows(long, { width: 115, updated })[1])
+  expect(row).toContain('\u2026')
+  expect(row).toMatch(/\u2026\s+borant/)
+  expect(row).not.toContain('item borant')
+})
+
+test('the digest sizes its columns like the band and keeps the saga title', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  for (const width of [200, 120, 96]) {
+    const text = digest(long, { width })
+    expect(text).toContain('ROG-4199: LiteLLM proxy rollout')
+    expect(text).not.toContain('LiteLL\u2026')
+  }
+})
