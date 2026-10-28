@@ -331,15 +331,15 @@ function ruleCell(label, right, width, hint = '') {
  * starts from the longest text it holds, so a name or a saga title is not cut
  * while room is free, then narrows to what the terminal leaves after the
  * hotkey, the state glyph, the bar, and the stats. The project keeps 11 cells
- * and the saga 17; the epic title gets at least 12 when the width allows.
+ * and the saga 17, with one blank cell before the glyph; the epic title gets
+ * at least eight when the width allows.
  */
 export function bandColumns(projects, width) {
   const project = Math.max(11, ...projects.map((p) => Array.from(badge(p)).length))
-  // One cell after the longest saga title keeps the state glyph off its edge.
-  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length + 1))
-  // hotkey 6, glyph 2, bar 10, ratio 5, and the three stats 11, 11, 13.
-  const reserved = 6 + 2 + 10 + 5 + 11 + 11 + 13
-  const room = Math.max(11 + 17, width - reserved - 12)
+  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
+  // hotkey 6, saga gap 1, glyph 2, bar 10, ratio 5, stats 11, 11, 13.
+  const reserved = 6 + 1 + 2 + 10 + 5 + 11 + 11 + 13
+  const room = Math.max(11 + 17, width - reserved - 8)
   if (project + saga <= room) return { project, saga }
   // The project name comes first: it names the row. The saga gives way after.
   const projectWidth = Math.max(11, Math.min(project, room - 17))
@@ -413,6 +413,8 @@ export function projectRow(project, width, narrow, digit, index = 0, columns = {
         { ...hotkey(digit, 'project', project?.project, 'project-' + index), width: 6 },
         { text: badge(project), style: badgeStyle(project, index), width: columns.project },
         { text: s.saga, style: 'bold', width: columns.saga },
+        // The state glyph never touches the saga title, even when it is cut.
+        { text: ' ', width: 1 },
         { text: GLYPH[state], style: state, width: 2 },
         { text: epicTitle, flex: 1 },
         { text: s.bar.filled, style: 'green', width: s.bar.filled.length },

@@ -1,7 +1,7 @@
 
 [38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.310[39m
 [38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · Claude Max[39m
-[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/tmp/tmp.bvukbrw2Yo
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/tmp/tmp.3BFJ5MLA0m
 
 
 [48;5;237m❯[39m [38;5;231m/cos[39m [49m
@@ -31,8 +31,8 @@
 
 [38;5;246m── [1m[39mchief of staff[0m[38;5;246m ───────── 2 projects · updated 05:17  ctrl+x tab focus · j/k move · 1-3 open · /cos help[39m [1m[ ? ][0m[38;5;246m ──[39m [38;5;246m[-][39m
 [1m[ 1 ][0m[38;5;220m▲ [1mNeeds you (2)  [0mCreate Hetzner bucket borant-hub-backup + 1Password it… [1m[38;5;16m[48;5;68m borant     [0m[38;5;246m blocks 2 epics · +1 more[39m
-[1m[ 2 ][38;5;16m[48;5;68m roger-docs [39m[49mROG-4199: LiteLLM proxy rollout  [0m[38;5;220m▲ [39mHub backup …[38;5;72m████[38;5;246m░░░░░░[39m 2/5 1 running  [38;5;168m2 blocked  [38;5;220m1 needs you  [39m
-[1m[ 3 ][38;5;16m[48;5;169m borant     [39m[49mChief board UX: columns and focus[0m[38;5;220m▲ [39mHub backup …[38;5;72m████[38;5;246m░░░░░░[39m 2/5 [38;5;246m0 running  [38;5;168m2 blocked  [38;5;246m0 needs you  [39m
+[1m[ 2 ][38;5;16m[48;5;68m roger-docs [39m[49mROG-4199: LiteLLM proxy rollout  [0m [38;5;220m▲ [39mHub backup…[38;5;72m████[38;5;246m░░░░░░[39m 2/5 1 running  [38;5;168m2 blocked  [38;5;220m1 needs you  [39m
+[1m[ 3 ][38;5;16m[48;5;169m borant     [39m[49mChief board UX: columns and focus[0m [38;5;220m▲ [39mHub backup…[38;5;72m████[38;5;246m░░░░░░[39m 2/5 [38;5;246m0 running  [38;5;168m2 blocked  [38;5;246m0 needs you  [39m
                                                                                                     [38;5;246m◐ medium · /effort[39m
 [38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [39m❯ 

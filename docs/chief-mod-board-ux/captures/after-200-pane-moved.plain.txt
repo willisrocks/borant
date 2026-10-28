@@ -1,7 +1,7 @@
                                                                                                               │                                                                                       ✕
  ▐▛███▛█   Claude Code v2.1.310                                                                               │[ Needs you (2) ]  [ Projects ]  [ Help ]   projects
 ▝▜██████▀  Opus 5.5 · Claude Max                                                                              │  borant › roger-docs
- ▝▝   ▝▝   /tmp/tmp.fg8v2G83cX                                                                                │
+ ▝▝   ▝▝   /tmp/tmp.JKgll3nnjX                                                                                │
                                                                                                               │▾ ✓ ROG-4199: LiteLLM proxy rollout  approved  2/5 epics
                                                                                                               │▸ ▌   ▲ Hub backup to object storage  waits on you
 ❯ /cos                                                                                                        │▸   ■ Delete borant-2  blocked
