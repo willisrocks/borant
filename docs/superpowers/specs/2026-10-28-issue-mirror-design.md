@@ -365,6 +365,33 @@ task line shows its `issue` key once the mirror sets it.
 - **The plugin:** `borant-infra` tests it by hand against a scratch Linear
   team.
 
+## Amendments from the plan (2026-10-28)
+
+The plan (`docs/superpowers/plans/2026-10-28-issue-mirror.md`) checked this
+spec against the code and settles these points. The plan wins where they
+differ.
+
+- **The write order** is create, then the KV record with `linked: false`,
+  then the link, then `linked: true`. A crash before the link no longer makes
+  the hub adopt its own issue as not owned.
+- **Clearing a link.** Setting `issue` to an empty string clears it. A
+  saga's link stays as it was set at create.
+- **The `close_channel` precedent** has no retry. The link write adds its own
+  loop of up to 5 tries.
+- **`invalid`** stores the refused hash in a `refused` field. The item is
+  skipped until its record hash differs from that hash.
+- **The attention text** names no vendor, under the repo rule. It reads
+  "Issue team needed: set issue_target on this task".
+- **A saga gate that already waits for approval** keeps its question. The
+  team question is appended to its attention message instead of replacing
+  it.
+- **A closed channel** maps to `canceled` when its saga was rejected, meaning
+  the gate closed with something other than `done`. Every other closed
+  channel maps to `done`.
+- **Commands.** The board has no task lines, so a task's key shows in
+  `task_get` and `task_list`. Task 3 adds `borant task update
+  --issue-target`.
+
 ## Not in this spec
 
 - Linear to Borant sync, comments, assignees, labels, and creating Borant
