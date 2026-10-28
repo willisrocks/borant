@@ -13,10 +13,18 @@
 
 TUI_OUT="${TUI_OUT:-/tmp/tui}"
 
+# Flags for a Claude Code session under test. It must not act on a prompt the
+# mod submits (default permission mode asks first), and it must not reach the
+# real sessions on this machine: Claude Code lets a session list and message
+# the others, and removing variables does not hide them.
+# shellcheck disable=SC2034 # used by the scripts that source this file
+TUI_CLAUDE_FLAGS=(--permission-mode default --disallowedTools SendMessage ListAgents)
+
 # tui_start <name> <width> <height> <command...>: start the program in a new
 # tmux server named <name>, at a fixed size, with the mouse on.
 tui_start() {
   TUI_NAME="$1" TUI_W="$2" TUI_H="$3"
+  TUI_PNG_H=0
   shift 3
   mkdir -p "$TUI_OUT"
   local run unset=()
@@ -27,6 +35,8 @@ tui_start() {
   env "${unset[@]}" -u NO_COLOR TERM=xterm-256color COLORTERM=truecolor FORCE_COLOR=3 \
     tmux -L "$TUI_NAME" new-session -d -s tui -x "$TUI_W" -y "$TUI_H" -c "${TUI_CWD:-$run}" "$(printf '%q ' "$@")"
   tmux -L "$TUI_NAME" set -g mouse on
+  # Without focus events Claude Code draws a notice over the band.
+  tmux -L "$TUI_NAME" set -g focus-events on
 }
 
 # tui_keys <keys...>: tmux key names (C-x, Tab, Enter, Escape, Down).
@@ -47,16 +57,29 @@ tui_wait() {
   return 1
 }
 
+# tui_png_height <file>: a PNG's height in pixels, from its header.
+tui_png_height() {
+  od -An -tu1 -j20 -N4 "$1" 2>/dev/null | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'
+}
+
 # tui_shot <name>: write <name>.txt (ANSI), <name>.plain.txt, and <name>.png.
+# freeze sometimes cuts the last rows off under load. Every full shot of one
+# session has the same height, so a shorter one is taken again.
 tui_shot() {
   tmux -L "$TUI_NAME" capture-pane -e -p -t tui >"$TUI_OUT/$1.txt"
   tmux -L "$TUI_NAME" capture-pane -p -t tui >"$TUI_OUT/$1.plain.txt"
-  local _
-  for _ in 1 2 3; do
-    freeze --execute "cat '$TUI_OUT/$1.txt'" -o "$TUI_OUT/$1.png" --margin=12 >/dev/null 2>&1 && return 0
+  local _ height
+  for _ in 1 2 3 4; do
+    if freeze --execute "cat '$TUI_OUT/$1.txt'" -o "$TUI_OUT/$1.png" --margin=12 >/dev/null 2>&1; then
+      height="$(tui_png_height "$TUI_OUT/$1.png")"
+      if [ "${height:-0}" -ge "${TUI_PNG_H:-0}" ]; then
+        TUI_PNG_H="$height"
+        return 0
+      fi
+    fi
     sleep 1
   done
-  echo "tui_shot: freeze failed for $1" >&2
+  echo "tui_shot: no full PNG for $1 (height ${height:-none}, expected ${TUI_PNG_H:-?})" >&2
 }
 
 # tui_find <text>: "<column> <row>" (1-based) of the first cell of text.

@@ -8,8 +8,8 @@
 # Writes <out>/<width>/NN-<state>.png (and .txt) for each step, and log.txt
 # with the prompt after each key test, the pane edge after each resize, and
 # how long each board change took to show. The session runs `claude --model
-# haiku --permission-mode default`: the Done step submits a prompt, and the
-# model must not act on it without a person.
+# haiku` with TUI_CLAUDE_FLAGS (lib.sh): the Done step submits a prompt, and
+# the model must neither act on it nor reach the real sessions here.
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -49,7 +49,8 @@ event() { echo '{"kind":"task.status","channel":"personal-borant"}' >>"$stub/eve
 
 trap 'tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-scenario-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
-  BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli claude --model haiku --permission-mode default --plugin-dir "$plugin"
+  BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
+  claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
 tui_wait 'chief of staff' 80 || exit 1
 sleep 3
 
@@ -66,11 +67,17 @@ tui_shot 01-band
 
 # The band: ctrl+x, a 1 s pause, tab, then j j k.
 tui_keys C-x; sleep 1; tui_keys Tab; sleep 0.8; tui_shot 02-band-focused
+ring="$(tmux -L "$TUI_NAME" capture-pane -e -p -t tui | grep -c $'\e\\[[0-9;]*7m')"
+note "reverse-video cells after the chord (the focus ring): $ring"
 tui_type j; sleep 0.8; tui_shot 03-band-j
 tui_type j; sleep 0.8; tui_shot 04-band-jj
 tui_type k; sleep 0.8; tui_shot 05-band-jjk
 note "prompt after band j j k: [$(prompt_line)]"
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+# Enter on the selected row opens it, and the pane takes the keyboard.
+tui_keys Enter; sleep 2.5; tui_type j; sleep 0.8; tui_shot 05a-band-enter-j
+note "prompt after band Enter j: [$(prompt_line)]"
+# Esc goes back to the root, and Esc there closes the pane.
+tui_keys Escape; sleep 0.5; tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
 
 # A digit from an empty prompt opens a project; j must move in the pane.
 tui_type 3; sleep 2.5; tui_shot 06-digit3
@@ -84,7 +91,7 @@ note "prompt after 0 j: [$(prompt_line)]"
 # The pane's width: drag its edge 15 columns right (narrower; it opens at
 # its widest), then ctrl+x left to widen it again.
 edge="$(tui_column 2 '│')"
-note "pane edge: $edge"
+if [ "${edge:--1}" -lt 0 ]; then note "pane edge: none (the pane is not docked at $width columns)"; else note "pane edge: $edge"; fi
 if [ "${edge:--1}" -ge 0 ]; then tui_drag $((edge + 1)) $((edge + 16)) 10; sleep 0.8; fi
 note "pane edge after a drag 15 right: $(tui_column 2 '│')"
 tui_shot 09-dragged
@@ -120,3 +127,14 @@ event
 for _ in $(seq 1 120); do tui_text | grep -q 'Revoke expired' && break; sleep 0.25; done
 note "a change with an event showed after $(since "$start") ms"
 tui_shot 14-refreshed
+
+# A Done that the hub does not close shows "still open" (20 s in this run).
+read -r col row < <(tui_find '[ Done ]')
+[ -n "${row:-}" ] && tui_click $((col + 2)) "$row"
+sleep 1; tui_shot 15-done-pending
+sleep 26; tui_shot 16-still-open
+note "after the wait: $(tui_text | grep -o 'still open[^│]*' | head -1)"
+
+# /cos help names every key.
+tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+tui_type '/cos help'; sleep 0.5; tui_keys Enter; sleep 2; tui_shot 17-help
