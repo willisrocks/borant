@@ -77,3 +77,7 @@ release bump="patch" notes="":
     gh workflow run release.yml --ref main "${args[@]}"
     sleep 3
     gh run list --workflow release.yml --limit 1
+
+# Render the chief mod at 200x50 and 120x40 and write ANSI + PNG captures.
+cos-visual plugin-dir="integrations/claude-code" out="docs/chief-mod-board-ux/captures" prefix="":
+    nix shell nixpkgs#charm-freeze -c scripts/cos-visual.sh {{plugin-dir}} {{out}} {{prefix}}

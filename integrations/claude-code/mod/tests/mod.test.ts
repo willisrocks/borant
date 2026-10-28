@@ -582,3 +582,49 @@ test('a channel is read once, and again on the tick only while its view is open'
   expect(reads).toEqual(['personal-borant', 'personal-borant'])
   await ui.unmount()
 })
+
+test('the band highlights the whole focused row, not only its chip', async ($, on) => {
+  chiefStubs(on)
+  await $.session.start({ ...SESSION })
+  await $.ui.focus({
+    component: 'AbovePrompt',
+    requestId: 'above-prompt',
+    plugin: 'borant',
+    element: 'project-1',
+    origin: { kind: 'person' },
+  })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a band press hands the keyboard to the pane it opens', async ($, on) => {
+  const opens: { title?: string; focus?: boolean }[] = []
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.open', ($, e) => {
+    opens.push({ title: e.title, focus: e.focus })
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.focus', () => ({ value: {} }))
+  on('ui.scroll', () => ({ value: {} }))
+  on('ui.close', () => ({ value: undefined }))
+
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: 'project-0' })
+  // The press opens the pane; the handoff asks for its keyboard once the
+  // band has let go, then draws the band's controls again.
+  expect(opens[0]).toEqual({ title: 'borant \u203a boopmark', focus: true })
+  await clock.advance(200)
+  await clock.advance(200)
+  expect(opens).toHaveLength(2)
+  expect(opens[1]).toEqual({ title: 'borant \u203a boopmark', focus: true })
+  expect(await band.find({ type: 'Button', key: 'project-0' })).toBeDefined()
+  await band.unmount()
+})

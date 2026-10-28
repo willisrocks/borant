@@ -1,0 +1,50 @@
+                                                                                                              [2m[48;5;235m│[0m[48;5;235m                                                                                       [38;5;246m✕[39m
+[38;5;174m[49m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.310[39m                                                                               [2m[48;5;235m│[0;1m[48;5;235m[ Needs you (2) ][0m[48;5;235m  [1m[ Projects ][0m[48;5;235m  [1m[ Help ][0m[38;5;246m[48;5;235m   projects[39m
+[38;5;174m[49m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · Claude Max[39m                                                                              [2m[48;5;235m│[0m[38;5;246m[48;5;235m  borant › roger-docs[39m
+[38;5;174m[49m ▝▝   ▝▝ [39m  [38;5;246m/tmp/tmp.U00J4F3sqe[39m                                                                                [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[38;5;246m[48;5;235m▾[39m [1m[38;5;38m▌ [0m[38;5;72m[48;5;235m✓ [1m[39mROG-4199: LiteLLM proxy rollout[0m[38;5;246m[48;5;235m  approved  2/5 epics[39m
+[49m                                                                                                              [2m[48;5;235m│[0m[38;5;246m[48;5;235m▸[39m   [38;5;220m▲ [39mHub backup to object storage[38;5;246m  waits on you[39m
+[38;5;246m[48;5;237m❯[39m [38;5;231m/cos[39m [49m                                                                                                       [2m[48;5;235m│[0m[38;5;246m[48;5;235m▸[39m   [38;5;168m■ [39mDelete borant-2[38;5;246m  blocked[39m
+[38;5;246m[49m  ⎿  [39mborant: ╭─ cos · 2 need you · 2 projects ──────────────────────────────────────────────────────────────  [2m[48;5;235m│[0m[38;5;246m[48;5;235m▸[39m   [38;5;246m○ [39mHub move to borant-hub[38;5;246m  waiting[39m
+[49m     │                                                                                                        [2m[48;5;235m│[0m[38;5;246m[48;5;235m▸[39m   [38;5;72m✓ [38;5;246mGolden image  done[39m
+[49m     │ ▲ Needs you (2)                                                                                        [2m[48;5;235m│[0m[38;5;246m[48;5;235m▸[39m   [38;5;72m✓ [38;5;246mHub join for pool boxes  done[39m
+[49m     │   1  Create Hetzner bucket borant-hub-backup + 1Password item  borant · blocks 2 epics · since 13:50   [2m[48;5;235m│[0m[48;5;235m  [1m[38;5;246mplain tasks  4 open · 2 blocked · 1 need you · 7 done[0m[48;5;235m
+[49m     │   2  Revoke old willisrocks gh token?  borant · optional · since 14:20                                 [2m[48;5;235m│[0m[48;5;235m
+[49m     │                                                                                                        [2m[48;5;235m│[0m[38;5;153m[48;5;235mj[39m: ↓  [38;5;153mk[39m: ↑  [38;5;153mh[39m: ←  [38;5;153ml[39m: →  [38;5;246mesc[39m  [38;5;246menter open · tab next · esc back[39m
+[49m     │  roger-docs ROG-4199: LiteLL… ████░░░░░░ 2/5 · ● orch-roger-docs · online · macbook                    [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ▲ Hub backup to object storage  waits on you                                                         [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ■ Delete borant-2  blocked                                                                           [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ○ Hub move to borant-hub  waiting                                                                    [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ✓ Golden image  done                                                                                 [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ✓ Hub join for pool boxes  done                                                                      [2m[48;5;235m│[0m[48;5;235m
+[49m     │                                                                                                        [2m[48;5;235m│[0m[48;5;235m
+[49m     │  borant     Chief board UX: … ████░░░░░░ 2/5 · ● orchestrator · online · macbook                       [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ▲ Hub backup to object storage  waits on you                                                         [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ■ Delete borant-2  blocked                                                                           [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ○ Hub move to borant-hub  waiting                                                                    [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ✓ Golden image  done                                                                                 [2m[48;5;235m│[0m[48;5;235m
+[49m     │   ✓ Hub join for pool boxes  done                                                                      [2m[48;5;235m│[0m[48;5;235m
+[49m     │                                                                                                        [2m[48;5;235m│[0m[48;5;235m
+[49m     ╰─ /cos <project> for one project · /cos pane for the pane ─────────────────────────────────────         [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[49m                                                                                                              [2m[48;5;235m│[0m[48;5;235m
+[38;5;246m[49m── [1m[39mchief of staff[0m[38;5;246m ────────────────────────────────────────────────── 2 projects · updated 05:17 [39m [1m[ ? ][0m[38;5;246m ──[39m [38;5;246m[-][39m [2m[48;5;235m│[0m[48;5;235m
+[1m[49m[ 1 ][0m[38;5;220m▲[1mNeeds you (2)[0m Create Hetzner bucket borant-hub-backup + 1Password item[1m borant[0m[38;5;246m +1[39m                        [2m[48;5;235m│[0m[48;5;235m
+[1m[49m[ 2 ][38;5;16m[48;5;68m roger-docs [0m ROG-4199: LiteLLM proxy rollout [38;5;220m▲ [39mHub backup to object storage[38;5;72m ███[38;5;246m░░░░░[39m 2/5[38;5;168m ■ 2[38;5;220m ▲ 1[39m         [2m[48;5;235m│[0m[48;5;235m
+[1m[49m[ 3 ][38;5;16m[48;5;169m borant [0m Chief board UX: columns and focus [38;5;220m▲ [39mHub backup to object storage[38;5;72m ███[38;5;246m░░░░░[39m 2/5[38;5;168m ■ 2[39m               [2m[48;5;235m│[0m[48;5;235m
+[49m           [38;5;246mtmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll[39m  [2m[48;5;235m│[0m[48;5;235m
+[38;5;244m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ j
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle)[39m

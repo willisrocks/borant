@@ -37,6 +37,8 @@ import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 /** The pane's id, and its tab label. */
 const PANE = 'cos'
 const PANE_TITLE = 'Chief of staff'
+/** The band's render instance, as its ui.focus events name it. */
+const BAND = 'above-prompt'
 /** How often the board is read while the session is the chief. */
 const REFRESH_MS = 15000
 /** A read arriving sooner than this after the last one is skipped. */
@@ -65,6 +67,10 @@ let taskCache = new Map()
 let paneOpen = false
 let paneTitle = ''
 let paneWidth = 60
+/** The band Button that holds the keyboard, so its whole row draws selected. */
+let bandKey = null
+/** True for the frame that hands the band's keyboard to the pane. */
+let bandHidden = false
 /** The row a mouse click just focused, so the click selects instead of opening. */
 let clickMark = null
 /** The terminal's width, as last measured while drawing the band. */
@@ -110,6 +116,24 @@ export function register(on) {
     } catch {
       return next(e)
     }
+  })
+
+  // The band's ring names the row Button it is on. The whole row draws
+  // selected, not only the `[ n ]` chip, and the row clears when the ring
+  // leaves the band's elements.
+  on('ui.focus', { requestId: BAND }, async ($, e, next) => {
+    try {
+      if (isChief) {
+        const key = typeof e.element === 'string' ? e.element : null
+        if (key !== bandKey) {
+          bandKey = key
+          redraw($)
+        }
+      }
+    } catch {
+      // A focus move is never worth an error.
+    }
+    return next(e)
   })
 
   // The engine moves the focus ring with Tab, the arrows, and a click; a row
@@ -380,6 +404,51 @@ async function openPane($) {
   }
 }
 
+/**
+ * Open the pane from a band press. The band holds the keyboard while its
+ * Button runs, and the engine refuses a pane's `focus` then. Draw the band
+ * without its controls for one frame, so the keys fall back to the empty
+ * composer, then open the pane for real and draw the controls again.
+ */
+async function openFromBand($) {
+  const answer = await openPane($)
+  try {
+    $.clock.after(50, () => {
+      handoff($).catch(() => {})
+    })
+  } catch {
+    // No clock: the pane opens without the keyboard, and ctrl+x tab reaches it.
+  }
+  return answer
+}
+
+/** Drop the band's keys, focus the pane, then draw the band's controls again. */
+async function handoff($) {
+  try {
+    bandHidden = true
+    redraw($)
+    await $.clock.sleep(50)
+    if (await takePaneFocus($)) await focusRow($, selectionOf())
+  } finally {
+    bandHidden = false
+    redraw($)
+  }
+}
+
+/** Ask the engine for the pane's keyboard, and say whether it took. */
+async function takePaneFocus($) {
+  try {
+    const title = breadcrumb(path)
+    const opened = await $.ui.open({ id: PANE, title, focus: true, closeOnEscape: true })
+    if (opened && opened.isPlaced === false) return false
+    paneOpen = true
+    paneTitle = title
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Move the selection one row, as j, k, and the arrows do. */
 async function move($, delta) {
   const rows = rowsNow()
@@ -580,6 +649,7 @@ function styleProps(style) {
 function tree($, e, rows, prefix) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const element = (s, key) => {
+    if (s.button && bandHidden) return Text({ key, children: [s.text], ...styleProps(s.style) })
     if (s.button) {
       const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
       if (s.button.hotkey) props.hotkey = s.button.hotkey
@@ -589,13 +659,18 @@ function tree($, e, rows, prefix) {
   }
   return Box({
     flexDirection: 'column',
-    children: rows.map((row, i) =>
-      Box({
+    children: rows.map((row, i) => {
+      // The row's chip names the row. A row with the keyboard draws on the
+      // selected background, not only the chip the engine's ring marks.
+      const chip = row.find((s) => s.button && (s.button.kind === 'project' || s.button.kind === 'needs'))
+      const selected = Boolean(chip && bandKey === chip.button.key)
+      return Box({
         key: prefix + '-row-' + i,
         flexDirection: 'row',
+        ...(selected ? { backgroundColor: 'promptBorder' } : {}),
         children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j)),
-      }),
-    ),
+      })
+    }),
   })
 }
 
@@ -695,13 +770,11 @@ function tabCells($, e, width) {
     const room = Math.max(0, width - used)
     if (room === 0) break
     const length = Array.from(cell.text).length
-    if (length <= room) {
-      out.push(cell)
-      used += length
-    } else {
-      out.push({ ...cell, text: Array.from(cell.text).slice(0, room).join('') })
-      used = width
-    }
+    // A tab or its label is drawn whole or left out; a cut header reads worse
+    // than a missing one.
+    if (length > room) break
+    out.push(cell)
+    used += length
   }
   return out
 }
@@ -730,15 +803,15 @@ function press($, button) {
     case 'needs':
       tab = 'needs'
       path = []
-      return openPane($)
+      return openFromBand($)
     case 'project':
       tab = 'projects'
       path = [{ kind: 'project', project: button.arg }]
-      return openPane($)
+      return openFromBand($)
     case 'help':
       tab = 'help'
       path = []
-      return openPane($)
+      return openFromBand($)
     case 'tab-needs':
       return selectTab($, 'needs')
     case 'tab-projects':

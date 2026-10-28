@@ -262,3 +262,26 @@ test('the digest of one project holds only that project', () => {
   expect(text).not.toContain('boopmark')
   expect(digest(board, { project: 'nope', width: 96 })).toContain('no project nope')
 })
+
+test('the project and saga columns take their text before the terminal runs out', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  const wide = bandRows(long, { width: 200, updated }).map(rowText)
+  expect(wide[3]).toContain('roger-docs')
+  expect(wide[3]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(wide[3]).toContain('rollout \u25b2')
+
+  // At 120 the full name and saga still fit; the epic gives way first.
+  const narrow = bandRows(long, { width: 120, updated }).map(rowText)
+  expect(narrow[3]).toContain('roger-docs')
+  expect(narrow[3]).toContain('ROG-4199: LiteLLM proxy rollout')
+  expect(Array.from(narrow[3]).length).toBe(120)
+
+  // At the wide layout's floor the saga is cut with an ellipsis, not the name.
+  const tight = bandRows(long, { width: 110, updated }).map(rowText)
+  expect(tight[3]).toContain('roger-docs')
+  expect(tight[3]).toContain('\u2026')
+  for (const row of tight) expect(Array.from(row).length).toBeLessThanOrEqual(110)
+})
