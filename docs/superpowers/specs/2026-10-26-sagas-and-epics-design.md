@@ -156,14 +156,20 @@ property would need a schema change in every old channel.
 - `channel_list` returns the new channel fields.
 - New: `channel_close { name }`. The CLI is `borant channel close <name>`.
 - New: `ToolCall::Board { collection: Option<CollectionName> }`. Without a
-  collection, it returns every collection. It is the MCP tool `board`, the CLI
+  collection, it returns every collection to a person and the collection of its
+  record to an agent; an agent that names another collection is `denied`. It is
+  the MCP tool `board`, the CLI
   `borant board [--collection C] [--json]`, and the read route
   `GET /api/board?collection=C` of the HTTP listener. It is a computed read.
   It stores nothing.
 
 The board is the read that the mod needs. The mod can call `borant board
 --json` through the local host, or the HTTP route on the tailnet, and follow
-`/api/events` for changes. Its shape:
+`/api/events` for changes. The CLI names the session that it runs inside, so a
+chief's read is the chief's own collection. A session that carries
+`BORANT_AGENT` and does not resolve is an error, never the person's read: a
+board that fell back to the person would list another collection's projects.
+The mod draws that error as an empty board with its message. Its shape:
 
 ```
 BoardView { at, collections: [CollectionBoard] }

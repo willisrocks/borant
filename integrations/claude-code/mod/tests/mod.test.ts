@@ -185,10 +185,52 @@ test('a board source that fails draws "board unavailable", and nothing else', as
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /board unavailable/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /unrecognized subcommand/ })).toBeDefined()
   await ui.unmount()
 
-  expect((await $.command.run({ command: 'cos', args: '' })).text).toBe('cos: board unavailable')
+  expect((await $.command.run({ command: 'cos', args: '' })).text).toBe(
+    'cos: board unavailable \u00b7 borant board exited 2: error: unrecognized subcommand',
+  )
   expect(toasts).toEqual([])
+})
+
+test('a failed read empties the board and names the reason', async ($, on) => {
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'cli' })
+  const clock = mock.clock(on)
+  let failing = false
+  on('command.register', () => ({ value: undefined }))
+  on('process.run', () =>
+    failing
+      ? {
+          value: {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error: cannot resolve this session; refusing to read the board as the person\n',
+          },
+        }
+      : { value: { exitCode: 0, stdout: JSON.stringify(board), stderr: '' } },
+  )
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.session.start({ ...SESSION })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Elastic compute/ })).toBeDefined()
+  await ui.unmount()
+
+  failing = true
+  // `/cos` reads the board at once, so the failed read lands before the mount.
+  expect((await $.command.run({ command: 'cos', args: '' })).text).toContain(
+    'refusing to read the board as the person',
+  )
+  await clock.advance(15000)
+  const empty = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(
+    await empty.find({ type: 'Text', text: /refusing to read the board/ }),
+  ).toBeDefined()
+  expect(await empty.find({ type: 'Text', text: /Elastic compute/ })).toBeUndefined()
+  await empty.unmount()
 })
 
 test('a board source that rejects draws "board unavailable", and nothing else', async ($, on) => {

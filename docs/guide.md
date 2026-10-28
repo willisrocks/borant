@@ -206,11 +206,18 @@ selection. Project, epic, and task views read the channel with
 quietly. (The board itself names no channel for a project's plain tasks, so
 those appear only in the counts line unless the board names their channel.)
 
-The band reads `borant board --json`. For a session without a hub, set
+The band reads `borant board --json`. A call from inside an agent's session is
+the agent's read, so the band of a chief shows only its own collection; a
+person's shell sees every collection. A launched session carries
+`BORANT_AGENT`, and when its session does not resolve the CLI refuses the
+board instead of reading it as the person, so a daemon that restarted shows
+`board unavailable` with that reason and no rows rather than another
+collection's projects. For a session without a hub, set
 `BORANT_COS_BOARD=fixture` and it draws the fixture under
-`integrations/claude-code/mod/fixtures` instead; when the read fails it shows
-`board unavailable` quietly. The Done and Ask orchestrator buttons in the pane
-submit a prompt to the chief session and call nothing else.
+`integrations/claude-code/mod/fixtures` instead; any failed read shows
+`board unavailable` with its reason quietly. The Done and Ask orchestrator
+buttons in the pane submit a prompt to the chief session and call nothing
+else.
 
 To pick up a new version, run `claude plugin update borant`, then
 `/reload-plugins` in a session that is already open.

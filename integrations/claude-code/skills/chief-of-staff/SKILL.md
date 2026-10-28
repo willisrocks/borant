@@ -71,8 +71,12 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
 
 ## Size the goal and approve sagas
 
-1. Map a new goal to a project and a size, and tell the orchestrator: a plain task in
-   the project channel, a standalone epic, or a saga.
+1. Size a new goal, then tell the orchestrator:
+   - One PR is a plain task.
+   - Several PRs that form one stack are a standalone epic.
+   - Several epics, or scope that Chris must approve first (a spec, or a Linear
+     parent issue with children), make a saga.
+   - When unsure, the orchestrator asks the chief.
 2. A saga gate is the main `needs_human` case. The hub sends you a direct message when
    a gate goes `needs_human`.
 3. Show the person the title, the scope, and the epics, with a suggested answer. Never

@@ -9,10 +9,10 @@ use borant_core::model::{
     CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskStatus,
     UsageWindow,
 };
-use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
+use borant_core::proto::{LocalSession, MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
-    TaskId, Timestamp,
+    SessionId, TaskId, Timestamp,
 };
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
@@ -472,15 +472,51 @@ pub(crate) fn client() -> LocalClient {
 const CALL: Duration = Duration::from_secs(30);
 
 pub(crate) async fn call(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
-    match c
-        .post::<_, Value>("/v1/call", &json!({ "call": call }), CALL)
-        .await
-    {
+    reply(c, json!({ "call": call })).await
+}
+
+/// A call that the hub reads as the agent of this session when the process
+/// runs inside one, and as the person otherwise. `borant board` uses it: a
+/// chief session gets the board of its own collection, never the person's.
+/// A launched session carries BORANT_AGENT, and then a session that does not
+/// resolve is refused: a person's read would show another collection.
+pub(crate) async fn call_in_session(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
+    match session(c).await? {
+        Some(session) => reply(c, json!({ "session": session, "call": call })).await,
+        None if std::env::var_os("BORANT_AGENT").is_some() => {
+            bail!("cannot resolve this session; refusing to read the board as the person")
+        }
+        None => reply(c, json!({ "call": call })).await,
+    }
+}
+
+/// The session this process runs inside, when there is one. The MCP server
+/// finds its own the same way, from its ancestors and the harness session id;
+/// a person's shell resolves nothing, and its calls stay the person's. A host
+/// that is down is an error, never "no session": the person's fallback would
+/// hide the daemon that the caller has to start.
+async fn session(c: &LocalClient) -> anyhow::Result<Option<SessionId>> {
+    let body = json!({
+        "ancestors": crate::mcp::ancestors(),
+        "harness_session_id": std::env::var("CLAUDE_CODE_SESSION_ID").ok(),
+    });
+    match c.post::<_, LocalSession>("/v1/resolve", &body, CALL).await {
+        Outcome::Reply(Ok(found)) => Ok(Some(found.session)),
+        Outcome::Reply(Err(_)) => Ok(None),
+        Outcome::Down(e) => Err(down(e)),
+    }
+}
+
+/// The error of a host daemon that is not running.
+fn down(e: anyhow::Error) -> anyhow::Error {
+    anyhow!("the Borant host daemon is not running ({e}). Start it with `borant host`.")
+}
+
+async fn reply(c: &LocalClient, body: Value) -> anyhow::Result<Value> {
+    match c.post::<_, Value>("/v1/call", &body, CALL).await {
         Outcome::Reply(Ok(v)) => Ok(v),
         Outcome::Reply(Err(e)) => bail!("{}", e.message),
-        Outcome::Down(e) => Err(anyhow!(
-            "the Borant host daemon is not running ({e}). Start it with `borant host`."
-        )),
+        Outcome::Down(e) => Err(down(e)),
     }
 }
 
@@ -1681,7 +1717,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             }
         }
         Command::Board { collection, json } => {
-            let v = call(&c, ToolCall::Board { collection }).await?;
+            let v = call_in_session(&c, ToolCall::Board { collection }).await?;
             if json {
                 pretty(&v);
             } else {

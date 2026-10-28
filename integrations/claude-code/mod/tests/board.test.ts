@@ -80,7 +80,47 @@ test('the progress bar fills in ten cells, and in eight on a narrow terminal', (
   expect(progressBar(2, 5, 10).text).toBe('████░░░░░░ 2/5')
   expect(progressBar(2, 5, 8).text).toBe('███░░░░░ 2/5')
   expect(progressBar(1, 1, 8).text).toBe('████████ 1/1')
-  expect(progressBar(0, 0, 10).text).toBe('░░░░░░░░░░ 0/0')
+  // A project with no epics has no bar at all: a dash, never a faint block.
+  expect(progressBar(0, 0, 10).text).toBe('\u2014')
+  expect(progressBar(0, 0, 10).filled).toBe('')
+  expect(progressBar(0, 0, 10).empty).not.toContain('\u2591')
+})
+
+test('a project with no epics shows a dash and no grey bar', () => {
+  const fresh = structuredClone(projectOf('boopmark'))
+  fresh.sagas = []
+  fresh.epics = []
+  expect(projectSummary(fresh).bar.text).toBe('\u2014')
+  const calm = structuredClone(board)
+  calm.collections[0].needs_you = []
+  calm.collections[0].projects = [fresh] as (typeof calm.collections)[0]['projects']
+  const row = rowText(bandRows(calm, { width: 120, updated })[1])
+  expect(row).toContain('\u2014')
+  expect(row).not.toContain('\u2591')
+})
+
+test('rows past nine carry no second [ 9 ]', () => {
+  const many = structuredClone(board)
+  const projects: (typeof many.collections)[0]['projects'] = []
+  for (let i = 0; i < 10; i += 1) {
+    const p = structuredClone(projectOf('borant'))
+    p.project = 'p' + String(i).padStart(2, '0')
+    projects.push(p)
+  }
+  many.collections[0].projects = projects
+  const rows = bandRows(many, { width: 120, updated })
+  // One needs row, then ten project rows: 1 to 9 are numbered, the tenth is not.
+  expect(rowText(rows[9])).toContain('[ 9 ]')
+  expect(rows.filter((r: unknown[]) => rowText(r).includes('[ 9 ]'))).toHaveLength(1)
+  expect(rowText(rows[10])).not.toContain('[')
+  expect(rowText(rows[11])).not.toContain('[')
+  // Each row is still its own button.
+  const keys = rows.flat().flatMap((s: { button?: { kind: string; key: string } }) =>
+    s.button?.kind === 'project' ? [s.button.key] : [],
+  )
+  expect(new Set(keys).size).toBe(10)
+  // The hint names the digits that work.
+  expect(rowText(bandRows(many, { width: 140, updated })[0])).toContain('1-9 open')
 })
 
 test('a gate comes first, then the oldest', () => {
