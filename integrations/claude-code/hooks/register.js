@@ -981,13 +981,16 @@ function paneBody($, e, width) {
         }),
       )
     }
-    children.push(Box({ key: 'pane-line-' + i, flexDirection: 'row', children: cells }))
+    // A row of buttons is the buttons alone: its blank text line would put a
+    // row between a question and its own buttons.
+    if (!r.buttons.length) children.push(Box({ key: 'pane-line-' + i, flexDirection: 'row', children: cells }))
     if (r.buttons.length) {
       children.push(
         Box({
           key: 'pane-buttons-' + i,
           flexDirection: 'row',
           columnGap: 2,
+          ...(r.buttonIndent ? { paddingLeft: r.buttonIndent } : {}),
           children: r.buttons.map((b) =>
             Button({ key: b.key, label: b.label, onPress: () => press($, b) }),
           ),
@@ -1026,12 +1029,14 @@ function footer($, e) {
           Button({ key: 'nav-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
           Button({ key: 'nav-left', label: '\u2190', hotkey: 'h', plain: true, onPress: () => left($) }),
           Button({ key: 'nav-right', label: '\u2192', hotkey: 'l', plain: true, onPress: () => right($) }),
-          Button({ key: 'nav-back', label: 'esc', plain: true, dimColor: true, onPress: () => escLike($) }),
+          // esc cannot be a Button hotkey, so its label names the key the way
+          // the hotkeys draw theirs.
+          Button({ key: 'nav-back', label: 'esc: back', plain: true, onPress: () => escLike($) }),
         ],
       }),
       Text({
         key: 'pane-foot-hint',
-        children: ['enter open \u00b7 esc back \u00b7 ctrl+x \u2190\u2192 or drag the edge: width'],
+        children: ['enter open \u00b7 ctrl+x \u2190\u2192 or drag the edge: width'],
         dimColor: true,
         wrap: 'truncate',
       }),

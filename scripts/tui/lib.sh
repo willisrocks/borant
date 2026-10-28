@@ -70,7 +70,9 @@ tui_shot() {
   tmux -L "$TUI_NAME" capture-pane -p -t tui >"$TUI_OUT/$1.plain.txt"
   local _ height
   for _ in 1 2 3 4; do
-    if freeze --execute "cat '$TUI_OUT/$1.txt'" -o "$TUI_OUT/$1.png" --margin=12 >/dev/null 2>&1; then
+    # freeze reads stdin when it is not a terminal, and waits forever in a
+    # background job, so it gets none.
+    if freeze --execute "cat '$TUI_OUT/$1.txt'" -o "$TUI_OUT/$1.png" --margin=12 </dev/null >/dev/null 2>&1; then
       height="$(tui_png_height "$TUI_OUT/$1.png")"
       if [ "${height:-0}" -ge "${TUI_PNG_H:-0}" ]; then
         TUI_PNG_H="$height"

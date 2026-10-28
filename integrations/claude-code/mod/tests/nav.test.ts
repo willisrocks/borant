@@ -4,6 +4,7 @@ import { expect, test } from 'claude-code/testing'
 import board from '../fixtures/board.js'
 import { tasks } from '../fixtures/tasks.js'
 import {
+  BUTTON_INDENT,
   breadcrumb,
   channelsFor,
   detailRows,
@@ -195,4 +196,29 @@ test('the selected row keeps its text where it was: the mark is a flag, not a pr
   expect(selected.selected).toBe(true)
   expect(unselected.selected).toBe(false)
   expect(rowLine(selected)).toBe(rowLine(at(1)[0]))
+})
+
+test('a question opens its task in the Needs tab, and its buttons sit under its title', () => {
+  const questions = board.collections[0].needs_you
+  const list = rowsFor(state({ tab: 'needs', path: [], questions })) as {
+    selectable: boolean
+    buttons: unknown[]
+    buttonIndent?: number
+    segments: { text: string }[]
+  }[]
+  // Each group: the question, its buttons indented to the title, then a blank.
+  expect(list[0].selectable).toBe(true)
+  expect(list[1].buttons).toHaveLength(2)
+  expect(list[1].buttonIndent).toBe(BUTTON_INDENT)
+  expect(rowLine(list[2]).trim()).toBe('')
+
+  // Enter pushes the task: the view is its detail, which the breadcrumb names.
+  const q = questions[1]
+  const node = { kind: 'task', channel: q.channel, id: q.task, title: q.title, project: q.project }
+  const lines = (rowsFor(state({ tab: 'needs', path: [node], questions })) as { segments: { text: string }[] }[]).map(
+    rowLine,
+  )
+  expect(lines.join('\n')).toContain('Revoke old willisrocks gh token?')
+  expect(lines.join('\n')).not.toContain('Create Hetzner bucket')
+  expect(breadcrumb([node])).toBe('borant › Revoke old willisrocks gh token?')
 })
