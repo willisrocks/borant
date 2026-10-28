@@ -294,7 +294,7 @@ export function keyHint(rows, form = 'full') {
   const digits = digitRange(rows)
   const keys = [navKey('j', '\u2193', 'band-down'), text(' '), navKey('k', '\u2191', 'band-up')]
   const pane = navKey('0', 'pane', 'band-pane')
-  if (form === 'keys') return [...keys, text(' '), pane]
+  if (form === 'keys') return [...keys, text(' ' + (digits ? digits + ' \u00b7 ' : ''), 'dim'), pane]
   const full = form === 'full'
   return [
     text('ctrl+x tab focus \u00b7 ', 'dim'),

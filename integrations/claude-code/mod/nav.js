@@ -238,7 +238,7 @@ export function needsRows(state, width, selection) {
     // The mark goes before the title, so a narrow pane does not cut it off.
     const segments = [text(GLYPH.needs + ' ', 'yellow')]
     if (mark && mark.state === 'pending') segments.push(text('marking done\u2026 ', 'yellow'))
-    if (mark && mark.state === 'failed') segments.push(text('still open: ' + (mark.reason || 'not closed') + ' \u00b7 ', 'red'))
+    if (mark && mark.state === 'failed') segments.push(text('still open \u00b7 ', 'red'))
     segments.push(text(q.title || '', 'yellowBold'), text('  ' + context, 'dim'))
     out.push(
       nodeRow({
@@ -249,7 +249,7 @@ export function needsRows(state, width, selection) {
     )
     const buttons = [{ key: 'ask-' + i, label: 'Ask orchestrator', kind: 'ask', arg: i }]
     if (!mark || mark.state !== 'pending') {
-      buttons.unshift({ key: 'done-' + i, label: mark ? 'Done again' : 'Done', kind: 'done', arg: i })
+      buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
     }
     out.push(row({ buttons }))
     out.push(row({ segments: [text(' ')] }))
@@ -297,7 +297,7 @@ function projectTree(state, project, depth, width) {
       segments: [
         text(indent(depth)),
         text(badge(project), badgeStyle(project, 0)),
-        text('  ' + truncate(s.saga, 17) + '  ', 'bold'),
+        text('  ' + truncate(s.saga, 17) + '  ', 'white'),
         text(s.bar.filled, 'green'),
         text(s.bar.empty, 'faint'),
         text(' ' + s.bar.label + ' epics', 'plain'),
