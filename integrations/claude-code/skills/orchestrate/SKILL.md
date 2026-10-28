@@ -35,6 +35,14 @@ general plan gets wrong.
 | In a project with `mirror_issues` on, the hub copies each saga, epic, and task with a PR to the issue tracker (Linear) and writes the key into `issue`. A create needs a team: the item's `issue_target`, an ancestor's, or the parent issue's. With none, the item goes `needs_human` with 'Issue team needed'. | Set `issue_target` (the Linear team key, for example `ENG`) at `channel_create` for a saga or an epic. A plain project channel has no anchor, so its tasks inherit nothing from the channel: set `issue_target` on each task that will get a PR, or on a parent task they hang under. When you do not know the team, ask the chief before you create. Answer a team question by `task_update(issue_target: ...)`; the hub then restores the task's status. |
 | The user is not an agent. `send` cannot reach them. | A question for the user: `task_update(status: "needs_human", attention_msg: ...)`, and say it in this session. |
 
+## Size the goal
+
+- One PR is a plain task.
+- Several PRs that form one stack are a standalone epic.
+- Several epics, or scope that Chris must approve first (a spec, or a Linear parent
+  issue with children), make a saga.
+- When unsure, the orchestrator asks the chief.
+
 ## Set up
 
 1. `whoami`. Note your agent ID: workers send to it.
