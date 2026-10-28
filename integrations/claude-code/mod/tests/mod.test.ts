@@ -42,7 +42,7 @@ const PANE = {
 const ENGINE_ROW = { type: 'Text', props: {}, children: ['drawn by Claude Code'] }
 
 /** The stubs every chief test needs: the clock, the pane, the ring, the scroll. */
-function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], focused: string[] = []) {
+function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], focused: string[] = [], toasts: string[] = []) {
   // The kit hands test files its own typed `on`, which only registers stubs.
   const on = kit as (name: string, hook: (...args: unknown[]) => unknown) => void
 
@@ -55,7 +55,10 @@ function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], 
     opened.push(e.title)
     return { value: { isPlaced: true } }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   // The mod moves the engine's ring and the pane's window itself.
   on('ui.focus', ($, e) => {
     const element = e.element || (e as { key?: string }).key
@@ -296,9 +299,40 @@ test('the pane has its tabs, and its buttons submit a prompt instead of calling 
   expect(await ui.find({ type: 'Text', text: /Elastic compute/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Golden image/ })).toBeDefined()
 
-  await ui.press({ key: 'tab-needs' })
+  await ui.unmount()
+})
+
+test('Ask orchestrator sends to the channel owner itself, and the chief is only told', async ($, on) => {
+  const prompts: { text: string; context?: readonly string[] }[] = []
+  const sends: string[][] = []
+  const toasts: string[] = []
+  chiefStubs(on, [], [], [], toasts)
+  const session = mock.session(on)
+  on('process.run', ($, e) => {
+    sends.push((e.argv || []) as string[])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('prompt.submit', ($, e) => {
+    prompts.push({ text: e.text, context: e.context })
+    return { text: e.text }
+  })
+
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'ask-1' })
-  expect(prompts[1]).toContain('Chris asks the orchestrator: Revoke old willisrocks gh token?')
+  // One send to the owner of the question's channel, and no prompt.
+  expect(sends).toHaveLength(1)
+  expect(sends[0].slice(0, 3)).toEqual(['borant', 'send', 'orchestrator'])
+  expect(sends[0][3]).toContain('Revoke old willisrocks gh token? (personal-borant/01M5ZG00000000000000000016)')
+  expect(sends[0][3]).toContain('Answer the chief')
+  expect(prompts).toHaveLength(0)
+  expect(toasts).toContain('asked orchestrator: Revoke old willisrocks gh token?')
+  expect(await ui.find({ type: 'Text', text: /asked orchestrator/ })).toBeDefined()
+
+  // The chief is told with a row it reads, not a prompt that starts a turn.
+  const rows = session.appended().map((r) => JSON.stringify(r.message))
+  expect(rows.filter((r) => r.includes('Do not answer it yourself'))).toHaveLength(1)
   await ui.unmount()
 })
 

@@ -232,9 +232,22 @@ board instead of reading it as the person, so a daemon that restarted shows
 collection's projects. For a session without a hub, set
 `BORANT_COS_BOARD=fixture` and it draws the fixture under
 `integrations/claude-code/mod/fixtures` instead; any failed read shows
-`board unavailable` with its reason quietly. The Done and Ask orchestrator
-buttons in the pane submit a prompt to the chief session and call nothing
-else.
+`board unavailable` with its reason quietly.
+
+Done submits a prompt to the chief session, which closes the task or asks its
+owner to. Ask orchestrator sends the question straight to the owner of the
+task's channel (`borant send`, as the person); the chief gets a note with its
+next prompt and relays the reply.
+
+The mod also keeps a chief to its role in a long session, where compaction can
+drop the chief-of-staff skill. A chief's system prompt carries the delegation
+rule (section `borant:chief-delegation`). A chief's Bash call that looks like
+project work goes to the person as a permission prompt, in any permission mode.
+That covers a background command, a script, a cloud, database, or deploy CLI,
+a build, `git push`, `gh pr merge`, and a write to a file. Reads, the Borant
+CLI, and `install_borant.sh` pass. A session that was already running when
+the plugin reloads keeps its system prompt, so the mod gives it the rule as a
+conversation row, and gives it again after each compaction.
 
 To pick up a new version, run `claude plugin update borant`, then
 `/reload-plugins` in a session that is already open.

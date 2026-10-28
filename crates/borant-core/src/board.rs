@@ -126,6 +126,10 @@ pub struct Question {
     pub since: Timestamp,
     /// The task is a saga's gate.
     pub gate: bool,
+    /// The owner of the task.s channel: the agent that answers for it, and the
+    /// only one besides a person that may close a plain task as done.
+    #[serde(default)]
+    pub owner: Option<AgentId>,
 }
 
 /// The records that the board reads, and the time that it shows.
@@ -242,6 +246,7 @@ fn collection_board(
                 attention_msg: task.attention_msg.clone(),
                 since: task.updated,
                 gate: channel.gate == Some(task.id),
+                owner: channel.owner.clone(),
             });
         }
     }

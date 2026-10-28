@@ -214,7 +214,8 @@ export const board = {
           "status": "needs_human",
           "attention_msg": "blocks 2 epics",
           "since": 1793022600000,
-          "gate": false
+          "gate": false,
+          "owner": "orchestrator"
         },
         {
           "project": "borant",
@@ -224,7 +225,8 @@ export const board = {
           "status": "needs_human",
           "attention_msg": "optional",
           "since": 1793024400000,
-          "gate": false
+          "gate": false,
+          "owner": "orchestrator"
         }
       ]
     }

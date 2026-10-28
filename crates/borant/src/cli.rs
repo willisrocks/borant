@@ -2806,6 +2806,7 @@ mod tests {
                         attention_msg: Some("waiting on Chris".into()),
                         since: Timestamp(at.0 - 180_000),
                         gate: true,
+                        owner: None,
                     },
                     Question {
                         project: None,
@@ -2816,6 +2817,7 @@ mod tests {
                         attention_msg: None,
                         since: Timestamp(at.0 - 90_000),
                         gate: false,
+                        owner: None,
                     },
                 ],
             }],

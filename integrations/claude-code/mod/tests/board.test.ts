@@ -265,7 +265,7 @@ test('the help view names every key, every command, and both buttons', () => {
   expect(text).toContain('Done')
   expect(text).toContain('Ask orchestrator')
   expect(text).toContain('Chris marked done:')
-  expect(text).toContain('neither button calls the hub')
+  expect(text).toContain("sends a question about <item> to its channel's owner")
   expect(helpLines({ rows: 1 }).join('\n')).toContain('1 opens a row')
 
   // The pane draws the same lines, each fitted to its width.
