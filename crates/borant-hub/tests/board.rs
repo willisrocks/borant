@@ -356,6 +356,7 @@ async fn board_shows_a_collection() {
                     "attention_msg": null,
                     "since": 1_500,
                     "gate": false,
+                    "owner": "orchestrator",
                 }],
             }],
         })
