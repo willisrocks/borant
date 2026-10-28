@@ -272,10 +272,37 @@ export function digitRange(rows) {
   return n === 1 ? '1' : '1-' + Math.min(9, n)
 }
 
-/** The dim hint in the band's title row: focus the band, move, the digits, help. */
-export function keyHint(rows) {
+/**
+ * A key of the band's title row, drawn as a plain Button (`j: \u2193`). Its hotkey
+ * presses it while the band holds the keyboard; `0` also from an empty prompt.
+ */
+export function navKey(key, label, kind) {
+  return {
+    text: key + ': ' + label,
+    style: 'hotkey',
+    button: { key: kind, label, kind, hotkey: key, plain: true },
+  }
+}
+
+/**
+ * The hint in the band's title row: focus the band, move, the digits, the
+ * pane, help. j, k, and 0 are Buttons, so the keys it names are the band's
+ * own. `form` is `full`, `short` (no words for moving or help), or `keys`
+ * (the Buttons alone), for a band with less room.
+ */
+export function keyHint(rows, form = 'full') {
   const digits = digitRange(rows)
-  return ['ctrl+x tab focus', 'j/k move', digits ? digits + ' open' : null, '/cos help'].filter(Boolean).join(' \u00b7 ')
+  const keys = [navKey('j', '\u2193', 'band-down'), text(' '), navKey('k', '\u2191', 'band-up')]
+  const pane = navKey('0', 'pane', 'band-pane')
+  if (form === 'keys') return [...keys, text(' '), pane]
+  const full = form === 'full'
+  return [
+    text('ctrl+x tab focus \u00b7 ', 'dim'),
+    ...keys,
+    text((full ? ' move' : '') + ' \u00b7 ' + (digits ? digits + ' open \u00b7 ' : ''), 'dim'),
+    pane,
+    ...(full ? [text(' \u00b7 /cos help', 'dim')] : []),
+  ]
 }
 
 /**
@@ -288,14 +315,19 @@ export function helpLines(options = {}) {
   return [
     'keys',
     row(digits, (digits === '1' ? '1 opens a row' : digits + ' open a row') + ': 1 needs you, then one per project'),
+    row('', 'from an empty prompt or the band; the pane takes the keyboard'),
+    row('0', 'focus the pane, and open it if it is closed'),
     row('ctrl+x tab', 'focus the band, then each pane, then the prompt'),
+    row('', 'press tab within 3 s of ctrl+x (Claude Code\u2019s chord limit)'),
     row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
-    row('j k', 'move the selection through the rows'),
+    row('j k', 'move the selection through the rows, in the band and the pane'),
     row('h l', 'switch tabs; fold or unfold a node; l opens a leaf'),
     row('enter', 'open the selected project, saga, epic, or task'),
     row('esc', 'back one level, and at the top close the pane'),
     row('tab', 'the next control, and shift+tab the one before'),
     row('\u2191 \u2193', 'scroll the pane (Claude Code); the footer arrows move the selection'),
+    row('', 'from an empty prompt, \u2193 goes to Claude Code\u2019s footer, not the band'),
+    row('ctrl+x \u2190 \u2192', 'widen or narrow the pane (Claude Code); or drag its edge'),
     row('click', 'a row selects it; a second click or its \u25b8 opens it'),
     '',
     'commands',
@@ -306,7 +338,8 @@ export function helpLines(options = {}) {
     '',
     'buttons',
     row('[ ? ]', "the band's help button: this view"),
-    row('Done', 'submits "Chris marked done: <item>" to the chief'),
+    row('Done', 'submits "Chris marked done: <item>" to the chief, who closes it'),
+    row('', 'the row shows "marking done\u2026" until the hub closes it'),
     row('Ask orchestrator', 'submits a question about <item> to the chief'),
     row('', 'neither button calls the hub'),
     '',
@@ -325,26 +358,35 @@ export function paneHelpRows(options = {}) {
   return helpLines(options).map((line) => fit([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], width))
 }
 
-/** The title row of the band: its name, the key hint, and the help button. */
-function ruleCell(label, right, width, hint = '') {
+/**
+ * The title row of the band: its name, the counts and age, the key hint, and
+ * the help button. `forms` (`{ label, right, hint }`) are tried in order; the
+ * first that leaves the rule four cells is drawn. The last ones keep j, k, and
+ * 0 with a shorter name and age, so the keys a person reads are always drawn;
+ * if even that does not fit, the last form goes without its hint.
+ */
+function ruleCell(width, forms) {
   const help = { text: '[ ? ]', style: 'button', button: { key: 'help', label: '?', kind: 'help' } }
-  const build = (tail) => {
-    const fixed =
-      3 + Array.from(label).length + 1 + Array.from(right).length + Array.from(tail).length + 1 + 5 + 3
+  const build = (label, right, tail) => {
+    const tailLength = tail.reduce((n, s) => n + Array.from(s.text).length, 0)
+    const fixed = 3 + Array.from(label).length + 1 + Array.from(right).length + tailLength + 1 + 5 + 3
     const dashes = Math.max(0, width - fixed)
     const out = [
       text(RULE + RULE + ' ', 'faint'),
       text(label, 'bold'),
       text(' ' + RULE.repeat(dashes), 'faint'),
       text(right, 'dim'),
+      ...tail,
     ]
-    if (tail) out.push(text(tail, 'dim'))
     out.push(text(' '), help, text(' ' + RULE + RULE, 'faint'))
     return { out, dashes }
   }
-  // The hint goes before anything else, leaving the rule four cells to itself.
-  const full = build(hint ? ' ' + hint : '')
-  return hint && full.dashes < 4 ? build('').out : full.out
+  for (const form of forms) {
+    const built = build(form.label, form.right, form.hint.length ? [text(' '), ...form.hint] : [])
+    if (built.dashes >= 4) return built.out
+  }
+  const last = forms[forms.length - 1]
+  return build(last.label, last.right, []).out
 }
 
 /**
@@ -511,8 +553,13 @@ export function bandRows(board, options = {}) {
   const right = ' ' + projects.length + ' ' + plural + ' \u00b7 updated ' + updated + ' '
   // The band numbers one row for what needs you, then one row per project.
   const rowCount = (questions.length ? 1 : 0) + projects.length
-  const hint = narrow ? '' : keyHint(rowCount)
-  const rows = [fit(ruleCell('chief of staff', right, width, hint), width)]
+  const name = 'chief of staff'
+  const forms = [
+    ...(narrow ? [] : ['full', 'short'].map((form) => ({ label: name, right, hint: keyHint(rowCount, form) }))),
+    { label: name, right, hint: keyHint(rowCount, 'keys') },
+    { label: 'cos', right: ' ' + updated + ' ', hint: keyHint(rowCount, 'keys') },
+  ]
+  const rows = [fit(ruleCell(width, forms), width)]
 
   if (questions.length) rows.push(needsRow(questions, width, narrow, 1, columns))
   const base = questions.length ? 2 : 1
@@ -522,6 +569,26 @@ export function bandRows(board, options = {}) {
     rows.push(projectRow(project, width, narrow, ordinal <= 9 ? ordinal : '', i, columns))
   })
   return rows.slice(0, maxRows === Infinity ? rows.length : maxRows)
+}
+
+/** The keys of the band's row chips, top to bottom: the rows j and k walk. */
+export function bandRowKeys(rows) {
+  return rows
+    .map((row) => row.find((s) => s.button && (s.button.kind === 'project' || s.button.kind === 'needs')))
+    .filter(Boolean)
+    .map((s) => s.button.key)
+}
+
+/**
+ * The key j (`delta` 1) or k (-1) moves to from `current`, wrapping at the
+ * ends. From anything else, such as the help button, j takes the first row
+ * and k the last. Null when there is no row.
+ */
+export function stepKey(keys, current, delta) {
+  if (keys.length === 0) return null
+  const at = keys.indexOf(current)
+  if (at < 0) return delta > 0 ? keys[0] : keys[keys.length - 1]
+  return keys[(at + delta + keys.length) % keys.length]
 }
 
 /** The short words after an epic's title in the pane. */

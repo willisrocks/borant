@@ -15,6 +15,7 @@
 // and the approved mockup in docs/superpowers/specs/2026-10-27-chief-mod-mockup/.
 
 import {
+  bandRowKeys,
   bandRows,
   allQuestions,
   allProjects,
@@ -22,6 +23,7 @@ import {
   helpLines,
   hhmm,
   paneTabs,
+  stepKey,
   text as seg,
   truncate,
 } from '../mod/board.js'
@@ -30,6 +32,7 @@ import {
   breadcrumb,
   channelsFor,
   rowsFor,
+  questionKey,
   viewKey,
 } from '../mod/nav.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
@@ -39,10 +42,19 @@ const PANE = 'cos'
 const PANE_TITLE = 'Chief of staff'
 /** The band's render instance, as its ui.focus events name it. */
 const BAND = 'above-prompt'
-/** How often the board is read while the session is the chief. */
-const REFRESH_MS = 15000
+/** How often the board is read while the session is the chief: the fallback
+ * for changes the event stream does not carry, such as a new task. */
+const REFRESH_MS = 5000
 /** A read arriving sooner than this after the last one is skipped. */
-const DEBOUNCE_MS = 5000
+const DEBOUNCE_MS = 1000
+/** An event is read this long after it arrives, so a burst costs one read. */
+const PUSH_DELAY_MS = 300
+/** A dropped event stream starts again after this long. */
+const EVENTS_RETRY_MS = 5000
+/** A Done that the hub has not closed by then shows as still open. */
+const DONE_WAIT_MS = 120000
+/** How many times a band press asks for the pane's keyboard. */
+const FOCUS_TRIES = 3
 
 /** Set to `chief` by the role check, and nothing else ever turns the mod on. */
 let isChief = false
@@ -53,6 +65,12 @@ let unavailable = false
 let reason = ''
 let updated = ''
 let lastReadAt = 0
+/** When the last read succeeded, by the session clock, for the header's age. */
+let lastOkAt = null
+/** Done presses by `<channel>/<task>`: `{ state, at, title, reason }`. */
+let pending = {}
+/** A read the event stream asked for is waiting on its timer. */
+let pushQueued = false
 /** The needs-you items the last drawing saw; a new one raises a toast. */
 let seenNeeds = null
 /** The open tab, and where drilling in has gone. */
@@ -71,6 +89,8 @@ let paneWidth = 60
 let bandKey = null
 /** True for the frame that hands the band's keyboard to the pane. */
 let bandHidden = false
+/** True while the pane holds the keyboard, as its last drawing said. */
+let paneFocused = false
 /** The row a mouse click just focused, so the click selects instead of opening. */
 let clickMark = null
 /** The terminal's width, as last measured while drawing the band. */
@@ -99,7 +119,7 @@ export function register(on) {
         return tree($, e, [row], 'band')
       }
       const width = widthOf(e)
-      const rows = bandRows(board, { width, maxRows: e.props?.maxRows, updated })
+      const rows = bandRows(board, { width, maxRows: e.props?.maxRows, updated: await age($) })
       return tree($, e, rows, 'band')
     } catch {
       return next(e)
@@ -112,6 +132,7 @@ export function register(on) {
       measure(e)
       const width = widthOf(e)
       paneWidth = width
+      paneFocused = Boolean(e.props && e.props.isFocused)
       return paneBody($, e, width)
     } catch {
       return next(e)
@@ -290,6 +311,82 @@ async function start($) {
   }
 
   await refresh($, true)
+  if (mode === 'cli') followEvents($)
+}
+
+/**
+ * Follow the host's event stream, and read the board soon after each event
+ * that can change it: a task's status, a lease, an agent, a spawn, a move.
+ * The stream ends with the module; a stream that drops starts again.
+ */
+function followEvents($) {
+  void (async () => {
+    for (;;) {
+      try {
+        const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
+        let rest = ''
+        for await (const piece of stream) {
+          if (!piece || piece.stream !== 'stdout') continue
+          const lines = (rest + piece.text).split('\n')
+          rest = lines.pop() || ''
+          if (lines.some(changesBoard)) pushRefresh($)
+        }
+      } catch {
+        // No borant, or an old one: the timer still reads the board.
+      }
+      try {
+        await $.clock.sleep(EVENTS_RETRY_MS)
+      } catch {
+        return
+      }
+    }
+  })()
+}
+
+/** Whether one line of `borant events --json` can change what the board shows. */
+function changesBoard(line) {
+  let kind = ''
+  try {
+    kind = String(JSON.parse(line).kind || '')
+  } catch {
+    return false
+  }
+  return /^(task|lease|agent|spawn|move|channel)\./.test(kind)
+}
+
+/** One read, shortly after a burst of events. */
+function pushRefresh($) {
+  if (pushQueued) return
+  pushQueued = true
+  try {
+    $.clock.after(PUSH_DELAY_MS, () => {
+      pushQueued = false
+      refresh($, true)
+        .then(async () => {
+          await refreshTasks($)
+          redraw($)
+        })
+        .catch(() => {})
+    })
+  } catch {
+    pushQueued = false
+  }
+}
+
+/** The header's "updated" text: how long ago the last read succeeded. */
+async function age($) {
+  let now = 0
+  try {
+    now = await $.clock.now()
+  } catch {
+    return updated
+  }
+  if (lastOkAt === null || now < lastOkAt) return updated
+  const seconds = Math.floor((now - lastOkAt) / 1000)
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return seconds + 's ago'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
+  return updated
 }
 
 /** Read the board and note what is new. Never throws. */
@@ -315,9 +412,37 @@ async function refresh($, force = false) {
   }
   board = result.board
   updated = hhmm(board.at, updated)
+  lastOkAt = now
   unavailable = false
   reason = ''
   announceNew($)
+  settlePending($, now)
+}
+
+/**
+ * A pending Done whose item left the board is done: the hub closed the task
+ * (or answered it), so its mark goes. One still there after DONE_WAIT_MS
+ * shows as still open, and its Done button comes back.
+ */
+function settlePending($, now) {
+  const open = new Set(allQuestions(board).map(questionKey))
+  for (const [key, mark] of Object.entries(pending)) {
+    if (!open.has(key)) {
+      delete pending[key]
+      if (mark.state === 'pending') toast($, 'closed: ' + mark.title)
+    } else if (mark.state === 'pending' && now - mark.at >= DONE_WAIT_MS) {
+      pending[key] = { ...mark, state: 'failed', reason: 'the chief did not close it within 2 min' }
+      toast($, 'still open: ' + mark.title)
+    }
+  }
+}
+
+function toast($, text) {
+  try {
+    $.ui.toast(text)
+  } catch {
+    // A toast is never worth an error.
+  }
 }
 
 /** A toast when the board shows a needs-you item that was not there before. */
@@ -367,6 +492,7 @@ function rowsNow() {
     board,
     tasks: taskLists(),
     questions: allQuestions(board),
+    pending,
     help: helpLines({ rows: rowCount() }),
     selection: selectionOf(),
     width: paneWidth,
@@ -455,16 +581,59 @@ async function openFromBand($) {
   return answer
 }
 
-/** Drop the band's keys, focus the pane, then draw the band's controls again. */
+/**
+ * Drop the band's keys, focus the pane, then draw the band's controls again.
+ * A slow frame can leave the band holding the keys when the pane asks, and
+ * the engine then opens the pane without them: ask again until the pane's
+ * drawing says it has the keyboard.
+ */
 async function handoff($) {
   try {
     bandHidden = true
     redraw($)
-    await $.clock.sleep(50)
-    if (await takePaneFocus($)) await focusRow($, selectionOf())
+    for (let tries = 0; tries < FOCUS_TRIES; tries += 1) {
+      await $.clock.sleep(50 + tries * 100)
+      if (!(await takePaneFocus($))) break
+      await $.clock.sleep(100)
+      if (paneFocused) break
+    }
+    await focusRow($, selectionOf())
   } finally {
     bandHidden = false
     redraw($)
+  }
+}
+
+/** The band's 0: the pane takes the keyboard, opened where it was if closed. */
+async function focusPane($) {
+  if (!paneOpen) return openFromBand($)
+  try {
+    $.clock.after(0, () => {
+      handoff($).catch(() => {})
+    })
+  } catch {
+    // No clock: ctrl+x tab reaches the pane.
+  }
+  return redraw($)
+}
+
+/**
+ * The band's j and k: move the band's ring through its row chips, the
+ * needs-you row and one per project, as Tab does, wrapping at the ends.
+ */
+async function bandMove($, delta) {
+  const key = stepKey(bandRowKeys(bandRows(board, { width: columns || 120 })), bandKey, delta)
+  if (!key) return
+  try {
+    // The mod's own move does not come back through its ui.focus hook, so
+    // the row it lands on is recorded here, and the band draws it selected.
+    const moved = await $.ui.focus({ requestId: BAND, key })
+    if (!moved || !moved.deny) {
+      bandKey = key
+      redraw($)
+    }
+  } catch {
+    // The band does not hold the keys.
   }
 }
 
@@ -686,6 +855,10 @@ function tree($, e, rows, prefix) {
     if (s.button) {
       const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
       if (s.button.hotkey) props.hotkey = s.button.hotkey
+      if (s.button.plain) {
+        props.plain = true
+        props.dimColor = !selected
+      }
       return Button(props)
     }
     const props = { key, children: [s.text], ...styleProps(s.style) }
@@ -820,20 +993,35 @@ function tabCells($, e, width) {
   return out
 }
 
-/** The footer: the keys as clickable Buttons, so the mouse can move too. */
+/**
+ * The footer: the keys as clickable Buttons, so the mouse can move too, and
+ * a line of the other keys under them, cut rather than wrapped in a narrow
+ * pane.
+ */
 function footer($, e) {
   const { Box, Text, Button } = $.ui.resolve(e)
   return Box({
     key: 'pane-foot',
-    flexDirection: 'row',
-    columnGap: 2,
+    flexDirection: 'column',
     children: [
-      Button({ key: 'nav-down', label: '\u2193', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
-      Button({ key: 'nav-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
-      Button({ key: 'nav-left', label: '\u2190', hotkey: 'h', plain: true, onPress: () => left($) }),
-      Button({ key: 'nav-right', label: '\u2192', hotkey: 'l', plain: true, onPress: () => right($) }),
-      Button({ key: 'nav-back', label: 'esc', plain: true, dimColor: true, onPress: () => escLike($) }),
-      Text({ children: ['enter open \u00b7 tab next \u00b7 esc back'], dimColor: true }),
+      Box({
+        key: 'pane-foot-keys',
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Button({ key: 'nav-down', label: '\u2193', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
+          Button({ key: 'nav-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
+          Button({ key: 'nav-left', label: '\u2190', hotkey: 'h', plain: true, onPress: () => left($) }),
+          Button({ key: 'nav-right', label: '\u2192', hotkey: 'l', plain: true, onPress: () => right($) }),
+          Button({ key: 'nav-back', label: 'esc', plain: true, dimColor: true, onPress: () => escLike($) }),
+        ],
+      }),
+      Text({
+        key: 'pane-foot-hint',
+        children: ['enter open \u00b7 esc back \u00b7 ctrl+x \u2190\u2192 or drag the edge: width'],
+        dimColor: true,
+        wrap: 'truncate',
+      }),
     ],
   })
 }
@@ -853,6 +1041,12 @@ function press($, button) {
       tab = 'help'
       path = []
       return openFromBand($)
+    case 'band-down':
+      return bandMove($, 1)
+    case 'band-up':
+      return bandMove($, -1)
+    case 'band-pane':
+      return focusPane($)
     case 'tab-needs':
       return selectTab($, 'needs')
     case 'tab-projects':
@@ -860,13 +1054,11 @@ function press($, button) {
     case 'tab-help':
       return selectTab($, 'help')
     case 'done':
+      return markDone($, allQuestions(board)[button.arg])
     case 'ask': {
       const q = allQuestions(board)[button.arg]
       if (!q) return redraw($)
-      const text =
-        button.kind === 'done'
-          ? 'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + ')'
-          : 'Chris asks the orchestrator: ' + q.title + ' (' + q.channel + '/' + q.task + ')'
+      const text = 'Chris asks the orchestrator: ' + q.title + ' (' + q.channel + '/' + q.task + ')'
       // The prompt submits when the session is idle; a press must not wait.
       try {
         $.prompt.submit({ text }).catch(() => {})
@@ -878,6 +1070,40 @@ function press($, button) {
     default:
       return redraw($)
   }
+}
+
+/**
+ * Done: the row shows "marking done…" at once, and the chief gets a prompt
+ * that says how to close the task. The hub lets only the channel's owner, a
+ * person, or (for a saga gate) an approver close it as done, so the chief
+ * closes a gate itself and asks the owner for anything else. The mark goes
+ * when the item leaves the board, and turns into "still open" after
+ * DONE_WAIT_MS.
+ */
+async function markDone($, q) {
+  if (!q) return redraw($)
+  let now = 0
+  try {
+    now = await $.clock.now()
+  } catch {
+    now = 0
+  }
+  const key = questionKey(q)
+  pending[key] = { state: 'pending', at: now, title: q.title }
+  const text =
+    'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
+    'Close it as done now: task_close it yourself if it is a saga gate or you own its channel; ' +
+    'otherwise send the owner of ' + q.channel + ' a direct message to close it as done, with "Chris marked it done in the board".'
+  // The prompt submits when the session is idle; a press must not wait.
+  try {
+    $.prompt.submit({ text }).catch(() => {
+      pending[key] = { ...pending[key], state: 'failed', reason: 'the prompt was not sent' }
+      redraw($)
+    })
+  } catch {
+    pending[key] = { ...pending[key], state: 'failed', reason: 'the prompt was not sent' }
+  }
+  return redraw($)
 }
 
 function redraw($) {

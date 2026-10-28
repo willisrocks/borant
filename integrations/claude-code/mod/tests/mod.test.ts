@@ -42,12 +42,12 @@ const PANE = {
 const ENGINE_ROW = { type: 'Text', props: {}, children: ['drawn by Claude Code'] }
 
 /** The stubs every chief test needs: the clock, the pane, the ring, the scroll. */
-function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = []) {
+function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], focused: string[] = []) {
   // The kit hands test files its own typed `on`, which only registers stubs.
   const on = kit as (name: string, hook: (...args: unknown[]) => unknown) => void
 
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
-  mock.clock(on)
+  const clock = mock.clock(on)
   on('command.register', () => ({ value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
   on('ui.render', () => ENGINE_ROW)
@@ -57,12 +57,17 @@ function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = []) 
   })
   on('ui.toast', () => ({ value: undefined }))
   // The mod moves the engine's ring and the pane's window itself.
-  on('ui.focus', () => ({ value: {} }))
+  on('ui.focus', ($, e) => {
+    const element = e.element || (e as { key?: string }).key
+    if (element) focused.push(element)
+    return { value: {} }
+  })
   on('ui.scroll', () => ({ value: {} }))
   on('ui.close', ($, e) => {
     closes.push(e.id)
     return { value: undefined }
   })
+  return clock
 }
 
 test('a session that is not the chief registers no timer, no command, and draws nothing', async ($, on) => {
@@ -275,9 +280,12 @@ test('the pane has its tabs, and its buttons submit a prompt instead of calling 
   // The Needs you tab opens on the gate, and Done submits its title and ids.
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
   await ui.press({ key: 'done-0' })
-  expect(prompts).toEqual([
-    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant/01M5ZG00000000000000000015)',
-  ])
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain(
+    'Chris marked done: Create Hetzner bucket borant-hub-backup + 1Password item (personal-borant/01M5ZG00000000000000000015). ',
+  )
+  // The prompt says how: the hub lets only the owner close a plain task as done.
+  expect(prompts[0]).toContain('send the owner of personal-borant a direct message')
 
   await ui.press({ key: 'tab-projects' })
   expect(await ui.find({ type: 'Text', text: /Elastic compute/ })).toBeDefined()
@@ -298,7 +306,11 @@ test('the help view opens from the band button and /cos help', async ($, on) => 
   // The band draws the hint and its help button.
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ type: 'Text', text: /ctrl\+x tab focus/ })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /j\/k move/ })).toBeDefined()
+  // j, k, and 0 are the band's own Buttons, so the keys the hint names reach it.
+  expect(await band.find({ type: 'Button', key: 'band-down' })).toBeDefined()
+  expect((await band.find({ type: 'Button', key: 'band-down' }))?.props.hotkey).toBe('j')
+  expect((await band.find({ type: 'Button', key: 'band-up' }))?.props.hotkey).toBe('k')
+  expect((await band.find({ type: 'Button', key: 'band-pane' }))?.props.hotkey).toBe('0')
   expect(await band.find({ type: 'Button', key: 'help' })).toBeDefined()
   await band.press({ key: 'help' })
   expect(opened).toEqual(['borant'])
@@ -570,15 +582,15 @@ test('a channel is read once, and again on the tick only while its view is open'
   await ui.press({ key: 'row-1' })
   expect(reads).toEqual(['personal-borant'])
 
-  // The 15 s tick reads the open view's channel again.
-  await clock.advance(15000)
+  // The 5 s tick reads the open view's channel again.
+  await clock.advance(5000)
   expect(reads).toEqual(['personal-borant', 'personal-borant'])
 
   // Closed, the tick reads nothing more.
   await ui.press({ key: 'nav-back' })
   await ui.press({ key: 'nav-back' })
   await ui.press({ key: 'nav-back' })
-  await clock.advance(15000)
+  await clock.advance(5000)
   expect(reads).toEqual(['personal-borant', 'personal-borant'])
   await ui.unmount()
 })
@@ -643,10 +655,123 @@ test('a band press hands the keyboard to the pane it opens', async ($, on) => {
   // The press opens the pane; the handoff asks for its keyboard once the
   // band has let go, then draws the band's controls again.
   expect(opens[0]).toEqual({ title: 'borant \u203a boopmark', focus: true })
-  await clock.advance(200)
-  await clock.advance(200)
+  // The pane draws focused, so one ask is enough.
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (let i = 0; i < 4; i += 1) await clock.advance(200)
   expect(opens).toHaveLength(2)
   expect(opens[1]).toEqual({ title: 'borant \u203a boopmark', focus: true })
   expect(await band.find({ type: 'Button', key: 'project-0' })).toBeDefined()
+  await pane.unmount()
+
+  // A pane that draws without the keyboard is asked again, three times in all.
+  const unfocused = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
+  await band.press({ key: 'project-1' })
+  for (let i = 0; i < 8; i += 1) await clock.advance(200)
+  expect(opens).toHaveLength(2 + 1 + 3)
+
+  // 0 asks again for the keyboard of the open pane.
+  const before = opens.length
+  await band.press({ key: 'band-pane' })
+  for (let i = 0; i < 8; i += 1) await clock.advance(200)
+  expect(opens.length).toBeGreaterThan(before)
+  expect(opens[opens.length - 1].focus).toBe(true)
+  await unfocused.unmount()
+  await band.unmount()
+})
+
+test('Done marks the row at once, and drops it when the hub closes the task', async ($, on) => {
+  const prompts: string[] = []
+  const toasts: string[] = []
+  let live = JSON.parse(JSON.stringify(board))
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'cli' })
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.focus', () => ({ value: {} }))
+  on('ui.scroll', () => ({ value: {} }))
+  on('ui.close', () => ({ value: undefined }))
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) return { value: { exitCode: 0, stdout: '[]', stderr: '' } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(live), stderr: '' } }
+  })
+
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'done-0' })
+  expect(prompts).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeDefined()
+  // While pending, the row has no Done to press twice.
+  expect(await ui.find({ type: 'Button', key: 'done-0' })).toBeUndefined()
+
+  // The hub closes it: the next read drops the item and its mark.
+  live = JSON.parse(JSON.stringify(live))
+  for (const c of live.collections) {
+    c.needs_you = (c.needs_you || []).filter((q: { task: string }) => q.task !== '01M5ZG00000000000000000015')
+  }
+  await clock.advance(5000)
+  expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeUndefined()
+  expect(toasts).toContain('closed: Create Hetzner bucket borant-hub-backup + 1Password item')
+  await ui.unmount()
+})
+
+test('a Done the hub has not closed after two minutes shows as still open', async ($, on) => {
+  const prompts: string[] = []
+  const clock = chiefStubs(on)
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'done-0' })
+  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeDefined()
+  await clock.advance(120000)
+  expect(await ui.find({ type: 'Text', text: /still open: the chief did not close it/ })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'done-0' }))?.props.label).toBe('Done again')
+  await ui.unmount()
+})
+
+test('an event from the host stream reads the board again at once', async ($, on) => {
+  let reads = 0
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'cli' })
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('process.run', () => {
+    reads += 1
+    return { value: { exitCode: 0, stdout: JSON.stringify(board), stderr: '' } }
+  })
+  let spawned: string[] = []
+  on('process.spawn', async function* ($, e) {
+    spawned = (e.argv || []) as string[]
+    yield { stream: 'stdout', text: '{"kind":"host.registered"}\n{"kind":"task.st' }
+    yield { stream: 'stdout', text: 'atus","channel":"personal-borant"}\n' }
+    return { value: { code: 0 } }
+  })
+
+  await $.session.start({ ...SESSION })
+  expect(spawned).toEqual(['borant', 'events', '--follow', '--json'])
+  const first = reads
+  await clock.advance(300)
+  expect(reads).toBe(first + 1)
+
+  // The header says how old the board is.
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /updated just now/ })).toBeDefined()
   await band.unmount()
 })

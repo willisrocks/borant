@@ -122,6 +122,12 @@ change to CI, secrets, releases, or infrastructure.
   it to the person in this session with the background, the options, and a suggested
   default, then relay the answer as a direct message and set the task back to `open`.
   Never guess a product decision.
+- **The person pressed Done on the board** (a prompt "<person> marked done: <title>
+  (<channel>/<task>)"): act on it at once. A saga gate, or a task in a channel you
+  own: `task_close` with `reason: "done"` and the person's words. Any other task:
+  only its channel's owner may close it as done, so `send` that owner a direct
+  message to close it, quoting the prompt. The board shows "marking done…" until
+  the task closes, and "still open" after two minutes.
 - **An orchestrator goes quiet:** `members` for `online` and the host. If it is
   moving, wait. If it is gone, spawn one replacement for the project, with the same
   goal and the tasks that are still open.
