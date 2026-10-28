@@ -348,12 +348,14 @@ approves, `started` once a child moves, and `todo` otherwise; a rejected saga
 is `canceled`.
 
 A create needs a team. The mirror takes the item's `issue_target`, then the
-nearest ancestor's, then the team of the parent issue. `issue_target` is the
-issue tracker team for this item and the items under it, for example `ENG`;
-an empty string clears it. With no team, the item goes `needs_human` with
-"Issue team needed: set issue_target on this task". Answer it with
-`borant task update <channel>/<id> --issue-target ENG`, and the next sweep
-restores the status.
+nearest ancestor's, then the team of the parent issue. A plain project
+channel has no anchor task, so its tasks inherit nothing from the channel:
+each one needs its own `issue_target` or a parent task that has one.
+`issue_target` is the issue tracker team for this item and the items under
+it, for example `ENG`; an empty string clears it. With no team, the item
+goes `needs_human` with "Issue team needed: set issue_target on this task".
+Answer it with `borant task update <channel>/<id> --issue-target ENG`, and
+the next sweep restores the status.
 
 Setting `issue` adopts an existing issue: the mirror writes the state only,
 and never the title, the body, or the parent. Setting `issue` to `""` stops
