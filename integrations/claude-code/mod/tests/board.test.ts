@@ -308,3 +308,25 @@ test('the digest sizes its columns like the band and keeps the saga title', () =
     expect(text).not.toContain('LiteLL\u2026')
   }
 })
+
+test('a narrow project row drops its stats whole and keeps an ellipsis', () => {
+  // At 55 cells the prefix and the stats cannot both fit; the stats go whole
+  // and the epic title is what gives way, with an ellipsis.
+  const row = rowText(bandRows(board, { width: 55, updated })[3])
+  expect(row).toContain('\u2026')
+  expect(row).not.toContain('\u2588')
+  expect(row).not.toContain('\u2591')
+  expect(row).not.toContain('2/5')
+})
+
+test('a digest line never wraps, even when the transcript is narrow', () => {
+  const long = structuredClone(board)
+  const project = long.collections[0].projects[1]
+  project.project = 'roger-docs'
+  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
+  for (const width of [108, 64, 50]) {
+    for (const line of digest(long, { width }).split('\n')) {
+      expect(Array.from(line).length).toBeLessThanOrEqual(width)
+    }
+  }
+})

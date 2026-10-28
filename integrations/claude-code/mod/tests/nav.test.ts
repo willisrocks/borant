@@ -173,3 +173,11 @@ test('a blocker the channel does not list shows its id and a question mark', () 
   expect(text).toContain('The restore')
   expect(text).toContain(ID[99] + '  ?')
 })
+
+test('a pane row that does not fit loses its tail with an ellipsis', () => {
+  const rows = rowsFor(state({ path: [projectBorant], width: 40 })) as { segments: { text: string }[] }[]
+  const line = rows.map(rowLine).find((l: string) => l.includes('Elastic compute'))
+  expect(line).toBeDefined()
+  expect(line).toContain('\u2026')
+  expect(line?.endsWith('\u2026')).toBe(true)
+})

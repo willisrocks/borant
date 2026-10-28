@@ -1,12 +1,11 @@
 
  ▐▛███▛█   Claude Code v2.1.310
 ▝▜██████▀  Opus 5.5 · Claude Max
- ▝▝   ▝▝   /tmp/tmp.JKgll3nnjX
+ ▝▝   ▝▝   /tmp/tmp.ApE2P1EnjF
 
 
 ❯ /cos
-  ⎿  borant: ╭─ cos · 2 need you · 2 projects
-     ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⎿  borant: ╭─ cos · 2 need you · 2 projects ───────────────────────────────────────────────────────────────────────────
      │
      │ ▲ Needs you (2)
      │   1  Create Hetzner bucket borant-hub-backup + 1Password item  borant · blocks 2 epics · since 13:50
@@ -26,8 +25,9 @@
      │   ✓ Golden image  done
      │   ✓ Hub join for pool boxes  done
      │
-     ╰─ /cos <project> for one project · /cos pane for the pane
-     ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     ╰─ /cos <project> for one project · /cos pane for the pane ──────────────────────────────────────────────────
+
+
 
 
 

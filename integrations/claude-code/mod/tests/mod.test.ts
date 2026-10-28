@@ -603,6 +603,10 @@ test('the band highlights the whole focused row, not only its chip', async ($, o
   expect(saga?.props.dimColor).toBe(false)
   const blocked = await ui.find({ type: 'Text', text: /^2 blocked/ })
   expect(blocked?.props.color).toBe('inverseText')
+  // The progress bar's filled cells keep their green on the selection.
+  const fills = await ui.findAll({ type: 'Text', text: /^\u2588/ })
+  expect(fills.length).toBeGreaterThan(0)
+  for (const fill of fills) expect(fill.props.color).toBe('green')
 
   // When the pane takes the keys the band no longer has them, so its row goes
   // back to normal colors instead of keeping a gray highlight.

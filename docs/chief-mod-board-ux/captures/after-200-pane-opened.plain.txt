@@ -1,12 +1,12 @@
                                                                                                               │                                                                                       ✕
  ▐▛███▛█   Claude Code v2.1.310                                                                               │[ Needs you (2) ]  [ Projects ]  [ Help ]   projects
 ▝▜██████▀  Opus 5.5 · Claude Max                                                                              │  borant › roger-docs
- ▝▝   ▝▝   /tmp/tmp.JKgll3nnjX                                                                                │
+ ▝▝   ▝▝   /tmp/tmp.ApE2P1EnjF                                                                                │
                                                                                                               │▾ ▌ ✓ ROG-4199: LiteLLM proxy rollout  approved  2/5 epics
                                                                                                               │▸   ▲ Hub backup to object storage  waits on you
 ❯ /cos                                                                                                        │▸   ■ Delete borant-2  blocked
-  ⎿  borant: ╭─ cos · 2 need you · 2 projects ────────────────────────────────────────────────────────────────│▸   ○ Hub move to borant-hub  waiting
-     ──────────────────────────────────────────────────────────────────────────────────────────────────────   │▸   ✓ Golden image  done
+  ⎿  borant: ╭─ cos · 2 need you · 2 projects                                                                 │▸   ○ Hub move to borant-hub  waiting
+     ───────────────────────────────────────────────────────────────────────────                              │▸   ✓ Golden image  done
      │                                                                                                        │▸   ✓ Hub join for pool boxes  done
      │ ▲ Needs you (2)                                                                                        │  plain tasks  4 open · 2 blocked · 1 need you · 7 done
      │   1  Create Hetzner bucket borant-hub-backup + 1Password item  borant · blocks 2 epics · since 13:50   │
@@ -26,8 +26,8 @@
      │   ✓ Golden image  done                                                                                 │
      │   ✓ Hub join for pool boxes  done                                                                      │
      │                                                                                                        │
-     ╰─ /cos <project> for one project · /cos pane for the pane ──────────────────────────────────────────────│
-     ───────────────────────────────────────────────────────────────────────────────────────────────          │
+     ╰─ /cos <project> for one project · /cos pane for the pane                                               │
+     ──────────────────────────────────────────────────                                                       │
                                                                                                               │
                                                                                                               │
                                                                                                               │

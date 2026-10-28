@@ -209,7 +209,10 @@ export function register(on) {
       if (args === 'help') return { text: helpText() }
       if (args === 'pane') return openPane($)
       if (!board) return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
-      return { text: digest(board, { project: args || null, width: columns || 96 }) }
+      // A docked pane can take up to 45% of the terminal; keep the digest
+      // inside the transcript column it leaves, so it never wraps.
+      const width = Math.max(48, Math.floor((columns || 96) * 0.55) - 1)
+      return { text: digest(board, { project: args || null, width }) }
     } catch {
       return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
     }
@@ -688,8 +691,9 @@ function tree($, e, rows, prefix) {
     const props = { key, children: [s.text], ...styleProps(s.style) }
     if (selected) {
       // On the selection background every cell takes the inverse text color,
-      // so dim and colored cells stay readable. Chips keep their background.
-      props.color = 'inverseText'
+      // so dim and colored cells stay readable. Chips keep their background,
+      // and the bar keeps its green fill.
+      if (s.style !== 'green' && s.style !== 'done') props.color = 'inverseText'
       props.dimColor = false
     }
     return Text(props)
