@@ -38,7 +38,7 @@ for size in 200x50 120x40; do
   tag="${prefix:+$prefix-}$width"
 
   tui_start "cos-visual-$$-$width" "$width" "$height" env PATH="$PATH" BORANT_ROLE=chief \
-    BORANT_COS_BOARD="${BORANT_COS_BOARD:-fixture}" claude --plugin-dir "$plugin"
+    BORANT_COS_BOARD="${BORANT_COS_BOARD:-fixture}" claude "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
 
   tui_wait 'Claude Code'
   # Let session.start register /cos before the prompt autocompletes it.

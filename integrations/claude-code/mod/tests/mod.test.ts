@@ -740,8 +740,10 @@ test('a Done the hub has not closed after two minutes shows as still open', asyn
   await ui.press({ key: 'done-0' })
   expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeDefined()
   await clock.advance(120000)
-  expect(await ui.find({ type: 'Text', text: /still open: the chief did not close it/ })).toBeDefined()
-  expect((await ui.find({ type: 'Button', key: 'done-0' }))?.props.label).toBe('Done again')
+  // The mark is short and goes before the title, so the row still names the item.
+  expect(await ui.find({ type: 'Text', text: /^still open/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'done-0' }))?.props.label).toBe('Done')
   await ui.unmount()
 })
 

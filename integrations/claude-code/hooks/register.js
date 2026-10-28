@@ -51,8 +51,10 @@ const DEBOUNCE_MS = 1000
 const PUSH_DELAY_MS = 300
 /** A dropped event stream starts again after this long. */
 const EVENTS_RETRY_MS = 5000
-/** A Done that the hub has not closed by then shows as still open. */
+/** A Done that the hub has not closed by then shows as still open. A test
+ * shortens it with BORANT_COS_DONE_WAIT_S. */
 const DONE_WAIT_MS = 120000
+let doneWaitMs = DONE_WAIT_MS
 /** How many times a band press asks for the pane's keyboard. */
 const FOCUS_TRIES = 3
 
@@ -287,6 +289,13 @@ async function start($) {
   config = { mode }
 
   try {
+    const wait = Number(await $.env.get('BORANT_COS_DONE_WAIT_S'))
+    if (Number.isFinite(wait) && wait > 0) doneWaitMs = wait * 1000
+  } catch {
+    doneWaitMs = DONE_WAIT_MS
+  }
+
+  try {
     await $.command.register({
       name: 'cos',
       description: 'The chief-of-staff board: /cos, /cos <project>, /cos pane, or /cos help',
@@ -430,9 +439,10 @@ function settlePending($, now) {
     if (!open.has(key)) {
       delete pending[key]
       if (mark.state === 'pending') toast($, 'closed: ' + mark.title)
-    } else if (mark.state === 'pending' && now - mark.at >= DONE_WAIT_MS) {
-      pending[key] = { ...mark, state: 'failed', reason: 'the chief did not close it within 2 min' }
-      toast($, 'still open: ' + mark.title)
+    } else if (mark.state === 'pending' && now - mark.at >= doneWaitMs) {
+      const reason = 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s'
+      pending[key] = { ...mark, state: 'failed', reason }
+      toast($, 'still open (' + reason + '): ' + mark.title)
     }
   }
 }
@@ -622,7 +632,9 @@ async function focusPane($) {
  * needs-you row and one per project, as Tab does, wrapping at the ends.
  */
 async function bandMove($, delta) {
-  const key = stepKey(bandRowKeys(bandRows(board, { width: columns || 120 })), bandKey, delta)
+  const keys = bandRowKeys(bandRows(board, { width: columns || 120 }))
+  // With no move recorded, the ring is where autoFocus put it: the first row.
+  const key = stepKey(keys, bandKey || keys[0], delta)
   if (!key) return
   try {
     // The mod's own move does not come back through its ui.focus hook, so
@@ -850,11 +862,15 @@ function styleProps(style) {
 /** The band: rows of segments, a Button where a segment names one. */
 function tree($, e, rows, prefix) {
   const { Box, Text, Button } = $.ui.resolve(e)
+  // ctrl+x tab lands the band's ring on its first row, so the focus shows at
+  // once and j moves on from there.
+  const first = bandRowKeys(rows)[0]
   const element = (s, key, selected) => {
     if (s.button && bandHidden) return Text({ key, children: [s.text], ...styleProps(s.style) })
     if (s.button) {
       const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
       if (s.button.hotkey) props.hotkey = s.button.hotkey
+      if (s.button.key === first) props.autoFocus = true
       if (s.button.plain) {
         props.plain = true
         props.dimColor = !selected
@@ -865,9 +881,11 @@ function tree($, e, rows, prefix) {
     if (selected) {
       // On the selection background every cell takes the inverse text color,
       // so dim and colored cells stay readable. Chips keep their background,
-      // and the bar keeps its green fill.
-      if (s.style !== 'green' && s.style !== 'done') props.color = 'inverseText'
+      // and the bar keeps its green fill. Bold goes: many terminals draw bold
+      // black as grey, which reads grey on grey.
+      if (!String(s.text).startsWith('\u2588')) props.color = 'inverseText'
       props.dimColor = false
+      props.bold = false
     }
     return Text(props)
   }
