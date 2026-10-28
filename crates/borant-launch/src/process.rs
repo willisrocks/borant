@@ -90,7 +90,12 @@ impl Launcher for ProcessLauncher {
             .try_clone()
             .map_err(|e| PortError::other(format!("cannot open {}: {e}", path.display())))?;
 
-        let mut child = tokio::process::Command::new(program)
+        let mut cmd = tokio::process::Command::new(program);
+        // The child inherits the daemon's environment, less its credentials.
+        for name in crate::HOST_ONLY_ENV {
+            cmd.env_remove(name);
+        }
+        let mut child = cmd
             .args(args)
             .current_dir(&spec.cwd)
             .envs(spec.env.iter().map(|(k, v)| (k, v)))

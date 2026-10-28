@@ -36,6 +36,8 @@ fn sh_quote(word: &str) -> String {
 /// The shell command line that Orca types into the new terminal.
 pub fn shell_command(spec: &LaunchSpec) -> String {
     let mut words = vec!["exec".to_owned(), "env".to_owned()];
+    // The host's own credentials go before the spec's variables are set.
+    words.extend(crate::unset_host_only());
     words.extend(spec.env.iter().map(|(k, v)| sh_quote(&format!("{k}={v}"))));
     words.extend(spec.program.iter().map(|a| sh_quote(a)));
     words.join(" ")
@@ -189,7 +191,8 @@ mod tests {
                 "--title",
                 "borant-o1",
                 "--command",
-                "exec env BORANT_AGENT=o1 claude --dangerously-skip-permissions \
+                "exec env -u BORANT_NATS_USER -u BORANT_NATS_PASSWORD -u CREDENTIALS_DIRECTORY \
+                 BORANT_AGENT=o1 claude --dangerously-skip-permissions \
                  'fix the bug'\\''s cause; then $STOP'",
                 "--json"
             ]

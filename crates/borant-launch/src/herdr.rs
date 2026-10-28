@@ -276,8 +276,11 @@ fn session_args(cfg: &HerdrConfig) -> Vec<String> {
 /// The environment of a server that the launcher starts: every variable but
 /// the `BORANT_*` ones.
 fn without_borant(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
-    vars.filter(|(k, _)| !k.to_string_lossy().starts_with("BORANT_"))
-        .collect()
+    vars.filter(|(k, _)| {
+        let k = k.to_string_lossy();
+        !k.starts_with("BORANT_") && !crate::HOST_ONLY_ENV.contains(&k.as_ref())
+    })
+    .collect()
 }
 
 /// The error code of a herdr reply, when it is an error.
