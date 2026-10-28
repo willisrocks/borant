@@ -210,6 +210,7 @@ impl Fx {
                     parent: None,
                     kind: TaskKind::Task,
                     issue: None,
+                    issue_target: None,
                     properties: Default::default(),
                     created: now,
                     updated: now,

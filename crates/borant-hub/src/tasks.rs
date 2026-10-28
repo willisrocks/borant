@@ -108,6 +108,7 @@ impl Hub {
             parent,
             kind: new.kind,
             issue: new.issue,
+            issue_target: new.issue_target,
             properties: new.properties,
             created: now,
             updated: now,
@@ -189,7 +190,11 @@ impl Hub {
             t.max_attempts = Some(max);
         }
         if let Some(issue) = patch.issue {
-            t.issue = Some(issue);
+            // An empty string clears the link (choice M1).
+            t.issue = (!issue.is_empty()).then_some(issue);
+        }
+        if let Some(target) = patch.issue_target {
+            t.issue_target = (!target.is_empty()).then_some(target);
         }
         if let Some(blocked_by) = patch.blocked_by {
             let all = self.tasks(channel).await?;

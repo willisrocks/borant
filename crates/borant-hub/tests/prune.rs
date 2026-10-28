@@ -226,6 +226,7 @@ async fn prune_keeps_an_agent_with_a_claim() {
         parent: None,
         kind: TaskKind::Task,
         issue: None,
+        issue_target: None,
         properties: Default::default(),
         created: Timestamp(1),
         updated: Timestamp(1),

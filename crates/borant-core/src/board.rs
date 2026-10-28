@@ -582,6 +582,7 @@ mod tests {
             parent: None,
             kind: TaskKind::Task,
             issue: None,
+            issue_target: None,
             properties: Default::default(),
             created: ts(created),
             updated: ts(created),

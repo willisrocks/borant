@@ -91,6 +91,7 @@ fn task(n: u32, title: &str, status: TaskStatus, created: i64) -> Task {
         parent: None,
         kind: TaskKind::Task,
         issue: None,
+        issue_target: None,
         properties: Default::default(),
         created: Timestamp(created),
         updated: Timestamp(created),

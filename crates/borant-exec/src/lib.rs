@@ -8,6 +8,7 @@
 //! into a log line or an error message. The caller gets the `ok` value itself.
 
 pub mod changes;
+pub mod issues;
 pub mod notify;
 pub mod provision;
 

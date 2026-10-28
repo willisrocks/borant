@@ -4,6 +4,7 @@
 mod bus;
 mod changes;
 mod events;
+mod issues;
 mod provision;
 mod session;
 mod state;
@@ -11,6 +12,7 @@ mod state;
 pub use bus::MemoryBus;
 pub use changes::MemoryChanges;
 pub use events::MemoryEventLog;
+pub use issues::{IssueCall, MemoryIssues};
 pub use provision::{Call, MemoryProvisioner};
 pub use session::MemorySession;
 pub use state::MemoryState;
