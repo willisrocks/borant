@@ -247,7 +247,9 @@ export function needsRows(state, width, selection) {
         segments,
       }),
     )
-    const buttons = [{ key: 'ask-' + i, label: 'Ask orchestrator', kind: 'ask', arg: i }]
+    // A narrow pane cannot cut a Button, so the label shortens instead.
+    const ask = width < 40 ? 'Ask' : 'Ask orchestrator'
+    const buttons = [{ key: 'ask-' + i, label: ask, kind: 'ask', arg: i }]
     if (!mark || mark.state !== 'pending') {
       buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
     }

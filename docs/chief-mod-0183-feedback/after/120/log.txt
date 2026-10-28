@@ -1,0 +1,14 @@
+footer:   ⏸ manual mode on · 1 shell · ↓ to manage
+reverse-video cells after the chord (the focus ring): 1
+prompt after band j j k: [❯ ]
+prompt after band Enter j: [❯ ]
+prompt after 3 j: [❯ ]
+prompt after 0 j: [❯ ]
+pane edge: 96
+pane edge after a drag 15 right: 96
+pane edge after ctrl+x left: 92
+[ Done ] at column 94 row 6
+closed item left the board after 563 ms (with an event)
+a change with no event showed after 1082 ms
+a change with an event showed after 567 ms
+after the wait: still open · Revoke …
