@@ -266,6 +266,14 @@ processes, and a launch whose values do not resolve fails before it clones.
 The host keeps a session's values in memory only. After a daemon restart it
 resolves them again from the session's bundles, as it does for the redactor.
 
+A session never inherits the host daemon's own credentials. Every launcher
+removes `BORANT_NATS_USER`, `BORANT_NATS_PASSWORD`, and
+`CREDENTIALS_DIRECTORY` from the program's environment, also when an older
+tmux server still holds them. The session log redacts the value after any
+name that contains `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `CREDENTIAL`,
+`API_KEY`, `ACCESS_KEY`, or `PRIVATE_KEY`, or that ends in `_KEY`, such as
+`BORANT_NATS_PASSWORD=` or `"password":`.
+
 Delivery rules:
 
 - A direct message wakes the agent.

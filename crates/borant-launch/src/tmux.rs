@@ -70,8 +70,12 @@ pub fn new_session_args(socket: &str, spec: &LaunchSpec) -> PortResult<Vec<Strin
     args.push("--".to_owned());
     // tmux sets TMUX and TMUX_PANE in the pane itself, whatever `-e` says, so
     // the program goes through `env` to drop them: an agent's own `tmux` then
-    // reaches the default server, never the one that holds its session.
-    args.extend(["env", "-u", "TMUX", "-u", "TMUX_PANE", "--"].map(str::to_owned));
+    // reaches the default server, never the one that holds its session. The
+    // same `env` drops the host's own credentials, which the pane inherits
+    // from the daemon and from the global environment of the tmux server.
+    args.extend(["env", "-u", "TMUX", "-u", "TMUX_PANE"].map(str::to_owned));
+    args.extend(crate::unset_host_only());
+    args.push("--".to_owned());
     args.extend(spec.program.iter().cloned());
     Ok(args)
 }
@@ -273,6 +277,12 @@ mod tests {
                 "TMUX",
                 "-u",
                 "TMUX_PANE",
+                "-u",
+                "BORANT_NATS_USER",
+                "-u",
+                "BORANT_NATS_PASSWORD",
+                "-u",
+                "CREDENTIALS_DIRECTORY",
                 "--",
                 "sleep",
                 "30"

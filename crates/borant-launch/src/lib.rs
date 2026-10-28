@@ -25,6 +25,24 @@ pub use sandbox::{SandboxPlan, wrap};
 pub use tmux::{DEFAULT_TMUX_SOCKET, TmuxConfig, TmuxLauncher};
 pub use zellij::ZellijLauncher;
 
+/// The variables of the host daemon that a session must never see: the NATS
+/// credential of the host, and the systemd credential folder of its unit. A
+/// launcher removes them from the program's environment, whatever the daemon,
+/// the terminal server, or an old tmux server passes down.
+pub const HOST_ONLY_ENV: &[&str] = &[
+    "BORANT_NATS_USER",
+    "BORANT_NATS_PASSWORD",
+    "CREDENTIALS_DIRECTORY",
+];
+
+/// The `env` arguments that remove `HOST_ONLY_ENV`: `-u NAME` for each.
+pub(crate) fn unset_host_only() -> Vec<String> {
+    HOST_ONLY_ENV
+        .iter()
+        .flat_map(|name| ["-u".to_owned(), (*name).to_owned()])
+        .collect()
+}
+
 /// Returns the launcher for a host configuration `launcher` value:
 /// `process`, `headless` (the same as `process`), `tmux`, `zellij`, `orca`,
 /// or `herdr`. The process launcher writes logs to `log_dir`, and the zellij

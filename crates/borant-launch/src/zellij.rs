@@ -52,10 +52,11 @@ pub fn layout(spec: &LaunchSpec) -> PortResult<String> {
     if spec.program.is_empty() {
         return Err(PortError::other("launch spec has an empty program"));
     }
-    let args: Vec<String> = spec
-        .env
+    // `env` first drops the host's own credentials, then sets the spec's.
+    let args: Vec<String> = crate::unset_host_only()
         .iter()
-        .map(|(k, v)| kdl(&format!("{k}={v}")))
+        .map(|a| kdl(a))
+        .chain(spec.env.iter().map(|(k, v)| kdl(&format!("{k}={v}"))))
         .chain(spec.program.iter().map(|a| kdl(a)))
         .collect();
     Ok(format!(
@@ -166,7 +167,7 @@ mod tests {
         assert_eq!(
             layout(&s).unwrap(),
             "layout {\n    pane command=\"env\" cwd=\"/work/repo\" {\n        \
-             args \"FOO=say \\\"hi\\\"\" \"sh\" \"-c\" \"echo a\\\\b\"\n    }\n}\n"
+             args \"-u\" \"BORANT_NATS_USER\" \"-u\" \"BORANT_NATS_PASSWORD\" \"-u\" \"CREDENTIALS_DIRECTORY\" \"FOO=say \\\"hi\\\"\" \"sh\" \"-c\" \"echo a\\\\b\"\n    }\n}\n"
         );
         assert_eq!(
             create_args("borant-z1", Path::new("/logs/borant-z1.kdl")).unwrap(),
