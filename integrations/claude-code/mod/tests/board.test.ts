@@ -4,6 +4,7 @@ import board from '../fixtures/board.js'
 import {
   allProjects,
   allQuestions,
+  bandRowKeys,
   bandRows,
   condensedRow,
   countNeedsYou,
@@ -15,6 +16,7 @@ import {
   progressBar,
   projectSummary,
   rowText,
+  stepKey,
 } from '../board.js'
 
 const updated = '14:32'
@@ -329,4 +331,29 @@ test('a digest line never wraps, even when the transcript is narrow', () => {
       expect(Array.from(line).length).toBeLessThanOrEqual(width)
     }
   }
+})
+
+test('band j and k walk the row chips, wrap, and start from the help button', () => {
+  const rows = bandRows(board, { width: 140, updated })
+  const keys = bandRowKeys(rows)
+  expect(keys).toEqual(['needs-1', 'project-0', 'project-1'])
+  // The title row holds j, k, and 0 as the band's own Buttons.
+  const title = rows[0].filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).map((s: { button: { hotkey: string } }) => s.button.hotkey)
+  expect(title).toEqual(['j', 'k', '0'])
+  expect(stepKey(keys, 'help', 1)).toBe('needs-1')
+  expect(stepKey(keys, 'help', -1)).toBe('project-1')
+  expect(stepKey(keys, 'needs-1', 1)).toBe('project-0')
+  expect(stepKey(keys, 'project-1', 1)).toBe('needs-1')
+  expect(stepKey(keys, 'needs-1', -1)).toBe('project-1')
+  expect(stepKey([], 'help', 1)).toBeNull()
+
+  // Where the full hint does not fit, the keys stay.
+  const tight = bandRows(board, { width: 100, updated })[0]
+  expect(tight.filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).length).toBe(3)
+  // Beside a docked pane the band can be 60 cells: the title shortens, the keys stay.
+  const docked = bandRows(board, { width: 60, updated })[0]
+  expect(rowText(docked)).toContain('cos')
+  expect(rowText(docked)).toContain(updated)
+  expect(docked.filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).length).toBe(3)
+  expect(Array.from(rowText(docked)).length).toBe(60)
 })

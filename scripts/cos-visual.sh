@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Render the chief-of-staff mod in a real Claude Code session at two fixed
 # sizes, drive it with keys, and write an ANSI capture and a PNG for each
-# state. This is the loop for every mod or TUI change: unit tests do not paint,
-# and a text capture without color does not show a highlight or a focus ring.
+# state. The tui-visual-qa skill (.agents/skills/tui-visual-qa) describes the
+# loop; scripts/tui/cos-scenario.sh covers mouse, chords, and refresh.
 #
 # Usage:
 #   scripts/cos-visual.sh [plugin-dir] [output-dir] [prefix]
@@ -16,8 +16,9 @@
 # States: band, band-focused, pane-opened, pane-moved, at 200x50 and 120x40.
 set -euo pipefail
 
-plugin="${1:-integrations/claude-code}"
-out="${2:-/tmp/cos-visual}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+plugin="$(realpath "${1:-integrations/claude-code}")"
+export TUI_OUT="${2:-/tmp/cos-visual}"
 prefix="${3:-}"
 
 command -v claude >/dev/null || { echo "claude is not on PATH" >&2; exit 1; }
@@ -27,79 +28,48 @@ command -v freeze >/dev/null || {
   exit 1
 }
 
-plugin="$(realpath "$plugin")"
-mkdir -p "$out"
+source "$root/scripts/tui/lib.sh"
+mkdir -p "$TUI_OUT"
+trap tui_stop EXIT
 
 for size in 200x50 120x40; do
   width="${size%x*}"
   height="${size#*x}"
-  socket="cos-visual-$$-$width"
-  name="cos"
-  run="$(mktemp -d)"
   tag="${prefix:+$prefix-}$width"
 
-  cleanup() {
-    tmux -L "$socket" kill-server 2>/dev/null || true
-    rm -rf "$run"
-  }
-  trap cleanup EXIT
+  tui_start "cos-visual-$$-$width" "$width" "$height" env PATH="$PATH" BORANT_ROLE=chief \
+    BORANT_COS_BOARD="${BORANT_COS_BOARD:-fixture}" claude --plugin-dir "$plugin"
 
-  env -u NO_COLOR TERM=xterm-256color COLORTERM=truecolor \
-    tmux -L "$socket" new-session -d -s "$name" -x "$width" -y "$height" -c "$run" \
-    "env -u NO_COLOR FORCE_COLOR=3 TERM=xterm-256color COLORTERM=truecolor BORANT_ROLE=chief BORANT_COS_BOARD=${BORANT_COS_BOARD:-fixture} claude --plugin-dir '$plugin'"
-
-  tmux_send() { tmux -L "$socket" send-keys -t "$name" "$@"; }
-  tmux_text() { tmux -L "$socket" capture-pane -p -t "$name"; }
-
-  wait_for() {
-    local text="$1" tries="${2:-40}"
-    for _ in $(seq 1 "$tries"); do
-      if tmux_text | grep -q -- "$text"; then return 0; fi
-      sleep 0.5
-    done
-    echo "timed out waiting for: $text" >&2
-    tmux_text >&2
-    return 1
-  }
-
-  shot() {
-    local state="$1"
-    tmux -L "$socket" capture-pane -e -p -t "$name" >"$out/$tag-$state.txt"
-    tmux -L "$socket" capture-pane -p -t "$name" >"$out/$tag-$state.plain.txt"
-    freeze --execute "cat '$out/$tag-$state.txt'" -o "$out/$tag-$state.png" --margin=12 >/dev/null
-  }
-
-  wait_for 'Claude Code'
+  tui_wait 'Claude Code'
   # Let session.start register /cos before the prompt autocompletes it.
   sleep 4
-  tmux_send -l '/cos'
-  tmux_send Enter
-  wait_for 'chief of staff'
-  wait_for 'cos · 2 need you'
+  tui_type '/cos'
+  tui_keys Enter
+  tui_wait 'chief of staff'
+  tui_wait 'cos · 2 need you'
 
-  shot band
+  tui_shot "$tag-band"
 
-  # The band's focus starts on its help chip; Tab and Down reach a project row.
-  tmux_send C-x Tab
+  # The band's focus starts on its help chip; j j reaches the first project.
+  tui_keys C-x Tab
   sleep 0.5
-  tmux_send Tab
+  tui_type 'j'
+  sleep 0.3
+  tui_type 'j'
   sleep 0.5
-  tmux_send Down
-  sleep 0.5
-  shot band-focused
+  tui_shot "$tag-band-focused"
 
-  # Enter opens the pane and asks for its keyboard.
-  tmux_send Enter
+  # Enter opens the pane and gives it the keyboard.
+  tui_keys Enter
   sleep 1.5
-  shot pane-opened
+  tui_shot "$tag-pane-opened"
 
   # j moves through the epics and tasks.
-  tmux_send -l 'j'
+  tui_type 'j'
   sleep 0.5
-  shot pane-moved
+  tui_shot "$tag-pane-moved"
 
-  cleanup
-  trap - EXIT
+  tui_stop
 done
 
-echo "wrote $out"
+echo "wrote $TUI_OUT"
