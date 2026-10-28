@@ -9,10 +9,10 @@ use borant_core::model::{
     CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskStatus,
     UsageWindow,
 };
-use borant_core::proto::{MoveSelector, MoveTarget, PauseSelector, ToolCall};
+use borant_core::proto::{LocalSession, MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
-    TaskId, Timestamp,
+    SessionId, TaskId, Timestamp,
 };
 use borant_host::LocalClient;
 use borant_host::client::Outcome;
@@ -472,10 +472,35 @@ pub(crate) fn client() -> LocalClient {
 const CALL: Duration = Duration::from_secs(30);
 
 pub(crate) async fn call(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
-    match c
-        .post::<_, Value>("/v1/call", &json!({ "call": call }), CALL)
-        .await
-    {
+    reply(c, json!({ "call": call })).await
+}
+
+/// A call that the hub reads as the agent of this session when the process
+/// runs inside one, and as the person otherwise. `borant board` uses it: a
+/// chief session gets the board of its own collection, never the person's.
+pub(crate) async fn call_in_session(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
+    match session(c).await {
+        Some(session) => reply(c, json!({ "session": session, "call": call })).await,
+        None => reply(c, json!({ "call": call })).await,
+    }
+}
+
+/// The session this process runs inside, when there is one. The MCP server
+/// finds its own the same way, from its ancestors and the harness session id;
+/// a person's shell resolves nothing, and its calls stay the person's.
+async fn session(c: &LocalClient) -> Option<SessionId> {
+    let body = json!({
+        "ancestors": crate::mcp::ancestors(),
+        "harness_session_id": std::env::var("CLAUDE_CODE_SESSION_ID").ok(),
+    });
+    match c.post::<_, LocalSession>("/v1/resolve", &body, CALL).await {
+        Outcome::Reply(Ok(found)) => Some(found.session),
+        _ => None,
+    }
+}
+
+async fn reply(c: &LocalClient, body: Value) -> anyhow::Result<Value> {
+    match c.post::<_, Value>("/v1/call", &body, CALL).await {
         Outcome::Reply(Ok(v)) => Ok(v),
         Outcome::Reply(Err(e)) => bail!("{}", e.message),
         Outcome::Down(e) => Err(anyhow!(
@@ -1681,7 +1706,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             }
         }
         Command::Board { collection, json } => {
-            let v = call(&c, ToolCall::Board { collection }).await?;
+            let v = call_in_session(&c, ToolCall::Board { collection }).await?;
             if json {
                 pretty(&v);
             } else {

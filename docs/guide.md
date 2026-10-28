@@ -206,7 +206,9 @@ selection. Project, epic, and task views read the channel with
 quietly. (The board itself names no channel for a project's plain tasks, so
 those appear only in the counts line unless the board names their channel.)
 
-The band reads `borant board --json`. For a session without a hub, set
+The band reads `borant board --json`. A call from inside an agent's session is
+the agent's read, so the band of a chief shows only its own collection; a
+person's shell sees every collection. For a session without a hub, set
 `BORANT_COS_BOARD=fixture` and it draws the fixture under
 `integrations/claude-code/mod/fixtures` instead; when the read fails it shows
 `board unavailable` quietly. The Done and Ask orchestrator buttons in the pane
