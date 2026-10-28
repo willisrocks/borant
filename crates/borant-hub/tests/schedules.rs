@@ -84,6 +84,7 @@ async fn fixture(schedule: &Schedule) -> Fx {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

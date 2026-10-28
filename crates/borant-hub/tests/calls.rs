@@ -71,6 +71,7 @@ async fn with_channel(fx: &Fx) -> borant_core::proto::Registered {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -140,6 +141,7 @@ async fn channel_create_sets_owner_and_default_schema() {
                 kind: ChannelKind::Project,
                 title: None,
                 issue: None,
+                issue_target: None,
             },
         )
         .await

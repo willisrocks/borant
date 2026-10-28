@@ -45,6 +45,7 @@ async fn pinned_agent(fx: &Fx) -> borant_core::proto::Registered {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await
@@ -181,6 +182,7 @@ async fn pinned_pending_move_is_not_placed() {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

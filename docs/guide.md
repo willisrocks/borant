@@ -38,6 +38,13 @@ approves = true            # may approve a saga's gate
 
 [collections.work]
 mirror_issues = true       # copy objects out to an issue tracker
+
+[mirror]
+adapter = "exec"                    # the exec plugin protocol, kind "issues"
+program = "/nix/store/.../bin/borant-mirror-linear"
+credential = "linear-token"         # a file under CREDENTIALS_DIRECTORY
+every_secs = 60                     # one sweep per minute
+max_writes = 50                     # tracker calls per sweep
 ```
 
 Then run `borant hub`. A stable `instance` name lets a restarted hub take its
@@ -45,7 +52,9 @@ own lease at once.
 
 Only a person, or an agent whose role sets `approves = true`, closes a saga
 gate as done. `mirror_issues` on a collection is the default for its
-projects, and the `--mirror-issues` flag of a project overrides it.
+projects, and the `--mirror-issues` flag of a project overrides it. The
+`[mirror]` table is absent when the mirror is off; `borant-infra` adds it,
+pinned to a release that has the mirror.
 
 ### Secrets of a host that the hub creates
 
@@ -311,6 +320,76 @@ The board is a computed read that stores nothing:
 `GET /api/board?collection=C`. It shows the projects, sagas, epics, and the
 questions that wait for a person, and the mod of a chief session draws it.
 
+### Issue mirror
+
+A project with `mirror_issues` on copies its items to an issue tracker, here
+Linear, one way only: Borant is the source, and an edit in Linear never flows
+back. The hub keeps the link in `issue` on the item, and a KV record beside
+it. An issue that the mirror did not create keeps its own title and body.
+
+What maps to what:
+
+| Borant | Issue |
+|---|---|
+| A saga | an issue that holds the saga's epics |
+| An epic task of a saga | an issue under the saga issue |
+| A standalone epic channel | an issue that holds the issues of the root epic's tasks |
+| Any other task with `pr_url` or `issue` | an issue under its nearest mirrored ancestor |
+
+The root epic of an epic channel and a saga gate are never mirrored, and
+neither is a task without a PR and without an issue. A task is a child of its
+nearest mirrored ancestor, so a task under an epic task hangs off the epic's
+issue.
+
+The state of a task follows the task: `open` is `todo`; `in_progress`,
+`needs_human`, and `stuck` are `started`; a close as `done` is `done`; any
+other close is `canceled`. A container is `backlog` before its saga gate
+approves, `started` once a child moves, and `todo` otherwise; a rejected saga
+is `canceled`.
+
+A create needs a team. The mirror takes the item's `issue_target`, then the
+nearest ancestor's, then the team of the parent issue. `issue_target` is the
+issue tracker team for this item and the items under it, for example `ENG`;
+an empty string clears it. With no team, the item goes `needs_human` with
+"Issue team needed: set issue_target on this task". Answer it with
+`borant task update <channel>/<id> --issue-target ENG`, and the next sweep
+restores the status.
+
+Setting `issue` adopts an existing issue: the mirror writes the state only,
+and never the title, the body, or the parent. Setting `issue` to `""` stops
+the mirror for that item.
+
+The KV record is `mirror.<channel>` for a container and
+`mirror.<channel>.<task>` for a task. It holds `issue` (the key), `hash`
+(what the mirror last wrote), `was` (the state from before the mirror raised
+`needs_human`), `owned`, `stopped`, `linked`, and `refused`.
+
+A call that answers `unavailable`, times out, or returns `internal` is retried
+on the next sweep. `not_found` tells the owner once. `invalid` skips the item
+until its hash changes. `denied` pauses the mirror until the next hub start
+and raises the `mirror_refused` alert.
+
+A sweep runs every `every_secs` and makes at most `max_writes` tracker calls.
+It writes parents first, then the oldest first. An item whose hash is
+unchanged costs no call, a project with the mirror off makes no call, and a
+closed history is not backfilled.
+
+The adapter is an exec plugin of `kind: "issues"`. The hub writes one JSON
+line per call and reads one back. `describe` answers
+`{"ok":{"v":1,"kind":"issues"}}`; `create` and `update` take the write:
+
+```
+{"v":1,"op":"create","config":{},"write":{"key":"<uuid>","target":"ENG"|"null","parent":"ENG-1"|"null","title":"..","body":"..","state":"backlog|todo|started|done|canceled"}}
+  -> {"ok":{"key":"ENG-123","url":"https://..."}}
+{"v":1,"op":"update","config":{},"issue":"ENG-123 or URL","write":{...},"full":true|false}
+  -> {"ok":{"key":"ENG-123","url":"https://..."}}
+```
+
+`target` and `parent` are always present, as `null` when unset, so a plugin
+reads one key set for every write. `full` is false for an adopted issue, which
+writes the state only. The private `borant-mirror-linear` plugin in
+`borant-infra` speaks this format against Linear.
+
 ## Orchestrate from a shell
 
 A person or a channel owner can drive the swarm from any machine that runs a
@@ -442,6 +521,7 @@ anyway.
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant task close <channel>/<id> --reason R --message M` | Close a task as a person |
+| `borant task update <channel>/<id> [--issue-target T] [--issue I]` | Change the issue link or the issue team of a task; an empty string clears it |
 | `borant channel close <name>` | Close a channel as its owner or a person; every task of it must be closed first |
 | `borant move <agent> [--host H] [--harness X] [--here] [--member M]` | Move one agent, or switch it to another token-pool member |
 | `borant move --from <host> --here` | Move all agents of a host to this host |

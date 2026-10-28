@@ -66,6 +66,7 @@ async fn setup(fx: &Fx, members: &[&str]) -> borant_core::proto::Registered {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

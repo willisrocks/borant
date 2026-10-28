@@ -207,6 +207,7 @@ async fn channel(fx: &Fx, owner: &Registered) -> ChannelName {
             kind: ChannelKind::Project,
             title: None,
             issue: None,
+            issue_target: None,
         },
     )
     .await

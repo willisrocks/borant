@@ -143,6 +143,7 @@ impl World {
                     kind,
                     title: title.map(str::to_owned),
                     issue: None,
+                    issue_target: None,
                 },
             )
             .await

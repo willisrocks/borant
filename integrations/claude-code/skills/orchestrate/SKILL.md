@@ -32,6 +32,7 @@ general plan gets wrong.
 | A spawn bound to a task starts on the `branch` property of the task's epic, if the epic has one; otherwise on the channel branch. The branch must be on `origin`. | Keep the epic's `branch` at the top branch of its stack, and push that branch before you spawn. |
 | `gh stack` keeps its metadata in the local clone, so only you run it, in your own clone; the host of an orchestrator needs the `gh-stack` extension of the GitHub CLI. | Run `gh stack` yourself; workers push a branch and open a PR, and never run it. |
 | `channel_close` closes a channel, only for its owner or a person, and only when every task of it is closed; a closed channel refuses `task_create`, `task_claim`, and `spawn`. | Close a saga when its last epic closes; close a wontfix saga's epics as `wontfix` first. |
+| In a project with `mirror_issues` on, the hub copies each saga, epic, and task with a PR to the issue tracker (Linear) and writes the key into `issue`. A create needs a team: the item's `issue_target`, an ancestor's, or the parent issue's. With none, the item goes `needs_human` with 'Issue team needed'. | Set `issue_target` (the Linear team key, for example `ENG`) at `channel_create` for a saga or an epic, or on the first task of a plain project. When you do not know the team, ask the chief before you create. Answer a team question by `task_update(issue_target: ...)`; the hub then restores the task's status. |
 | The user is not an agent. `send` cannot reach them. | A question for the user: `task_update(status: "needs_human", attention_msg: ...)`, and say it in this session. |
 
 ## Set up
@@ -42,9 +43,9 @@ general plan gets wrong.
    shows the projects).
 3. Size the goal: a plain task runs in the project channel; a standalone epic
    needs `channel_create` with `kind: "epic"` and a `title`; a saga needs
-   `channel_create` with `kind: "saga"`, a `title`, and the `issue` link. An
-   epic channel's hub-created root task is the epic; a saga holds a gate and the
-   epics.
+   `channel_create` with `kind: "saga"`, a `title`, the `issue` link, and
+   `issue_target`. An epic channel's hub-created root task is the epic; a saga
+   holds a gate and the epics.
 4. Create every task before the first spawn. The body is the worker's brief: the
    acceptance criteria, the files in scope, and the test that proves it. Set
    `blocked_by` for order.
@@ -55,8 +56,8 @@ general plan gets wrong.
 A saga is one approval, then a set of epics that run without more gates.
 
 1. Create the saga: `channel_create` with `kind: "saga"`, `title`, `issue`,
-   `project`, and base `branch`. The hub also creates the gate task "Approve the
-   scope and the epics".
+   `issue_target`, `project`, and base `branch`. The hub also creates the gate
+   task "Approve the scope and the epics".
 2. Create the epics: `task_create` with `kind: "epic"` and a body that states the
    scope of each; set `blocked_by` between epics for order.
 3. Set the gate to `needs_human` with `task_update`, and an `attention_msg` that
@@ -253,3 +254,4 @@ the rest:
 | "Block this task until the deploy" | Code it now. Make the deploy its own task. |
 | "The worker is quiet, spawn a replacement" | Check `members`. It may be moving hosts. |
 | "Send the user a message with `send`" | `needs_human` on the task, and say it here. |
+| "Guess the Linear team" | Ask the chief. A wrong team puts the issue in the wrong place; the mirror never moves it. |

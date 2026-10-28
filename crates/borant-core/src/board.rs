@@ -365,7 +365,13 @@ fn epic_channel_line<'a>(channel: &Channel, tasks: &'a [Task]) -> Option<(&'a Ta
         .root
         .and_then(|root| tasks.iter().find(|task| task.id == root))
         .or_else(|| tasks.iter().find(|task| task.kind == TaskKind::Epic))?;
-    Some((epic, epic_line(channel, epic, tasks)))
+    let mut line = epic_line(channel, epic, tasks);
+    // The hub writes the root's issue with the channel's link, so the
+    // channel's issue wins; the root's is the fallback.
+    if let Some(issue) = &channel.issue {
+        line.issue = Some(issue.clone());
+    }
+    Some((epic, line))
 }
 
 /// One epic line: its own status, its branch and PR, and the counts of the
@@ -799,6 +805,40 @@ mod tests {
                 running: 1,
                 ..Counts::default()
             }
+        );
+    }
+
+    #[test]
+    fn board_epic_channel_line_reads_the_channel_issue() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("metrics", ChannelKind::Epic, Some("mirror"));
+        fx.at("metrics", |c| {
+            c.issue = Some("ENG-1".into());
+            c.root = Some(id(1));
+        });
+        fx.task(
+            "metrics",
+            Task {
+                issue: Some("ENG-9".into()),
+                ..epic(1, "the mirror", 1_100)
+            },
+        );
+
+        // The channel's issue wins: the hub writes the root's issue with the
+        // channel's link.
+        let board = fx.build(&[None]);
+        assert_eq!(
+            board.collections[0].projects[0].epics[0].issue.as_deref(),
+            Some("ENG-1")
+        );
+
+        // Without a channel issue the root task's issue stands in.
+        fx.at("metrics", |c| c.issue = None);
+        let board = fx.build(&[None]);
+        assert_eq!(
+            board.collections[0].projects[0].epics[0].issue.as_deref(),
+            Some("ENG-9")
         );
     }
 
