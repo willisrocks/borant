@@ -203,10 +203,15 @@ the rest:
   Every worker spawn binds the worker to its task and passes `--continue 5`, so a
   worker that goes idle before it finishes gets a continue instead of dying quiet.
 - A helper for your own steps: `role: "helper"`. It runs on your host.
-- A step that only the laptop can run (prod credentials, a local tool): a worker
-  spawn with `host` set to the laptop's host name. A role's `avoid` tags are soft, so
-  a named host wins. Ask the chief first when the standing permissions do not cover
-  work on the laptop.
+- A step that only the laptop can run (prod credentials, a local tool): a spawn with
+  `host` set to the laptop's host name. A named host wins over a role's soft `avoid`
+  tags, not over its `require` tags: when the worker role requires a tag the laptop
+  lacks, the spawn waits in `borant ps` with "missing tag". Then use a role in your
+  `spawns` whose `require` tags the laptop carries. If none exists, `borant cancel`
+  the queued spawn and send the chief the brief, the task as `channel/ID`, and the
+  settings: the chief spawns it as its own helper, which runs on the laptop and reports
+  to you. Ask the chief first when the standing permissions do not cover work on the
+  laptop.
 - A spawn from a roled agent must name a role that its own role allows; the hub refuses
   the rest with `denied`.
 - The role also sets the placement tags and the skill line in the brief. In a
@@ -267,5 +272,5 @@ the rest:
 | "Block this task until the deploy" | Code it now. Make the deploy its own task. |
 | "The worker is quiet, spawn a replacement" | Check `members`. It may be moving hosts. |
 | "Send the user a message with `send`" | `needs_human` on the task, and say it here. |
-| "Ask the chief to run it: the access is on the laptop" | Never ask the chief to run work. Spawn a worker on the laptop's host; ask the chief only to approve that placement. |
+| "Ask the chief to run it: the access is on the laptop" | Never ask the chief to run work. Spawn on the laptop's host with a role that may run there; if no role of yours may, send the chief the brief to spawn as its helper, bound to your task and reporting to you. |
 | "Guess the Linear team" | Ask the chief. A wrong team puts the issue in the wrong place; the mirror never moves it. |
