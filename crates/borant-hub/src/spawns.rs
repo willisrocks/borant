@@ -578,7 +578,7 @@ impl Hub {
         }) {
             target.host = None;
         }
-        let placed = self
+        let mut placed = self
             .place_agent(
                 mem,
                 agent,
@@ -587,6 +587,23 @@ impl Hub {
                 Some(record.spec.prompt.clone()),
             )
             .await?;
+        // No other host fits, so the hosts that failed this agent get the next
+        // try: a spawn that only those hosts can take must reach its try limit
+        // and fail with a message, not wait on "failed recently" for good.
+        if !placed && let Some(failed) = mem.failed_hosts.remove(&record.agent) {
+            placed = self
+                .place_agent(
+                    mem,
+                    agent,
+                    MoveReason::Spawn,
+                    target.clone(),
+                    Some(record.spec.prompt.clone()),
+                )
+                .await?;
+            if !placed {
+                mem.failed_hosts.insert(record.agent.clone(), failed);
+            }
+        }
         let mut next = record.clone();
         if placed {
             next.state = SpawnState::Launching;

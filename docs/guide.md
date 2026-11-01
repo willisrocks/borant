@@ -557,6 +557,17 @@ file. The file is written with mode 0600. A launch of another harness does
 not touch it, and a write that fails logs a warning and starts the harness
 anyway.
 
+A Claude Code launch that runs with `--dangerously-skip-permissions` also
+passes `--settings '{"skipDangerousModePermissionPrompt":true}'`, so it never
+waits at the bypass-permissions consent screen on a host whose own settings
+never accepted it. The flag holds for that session only and writes no file.
+
+A launch that does not register fails its try, and the hub places the spawn
+again, on another host when one fits. When no other host fits, the host that
+failed gets the try. After three failed tries the spawn fails: `borant ps`
+shows the reason with the end of the screen, and the spawner gets a direct
+message.
+
 ## Commands
 
 | Command | Purpose |

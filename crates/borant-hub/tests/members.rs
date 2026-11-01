@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use borant_core::model::{
-    Agent, ChannelKind, Harness, HostInfo, MemberBundle, MemberState, SpawnRecord, SpawnState,
-    UsageWindow,
+    Agent, ChannelKind, Harness, HostInfo, MemberBundle, MemberState, UsageWindow,
 };
 use borant_core::ports::StateStore;
 use borant_core::proto::{CtlRequest, HostCommand, ToolCall};
@@ -151,7 +150,7 @@ async fn members_omp_launch_gets_no_claude_code_member() {
 
 /// A failed pool launch on h1 must not fall back to h2, which has no
 /// `[secrets]`: the launch would run on the login of the box instead of the
-/// pool. The spawn waits in the queue, and the reason names the bundle.
+/// pool. The retry goes back to h1, the only host with the bundle.
 #[tokio::test]
 async fn members_a_failed_pool_launch_does_not_fall_back_to_a_host_without_the_bundle() {
     let fx = Fx::new();
@@ -176,36 +175,19 @@ async fn members_a_failed_pool_launch_does_not_fall_back_to_a_host_without_the_b
     })
     .await
     .unwrap();
-    // The hub tries again. h1 failed the agent, h2 has no member bundle.
+    // The hub tries again. h2 has no member bundle, so the try goes back to
+    // h1, the only host that fits.
     fx.hub.tick().await.unwrap();
     assert!(
         next_cmd(&mut h2).await.is_none(),
         "a host without the member bundle must not take the agent"
     );
-    let doc = fx
-        .state
-        .get(&keys::spawn(&agent("w1")))
-        .await
-        .unwrap()
-        .expect("the spawn record");
-    let record: SpawnRecord = serde_json::from_slice(&doc.value).unwrap();
-    assert_eq!(record.state, SpawnState::Queued, "{record:?}");
-    assert!(
-        record
-            .last_reject
-            .iter()
-            .any(|(host, why)| host == &name("h2") && why == "no member bundle claude_auth"),
-        "the queue names the bundle: {:?}",
-        record.last_reject
-    );
-    assert!(
-        record
-            .last_reject
-            .iter()
-            .any(|(host, why)| host == &name("h1") && why == "failed recently"),
-        "{:?}",
-        record.last_reject
-    );
+    match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.members.get(&bundle()), Some(&member("a")), "{o:?}");
+        }
+        other => panic!("expected the retry on h1, got {other:?}"),
+    }
 }
 
 /// An agent with no member keeps today's placement: a host without secrets
