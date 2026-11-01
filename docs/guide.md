@@ -682,3 +682,15 @@ shasum -a 256 -c "borant-$tag-aarch64-apple-darwin.tar.gz.sha256"
 tar -xzf "borant-$tag-aarch64-apple-darwin.tar.gz"
 install -m 0755 "borant-$tag-aarch64-apple-darwin/borant" ~/.local/bin/borant
 ```
+
+A host daemon that a LaunchAgent starts runs its agents in launchd's
+Background session (`launchctl managername` prints `Background` in an
+agent's shell). There macOS cannot show a privacy prompt. A process that
+opens another app's data under `~/Library/Group Containers/` waits for that
+prompt, so its `open()` blocks forever, with no output and no error. A
+signal other than `SIGKILL` does not stop it. The 1Password CLI does this at
+startup, even with a service account token: it reads the desktop app's
+settings. Set `OP_LOAD_DESKTOP_APP_SETTINGS=false` and `OP_CACHE=false` in
+the environment of `op` (for example in the wrapper that sets the token) and
+it skips that read. The variable is not documented by 1Password; check it
+after an `op` upgrade with a run that you stop after a few seconds.
