@@ -38,11 +38,29 @@ fs.writeFileSync('$stub/board.json', JSON.stringify(b))
 }
 # A shot, and the visible rows with no ANSI, for the log.
 shot() { sleep "${2:-0.8}"; tui_shot "$1"; }
+# Back to an empty prompt that takes typing. With vim mode on, an Esc that
+# reaches the prompt leaves insert mode, and a digit is then a count, not an
+# edit; `i` goes back to insert mode, and End C-u clears the line.
+prompt_reset() { sleep 0.5; tui_type i; sleep 0.3; tui_keys End C-u; sleep 0.3; }
+# A Done submits a prompt, and the model's turn holds the keyboard until it
+# ends (its spinner line reads "… (12s"); the pane asks for it back then.
+wait_idle() {
+  sleep 1
+  for _ in $(seq 1 90); do tui_text | grep -q '… ([0-9]*s' || return 0; sleep 0.5; done
+}
+# A Done submits a prompt, and the test model may then ask to run a command.
+# Its permission dialog would take the keys below; Esc refuses it.
+no_dialog() {
+  if tui_text | grep -q 'Do you want to proceed\|requires approval'; then
+    note "a permission dialog of the model's own came up; refused it with Esc"
+    tui_keys Escape; sleep 0.8
+  fi
+}
 
 node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
 : >"$stub/events.jsonl"
 
-trap 'tui_stop; rm -rf "$stub"' EXIT
+trap 'cp "$stub/calls.log" "$TUI_OUT/calls.log" 2>/dev/null; tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-qa-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
   BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
   claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
@@ -70,12 +88,16 @@ tui_type j; shot 04-jj
 tui_type k; shot 05-jjk
 tui_keys Enter; shot 06-enter 1.5
 tui_keys Escape; shot 07-esc
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+tui_keys Escape; prompt_reset
 
-# A project row by its digit, then Enter on it.
-tui_type 8; shot 08-digit8 1.5
+# A project row by its digit, then Enter on it: 8, or the last digit the band
+# names when it names fewer (a small board, or `+N more` below 144 columns).
+d8="$(tui_text | grep -E '^(cos|chief of staff) ' | grep -oE '[1-9]: ' | cut -c1 | sort -n | tail -1)"
+[ -z "$d8" ] || [ "$d8" -gt 8 ] && d8=8
+note "digit for the project step: $d8"
+tui_type "$d8"; shot 08-digit8 1.5
 tui_keys Enter; shot 09-digit8-enter 1.5
-tui_keys Escape; sleep 0.5; tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+tui_keys Escape; sleep 0.5; tui_keys Escape; prompt_reset
 
 # Done on the first item with its key: pressed, landed, then the hub closes it.
 tui_type 1; sleep 1.2
@@ -88,12 +110,22 @@ event
 for _ in $(seq 1 80); do tui_text | grep -q 'closed' && break; sleep 0.25; done
 note "Done closed mark after $(since "$start") ms (with an event)"
 shot 12-done-closed 0.2
+no_dialog
+wait_idle
+no_dialog
 # Ask on the next item.
 tui_type a; shot 13-ask 1.5
 note "stub sends: $(grep -c ' send ' "$stub/calls.log" 2>/dev/null || true)"
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+no_dialog
+tui_keys Escape; prompt_reset
 
 # Refresh: a change with no event waits for the poll; one with an event does not.
+# The changed titles are epics, which the inbox pane shows under an unfolded
+# project: 4 unfolds roger-docs-api (Prod cutover), 2 unfolds borant (Hub backup).
+no_dialog
+tui_type 4; sleep 1.2; tui_keys Escape; prompt_reset
+no_dialog
+tui_type 2; sleep 1.2
 start="$(now_ms)"
 board_edit "b = JSON.parse(JSON.stringify(b).replaceAll('Prod cutover', 'Prod cutover (moved)'))"
 for _ in $(seq 1 80); do tui_text | grep -q 'cutover (moved)' && break; sleep 0.25; done
@@ -105,6 +137,7 @@ for _ in $(seq 1 80); do tui_text | grep -q 'Hub backup to R2' && break; sleep 0
 note "a change with an event showed after $(since "$start") ms"
 shot 14-refreshed 0.2
 
+no_dialog
 # Resize: the other size, then back.
 if [ "$width" -ge 150 ]; then other_w=100 other_h=40; else other_w=200 other_h=50; fi
 tmux -L "$TUI_NAME" resize-window -t tui -x "$other_w" -y "$other_h"
@@ -119,4 +152,6 @@ node "$root/scripts/tui/board-variants.mjs" empty "$stub" >>"$log"
 event
 shot 17-empty 2.5
 
+no_dialog
+tui_keys Escape; prompt_reset
 tui_type '/cos help'; sleep 0.5; tui_keys Enter; shot 18-help 2

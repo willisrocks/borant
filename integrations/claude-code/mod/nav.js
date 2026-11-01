@@ -1,67 +1,60 @@
-// The pane's navigation model: which rows a view draws, which rows fold or
-// drill in, the breadcrumb of where the person is, and a task's detail lines.
+// The pane's navigation model: the rows each view draws, which rows fold or
+// open, the breadcrumb of where the person is, and a task's detail lines.
 //
 // Pure, like board.js: no mods API here, so the tests call it with the
-// fixture and no session. The mod's renderer turns a row into a Button, and a
-// row's `open` into the small ▸ button beside it.
+// fixture and no session. The renderer turns a selectable row's glyph into
+// a Button, which carries the engine's focus ring, and paints the selected
+// item, every line of it, on the selection background.
 //
-// A row is: { key, selectable, marker, open, segments, buttons, link }.
+// The root view is one list: what needs you, as cards, then the projects as
+// a tree. A row is:
 //   key        `row-3` while the row can take the selection, else null
-//   marker     `▸` a closed node or a leaf to open, `▾` an open node, ` ` nothing
-//   open       { key } to fold, or { node } to drill in, else null
-//   segments   [{ text, style }], the row's text after the 2-cell marker cell
-//   buttons    action Buttons a row draws under its text (Done, Ask)
-//   link       { prefix, href, label } a Link a detail line draws
+//   part       the selectable row it belongs to (a card's lines share one), or -1
+//   marker     the glyph segment in the row's first cell
+//   indent     blank cells before the marker
+//   segments   [{ text, style }], the row's text after the marker and a space
+//   status     a press's status segments, drawn before `buttons`
+//   buttons    Buttons the line draws (Done, Ask, open the task)
+//   drill      the node Enter opens, or null
+//   fold       the fold key Enter, h, and l toggle, with `isOpen`
+//   parentFold the fold of the project an epic row sits under
+//   link       { href, label } a Link a detail line draws
 
 import {
   GLYPH,
   activeProjects,
+  activeSaga,
   allProjects,
-  badge,
-  badgeStyle,
   epicNote,
   epicState,
   fitEllipsis,
-  hhmm,
-  isActive,
-  openTasksLabel,
+  openTasks,
   pad,
+  projectCount,
   projectSummary,
   text,
-  truncate,
+  wrap,
 } from './board.js'
-import { canDone, pressStatus } from './status.js'
-
-/** The pane's tabs, in the order h and l cycle them. */
-export const TABS = ['needs', 'projects', 'help']
+import { ageText, canDone, pressStatus } from './status.js'
 
 /** The first breadcrumb segment: the mod itself. */
 export const ROOT = 'borant'
 
-const SEP = ' \u203a '
-/** The selected row's mark, drawn in the gap after its \u25b8, so the row's text
- * does not move. */
-export const SELECTED = '\u258c'
+const SEP = ' › '
 
-/** The key that remembers a node's fold: a project, a saga, or an epic. */
+/** The key that remembers a project's fold. */
 export function foldKey(node) {
-  if (node.kind === 'project') return 'project:' + node.project
-  if (node.kind === 'saga') return 'saga:' + node.channel
-  return 'epic:' + node.channel + ':' + node.id
+  return 'project:' + node.project
 }
 
-/** Whether a node is open. Projects and sagas start open, epics closed. */
+/** Whether a project is unfolded. Projects start folded. */
 export function isOpen(folds, node) {
-  const key = foldKey(node)
-  const value = folds ? folds[key] : undefined
-  if (typeof value === 'boolean') return value
-  return node.kind !== 'epic'
+  return Boolean(folds && folds[foldKey(node)])
 }
 
-/** The view's name, which keys the remembered selection and the fold state. */
-export function viewKey(state) {
-  const path = (state.path || []).map((n) => foldKey(n)).join('/')
-  return (state.tab || 'needs') + (path ? '/' + path : '')
+/** The view's name, which keys the remembered selection. */
+export function viewKey(path) {
+  return (path || []).map((n) => n.kind + ':' + (n.id || n.project || '')).join('/') || 'root'
 }
 
 /** A needs-you item's name, `<channel>/<task>`, which keys a pending Done. */
@@ -69,18 +62,22 @@ export function questionKey(q) {
   return String(q && q.channel) + '/' + String(q && q.task)
 }
 
-/** The breadcrumb the pane's title and its dim top line show. */
+/** The breadcrumb of a view below the root: the project, a saga, the titles. */
 export function breadcrumb(path) {
   const parts = [ROOT]
-  for (const node of path || []) {
-    if (node.kind === 'epic' && node.saga) parts.push(node.saga)
-    const label = node.kind === 'project' ? node.project : node.title
+  const add = (label) => {
     if (label && parts[parts.length - 1] !== label) parts.push(label)
   }
+  ;(path || []).forEach((node, i) => {
+    if (node.kind === 'help') return add('help')
+    if (i === 0) add(node.project)
+    if (node.kind === 'epic') add(node.saga)
+    add(node.title)
+  })
   return parts.join(SEP)
 }
 
-/** Every project of the board, flattened. */
+/** A project of the board by name, or null. */
 export function findProject(board, name) {
   for (const collection of board?.collections || []) {
     for (const project of collection.projects || []) {
@@ -90,27 +87,12 @@ export function findProject(board, name) {
   return null
 }
 
-/** The channels a view reads for its tasks: the board names no other. */
+/** The channels a view reads for its tasks: an epic's or a task's. */
 export function channelsFor(state) {
   const path = state.path || []
   const last = path[path.length - 1]
-  if (!last) return []
-  if (last.kind === 'epic' || last.kind === 'task') return [last.channel]
-  if (last.kind === 'project' && state.board) {
-    const project = findProject(state.board, last.project)
-    return channelsOf(project)
-  }
+  if (last && (last.kind === 'epic' || last.kind === 'task')) return [last.channel]
   return []
-}
-
-function channelsOf(project) {
-  const out = []
-  const add = (channel) => {
-    if (channel && !out.includes(channel)) out.push(channel)
-  }
-  for (const saga of project?.sagas || []) add(saga.channel)
-  for (const epic of project?.epics || []) add(epic.channel)
-  return out
 }
 
 /** The task of a channel's list by id, or null. */
@@ -159,289 +141,270 @@ export function localTime(at, fallback = '?') {
   )
 }
 
-/** A row with the selection mark and its text, for tests and the digest. */
-export function rowLine(row) {
-  return row.segments.map((s) => s.text).join('')
-}
 
 function row(options) {
   return {
     key: null,
     selectable: false,
-    marker: ' ',
-    open: null,
+    cont: false,
+    marker: text(' '),
+    indent: 0,
     segments: [],
+    status: [],
     buttons: [],
+    drill: null,
+    fold: null,
     link: null,
     ...options,
   }
 }
 
-/**
- * The rows of the current view, each fitted to `width` less the marker cell.
- * `state` is `{ tab, path, folds, selection }` and carries the board and the
- * task lists as `board` and `tasks` (channel → Task[] or null).
- */
-export function rowsFor(state) {
-  const width = Math.max(20, state.width || 60)
-  const selection = Number(state.selection) || 0
-  const tab = state.tab || 'needs'
-  if (tab === 'help') return helpRows(state, width, selection)
-  const last = (state.path || [])[(state.path || []).length - 1]
-  // Enter on a question opens its task, as in the Projects tab, so the
-  // breadcrumb names the view that shows.
-  if (tab === 'needs') return last && last.kind === 'task' ? detailRows(state, last, width) : needsRows(state, width, selection)
-  if (last && last.kind === 'task') return detailRows(state, last, width)
-  if (last && last.kind === 'epic') return epicRows(state, last, width, selection)
-  if (last && last.kind === 'project') return projectRows(state, last, width, selection)
-  return projectsRows(state, width, selection)
-}
-
-/** Fit every row to the cells left beside the marker, before the bar. */
-function finishWidth(rows, width) {
-  return rows.map((r) => ({ ...r, width: Math.max(1, width - 2) }))
-}
-
-/** Number the selectable rows, mark the selection, and fit each row. */
-function finish(rows, selection) {
-  let index = 0
-  return rows.map((original) => {
-    const r = { ...original }
-    if (r.open && r.open.kind === 'drill' && !r.drill) r.drill = r.open.node
-    let segments = r.segments
-    if (r.selectable) {
-      r.key = 'row-' + index
-      r.selected = index === selection
-      index += 1
-    }
-    // A link row draws its label and then the Link itself, not a padded cell.
-    const fitted = r.link ? segments : fitEllipsis(segments, Math.max(1, r.width || 1))
-    return { ...r, segments: fitted }
-  })
-}
-
-/** A selectable row of `width` cells, before the marker cell. */
+/** A row that takes the selection. */
 function nodeRow(options) {
   return row({ selectable: true, ...options })
 }
 
-function indent(depth) {
-  return '  '.repeat(depth)
+/** A further line of the selectable row before it: it shares its selection. */
+function contRow(options) {
+  return row({ cont: true, ...options })
 }
 
-/** The cells before a question's title: the ▸, the selection gap, and the ▲. */
-export const BUTTON_INDENT = 4
+/**
+ * Number the selectable rows, give each line the item it belongs to, mark
+ * the selected item, and fit each row to the cells beside its marker.
+ */
+function finish(rows, selection, width) {
+  let index = -1
+  return rows.map((r) => {
+    const out = { ...r }
+    if (r.selectable) {
+      index += 1
+      out.key = 'row-' + index
+    }
+    out.part = r.selectable || r.cont ? index : -1
+    out.selected = out.part >= 0 && out.part === selection
+    const room = Math.max(1, width - out.indent - (out.marker ? 2 : 0))
+    out.segments = r.link || r.segments.length === 0 ? r.segments : fitEllipsis(r.segments, room)
+    return out
+  })
+}
 
-/** The Needs you tab: one selectable row per question, then its buttons. */
-export function needsRows(state, width, selection) {
+/** A row with its text, for tests. */
+export function rowLine(r) {
+  return r.segments.map((s) => s.text).join('')
+}
+
+/**
+ * The rows of the current view. `state` is `{ path, folds, selection, width }`
+ * with the board, the drawn needs-you items (`questions`), the presses
+ * (`pending`, `asked`), the clock (`now`), the help lines, and the task lists
+ * (`tasks`: channel to Task[] or null).
+ */
+export function rowsFor(state) {
+  const width = Math.max(24, state.width || 60)
+  const selection = Number(state.selection) || 0
+  const last = (state.path || [])[(state.path || []).length - 1]
+  if (!last) return inboxRows(state, width, selection)
+  if (last.kind === 'help') return finish((state.help || []).map((line) => row({ marker: null, segments: [text(line || ' ', line.startsWith('  ') || !line ? 'plain' : 'dimBold')] })), -1, width)
+  if (last.kind === 'task') {
+    const rows = detailRows(state, last, width)
+    const at = (state.questions || []).findIndex((q) => questionKey(q) === last.question)
+    const actions = at >= 0 ? cardActions(state, state.questions[at], at, true, width, false) : null
+    return actions ? [...rows, ...finish([row({}), row({ marker: null, ...actions })], -1, width)] : rows
+  }
+  return epicRows(state, last, width, selection)
+}
+
+/** The task a card opens, with what the card knows of it while its
+ * channel's task list is not read. */
+export function cardNode(q) {
+  const task = { id: q.task, title: q.title, status: q.status }
+  return { kind: 'task', channel: q.channel, id: q.task, title: q.title, project: q.project, question: questionKey(q), task }
+}
+
+/**
+ * The line of a card's keys, or of a press's status in their place: `d: Done`,
+ * `a: Ask orchestrator`, and on the inbox `\u23ce open the task`. Only the
+ * selected card draws keys, so d and a are never two hotkeys in the pane.
+ */
+function cardActions(state, q, i, selected, width, inbox) {
+  const mark = (state.pending || {})[questionKey(q)]
+  const ask = (state.asked || {})[questionKey(q)]
+  const status = pressStatus(mark, ask, state.now || 0) || []
+  // Each card's keys are its own, so the focus ring never carries over from
+  // the card the selection left.
+  const buttons = []
+  if (selected && !q.closed) {
+    if (canDone(mark)) buttons.push({ key: 'done-' + i, label: mark ? 'Done again' : 'Done', hotkey: 'd', kind: 'done', arg: i })
+    if (!ask || ask.state === 'failed') {
+      buttons.push({ key: 'ask-' + i, label: width < 44 ? 'Ask' : 'Ask orchestrator', hotkey: 'a', kind: 'ask', arg: i })
+    }
+    if (inbox) buttons.push({ key: 'open-' + i, label: '\u23ce open the task', kind: 'open', arg: i })
+  }
+  return status.length || buttons.length ? { status, buttons } : null
+}
+
+/** The meta line of a card: project, saga, why, age, owner. */
+function cardMeta(q, board) {
+  const project = findProject(board, q.project)
+  const saga = project ? activeSaga(project) : null
+  const age = typeof q.since === 'number' && typeof board?.at === 'number' ? ageText(board.at - q.since) : ''
+  return [q.project, saga?.title, q.attention_msg || (q.gate ? 'gate' : ''), age, q.owner].filter(Boolean).join(' · ')
+}
+
+/**
+ * The root view: NEEDS YOU, one card per item, then PROJECTS, a row per
+ * active project and, unfolded, its open epics, then the idle projects.
+ * A card is its title (wrapped, never cut), a dim meta line, and on the
+ * selected card the line of its keys, or a press's status in their place.
+ */
+export function inboxRows(state, width, selection) {
+  const board = state.board
+  const body = width - 2
   const questions = state.questions || []
   const out = []
-  if (questions.length === 0) {
-    out.push(row({ segments: [text('  nothing waits on you', 'green')] }))
+  if (!board) {
+    out.push(row({ marker: null, segments: [text('board unavailable', 'red'), text(state.reason ? ' \u00b7 ' + state.reason : '', 'dim')] }))
+    return finish(out, selection, width)
   }
-  const pending = state.pending || {}
+  const open = questions.filter((q) => !q.closed).length
+  out.push(row({ marker: null, segments: [text('NEEDS YOU', 'yellowBold'), text(' · ' + open, 'dim')] }))
+  if (questions.length === 0) {
+    out.push(row({ marker: text(GLYPH.done, 'green'), segments: [text('nothing needs you', 'green')] }))
+    out.push(row({}))
+  }
+  // A card a Done just closed stays a while, checked off, but takes no
+  // selection: the selection moves on to the next card, which then has d and a.
+  let live = 0
   questions.forEach((q, i) => {
-    const context = [q.project || '', q.attention_msg || (q.gate ? 'gate' : ''), 'since ' + hhmm(q.since, '?')]
-      .filter(Boolean)
-      .join(' \u00b7 ')
-    // A Done or an Ask the person pressed shows where it is, before the title,
-    // so a narrow pane does not cut it off.
-    const mark = pending[questionKey(q)]
-    const status = pressStatus(mark, (state.asked || {})[questionKey(q)], state.now || 0)
-    const segments = [text((q.closed ? GLYPH.done : GLYPH.needs) + ' ', q.closed ? 'green' : 'yellow')]
-    if (status) segments.push(...status, text(' \u00b7 ', 'dim'))
-    segments.push(text(q.title || '', q.closed ? 'dim' : 'yellowBold'), text('  ' + context, 'dim'))
+    const selected = !q.closed && selection === live
+    if (!q.closed) live += 1
+    const first = q.closed ? row : nodeRow
+    const more = q.closed ? row : contRow
+    const style = q.closed ? 'dim' : 'yellowBold'
+    const lines = wrap(q.title || q.task, body)
     out.push(
-      nodeRow({
-        marker: '\u25b8',
-        open: { kind: 'drill', node: { kind: 'task', channel: q.channel, id: q.task, title: q.title, project: q.project } },
-        segments,
+      first({
+        marker: text(q.closed ? GLYPH.done : GLYPH.needs, q.closed ? 'green' : 'yellow'),
+        drill: cardNode(q),
+        segments: [text(lines[0], style)],
       }),
     )
-    if (q.closed) {
-      out.push(row({ segments: [text(' ')] }))
-      return
-    }
-    // A narrow pane cannot cut a Button, so the label shortens instead.
-    const ask = width < 40 ? 'Ask' : 'Ask orchestrator'
-    const buttons = [{ key: 'ask-' + i, label: ask, kind: 'ask', arg: i }]
-    if (canDone(mark)) buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
-    // The buttons sit under the title, after the ▸ and the ▲, so they read as
-    // the question's own; a blank row then ends the group.
-    out.push(row({ buttons, buttonIndent: BUTTON_INDENT }))
-    out.push(row({ segments: [text(' ')] }))
+    for (const line of lines.slice(1)) out.push(more({ segments: [text(line, style)] }))
+    // Inline above the prompt the pane gets few rows, so a card there is its
+    // title alone, and the selected one adds its meta and keys.
+    if (!state.compact || selected) out.push(more({ segments: [text(cardMeta(q, board), 'dim')] }))
+    const actions = cardActions(state, q, i, selected, width, true)
+    if (actions) out.push(more(actions))
+    if (!state.compact) out.push(row({}))
   })
-  return finish(finishWidth(out, width), selection)
-}
+  if (state.compact && questions.length) out.push(row({}))
 
-/** The Help tab: one selectable line per help line. */
-export function helpRows(state, width, selection) {
-  const lines = state.help || []
-  return finish(
-    finishWidth(
-      lines.map((line) =>
-        line.trim() === ''
-          ? row({ segments: [text(' ')] })
-          : nodeRow({ segments: [text(line, line.startsWith('  ') ? 'plain' : 'dimBold')] }),
-      ),
-      width,
-    ),
-    selection,
-  )
-}
-
-/** The Projects tab at the root: every project with open work, open by default. */
-export function projectsRows(state, width, selection) {
-  const out = []
-  for (const collection of state.board?.collections || []) {
-    for (const project of collection.projects || []) {
-      if (isActive(project)) out.push(...projectTree(state, project, 0, width))
+  out.push(row({ marker: null, segments: [text('PROJECTS', 'bold'), text(' · ' + projectCount(board), 'dim')] }))
+  const projects = activeProjects(board)
+  if (projects.length === 0) out.push(row({ segments: [text('no project has open work', 'dim')] }))
+  out.push(...projectTree(state, projects, body))
+  const idle = allProjects(board).filter((p) => !projects.includes(p)).map((p) => p.project)
+  if (idle.length) {
+    for (const line of wrap(idle.length + ' idle: ' + idle.join(', '), width)) {
+      out.push(row({ marker: null, segments: [text(line, 'dim')] }))
     }
   }
-  const idle = allProjects(state.board).length - activeProjects(state.board).length
-  if (idle) out.push(row({ segments: [text(idle + (idle === 1 ? ' idle project' : ' idle projects') + ', no open work', 'faint')] }))
-  return finish(finishWidth(out, width), selection)
+  return finish(out, selection, width)
 }
 
-/** One project and, while it is open, its saga epics or its standalone epics. */
-function projectTree(state, project, depth, width) {
-  const node = { kind: 'project', project: project.project }
-  const open = isOpen(state.folds, node)
-  const s = projectSummary(project, 10)
-  const out = [
-    nodeRow({
-      marker: open ? '\u25be' : '\u25b8',
-      open: { kind: 'fold', key: foldKey(node), isOpen: open },
-      drill: node,
-      segments: [
-        text(indent(depth)),
-        text(badge(project), badgeStyle(project, 0)),
-        text('  ' + truncate(s.saga, 17) + '  ', 'white'),
-        ...(s.plain
-          ? [text(openTasksLabel(project), 'plain')]
-          : [text(s.bar.filled, 'green'), text(s.bar.empty, 'faint'), text(' ' + s.bar.label + ' epics', 'plain')]),
-      ],
-    }),
-  ]
-  if (!open) return out
-  for (const saga of project.sagas || []) {
-    for (const epic of saga.epics || []) out.push(...epicTree(state, epic, saga, depth + 1, width, project))
+/** The counts after a project's bar: `■2 ▲1`. */
+function projectCounts(s) {
+  const out = []
+  if (s.blocked) out.push(text(GLYPH.blocked + s.blocked, 'red'))
+  if (s.needs) out.push(text(GLYPH.needs + s.needs, 'yellow'))
+  return out.flatMap((c, i) => (i ? [text(' '), c] : [c]))
+}
+
+const BAR = 10
+const WORD = 12
+
+/**
+ * The project rows. The name column takes the longest name, so a name is
+ * never cut; the saga column the longest saga that fits, wrapped when it
+ * does not; the bar and the counts follow, and what is left goes at the end.
+ */
+function projectTree(state, projects, body) {
+  const summaries = projects.map((p) => ({ project: p, s: projectSummary(p, BAR) }))
+  // A name longer than a third of the pane gets a line of its own, whole,
+  // rather than a wide column that leaves a gap beside every short name.
+  const cap = Math.max(12, Math.floor(body / 3))
+  const nameCol = Math.max(0, ...projects.map((p) => Array.from(p.project).length).filter((n) => n <= cap))
+  const ratioCol = Math.max(3, ...summaries.map(({ s }) => (s.plain ? 0 : Array.from(s.bar.label).length)))
+  const countsCol = Math.max(0, ...summaries.map(({ s }) => projectCounts(s).reduce((n, c) => n + Array.from(c.text).length, 0)))
+  const tailW = BAR + 1 + ratioCol + (countsCol ? 2 + countsCol : 0)
+  const sagaText = (s) => (s.plain ? 'plain tasks' : s.saga)
+  const longest = Math.max(0, ...summaries.map(({ s }) => Array.from(sagaText(s)).length))
+  let sagaCol = Math.min(longest, body - nameCol - 4 - tailW)
+  const tailInline = sagaCol >= 10
+  if (!tailInline) sagaCol = Math.max(8, body - nameCol - 2)
+  const out = []
+  for (const { project, s } of summaries) {
+    const node = { kind: 'project', project: project.project }
+    const unfolded = isOpen(state.folds, node)
+    const tail = s.plain
+      ? [text(pad(GLYPH.running + ' ' + openTasks(project) + ' open', BAR + 1 + ratioCol), 'blue')]
+      : [text(s.bar.filled, 'green'), text(s.bar.empty, 'faint'), text(' ' + pad(s.bar.label, ratioCol))]
+    const counts = projectCounts(s)
+    if (counts.length) tail.push(text('  '), ...counts)
+    const sagaLines = wrap(sagaText(s), sagaCol)
+    const sagaStyle = s.plain ? 'dim' : 'plain'
+    const long = Array.from(project.project).length > nameCol
+    const head = {
+      marker: text(unfolded ? '\u25be' : '\u25b8', 'dim'),
+      fold: foldKey(node),
+      isOpen: unfolded,
+      project: project.project,
+    }
+    if (long) out.push(nodeRow({ ...head, segments: [text(project.project, 'bold')] }))
+    const lead = (i) => (i === 0 && !long ? [text(pad(project.project, nameCol), 'bold')] : [text(' '.repeat(nameCol))])
+    sagaLines.forEach((line, i) => {
+      const segments = [...lead(i), text('  '), text(pad(line, sagaCol), sagaStyle)]
+      if (tailInline && i === sagaLines.length - 1) segments.push(text('  '), ...tail)
+      if (i === 0 && !long) out.push(nodeRow({ ...head, segments }))
+      else out.push(contRow({ segments }))
+    })
+    if (!tailInline) out.push(contRow({ segments: [text(' '.repeat(nameCol + 2)), ...tail] }))
+    if (unfolded) out.push(...epicLines(state, project, body))
   }
-  for (const epic of project.epics || []) out.push(...epicTree(state, epic, null, depth + 1, width, project))
   return out
 }
 
-/** The project view: its sagas, its standalone epics, and its plain tasks. */
-export function projectRows(state, node, width, selection) {
-  const project = findProject(state.board, node.project)
+/** An unfolded project's open epics, its done ones as one line. */
+function epicLines(state, project, body) {
   const out = []
-  if (!project) {
-    out.push(row({ segments: [text('  no project ' + truncate(node.project, 24), 'dim')] }))
-    return finish(finishWidth(out, width), selection)
-  }
-  const tasks = state.tasks || {}
-  for (const saga of project.sagas || []) {
-    const sagaNode = { kind: 'saga', channel: saga.channel, title: saga.title || saga.channel }
-    const open = isOpen(state.folds, sagaNode)
-    out.push(
-      nodeRow({
-        marker: open ? '\u25be' : '\u25b8',
-        open: { kind: 'fold', key: foldKey(sagaNode), isOpen: open },
-        segments: [
-          text((saga.state === 'approved' ? GLYPH.done : GLYPH.scheduled) + ' ', saga.state === 'approved' ? 'green' : 'dim'),
-          text(saga.title || saga.channel, 'bold'),
-          text('  ' + String(saga.state || '') + '  ' + (saga.done || 0) + '/' + (saga.total || 0) + ' epics', 'dim'),
-        ],
-      }),
-    )
-    if (open) {
-      for (const epic of saga.epics || []) out.push(...epicTree(state, epic, saga, 1, width, project))
+  const saga = activeSaga(project)
+  const epics = [...(saga?.epics || []).map((e) => ({ epic: e, saga })), ...(project.epics || []).map((e) => ({ epic: e, saga: null }))]
+  const parentFold = foldKey({ project: project.project })
+  // The title column takes the longest open epic's title that fits, so the
+  // state words sit beside the titles, not at the far edge.
+  const longest = Math.max(0, ...epics.filter(({ epic }) => epicState(epic) !== 'done').map(({ epic }) => Array.from(epic.title || '').length))
+  const titleCol = Math.max(8, Math.min(longest, body - 2 - 2 - WORD))
+  let done = 0
+  for (const { epic, saga: owner } of epics) {
+    const stateName = epicState(epic)
+    if (stateName === 'done') {
+      done += 1
+      continue
     }
+    const node = { kind: 'epic', channel: epic.channel, id: epic.task, title: epic.title, saga: owner?.title, project: project.project }
+    const lines = wrap(epic.title, titleCol)
+    lines.forEach((line, i) => {
+      const segments = [text(pad(line, titleCol)), ...(i === 0 ? [text('  '), text(epicNote(epic, stateName), stateName === 'needs' ? 'yellow' : stateName)] : [])]
+      if (i === 0) out.push(nodeRow({ indent: 2, marker: text(GLYPH[stateName], stateName), drill: node, parentFold, segments }))
+      else out.push(contRow({ indent: 2, segments }))
+    })
   }
-  for (const epic of project.epics || []) out.push(...epicTree(state, epic, null, 0, width, project))
-
-  // The board counts a project's plain tasks but names no channel for them.
-  const counts = project.tasks || {}
-  const gates = new Set((project.sagas || []).map((s) => s.gate).filter(Boolean))
-  const plain = []
-  for (const channel of channelsOf(project)) {
-    const list = tasks[channel]
-    if (!Array.isArray(list)) continue
-    for (const task of list) {
-      if (task.kind === 'epic' || task.parent || gates.has(task.id)) continue
-      plain.push({ channel, task })
-    }
-  }
-  out.push(
-    row({
-      segments: [
-        text(
-          'plain tasks  ' +
-            (counts.open || 0) +
-            ' open \u00b7 ' +
-            (counts.blocked || 0) +
-            ' blocked \u00b7 ' +
-            (counts.needs_human || 0) +
-            ' need you \u00b7 ' +
-            (counts.done || 0) +
-            ' done',
-          'dimBold',
-        ),
-      ],
-    }),
-  )
-  const unreadable = channelsOf(project).filter((c) => tasks[c] === null || tasks[c] === undefined)
-  if (unreadable.length) out.push(row({ segments: [text('  tasks unavailable', 'faint')] }))
-  for (const { channel, task } of plain) {
-    out.push(
-      nodeRow({
-        marker: '\u25b8',
-        open: { kind: 'drill', node: { kind: 'task', project: node.project, channel, id: task.id, title: task.title } },
-        segments: [text(taskGlyph(task) + ' ', taskState(task.status)), text(task.title || task.id)],
-      }),
-    )
-  }
-  return finish(finishWidth(out, width), selection)
-}
-
-/** One epic and, while it is open, the child tasks its channel lists. */
-function epicTree(state, epic, saga, depth, width, project) {
-  const node = { kind: 'epic', channel: epic.channel, id: epic.task, title: epic.title, saga: saga?.title, project: project?.project }
-  const open = isOpen(state.folds, node)
-  const stateName = epicState(epic)
-  const out = [
-    nodeRow({
-      marker: open ? '\u25be' : '\u25b8',
-      open: { kind: 'fold', key: foldKey(node), isOpen: open },
-      drill: node,
-      segments: [
-        text(indent(depth)),
-        text(GLYPH[stateName] + ' ', stateName),
-        text(truncate(epic.title, 34), stateName === 'done' ? 'doneDim' : 'plain'),
-        text('  ' + epicNote(epic, stateName), 'dim'),
-      ],
-    }),
-  ]
-  if (!open) return out
-  const list = (state.tasks || {})[epic.channel]
-  const children = Array.isArray(list) ? list.filter((t) => t.parent === epic.task) : []
-  if (list === null) out.push(row({ segments: [text(indent(depth + 1) + '  tasks unavailable', 'faint')] }))
-  if (Array.isArray(list) && children.length === 0) {
-    out.push(row({ segments: [text(indent(depth + 1) + '  no child tasks', 'dim')] }))
-  }
-  for (const task of children) {
-    out.push(
-      nodeRow({
-        marker: '\u25b8',
-        open: { kind: 'drill', node: { kind: 'task', project: project?.project, channel: epic.channel, id: task.id, title: task.title } },
-        segments: [
-          text(indent(depth + 1) + '  '),
-          text(taskGlyph(task) + ' ', taskState(task.status)),
-          text(task.title || task.id),
-          text('  ' + statusWord(task.status), taskState(task.status)),
-        ],
-      }),
-    )
+  if (done) out.push(row({ indent: 2, marker: text(GLYPH.done, 'doneDim'), segments: [text(done + ' done', 'dim')] }))
+  if (epics.length === 0) {
+    const c = project.tasks || {}
+    const counts = (c.open || 0) + ' open · ' + (c.blocked || 0) + ' blocked · ' + ((c.needs_human || 0) + (c.stuck || 0)) + ' need you · ' + (c.done || 0) + ' done'
+    out.push(row({ indent: 2, segments: [text('plain tasks: ' + counts, 'dim')] }))
   }
   return out
 }
@@ -453,6 +416,7 @@ export function epicRows(state, node, width, selection) {
   const children = Array.isArray(list) ? list.filter((t) => t.parent === node.id) : []
   out.push(
     row({
+      marker: null,
       segments: [
         text('epic  ', 'dimBold'),
         text(node.title, 'bold'),
@@ -463,10 +427,9 @@ export function epicRows(state, node, width, selection) {
   for (const task of children) {
     out.push(
       nodeRow({
-        marker: '\u25b8',
-        open: { kind: 'drill', node: { kind: 'task', project: node.project, channel: node.channel, id: task.id, title: task.title } },
+        marker: text(taskGlyph(task), taskState(task.status)),
+        drill: { kind: 'task', project: node.project, channel: node.channel, id: task.id, title: task.title },
         segments: [
-          text(taskGlyph(task) + ' ', taskState(task.status)),
           text(task.title || task.id),
           text('  ' + statusWord(task.status), taskState(task.status)),
           text(task.claimed_by ? '  ' + task.claimed_by : '', 'dim'),
@@ -477,7 +440,7 @@ export function epicRows(state, node, width, selection) {
   if (Array.isArray(list) && children.length === 0) {
     out.push(row({ segments: [text('  no child tasks', 'dim')] }))
   }
-  return finish(finishWidth(out, width), selection)
+  return finish(out, selection, width)
 }
 
 /** The detail of one task: title, status, owner, blockers, PR, last update. */
@@ -485,13 +448,18 @@ export function detailRows(state, node, width) {
   const list = (state.tasks || {})[node.channel]
   const task = taskOf(list, node.id) || (node.task || null)
   const out = []
-  const push = (segments, link = null) => out.push(row({ segments, link }))
+  const push = (segments, link = null) => out.push(row({ marker: null, segments, link }))
   if (!task) {
     push([text('tasks unavailable', 'faint')])
     push([text(taskLine('channel', node.channel), 'dim')])
-    return finish(finishWidth(out, width), -1)
+    return finish(out, 0, width)
   }
-  push([text(task.title || task.id, 'bold')])
+  // The title holds the selection, so the focus ring has a harmless home:
+  // Enter on it does nothing, where on a key it would press Done or Ask.
+  wrap(task.title || task.id, width - 2).forEach((line, i) => {
+    if (i === 0) out.push(nodeRow({ marker: text(taskGlyph(task), taskState(task.status)), segments: [text(line, 'bold')] }))
+    else out.push(contRow({ segments: [text(line, 'bold')] }))
+  })
   push([text(taskLine('status', statusWord(task.status)), taskState(task.status))])
   push([text(taskLine('owner', task.claimed_by || 'unclaimed'), task.claimed_by ? 'plain' : 'dim')])
   const blockers = Array.isArray(task.blocked_by) ? task.blocked_by : []
@@ -510,7 +478,7 @@ export function detailRows(state, node, width) {
   else push([text(taskLine('pr', 'none'), 'dim')])
   push([text(taskLine('updated', localTime(task.updated)), 'dim')])
   push([text(taskLine('channel', node.channel + ' / ' + (task.id || node.id)), 'dim')])
-  return finish(finishWidth(out, width), -1)
+  return finish(out, 0, width)
 }
 
 function taskLine(label, value) {

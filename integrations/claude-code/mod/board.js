@@ -1,10 +1,10 @@
 // The chief-of-staff board: a pure mapping from a BoardView (the hub's
-// `board` read) to everything the mod draws. No mods API here, so the tests
-// call it with a fixture and no session.
+// `board` read) to the band's ticker, the digest, and the help. No mods API
+// here, so the tests call it with a fixture and no session.
 //
 // A row is a list of segments: { text, style, button? }. `text` is what the
 // row shows, `style` picks a color, and `button` marks a cell the renderer
-// turns into a Button.
+// turns into a Button. The pane's rows are built in nav.js.
 //
 // The shape is the one in docs/superpowers/specs/2026-10-26-sagas-and-epics-design.md,
 // section "API, MCP, and CLI".
@@ -27,24 +27,6 @@ export function text(text, style = 'plain') {
   return { text: String(text), style }
 }
 
-/**
- * A hotkey cell, drawn by the renderer as a Button. Rows past nine have no
- * hotkey, so the cell is blank and the row stays clickable; `key` keeps the
- * Buttons of a band unique when two rows show the same digit.
- */
-export function hotkey(digit, kind, arg, key) {
-  const shown = digit === null || digit === undefined ? '' : String(digit)
-  // The engine draws a hotkey chip as `[ 9 ]`; a row with no hotkey keeps the
-  // chip's five cells blank, so the columns of the other rows stay put.
-  const button = { key: key || kind + '-' + (shown || 'row'), label: shown || '     ', kind, arg }
-  if (shown) button.hotkey = shown
-  return {
-    text: shown ? '[ ' + shown + ' ]' : ' '.repeat(5),
-    style: 'hotkey',
-    button,
-  }
-}
-
 /** The plain text of a row, for tests and for the digest. */
 export function rowText(row) {
   return row.map((s) => s.text).join('')
@@ -63,30 +45,6 @@ export function truncate(value, width) {
 export function pad(value, width) {
   const cut = truncate(value, width)
   return cut + ' '.repeat(Math.max(0, width - Array.from(cut).length))
-}
-
-/**
- * Lay out cells across `width` cells. A cell is
- * `{ text, style, width }` with a fixed width, or `{ text, style, flex: 1 }`
- * to share what the fixed cells leave.
- */
-export function layout(cells, width, gap = 0) {
-  const cellWidth = (c) => (c.flex ? 0 : c.width || Array.from(String(c.text === undefined ? '' : c.text)).length)
-  const fixed = cells.reduce((n, c) => n + cellWidth(c) + gap, -gap)
-  const flexCount = cells.filter((c) => c.flex).length
-  const left = Math.max(0, width - fixed)
-  const flexWidth = flexCount ? Math.max(1, Math.floor(left / flexCount)) : 0
-  const out = []
-  cells.forEach((c, i) => {
-    if (i > 0 && gap > 0) out.push(text(' '.repeat(gap)))
-    const w = c.flex ? flexWidth : cellWidth(c)
-    if (c.button) {
-      out.push({ text: pad(c.text || '', w), style: c.style, button: c.button })
-    } else {
-      out.push({ text: pad(c.text === undefined ? '' : c.text, w), style: c.style })
-    }
-  })
-  return out
 }
 
 /** Like `fit`, but a row that does not fit loses its tail with an ellipsis. */
@@ -242,19 +200,7 @@ export function epicState(epic) {
   return 'waiting'
 }
 
-/** The epic a project row shows: the one that needs the person, else a working one, else waiting. */
-export function currentEpic(project) {
-  const epics = [...(activeSaga(project)?.epics || []), ...(project?.epics || [])]
-  const rank = { needs: 0, blocked: 1, running: 2, waiting: 3, done: 4 }
-  let best = null
-  for (const epic of epics) {
-    const state = epicState(epic)
-    if (!best || rank[state] < rank[best.state]) best = { epic, state }
-  }
-  return best
-}
-
-/** A project's one-line summary: badge, saga, bar, and counts. */
+/** A project's one-line summary: saga, bar, and counts. */
 export function projectSummary(project, cells = 10) {
   const saga = activeSaga(project)
   const done = saga ? saga.done || 0 : totalDone(project)
@@ -289,81 +235,37 @@ export function orchestratorLine(project) {
   return GLYPH.running + ' ' + orch.agent + ' \u00b7 ' + state + host
 }
 
-/** A project's badge, colored per project, as the mockup draws it. */
-export function badge(project) {
-  const name = typeof project === 'string' ? project : project?.project
-  return ' ' + (name || '?') + ' '
-}
-
-export function badgeStyle(project, index) {
-  return index % 2 === 0 ? 'badgeBlue' : 'badgeMagenta'
-}
-
-/** The digits that open rows, as the band hints them: `1`, `1-3`, or `` when
- * no row is there. Rows are the needs-you row, then one per project. */
-export function digitRange(rows) {
-  const n = Math.max(0, Number(rows) || 0)
-  if (n === 0) return ''
+/** The digits that open the pane, as the help names them: `1`, `1-4`. The
+ * ticker numbers what needs you 1, then one number per active project. */
+export function digitRange(projects) {
+  const n = 1 + Math.max(0, Number(projects) || 0)
   return n === 1 ? '1' : '1-' + Math.min(9, n)
 }
 
 /**
- * A key of the band's title row, drawn as a plain Button (`j: \u2193`). Its hotkey
- * presses it while the band holds the keyboard; `0` also from an empty prompt.
- */
-export function navKey(key, label, kind) {
-  return {
-    text: key + ': ' + label,
-    style: 'hotkey',
-    button: { key: kind, label, kind, hotkey: key, plain: true },
-  }
-}
-
-/**
- * The hint in the band's title row: focus the band, move, the digits, the
- * pane, help. j, k, and 0 are Buttons, so the keys it names are the band's
- * own. `form` is `full`, `short` (no words for moving or help), or `keys`
- * (the Buttons alone), for a band with less room.
- */
-export function keyHint(rows, form = 'full') {
-  const digits = digitRange(rows)
-  const keys = [navKey('j', '\u2193', 'band-down'), text(' '), navKey('k', '\u2191', 'band-up')]
-  const pane = navKey('0', 'pane', 'band-pane')
-  if (form === 'keys') return [...keys, text(' ' + (digits ? digits + ' \u00b7 ' : ''), 'dim'), pane]
-  const full = form === 'full'
-  return [
-    text('ctrl+x tab focus \u00b7 ', 'dim'),
-    ...keys,
-    text((full ? ' move' : '') + ' \u00b7 ' + (digits ? digits + ' open \u00b7 ' : ''), 'dim'),
-    pane,
-    ...(full ? [text(' \u00b7 /cos help', 'dim')] : []),
-  ]
-}
-
-/**
- * The help view as plain text: every key and command of the board. The pane's
- * Help tab and `/cos help` draw these lines, so they always agree.
+ * The help as plain text: every key and command of the board. The pane's
+ * help view and `/cos help` draw these lines, so they always agree.
  */
 export function helpLines(options = {}) {
-  const digits = digitRange(options.rows) || '1'
+  const digits = digitRange(options.projects)
   const row = (key, what) => '  ' + pad(key, 17) + what
   return [
-    'keys',
-    row(digits, (digits === '1' ? '1 opens a row' : digits + ' open a row') + ': 1 needs you, then one per project'),
-    row('', 'from an empty prompt or the band; the pane takes the keyboard'),
-    row('0', 'focus the pane, and open it if it is closed'),
-    row('ctrl+x tab', 'focus the band, then each pane, then the prompt'),
-    row('', 'press tab within 3 s of ctrl+x (Claude Code\u2019s chord limit)'),
-    row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
-    row('j k', 'move the selection through the rows, in the band and the pane'),
-    row('h l', 'switch tabs; fold or unfold a node; l opens a leaf'),
-    row('enter', 'open the selected project, saga, epic, or task'),
+    'keys at an empty prompt',
+    row(digits, 'open the pane with the keyboard, on that ticker entry:'),
+    row('', '1 what needs you, then one number per project'),
+    row('', 'below 144 columns, the digits the ticker shows'),
+    row('/cos pane', 'open the pane with the keyboard, at the top'),
+    '',
+    'keys in the pane',
+    row('j k', 'move the selection, through needs you and the projects'),
+    row('d', 'Done on the selected item'),
+    row('a', 'Ask its orchestrator about the selected item'),
+    row('enter', 'open the selected task or epic; fold or unfold a project'),
+    row('h l', 'fold or unfold a project; l also opens'),
     row('esc', 'back one level, and at the top close the pane'),
-    row('tab', 'the next control, and shift+tab the one before'),
-    row('\u2191 \u2193', 'scroll the pane (Claude Code); the footer arrows move the selection'),
-    row('', 'from an empty prompt, \u2193 goes to Claude Code\u2019s footer, not the band'),
-    row('ctrl+x \u2190 \u2192', 'widen or narrow the pane (Claude Code); or drag its edge'),
-    row('click', 'a row selects it; a second click or its \u25b8 opens it'),
+    row('↑ ↓', 'scroll the pane (Claude Code)'),
+    row('ctrl+x ← →', 'widen or narrow the docked pane; or drag its edge'),
+    row('click', 'a row’s glyph selects it; a second click opens it'),
     '',
     'commands',
     row('/cos', 'the board as text'),
@@ -372,269 +274,130 @@ export function helpLines(options = {}) {
     row('/cos help', 'this help'),
     '',
     'buttons',
-    row('[ ? ]', "the band's help button: this view"),
-    row('Done', 'submits "Chris marked done: <item>" to the chief, who closes it'),
-    row('', 'the row shows "marking done\u2026" until the hub closes it'),
-    row('Ask orchestrator', 'sends a question about <item> to its channel\'s owner;'),
+    row('[ ? ]', "the ticker's help button: this view"),
+    row('Done', 'submits "Chris marked done: <item>" to the chief, who closes it;'),
+    row('', 'the item says where it is until the hub closes it'),
+    row('Ask orchestrator', "sends a question about <item> to its channel's owner;"),
     row('', 'the chief is only told, and relays the reply'),
     '',
-    'the pane',
-    row('project', 'opens its sagas, epics, and plain tasks'),
-    row('epic', 'opens its child tasks'),
-    row('task', 'its status, owner, blockers, PR, and last update'),
-    row('', 'the breadcrumb in the title shows where you are'),
-    row('', 'borant tasks <channel> reads a view; tasks unavailable if it fails'),
+    'the ticker’s last word: how fresh the board is',
+    row('live', 'the event stream runs; the age shows from 30 s'),
+    row('↻ reading', 'a read runs now'),
+    row('polling · 4s', 'no event stream; the board is read every 5 s'),
+    row('stale · 2m', 'no read has worked for 90 s'),
   ]
 }
 
-/** The rows of the pane's Help tab. */
-export function paneHelpRows(options = {}) {
-  const width = Math.max(20, options.width || 60)
-  return helpLines(options).map((line) => fit([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], width))
-}
-
-/**
- * The title row of the band: its name, the counts and age, the key hint, and
- * the help button. `forms` (`{ label, right, hint }`) are tried in order; the
- * first that leaves the rule four cells is drawn. The last ones keep j, k, and
- * 0 with a shorter name and age, so the keys a person reads are always drawn;
- * if even that does not fit, the last form goes without its hint.
- */
-function ruleCell(width, forms) {
-  const help = { text: '[ ? ]', style: 'button', button: { key: 'help', label: '?', kind: 'help' } }
-  const build = (label, right, tail) => {
-    const tailLength = tail.reduce((n, s) => n + Array.from(s.text).length, 0)
-    const fixed = 3 + Array.from(label).length + 1 + Array.from(right).length + tailLength + 1 + 5 + 3
-    const dashes = Math.max(0, width - fixed)
-    const out = [
-      text(RULE + RULE + ' ', 'faint'),
-      text(label, 'bold'),
-      text(' ' + RULE.repeat(dashes), 'faint'),
-      text(right, 'dim'),
-      ...tail,
-    ]
-    out.push(text(' '), help, text(' ' + RULE + RULE, 'faint'))
-    return { out, dashes }
-  }
-  for (const form of forms) {
-    const built = build(form.label, form.right, form.hint.length ? [text(' '), ...form.hint] : [])
-    if (built.dashes >= 4) return built.out
-  }
-  const last = forms[forms.length - 1]
-  return build(last.label, last.right, []).out
-}
-
-/**
- * The widths of the project and saga columns of a wide band. Each column
- * starts from the longest text it holds, so a name or a saga title is not cut
- * while room is free, then narrows to what the terminal leaves after the
- * hotkey, the state glyph, the bar, and the stats. The project keeps 11 cells
- * and the saga 17, with one blank cell before the glyph; the epic title gets
- * at least eight when the width allows.
- */
-export function bandColumns(projects, width) {
-  const project = Math.max(11, ...projects.map((p) => Array.from(badge(p)).length))
-  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
-  // hotkey 6, saga gap 1, glyph 2, bar 10, ratio 5, stats 11, 11, 13.
-  const reserved = 6 + 1 + 2 + 10 + 5 + 11 + 11 + 13
-  const room = Math.max(11 + 17, width - reserved - 8)
-  if (project + saga <= room) return { project, saga }
-  // The project name comes first: it names the row. The saga gives way after.
-  const projectWidth = Math.max(11, Math.min(project, room - 17))
-  return { project: projectWidth, saga: Math.max(17, room - projectWidth) }
-}
-
-/** The row of the band that shows what waits on the person. */
-export function needsRow(questions, width, narrow, digit = 1, columns = { project: 11, saga: 17 }) {
-  const first = questions[0]
-  const extra = questions.length - 1
-  const context = []
-  if (first?.attention_msg) context.push(first.attention_msg)
-  if (extra > 0) context.push('+' + extra + ' more')
-  const contextText = context.join(' \u00b7 ')
-  if (narrow) {
-    const prefix = [
-      hotkey(digit, 'needs', 0),
-      text(GLYPH.needs, 'yellow'),
-      text('Needs you (' + questions.length + ')', 'yellowBold'),
-    ]
-    const prefixWidth = prefix.reduce((n, s) => n + Array.from(s.text).length, 0)
-    const extraParts = []
-    if (first?.project) extraParts.push(text(' ' + first.project, 'bold'))
-    if (extra > 0) extraParts.push(text(' +' + extra, 'dim'))
-    let extraWidth = extraParts.reduce((n, s) => n + Array.from(s.text).length, 0)
-    if (width - prefixWidth - extraWidth < 9) {
-      // The project and the "+n" are one block: drop both or keep both.
-      extraParts.length = 0
-      extraWidth = 0
+/** Split text into lines of at most `width` cells, at spaces where it can. */
+export function wrap(value, width) {
+  const w = Math.max(1, width)
+  const out = []
+  let line = ''
+  for (const word of String(value || '').split(/\s+/).filter(Boolean)) {
+    let rest = word
+    // A word longer than a line is split where the line ends.
+    while (Array.from(rest).length > w) {
+      if (line) {
+        out.push(line)
+        line = ''
+      }
+      out.push(Array.from(rest).slice(0, w).join(''))
+      rest = Array.from(rest).slice(w).join('')
     }
-    const titleWidth = Math.max(0, width - prefixWidth - extraWidth - 1)
-    const head = [...prefix]
-    if (titleWidth > 0) head.push(text(' ' + truncate(first?.title || '', titleWidth)))
-    head.push(...extraParts)
-    return fitEllipsis(head, width)
+    if (!rest) continue
+    const next = line ? line + ' ' + rest : rest
+    if (Array.from(next).length <= w) line = next
+    else {
+      out.push(line)
+      line = rest
+    }
   }
-  return fit(
-    layout(
-      [
-        { ...hotkey(digit, 'needs', 0), width: 5 },
-        { text: GLYPH.needs, style: 'yellow', width: 2 },
-        { text: 'Needs you (' + questions.length + ')', style: 'yellowBold', width: 15 },
-        { text: first?.title || '', flex: 1 },
-        // One blank cell, so a full title truncates with an ellipsis before the
-        // badge instead of running into it.
-        { text: '', width: 1 },
-        { text: badge(first?.project), style: badgeStyle(first?.project, 0), width: columns.project },
-        { text: ' ' + contextText, style: 'dim' },
-      ],
-      width,
-    ),
-    width,
-  )
+  if (line || out.length === 0) out.push(line)
+  return out
 }
 
-/** The state of a project's plain tasks, for a project with no epic. */
-export function plainState(project) {
-  const c = project?.tasks || {}
-  if ((c.needs_human || 0) + (c.stuck || 0) > 0) return 'needs'
-  if ((c.running || 0) > 0) return 'running'
-  if ((c.blocked || 0) > 0 && !(c.ready || 0)) return 'blocked'
-  return 'waiting'
+function cells(segments) {
+  return segments.reduce((n, s) => n + Array.from(s.text).length, 0)
 }
 
-/** One row for one project. */
-export function projectRow(project, width, narrow, digit, index = 0, columns = { project: 11, saga: 17 }) {
-  const s = projectSummary(project, narrow ? 8 : 10)
-  const current = currentEpic(project)
-  const epicTitle = current ? current.epic.title : s.plain ? openTasksLabel(project) : 'no epic yet'
-  const state = current ? current.state : s.plain ? plainState(project) : 'waiting'
-  // A project of plain tasks has no epics to count, so its bar is blank.
-  const bar = s.plain
-    ? { filled: '', empty: ' '.repeat(s.bar.filled.length + s.bar.empty.length), label: '' }
-    : s.bar
-  if (narrow) {
-    const head = [
-      hotkey(digit, 'project', project?.project, 'project-' + index),
-      text(badge(project), badgeStyle(project, index)),
-      text(' ' + s.saga + ' '),
-      text(GLYPH[state] + ' ', state),
-    ]
-    const prefixWidth = head.reduce((n, s) => n + Array.from(s.text).length, 0)
-    const stats = [
-      ...(s.plain ? [] : [text(' ' + s.bar.filled, 'green'), text(s.bar.empty, 'faint'), text(' ' + s.bar.label)]),
-      s.blocked ? text(' ' + GLYPH.blocked + ' ' + s.blocked, 'red') : null,
-      s.needs ? text(' ' + GLYPH.needs + ' ' + s.needs, 'yellow') : null,
-    ].filter(Boolean)
-    const statsWidth = stats.reduce((n, s) => n + Array.from(s.text).length, 0)
-    // The stats are one block: keep them whole and leave the epic at least
-    // eight cells, or drop them and give the epic the room.
-    const keepStats = prefixWidth + statsWidth + 8 <= width
-    const epicWidth = Math.max(0, width - prefixWidth - (keepStats ? statsWidth : 0))
-    return fitEllipsis(
-      [...head, text(truncate(epicTitle, epicWidth)), ...(keepStats ? stats : [])],
-      width,
-    )
-  }
-  return fit(
-    layout(
-      [
-        { ...hotkey(digit, 'project', project?.project, 'project-' + index), width: 6 },
-        { text: badge(project), style: badgeStyle(project, index), width: columns.project },
-        { text: s.saga, style: 'bold', width: columns.saga },
-        // The state glyph never touches the saga title, even when it is cut.
-        { text: ' ', width: 1 },
-        { text: GLYPH[state], style: state, width: 2 },
-        { text: epicTitle, flex: 1 },
-        { text: bar.filled, style: 'green', width: bar.filled.length },
-        { text: bar.empty, style: 'faint', width: bar.empty.length },
-        { text: ' ' + bar.label + ' ', style: 'plain', width: 5 },
-        { text: s.running + ' running', style: s.running ? 'plain' : 'dim', width: 11 },
-        { text: s.blocked + ' blocked', style: s.blocked ? 'red' : 'dim', width: 11 },
-        { text: s.needs + ' needs you', style: s.needs ? 'yellow' : 'dim', width: 13 },
-      ],
-      width,
-    ),
-    width,
-  )
-}
-
-/** The band as one row, for a band with room for one row. */
-export function condensedRow(board, options = {}) {
-  const width = Math.max(20, options.width || 100)
-  const updated = options.updated || hhmm(board?.at, '')
-  const questions = allQuestions(board)
-  const parts = []
-  parts.push(text('cos  ', 'dimBold'))
-  if (questions.length) {
-    parts.push(hotkey(1, 'needs', 0), text(' ' + GLYPH.needs + ' ' + questions.length + ' need you', 'yellowBold'))
-  } else {
-    parts.push(text(GLYPH.done + ' all clear', 'green'))
-  }
-  activeProjects(board).forEach((project, i) => {
-    const s = projectSummary(project, 10)
-    parts.push(text('  ' + BRANCH + '  ', 'faint'))
-    parts.push(text(badge(project), badgeStyle(project, i)))
-    parts.push(text(' ' + (s.plain ? openTasksLabel(project) : s.bar.label) + (s.blocked ? ' ' + GLYPH.blocked + ' ' + s.blocked + ' blocked' : ''), s.blocked ? 'red' : 'plain'))
-    if (s.needs === 0 && s.blocked === 0) parts.push(text(' ' + GLYPH.done + ' idle', 'dim'))
-  })
-  if (updated) parts.push(text('  ' + BRANCH + '  ' + updated, 'dim'))
-  return fit(parts, width)
+/** The glyph counts of a project: `■2 ▲1`, and `●3` for a plain one. */
+export function glyphCounts(project) {
+  const s = projectSummary(project)
+  return [
+    s.plain && openTasks(project) ? text(GLYPH.running + openTasks(project), 'blue') : null,
+    s.blocked ? text(GLYPH.blocked + s.blocked, 'red') : null,
+    s.needs ? text(GLYPH.needs + s.needs, 'yellow') : null,
+  ].filter(Boolean)
 }
 
 /**
- * The band above the prompt: a title rule, the needs-you row, then one row per
- * project. With room for one row it is the condensed row instead.
+ * The band: one line, a ticker of what needs you and each active project,
+ * each with the digit that opens the pane on it, then the freshness word and
+ * the help button. Projects that do not fit go as `+N more`. `fresh` is the
+ * freshness segment; the result is segments, the help one with a `button`.
  */
-export function bandRows(board, options = {}) {
+export function ticker(board, options = {}) {
   const width = Math.max(20, options.width || 100)
-  const maxRows = options.maxRows === undefined || options.maxRows === null ? Infinity : options.maxRows
-  const updated = options.updated || hhmm(board?.at, '')
-  if (maxRows <= 1) return [condensedRow(board, { width, updated })]
-
-  const questions = allQuestions(board)
-  // A project with no open work stays off the band; the header counts it as idle.
-  const projects = activeProjects(board)
-  const narrow = width < 110
-  const columns = narrow ? null : bandColumns(projects, width)
-  const right = ' ' + projectCount(board) + ' \u00b7 updated ' + updated + ' '
-  // The band numbers one row for what needs you, then one row per project.
-  const rowCount = (questions.length ? 1 : 0) + projects.length
-  const name = 'chief of staff'
-  const forms = [
-    ...(narrow ? [] : ['full', 'short'].map((form) => ({ label: name, right, hint: keyHint(rowCount, form) }))),
-    { label: name, right, hint: keyHint(rowCount, 'keys') },
-    { label: 'cos', right: ' ' + updated + ' ', hint: keyHint(rowCount, 'keys') },
+  const fresh = options.fresh || text('live', 'green')
+  const help = { text: '[ ? ]', style: 'button', button: { key: 'help', label: '?', kind: 'help' } }
+  const label = width >= 110 ? 'chief of staff' : 'cos'
+  const sep = () => text(' │ ', 'faint')
+  const key = (digit) => text(digit + ': ', 'key')
+  const head = [text(label, 'bold'), text('  ')]
+  const tail = [sep(), fresh, text('  '), help]
+  if (!board) {
+    // The reason takes what the label, the word, ` \u00b7 `, and `  [ ? ]` leave.
+    const room = width - cells(head) - cells([fresh, help]) - 5
+    const why = options.reason && room > 4 ? text(' \u00b7 ' + truncate(options.reason, room), 'dim') : null
+    return fit([...head, fresh, ...(why ? [why] : []), text('  '), help], width)
+  }
+  const n = allQuestions(board).length
+  // Each entry's segments name the digit they open, so the band can draw an
+  // entry as one Button where it must (see the band in hooks/register.js).
+  const entry = (digit, segments) => segments.map((s) => ({ ...s, entry: digit }))
+  const entries = [
+    entry(
+      1,
+      n
+        ? [key(1), text(GLYPH.needs + ' ' + n + (n === 1 ? ' needs you' : ' need you'), 'yellowBold')]
+        : [key(1), text(GLYPH.done + ' nothing needs you', 'green')],
+    ),
   ]
-  const rows = [fit(ruleCell(width, forms), width)]
-
-  if (questions.length) rows.push(needsRow(questions, width, narrow, 1, columns))
-  const base = questions.length ? 2 : 1
+  const projects = activeProjects(board)
   projects.forEach((project, i) => {
-    // The digits run 1 to 9; a tenth row keeps its place and loses its digit.
-    const ordinal = base + i
-    rows.push(projectRow(project, width, narrow, ordinal <= 9 ? ordinal : '', i, columns))
+    const s = projectSummary(project)
+    const digit = i + 2
+    const segments = [
+      ...(digit <= 9 ? [key(digit)] : []),
+      text(project.project, 'bold'),
+      ...(s.plain ? [] : [text(' ' + s.bar.label)]),
+      ...glyphCounts(project).flatMap((c) => [text(' '), c]),
+    ]
+    entries.push(digit <= 9 ? entry(digit, segments) : segments)
   })
-  return rows.slice(0, maxRows === Infinity ? rows.length : maxRows)
-}
-
-/** The keys of the band's row chips, top to bottom: the rows j and k walk. */
-export function bandRowKeys(rows) {
-  return rows
-    .map((row) => row.find((s) => s.button && (s.button.kind === 'project' || s.button.kind === 'needs')))
-    .filter(Boolean)
-    .map((s) => s.button.key)
-}
-
-/**
- * The key j (`delta` 1) or k (-1) moves to from `current`, wrapping at the
- * ends. From anything else, such as the help button, j takes the first row
- * and k the last. Null when there is no row.
- */
-export function stepKey(keys, current, delta) {
-  if (keys.length === 0) return null
-  const at = keys.indexOf(current)
-  if (at < 0) return delta > 0 ? keys[0] : keys[keys.length - 1]
-  return keys[(at + delta + keys.length) % keys.length]
+  if (projects.length === 0) entries.push([text(projectCount(board), 'dim')])
+  const out = [...head, ...entries[0]]
+  let used = cells(out)
+  const room = width - cells(tail)
+  // `+N more` carries the digit of the first project it hides, so that
+  // digit is named on screen and opens the pane there.
+  const more = (i) => {
+    const rest = entries.length - i
+    const digit = i + 1
+    return digit <= 9 ? entry(digit, [key(digit), text('+' + rest + ' more', 'dim')]) : [text('+' + rest + ' more', 'dim')]
+  }
+  for (let i = 1; i < entries.length; i += 1) {
+    const after = i + 1 < entries.length ? cells([sep(), ...more(i + 1)]) : 0
+    const need = cells([sep(), ...entries[i]])
+    if (used + need + after > room) {
+      out.push(sep(), ...more(i))
+      used += cells([sep(), ...more(i)])
+      break
+    }
+    out.push(sep(), ...entries[i])
+    used += need
+  }
+  return fit([...out, ...tail], width)
 }
 
 /** The short words after an epic's title in the pane. */
@@ -644,41 +407,6 @@ export function epicNote(epic, state) {
   if (state === 'blocked') return 'blocked'
   if (state === 'running') return 'running'
   return 'waiting'
-}
-
-/**
- * The pane's tab row, fitted to `width`: every tab stays, with shorter
- * labels and then without brackets when room runs out. The open tab is the
- * primary Button and the others are dim, so the row says which one is open.
- */
-export function paneTabs(tab, questions, width = Infinity) {
-  const n = questions.length
-  const forms = [
-    { labels: ['Needs you (' + n + ')', 'Projects', 'Help'], gap: '  ' },
-    { labels: ['Needs (' + n + ')', 'Projects', 'Help'], gap: ' ' },
-    { labels: ['Needs ' + n, 'Proj', 'Help'], gap: ' ' },
-    { labels: ['Needs ' + n, 'Proj', 'Help'], gap: ' \u00b7 ', plain: true },
-  ]
-  const kinds = ['needs', 'projects', 'help']
-  const build = (form) => {
-    const out = []
-    form.labels.forEach((label, i) => {
-      if (i > 0) out.push(text(form.gap, 'dim'))
-      out.push({
-        // A plain Button draws no variant, so the open tab wears brackets there.
-        text: form.plain ? (tab === kinds[i] ? '[' + label + ']' : label) : '[ ' + label + ' ]',
-        style: 'button',
-        button: { key: 'tab-' + kinds[i], label: form.plain && tab === kinds[i] ? '[' + label + ']' : label, kind: 'tab-' + kinds[i], active: tab === kinds[i], plain: form.plain },
-      })
-    })
-    return out
-  }
-  const cellsWidth = (cells) => cells.reduce((sum, c) => sum + Array.from(c.text).length, 0)
-  for (const form of forms) {
-    const cells = build(form)
-    if (cellsWidth(cells) <= width) return cells
-  }
-  return build(forms[forms.length - 1])
 }
 
 /**

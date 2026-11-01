@@ -66,7 +66,8 @@ tui_png_height() {
 # freeze sometimes cuts the last rows off under load. Every full shot of one
 # session has the same height, so a shorter one is taken again.
 tui_shot() {
-  tmux -L "$TUI_NAME" capture-pane -e -p -t tui >"$TUI_OUT/$1.txt"
+  # -N keeps trailing cells, so a row's background shows to the edge.
+  tmux -L "$TUI_NAME" capture-pane -e -N -p -t tui >"$TUI_OUT/$1.txt"
   tmux -L "$TUI_NAME" capture-pane -p -t tui >"$TUI_OUT/$1.plain.txt"
   local _ height
   for _ in 1 2 3 4; do
