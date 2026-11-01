@@ -45,6 +45,10 @@ const PANE = 'cos'
 const PANE_TITLE = 'Chief of staff'
 /** The band's render instance, as its ui.focus events name it. */
 const BAND = 'above-prompt'
+/** The selected band row's background: the theme's user-message grey, darker
+ * than promptBorder, so yellow titles, colored glyphs, and the engine's blue
+ * hotkeys stay readable on it. */
+const SELECTED_BG = 'userMessageBackground'
 /** How often the board is read while the session is the chief: the fallback
  * for changes the event stream does not carry, such as a new task. */
 const REFRESH_MS = 5000
@@ -388,30 +392,42 @@ async function start($) {
 /**
  * Follow the host's event stream, and read the board soon after each event
  * that can change it: a task's status, a lease, an agent, a spawn, a move.
- * The stream ends with the module; a stream that drops starts again.
+ *
+ * A stream spawned under the session or render hook never reached borant in
+ * a real session, so it starts from a timer, outside any hook's dispatch, and
+ * one that ends or is refused starts again from a timer. The stream ends with
+ * the module.
  */
 function followEvents($) {
-  void (async () => {
-    for (;;) {
-      try {
-        const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
-        let rest = ''
-        for await (const piece of stream) {
-          if (!piece || piece.stream !== 'stdout') continue
-          const lines = (rest + piece.text).split('\n')
-          rest = lines.pop() || ''
-          if (lines.some(changesBoard)) pushRefresh($)
-        }
-      } catch {
-        // No borant, or an old one: the timer still reads the board.
-      }
-      try {
-        await $.clock.sleep(EVENTS_RETRY_MS)
-      } catch {
-        return
-      }
+  try {
+    $.clock.after(0, () => {
+      streamEvents($).catch(() => {})
+    })
+  } catch {
+    // Without a timer the board still refreshes on each turn.
+  }
+}
+
+async function streamEvents($) {
+  try {
+    const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
+    let rest = ''
+    for await (const piece of stream) {
+      if (!piece || piece.stream !== 'stdout') continue
+      const lines = (rest + piece.text).split('\n')
+      rest = lines.pop() || ''
+      if (lines.some(changesBoard)) pushRefresh($)
     }
-  })()
+  } catch {
+    // No borant, or an old one: the 5 s timer still reads the board.
+  }
+  try {
+    $.clock.after(EVENTS_RETRY_MS, () => {
+      streamEvents($).catch(() => {})
+    })
+  } catch {
+    // The 5 s timer still reads the board.
+  }
 }
 
 /** Whether one line of `borant events --json` can change what the board shows. */
@@ -941,14 +957,13 @@ function tree($, e, rows, prefix) {
       return Button(props)
     }
     const props = { key, children: [s.text], ...styleProps(s.style) }
+    // On the selection background a dim cell is drawn at full strength; every
+    // other cell keeps its own color, so a needs row stays yellow and a red or
+    // blue glyph keeps its meaning. A cell with no color of its own takes the
+    // theme's text color: on a row background it would draw dark.
     if (selected) {
-      // On the selection background every cell takes the inverse text color,
-      // so dim and colored cells stay readable. Chips keep their background,
-      // and the bar keeps its green fill. Bold goes: many terminals draw bold
-      // black as grey, which reads grey on grey.
-      if (!String(s.text).startsWith('\u2588')) props.color = 'inverseText'
       props.dimColor = false
-      props.bold = false
+      if (!props.color) props.color = 'text'
     }
     return Text(props)
   }
@@ -962,7 +977,7 @@ function tree($, e, rows, prefix) {
       return Box({
         key: prefix + '-row-' + i,
         flexDirection: 'row',
-        ...(selected ? { backgroundColor: 'promptBorder' } : {}),
+        ...(selected ? { backgroundColor: SELECTED_BG } : {}),
         children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j, selected)),
       })
     }),

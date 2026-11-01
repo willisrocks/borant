@@ -650,15 +650,15 @@ test('the band highlights the whole focused row, not only its chip', async ($, o
     origin: { kind: 'person' },
   })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-2' }))?.props.backgroundColor).toBe('userMessageBackground')
   expect((await ui.find({ key: 'band-row-3' }))?.props.backgroundColor).toBeUndefined()
-  // Every cell on the selection background takes a contrasting foreground,
-  // including the dim stats and the colored ones.
+  // On the dark selection background a dim cell is drawn at full strength,
+  // a colored cell keeps its color, and a plain one takes the text color.
   const saga = await ui.find({ type: 'Text', text: /Elastic compute/ })
-  expect(saga?.props.color).toBe('inverseText')
+  expect(saga?.props.color).toBe('text')
   expect(saga?.props.dimColor).toBe(false)
   const blocked = await ui.find({ type: 'Text', text: /^2 blocked/ })
-  expect(blocked?.props.color).toBe('inverseText')
+  expect(blocked?.props.color).toBe('red')
   // The progress bar's filled cells keep their green on the selection.
   const fills = await ui.findAll({ type: 'Text', text: /^\u2588/ })
   expect(fills.length).toBeGreaterThan(0)
@@ -811,6 +811,9 @@ test('an event from the host stream reads the board again at once', async ($, on
   })
 
   await $.session.start({ ...SESSION })
+  // The stream starts from a timer, outside the session hook.
+  expect(spawned).toEqual([])
+  await clock.advance(0)
   expect(spawned).toEqual(['borant', 'events', '--follow', '--json'])
   const first = reads
   await clock.advance(300)
