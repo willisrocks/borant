@@ -922,18 +922,38 @@ impl Host {
         self.check_launch_timeouts().await;
     }
 
-    /// Stops every launch that has not registered within `launch_timeout`,
-    /// and tells the hub with the end of its screen. A launch that sits on a
-    /// first-run screen, such as a folder-trust prompt, never registers, and
-    /// a relaunch without this text repeats the same wait. Public for tests.
+    /// Stops every launch that has not registered within `launch_timeout`, or
+    /// that waits at a confirm dialog, and tells the hub with the end of its
+    /// screen. A launch that sits on a first-run screen, such as a
+    /// folder-trust prompt, never registers, and a relaunch without this text
+    /// repeats the same wait. Public for tests.
     pub async fn check_launch_timeouts(&self) {
         let timeout = self.inner.cfg.launch_timeout;
-        let late: Vec<AgentId> = self
+        let pending: Vec<(AgentId, LaunchHandle, bool)> = self
             .state()
             .pending_launch
             .iter()
-            .filter(|(_, p)| p.started.elapsed() >= timeout)
-            .map(|(agent, _)| agent.clone())
+            .map(|(agent, p)| {
+                (
+                    agent.clone(),
+                    p.handle.clone(),
+                    p.started.elapsed() >= timeout,
+                )
+            })
+            .collect();
+        // A launch that waits at a confirm dialog never registers by itself,
+        // so it fails now instead of at the timeout, with the dialog's text.
+        let late: Vec<AgentId> = pending
+            .into_iter()
+            .filter(|(_, handle, timed_out)| {
+                *timed_out
+                    || self
+                        .inner
+                        .launcher
+                        .capture(handle, WATCHDOG_LINES)
+                        .is_some_and(|screen| waits_at_dialog(&screen))
+            })
+            .map(|(agent, _, _)| agent)
             .collect();
         for agent in late {
             let Some((_, screen)) = self.take_pending_launch(&agent).await else {
@@ -1015,6 +1035,15 @@ impl Host {
 
 /// How many lines of a stuck screen the watchdog keeps.
 const WATCHDOG_LINES: usize = 40;
+
+/// The footer of a Claude Code confirm dialog, such as the folder-trust or
+/// the bypass-permissions screen: a launch that shows it waits for a key.
+const DIALOG_FOOTER: &str = "Enter to confirm";
+
+/// True when `screen` waits at a confirm dialog.
+fn waits_at_dialog(screen: &str) -> bool {
+    screen.contains(DIALOG_FOOTER)
+}
 
 pub(crate) fn pid_alive(pid: u32) -> bool {
     use nix::errno::Errno;

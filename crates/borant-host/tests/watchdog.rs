@@ -145,6 +145,11 @@ struct Fixture {
 
 /// A host with the fake launcher, a hub on the bus, and a short watchdog.
 async fn fixture(timeout: Duration) -> Fixture {
+    fixture_with(timeout, |_| {}).await
+}
+
+/// [`fixture`] with a last change to the host configuration.
+async fn fixture_with(timeout: Duration, configure: impl FnOnce(&mut HostConfig)) -> Fixture {
     let bus = MemoryBus::new();
     let sessions = MemorySession::new();
     let dir = tempfile::tempdir().unwrap();
@@ -155,6 +160,7 @@ async fn fixture(timeout: Duration) -> Fixture {
     cfg.commands.fake = Some(vec!["true".to_owned()]);
     cfg.hub_timeout = Duration::from_millis(500);
     cfg.launch_timeout = timeout;
+    configure(&mut cfg);
     let launcher = FakeLauncher::default();
     let host = Host::new(
         cfg,
@@ -478,6 +484,84 @@ async fn a_retired_or_paused_launch_stops_on_the_next_heartbeat() {
             "stop fake-a2".to_owned(),
         ],
         "the retired and the paused launch stop, and the live one runs on"
+    );
+
+    f.stop.cancel();
+    drop(f.dir);
+}
+
+/// A launch that waits at a Claude Code confirm dialog fails at the next
+/// check, long before the timeout, with the dialog's text.
+#[tokio::test]
+async fn watchdog_fails_a_launch_at_a_dialog_at_once() {
+    let f = fixture(Duration::from_secs(600)).await;
+    f.launcher.set_screen(&["working"]);
+    let agent: AgentId = "a1".parse().unwrap();
+    f.host.launch(order(&agent)).await.unwrap();
+    f.host.check_liveness().await;
+    assert!(
+        launch_failures(&f.seen).is_empty(),
+        "a launch that is still starting is left alone"
+    );
+
+    f.launcher.set_screen(&[
+        "WARNING: Claude Code running in Bypass Permissions mode",
+        "❯ No, exit",
+        "  Yes, I accept",
+        "Enter to confirm · Esc to cancel",
+    ]);
+    f.host.check_liveness().await;
+
+    assert_eq!(
+        f.launcher.calls(),
+        vec!["launch fake-a1".to_owned(), "stop fake-a1".to_owned()],
+        "the watchdog stops the launch without waiting for the timeout"
+    );
+    let failures = launch_failures(&f.seen);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].1.contains("Bypass Permissions"), "{failures:?}");
+
+    f.stop.cancel();
+    drop(f.dir);
+}
+
+/// A Claude Code launch into a fresh folder marks that folder as trusted in
+/// the profile that its session reads, here a `CLAUDE_CONFIG_DIR` that a
+/// `[commands]` override sets through `env`, so the session opens with no
+/// trust dialog.
+#[tokio::test]
+async fn a_claude_launch_trusts_its_fresh_folder_in_the_session_profile() {
+    let profile = tempfile::tempdir().unwrap();
+    // A profile path with a space, as Orca keeps one on macOS.
+    let dir = profile.path().join("Application Support/home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file_dir = dir.clone();
+    let f = fixture_with(Duration::from_secs(600), |cfg| {
+        cfg.harnesses = vec![Harness::ClaudeCode];
+        cfg.commands.claude = Some(vec![
+            "env".to_owned(),
+            format!("CLAUDE_CONFIG_DIR={}", dir.display()),
+            "true".to_owned(),
+        ]);
+    })
+    .await;
+    let agent: AgentId = "a1".parse().unwrap();
+    f.host
+        .launch(borant_core::proto::LaunchOrder {
+            agent: agent.clone(),
+            harness: Harness::ClaudeCode,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let cwd = f.dir.path().join("work/a1").canonicalize().unwrap();
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(file_dir.join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(
+        file["projects"][cwd.to_str().unwrap()]["hasTrustDialogAccepted"],
+        json!(true),
+        "{file}"
     );
 
     f.stop.cancel();

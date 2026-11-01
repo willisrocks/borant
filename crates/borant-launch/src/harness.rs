@@ -44,11 +44,23 @@ pub fn command(
         argv.push("--model".to_owned());
         argv.push(m.to_owned());
     }
-    if limit_restart && harness == Harness::ClaudeCode {
-        // The session stops at a limit instead of waiting for the reset, so a
-        // limit restart can move the agent to another member.
-        argv.push("--settings".to_owned());
-        argv.push(r#"{"autoContinueAtUsageLimit":false}"#.to_owned());
+    if harness == Harness::ClaudeCode {
+        let mut settings = Vec::new();
+        if argv.iter().any(|a| a == "--dangerously-skip-permissions") {
+            // A launch skips the bypass-permissions consent screen: it waits
+            // for Enter on a host whose own settings never accepted it, so
+            // the launch would never register.
+            settings.push(r#""skipDangerousModePermissionPrompt":true"#);
+        }
+        if limit_restart {
+            // The session stops at a limit instead of waiting for the reset,
+            // so a limit restart can move the agent to another member.
+            settings.push(r#""autoContinueAtUsageLimit":false"#);
+        }
+        if !settings.is_empty() {
+            argv.push("--settings".to_owned());
+            argv.push(format!("{{{}}}", settings.join(",")));
+        }
     }
     if harness != Harness::Fake {
         // `--` ends the options, so a prompt that starts with `-` stays a
@@ -131,6 +143,8 @@ pub fn find_program(dirs: &[PathBuf], program: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    const SKIP_CONSENT: &str = r#"{"skipDangerousModePermissionPrompt":true}"#;
+
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
     }
@@ -185,7 +199,14 @@ mod tests {
         let cfg = HarnessCommands::default();
         assert_eq!(
             command(Harness::ClaudeCode, "hi", None, &cfg, false),
-            v(&["claude", "--dangerously-skip-permissions", "--", "hi"])
+            v(&[
+                "claude",
+                "--dangerously-skip-permissions",
+                "--settings",
+                SKIP_CONSENT,
+                "--",
+                "hi"
+            ])
         );
         assert_eq!(
             command(Harness::Pi, "hi", None, &cfg, false),
@@ -247,6 +268,8 @@ mod tests {
                 "--dangerously-skip-permissions",
                 "--model",
                 "opus",
+                "--settings",
+                SKIP_CONSENT,
                 "--",
                 "hi"
             ])
@@ -274,7 +297,7 @@ mod tests {
                 "claude",
                 "--dangerously-skip-permissions",
                 "--settings",
-                r#"{"autoContinueAtUsageLimit":false}"#,
+                r#"{"skipDangerousModePermissionPrompt":true,"autoContinueAtUsageLimit":false}"#,
                 "--",
                 "hi"
             ])

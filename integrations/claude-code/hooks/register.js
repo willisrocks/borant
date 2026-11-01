@@ -277,14 +277,15 @@ export function register(on) {
     return { ...out, sections: [...out.sections, { id: 'borant:chief-delegation', text: DELEGATION_RULE, scope: 'session' }] }
   })
 
-  // Project work that reaches the chief's shell goes to the person as a
-  // permission prompt, in any mode. Reads, and the Borant CLI, pass.
+  // Project work that reaches the chief's shell is refused, in any mode, with
+  // a reason the model reads; the person gets no prompt. Reads, and the
+  // Borant CLI, pass.
   on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
     await ensureStarted($).catch(() => {})
     const verdict = await next(e)
     if (!isChief || verdict.decision === 'deny') return verdict
     const why = projectWork(e.input)
-    return why ? { decision: 'ask', reason: guardReason(why) } : verdict
+    return why ? { decision: 'deny', reason: guardReason(why) } : verdict
   })
 
   on('session.compact', async ($, e, next) => {

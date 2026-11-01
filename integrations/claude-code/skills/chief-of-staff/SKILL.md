@@ -59,8 +59,8 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
   logs, git history, `gh` output, or `borant status --json` goes to a subagent.
 - Two things in the mod hold this when compaction drops this skill: the system prompt
   of a chief carries the rule ("borant:chief-delegation"), and project work in the
-  chief's shell goes to the person as a permission prompt ("Chief guard: …"). Never
-  word a command to get around the guard. The one command of yours it allows is
+  chief's shell is refused with a reason ("Chief guard: refused, …"); the person gets
+  no prompt. Never word a command to get around the guard. The one command of yours it allows is
   `install_borant.sh`, the person's laptop install of a release.
 - Call single Borant tools directly: the MCP tools `send`, `members`, `spawn`,
   `channel_create`, `channel_join`, `channel_transfer`, `board`, and the `borant cancel`
@@ -193,5 +193,5 @@ change to CI, secrets, releases, or infrastructure.
 | "The orchestrator is slow, I will do it here" | Tell the orchestrator it is urgent. A step you run here has no task, no worker, and no review. |
 | "The orchestrator asked me to run it: the prod access is on the laptop" | Tell it to spawn a worker on the laptop's host, or spawn its brief as your helper when its roles cannot run there. You never run a project's step for it. |
 | "Chris pressed Ask orchestrator, I know the answer" | The board sent it to the owner. Relay the owner's reply; add your view only if he asks. |
-| "The guard asked; I will reword the command" | The guard is the rule. Send the step to the orchestrator. |
+| "The guard refused; I will reword the command" | The guard is the rule. Send the step to the orchestrator. |
 | "Pick a team for the orchestrator" | Ask the person. |

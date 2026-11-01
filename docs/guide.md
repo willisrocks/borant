@@ -242,10 +242,12 @@ next prompt and relays the reply.
 The mod also keeps a chief to its role in a long session, where compaction can
 drop the chief-of-staff skill. A chief's system prompt carries the delegation
 rule (section `borant:chief-delegation`). A chief's Bash call that looks like
-project work goes to the person as a permission prompt, in any permission mode.
-That covers a background command, a script, a cloud, database, or deploy CLI,
-a build, `git push`, `gh pr merge`, and a write to a file. Reads, the Borant
-CLI, and `install_borant.sh` pass. A session that was already running when
+project work is refused, in any permission mode, with a reason that tells the
+chief to send it to the orchestrator; the person gets no prompt. That covers a
+background command, a script, a cloud, database, or deploy CLI, a build,
+`git push`, `gh pr merge`, and a write to a file. Reads, the Borant CLI,
+`install_borant.sh`, and writes into a temporary folder (`/tmp`,
+`/private/tmp`, `$TMPDIR`, a Claude Code scratchpad) pass. A session that was already running when
 the plugin reloads keeps its system prompt, so the mod gives it the rule as a
 conversation row, and gives it again after each compaction.
 
@@ -551,11 +553,26 @@ to agents.
 
 Before a Claude Code launch the host marks the clone as trusted, so the
 launch never waits at the folder-trust screen: it sets
-`projects."<cwd>".hasTrustDialogAccepted` in `~/.claude.json` (or
-`$CLAUDE_CONFIG_DIR/.claude.json` when set) and keeps every other key of the
-file. The file is written with mode 0600. A launch of another harness does
+`projects."<cwd>".hasTrustDialogAccepted` in the `.claude.json` of the config
+directory that the session reads. That is the `CLAUDE_CONFIG_DIR` of the launch,
+from a bundle value or an `env CLAUDE_CONFIG_DIR=…` prefix in `[commands]`, then
+the daemon's own `CLAUDE_CONFIG_DIR`, then `~/.claude.json`. The host keeps
+every other key of the file. The file is written with mode 0600. A launch of another harness does
 not touch it, and a write that fails logs a warning and starts the harness
 anyway.
+
+A Claude Code launch that runs with `--dangerously-skip-permissions` also
+passes `--settings '{"skipDangerousModePermissionPrompt":true}'`, so it never
+waits at the bypass-permissions consent screen on a host whose own settings
+never accepted it. The flag holds for that session only and writes no file.
+
+A launch whose screen shows a Claude Code confirm dialog ("Enter to confirm")
+fails at the next watchdog check, about every 5 s, without waiting for
+`launch_timeout_secs`. A launch that does not register fails its try, and the
+hub places the spawn again, on another host when one fits. When no other host fits, the host that
+failed gets the try. After three failed tries the spawn fails: `borant ps`
+shows the reason with the end of the screen, and the spawner gets a direct
+message.
 
 ## Commands
 

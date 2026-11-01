@@ -1018,3 +1018,51 @@ async fn spawns_start_drops_the_records_of_stopped_agents() {
         &agent
     ));
 }
+
+/// A spawn that only one host can take tries that host again after it fails
+/// there, so a launch stuck on the same screen reaches the try limit and
+/// fails with a reason, instead of waiting on "failed recently" for good.
+#[tokio::test]
+async fn spawns_a_single_host_spawn_retries_and_then_fails() {
+    let fx = Fx::new();
+    host(&fx, "h1", 4).await;
+    let spawner = owner(&fx).await;
+    let mut commands = fx.commands("h1").await;
+    let spawned = fx
+        .call(Some(&spawner), spawn_call("design work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    match next_cmd(&mut commands).await.expect("the first launch") {
+        HostCommand::Launch(order) => assert_eq!(order.agent, agent),
+        other => panic!("not a launch: {other:?}"),
+    }
+
+    for try_no in 1..=2 {
+        fx.req(CtlRequest::LaunchFailed {
+            agent: agent.clone(),
+            host: name("h1"),
+            error: "Enter to confirm · Esc to cancel".into(),
+            timeout_secs: Some(90.0),
+        })
+        .await
+        .expect("a failed launch");
+        fx.hub.tick().await.expect("tick");
+        match next_cmd(&mut commands).await {
+            Some(HostCommand::Launch(order)) => assert_eq!(order.agent, agent),
+            other => panic!("try {try_no}: the only host gets the next try, got {other:?}"),
+        }
+    }
+
+    fx.req(CtlRequest::LaunchFailed {
+        agent: agent.clone(),
+        host: name("h1"),
+        error: "Enter to confirm · Esc to cancel".into(),
+        timeout_secs: Some(90.0),
+    })
+    .await
+    .expect("the third failed launch");
+    let failed = record(&fx, &agent).await.expect("the record");
+    assert_eq!(failed.state, SpawnState::Failed, "{failed:?}");
+    assert_eq!(failed.attempts, 3);
+}
