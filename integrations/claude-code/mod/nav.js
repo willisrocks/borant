@@ -18,6 +18,8 @@
 //   drill      the node Enter opens, or null
 //   fold       the fold key Enter, h, and l toggle, with `isOpen`
 //   parentFold the fold of the project an epic row sits under
+//   under      the fold of the project an unfolded line belongs to, so the
+//              window can keep a selected project and its epics in view
 //   link       { href, label } a Link a detail line draws
 
 import {
@@ -37,8 +39,8 @@ import {
 } from './board.js'
 import { ageText, canDone, pressStatus } from './status.js'
 
-/** The first breadcrumb segment: the mod itself. */
-export const ROOT = 'borant'
+/** The first breadcrumb segment: the pane's own name, as its header reads. */
+export const ROOT = 'chief of staff'
 
 const SEP = ' › '
 
@@ -244,12 +246,18 @@ function cardActions(state, q, i, selected, width, inbox) {
   return status.length || buttons.length ? { status, buttons } : null
 }
 
-/** The meta line of a card: project, saga, why, age, owner. */
-function cardMeta(q, board) {
+/**
+ * The meta line of a card: project, saga, why, age, owner. When it does not
+ * fit `room`, the saga goes first, so the owner the Ask goes to stays.
+ */
+function cardMeta(q, board, room) {
   const project = findProject(board, q.project)
   const saga = project ? activeSaga(project) : null
   const age = typeof q.since === 'number' && typeof board?.at === 'number' ? ageText(board.at - q.since) : ''
-  return [q.project, saga?.title, q.attention_msg || (q.gate ? 'gate' : ''), age, q.owner].filter(Boolean).join(' · ')
+  const parts = [q.project, saga?.title, q.attention_msg || (q.gate ? 'gate' : ''), age, q.owner]
+  const line = parts.filter(Boolean).join(' · ')
+  if (Array.from(line).length <= room) return line
+  return parts.filter((p, i) => p && i !== 1).join(' · ')
 }
 
 /**
@@ -269,7 +277,8 @@ export function inboxRows(state, width, selection) {
   }
   const open = questions.filter((q) => !q.closed).length
   out.push(row({ marker: null, segments: [text('NEEDS YOU', 'yellowBold'), text(' · ' + open, 'dim')] }))
-  if (questions.length === 0) {
+  // A card a Done just closed may still show below, checked off.
+  if (open === 0) {
     out.push(row({ marker: text(GLYPH.done, 'green'), segments: [text('nothing needs you', 'green')] }))
     out.push(row({}))
   }
@@ -293,7 +302,7 @@ export function inboxRows(state, width, selection) {
     for (const line of lines.slice(1)) out.push(more({ segments: [text(line, style)] }))
     // Inline above the prompt the pane gets few rows, so a card there is its
     // title alone, and the selected one adds its meta and keys.
-    if (!state.compact || selected) out.push(more({ segments: [text(cardMeta(q, board), 'dim')] }))
+    if (!state.compact || selected) out.push(more({ segments: [text(cardMeta(q, board, body), 'dim')] }))
     const actions = cardActions(state, q, i, selected, width, true)
     if (actions) out.push(more(actions))
     if (!state.compact) out.push(row({}))
@@ -343,6 +352,8 @@ function projectTree(state, projects, body) {
   let sagaCol = Math.min(longest, body - nameCol - 4 - tailW)
   const tailInline = sagaCol >= 10
   if (!tailInline) sagaCol = Math.max(8, body - nameCol - 2)
+  // One state column for every project's epics, so the words line up.
+  const titleCol = epicTitleCol(projects, body)
   const out = []
   for (const { project, s } of summaries) {
     const node = { kind: 'project', project: project.project }
@@ -370,21 +381,33 @@ function projectTree(state, projects, body) {
       else out.push(contRow({ segments }))
     })
     if (!tailInline) out.push(contRow({ segments: [text(' '.repeat(nameCol + 2)), ...tail] }))
-    if (unfolded) out.push(...epicLines(state, project, body))
+    if (unfolded) out.push(...epicLines(project, titleCol))
   }
   return out
 }
 
-/** An unfolded project's open epics, its done ones as one line. */
-function epicLines(state, project, body) {
-  const out = []
+/** A project's epics: its active saga's, then its own. */
+function epicsOf(project) {
   const saga = activeSaga(project)
-  const epics = [...(saga?.epics || []).map((e) => ({ epic: e, saga })), ...(project.epics || []).map((e) => ({ epic: e, saga: null }))]
+  return [...(saga?.epics || []).map((e) => ({ epic: e, saga })), ...(project.epics || []).map((e) => ({ epic: e, saga: null }))]
+}
+
+/**
+ * The epic title column: the longest open epic's title of any project that
+ * fits, so the state words sit beside the titles, not at the far edge.
+ */
+function epicTitleCol(projects, body) {
+  const titles = projects.flatMap(epicsOf).filter(({ epic }) => epicState(epic) !== 'done')
+  const longest = Math.max(0, ...titles.map(({ epic }) => Array.from(epic.title || '').length))
+  return Math.max(8, Math.min(longest, body - 2 - 2 - WORD))
+}
+
+/** An unfolded project's open epics, its done ones as one line. */
+function epicLines(project, titleCol) {
+  const out = []
+  const epics = epicsOf(project)
   const parentFold = foldKey({ project: project.project })
-  // The title column takes the longest open epic's title that fits, so the
-  // state words sit beside the titles, not at the far edge.
-  const longest = Math.max(0, ...epics.filter(({ epic }) => epicState(epic) !== 'done').map(({ epic }) => Array.from(epic.title || '').length))
-  const titleCol = Math.max(8, Math.min(longest, body - 2 - 2 - WORD))
+  const under = parentFold
   let done = 0
   for (const { epic, saga: owner } of epics) {
     const stateName = epicState(epic)
@@ -396,15 +419,15 @@ function epicLines(state, project, body) {
     const lines = wrap(epic.title, titleCol)
     lines.forEach((line, i) => {
       const segments = [text(pad(line, titleCol)), ...(i === 0 ? [text('  '), text(epicNote(epic, stateName), stateName === 'needs' ? 'yellow' : stateName)] : [])]
-      if (i === 0) out.push(nodeRow({ indent: 2, marker: text(GLYPH[stateName], stateName), drill: node, parentFold, segments }))
-      else out.push(contRow({ indent: 2, segments }))
+      if (i === 0) out.push(nodeRow({ indent: 2, marker: text(GLYPH[stateName], stateName), drill: node, parentFold, under, segments }))
+      else out.push(contRow({ indent: 2, under, segments }))
     })
   }
-  if (done) out.push(row({ indent: 2, marker: text(GLYPH.done, 'doneDim'), segments: [text(done + ' done', 'dim')] }))
+  if (done) out.push(row({ indent: 2, under, marker: text(GLYPH.done, 'doneDim'), segments: [text(done + ' done', 'dim')] }))
   if (epics.length === 0) {
     const c = project.tasks || {}
     const counts = (c.open || 0) + ' open · ' + (c.blocked || 0) + ' blocked · ' + ((c.needs_human || 0) + (c.stuck || 0)) + ' need you · ' + (c.done || 0) + ' done'
-    out.push(row({ indent: 2, segments: [text('plain tasks: ' + counts, 'dim')] }))
+    out.push(row({ indent: 2, under, segments: [text('plain tasks: ' + counts, 'dim')] }))
   }
   return out
 }
@@ -476,7 +499,8 @@ export function detailRows(state, node, width) {
   const pr = task.properties && typeof task.properties.pr_url === 'string' ? task.properties.pr_url : null
   if (pr) push([text(taskLine('pr', ''), 'dim')], { href: pr, label: pr })
   else push([text(taskLine('pr', 'none'), 'dim')])
-  push([text(taskLine('updated', localTime(task.updated)), 'dim')])
+  const updated = localTime(task.updated, '')
+  if (updated) push([text(taskLine('updated', updated), 'dim')])
   push([text(taskLine('channel', node.channel + ' / ' + (task.id || node.id)), 'dim')])
   return finish(out, 0, width)
 }

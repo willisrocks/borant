@@ -57,7 +57,9 @@ test('the inbox is NEEDS YOU, a card per item, then PROJECTS and the idle ones',
   const lines = list.map(rowLine)
   expect(lines[0]).toStartWith('NEEDS YOU · 2')
   expect(lines[1]).toStartWith('Create Hetzner bucket borant-hub-backup + 1Password item')
-  expect(lines[2]).toContain('borant · Elastic compute · blocks 2 epics')
+  // The meta line drops the saga first when it does not fit, never the owner.
+  expect(lines[2]).toContain('borant · blocks 2 epics · 42m · orchestrator')
+  expect(rows({ width: 80 }).map(rowLine)[2]).toContain('borant · Elastic compute · blocks 2 epics · 42m · orchestrator')
   expect(lines.findIndex((l) => l.startsWith('PROJECTS · 2 active · 1 idle'))).toBeGreaterThan(2)
   expect(lines[lines.length - 1]).toStartWith('1 idle: boopmark')
   // Two cards and two projects take the selection; projects start folded.
@@ -133,14 +135,14 @@ test('a card opens its task, which shows what the card knows, and its keys', () 
   expect(text(list)).toContain('Revoke old willisrocks gh token?')
   expect(text(list)).toContain('needs you')
   expect(list.flatMap((r) => r.buttons.map((b) => b.hotkey))).toEqual(['d', 'a'])
-  expect(breadcrumb([cardNode(q)])).toBe('borant › Revoke old willisrocks gh token?')
+  expect(breadcrumb([cardNode(q)])).toBe('chief of staff › borant › Revoke old willisrocks gh token?')
 })
 
-test('the breadcrumb walks the project, the saga, and the task', () => {
-  expect(breadcrumb([])).toBe('borant')
-  expect(breadcrumb([epicBackup])).toBe('borant › Elastic compute › Hub backup to object storage')
-  expect(breadcrumb([epicBackup, taskBucket])).toBe('borant › Elastic compute › Hub backup to object storage › The bucket')
-  expect(breadcrumb([{ kind: 'help' }])).toBe('borant › help')
+test('the breadcrumb starts at the pane, then walks the project, the saga, and the task', () => {
+  expect(breadcrumb([])).toBe('chief of staff')
+  expect(breadcrumb([epicBackup])).toBe('chief of staff › borant › Elastic compute › Hub backup to object storage')
+  expect(breadcrumb([epicBackup, taskBucket])).toBe('chief of staff › borant › Elastic compute › Hub backup to object storage › The bucket')
+  expect(breadcrumb([{ kind: 'help' }])).toBe('chief of staff › help')
 })
 
 test('a view reads the channels it names, and none at the root', () => {

@@ -29,8 +29,12 @@ const PANE_TITLE = 'chief of staff'
  * and the inline block's rows below 110 columns. */
 const PANE_COLUMNS = 88
 const PANE_ROWS = 18
-/** The selected item's background, every line of it, to the site's edge. */
-const SELECT_BG = 'promptBorder'
+/** The selected item's background, every line of it, to the site's edge: the
+ * tint Claude Code puts behind the person's own messages, a step lighter than
+ * the pane in a dark theme and darker in a light one, so each segment keeps its
+ * own color and stays readable on it. (`selectionBg`, a blue, comes out as a
+ * light teal at 256 colors, under which cyan, red and dim text fade.) */
+const SELECT_BG = 'userMessageBackground'
 /** Below this many terminal columns the engine places only an asked pane:
  * one a command, a prompt, or a press is behind. A digit's prompt.edit is
  * none of those, so there the ticker's entries are band Buttons instead. */
@@ -50,6 +54,10 @@ const EVENTS_RETRY_MS = 5000
  * shortens it with BORANT_COS_DONE_WAIT_S. */
 const DONE_WAIT_MS = 120000
 let doneWaitMs = DONE_WAIT_MS
+/** What the chief reads when a call in a Done's turn would ask the person. */
+const DONE_TURN_REASON =
+  'Chief mod: refused. This turn comes from a Done the person pressed on the board, and they are not at the prompt to approve tools. ' +
+  'Close the task with the borant MCP tools (task_close, or send to its owner). If that does not work, say so in one line; do not ask the person to allow anything.'
 
 /** Set to `chief` by the role check, and nothing else ever turns the mod on. */
 let isChief = false
@@ -107,6 +115,16 @@ let paneFocused = false
 let refocusOnIdle = false
 /** Where the engine seated the pane: `dock` beside the transcript, or `inline`. */
 let placement = 'dock'
+/**
+ * The pane draws its own window over the view's lines, under a header and
+ * above the footer that always show: the first line shown, and whether the
+ * window follows the selection (a person's scroll stops it).
+ */
+let paneOffset = 0
+let followSelection = true
+/** A Done's prompt runs a turn now: the person is not at the prompt, so no
+ * tool of it may stop to ask them. */
+let doneTurn = false
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -137,7 +155,15 @@ export function register(on) {
       clockNow = await nowMs($)
       freshNow = await fresh($)
       paneWidth = widthOf(e)
-      paneFocused = Boolean(e.props && e.props.isFocused)
+      const focused = Boolean(e.props && e.props.isFocused)
+      if (focused && !paneFocused) {
+        // The pane got the keyboard back (an open, Esc's back, a Done's turn
+        // ending): the ring goes to the selected row, not where it was left.
+        $.clock.after(0, () => {
+          focusRow($, selectionOf()).catch(() => {})
+        })
+      }
+      paneFocused = focused
       const seat = (e.props && e.props.placement) || 'dock'
       if (seat !== placement) {
         // A resize moved the pane between the dock and the inline block; its
@@ -182,6 +208,20 @@ export function register(on) {
       // A focus move is never worth an error.
     }
     return next(e)
+  })
+
+  // The pane draws its own window under a header that stays, so the person's
+  // wheel and scroll keys move that window, not the engine's.
+  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    try {
+      if (!isChief) return next(e)
+      paneOffset = Math.max(0, paneOffset + (Number(e.by) || 0))
+      followSelection = false
+      redraw($)
+      return {}
+    } catch {
+      return next(e)
+    }
   })
 
   // Esc (with closeOnEscape) and ctrl+x x raise this. Deeper than the root it
@@ -256,13 +296,17 @@ export function register(on) {
 
   // Project work that reaches the chief's shell is refused, in any mode, with
   // a reason the model reads; the person gets no prompt. Reads, and the
-  // Borant CLI, pass.
-  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+  // Borant CLI, pass. In the turn a Done press started, any
+  // call that would ask the person is refused too: they pressed a key on the
+  // board and are not at the prompt to approve it.
+  on('tool.check', async ($, e, next) => {
     await ensureStarted($).catch(() => {})
     const verdict = await next(e)
     if (!isChief || verdict.decision === 'deny') return verdict
-    const why = projectWork(e.input)
-    return why ? { decision: 'deny', reason: guardReason(why) } : verdict
+    const why = e.tool === 'Bash' ? projectWork(e.input) : null
+    if (why) return { decision: 'deny', reason: guardReason(why) }
+    if (doneTurn && verdict.decision === 'ask' && e.agentId === undefined) return { decision: 'deny', reason: DONE_TURN_REASON }
+    return verdict
   })
 
   on('session.compact', async ($, e, next) => {
@@ -274,6 +318,7 @@ export function register(on) {
   // The turn a Done started is over: the pane takes the keyboard back.
   on('turn.complete', async ($, e, next) => {
     const out = await next(e)
+    if (e.agentId === undefined) doneTurn = false
     try {
       if (isChief && refocusOnIdle && paneOpen) {
         // A dialog the turn raised (a permission prompt) may still hold the
@@ -484,7 +529,9 @@ async function refresh($, force = false) {
   try {
     result = await readBoard($, config)
   } finally {
+    // Drawn now, whoever asked for the read: a `↻ reading` must not outlive it.
     reading = false
+    redraw($)
   }
   if (!result.board) {
     // A failed read draws an empty board with the reason, never the stale one:
@@ -522,7 +569,9 @@ function settlePending($, now) {
       }
     } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
       pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
-      toast($, 'still open: ' + mark.title)
+      // The open pane says it on the card; a toast there would outlive the
+      // card's own word when the hub closes it a moment later.
+      if (!paneOpen) toast($, 'still open: ' + mark.title)
     }
   }
 }
@@ -564,6 +613,7 @@ function selectionOf() {
 
 function setSelection(ordinal) {
   selections.set(currentKey(), Math.max(0, Number(ordinal) || 0))
+  followSelection = true
 }
 
 /** The task lists of the cache, by channel: an array, or null on failure. */
@@ -587,7 +637,8 @@ function rowsNow() {
     asked,
     help: helpLines({ projects: activeProjects(board).length }),
     selection: selectionOf(),
-    width: paneWidth,
+    // One cell of room at the right edge, so the counts never touch the frame.
+    width: paneWidth - 1,
     compact: placement === 'inline',
   })
 }
@@ -733,7 +784,12 @@ async function handoff($) {
 /** Move the selection one row, as j and k do. */
 async function move($, delta) {
   const count = selectableRows(rowsNow()).length
-  if (count === 0) return
+  if (count === 0) {
+    // The help has no rows to select: j and k scroll it.
+    paneOffset = Math.max(0, paneOffset + delta * 3)
+    followSelection = false
+    return redraw($)
+  }
   const current = Math.min(selectionOf(), count - 1)
   const next = Math.min(count - 1, Math.max(0, current + delta))
   setSelection(next)
@@ -742,12 +798,14 @@ async function move($, delta) {
 }
 
 /**
- * Land the engine's focus ring on one row, and scroll its whole item in. The
- * ring keeps its place in the tab order across a redraw, and the selected
- * card's keys move with the selection, so the ring is put on the row again
- * once the new drawing is in.
+ * Land the engine's focus ring on one row; the pane's window follows the
+ * selection as it draws. The ring keeps its place in the tab order across a
+ * redraw, and the selected card's keys move with the selection, so the ring
+ * is put on the row again once the new drawing is in.
  */
 async function focusRow($, ordinal) {
+  followSelection = true
+  redraw($)
   const ring = () => $.ui.focus({ requestId: PANE, key: 'row-' + ordinal }).catch(() => {})
   try {
     await ring()
@@ -757,17 +815,30 @@ async function focusRow($, ordinal) {
   } catch {
     // A row not drawn yet, or a pane without the keys.
   }
-  const lines = rowsNow()
-  const last = lines.reduce((at, r, i) => (r.part === ordinal ? i : at), -1)
-  const first = lines.findIndex((r) => r.part === ordinal)
-  for (const at of [last, first]) {
-    if (at < 0) continue
-    try {
-      await $.ui.scroll({ to: { key: 'line-' + at }, in: PANE, block: 'nearest' })
-    } catch {
-      // A drawing that fits needs no scroll.
-    }
+}
+
+/**
+ * The window's first line that shows the selected item whole: a card's lines,
+ * or a project with the epics it unfolds. Going up, the lines just before it
+ * that belong to no item (a section's heading) come along.
+ */
+function inView(lines, offset, size) {
+  const sel = selectionOf()
+  const head = lines.find((r) => r.selectable && r.part === sel)
+  if (!head) return offset
+  const mine = (r) => r.part === sel || (head.fold && head.isOpen && r.under === head.fold)
+  const first = lines.findIndex(mine)
+  let last = first
+  lines.forEach((r, i) => {
+    if (mine(r)) last = i
+  })
+  if (first < offset) {
+    let top = first
+    while (top > 0 && first - top < 2 && lines[top - 1].part < 0 && !lines[top - 1].under) top -= 1
+    return lines.slice(0, top).some((r) => r.part >= 0) ? top : 0
   }
+  if (last >= offset + size) return Math.max(0, Math.min(first, last - size + 1))
+  return offset
 }
 
 /** h: fold an open project, or the project an epic sits under, else go back. */
@@ -804,6 +875,7 @@ async function toggleFold($, row) {
 async function drill($, node) {
   if (!node) return
   path = [...path, node]
+  paneOffset = 0
   setSelection(0)
   redraw($)
   await land($)
@@ -812,6 +884,8 @@ async function drill($, node) {
 /** Go back one level. */
 async function back($, refocus = false) {
   path = path.slice(0, -1)
+  paneOffset = 0
+  followSelection = true
   redraw($)
   await land($, refocus)
 }
@@ -906,16 +980,6 @@ function styleProps(style) {
 }
 
 /**
- * A segment's Text props on the selection background: the inverse text
- * color, so dim and colored cells stay readable, and no bold, which many
- * terminals draw as grey. The bar's filled cells keep their green.
- */
-function onSelected(style, value = '') {
-  if (String(value).startsWith('\u2588')) return styleProps(style)
-  return { color: 'inverseText', dimColor: false, bold: false }
-}
-
-/**
  * The band: the ticker's one line. From 144 columns its digits are text, and
  * the prompt.edit hook takes a digit; below, each entry is a plain Button
  * with its digit as hotkey (the engine draws `2: ` before it), since only a
@@ -951,29 +1015,49 @@ function band($, e, segments) {
   return Box({ flexDirection: 'row', children })
 }
 
-/** The pane: a header with the freshness word, the view's rows, the keys. */
+/**
+ * The pane: a header with the freshness word, a window over the view's lines,
+ * and the keys. The header and the keys always show; the lines between scroll
+ * under them (the mod's own window, `ui.scroll`), and a cue says how many are
+ * above and below. Docked, a blank row or the cue sits on each side of the
+ * window; inline above the prompt, where rows are few, the cues share the
+ * header's and the footer's rows.
+ */
 function paneBody($, e, width) {
   const { Box, Text, Button, Link } = $.ui.resolve(e)
+  const inline = placement === 'inline'
+  const lines = rowsNow()
+  const room = (e.props && e.props.scroll && e.props.scroll.bodyRows) || 0
+  const chrome = inline ? 2 : 4
+  const size = room > chrome ? Math.max(1, Math.min(lines.length, room - chrome)) : lines.length
+  if (followSelection) paneOffset = inView(lines, paneOffset, size)
+  paneOffset = Math.max(0, Math.min(paneOffset, lines.length - size))
+  const above = paneOffset
+  const below = lines.length - paneOffset - size
+  const cue = (n, up) => seg((up ? '↑ ' : '↓ ') + n + ' more', 'dim')
+  const len = (value) => Array.from(value).length
+
   const fresh = freshNow || seg('live', 'green')
-  const freshWidth = Array.from(fresh.text).length
-  const label = truncate(titleNow(), Math.max(4, width - freshWidth - 2))
-  const gap = Math.max(1, width - Array.from(label).length - freshWidth)
+  const right = inline && above ? [cue(above, true), seg('  '), fresh] : [fresh]
+  const rightWidth = right.reduce((n, s) => n + len(s.text), 0)
+  const label = truncate(titleNow(), Math.max(4, width - rightWidth - 2))
   const children = [
     Box({
       key: 'pane-head',
       flexDirection: 'row',
       children: [
         Text({ key: 'head-label', children: [label], bold: true, ...(path.length ? { dimColor: true } : {}) }),
-        Text({ key: 'head-gap', children: [' '.repeat(gap)] }),
-        Text({ key: 'head-fresh', children: [fresh.text], ...styleProps(fresh.style) }),
+        Text({ key: 'head-gap', children: [' '.repeat(Math.max(1, width - len(label) - rightWidth))] }),
+        ...right.map((s, j) => Text({ key: 'head-right-' + j, children: [s.text], ...styleProps(s.style) })),
       ],
     }),
-    Text({ key: 'pane-blank', children: [' '] }),
   ]
+  if (!inline) children.push(Text({ key: 'pane-up', children: [above ? cue(above, true).text : ' '], dimColor: true }))
 
-  rowsNow().forEach((r, i) => {
+  lines.slice(paneOffset, paneOffset + size).forEach((r, k) => {
+    const i = paneOffset + k
     const selected = r.selected
-    const props = selected ? (style, value) => onSelected(style, value) : (style) => styleProps(style)
+    const props = (style) => styleProps(style)
     const cells = []
     if (r.indent) cells.push(Text({ key: 'indent', children: [' '.repeat(r.indent)] }))
     if (r.marker) {
@@ -1000,7 +1084,7 @@ function paneBody($, e, width) {
         cells.push(Button(button))
       })
     } else {
-      r.segments.forEach((s, j) => cells.push(Text({ key: 'seg-' + j, children: [s.text], wrap: 'truncate', ...props(s.style, s.text) })))
+      r.segments.forEach((s, j) => cells.push(Text({ key: 'seg-' + j, children: [s.text], wrap: 'truncate', ...props(s.style) })))
       if (r.link) cells.push(Link({ key: 'link', href: r.link.href, label: r.link.label }))
     }
     children.push(
@@ -1013,28 +1097,80 @@ function paneBody($, e, width) {
     )
   })
 
-  children.push(Text({ key: 'pane-foot-blank', children: [' '] }))
-  children.push(footer($, e))
+  if (!inline) children.push(Text({ key: 'pane-down', children: [below ? cue(below, false).text : ' '], dimColor: true }))
+  children.push(footer($, e, lines, width, inline && below ? cue(below, false) : null))
   return Box({ flexDirection: 'column', children })
 }
 
-/** The footer: the pane's keys, as Buttons whose hotkeys they are. */
-function footer($, e) {
+/**
+ * The keys of the view, and only those that do something there: j k move,
+ * d and a on a selected card (its own Buttons hold those hotkeys, so the
+ * footer only names them), h l on a project or an epic, ⏎ where it opens,
+ * and esc. A key that is a hotkey here is the footer's own Button.
+ */
+function footerKeys($, lines) {
+  const last = path[path.length - 1]
+  const keys = []
+  const nav = () => {
+    keys.push({ id: 'nav-down', key: 'j', label: '↓', hotkey: 'j', onPress: () => move($, 1) })
+    keys.push({ id: 'nav-up', key: 'k', label: '↑', hotkey: 'k', onPress: () => move($, -1) })
+  }
+  const hotkeys = new Set(lines.flatMap((r) => r.buttons.map((b) => b.hotkey)).filter(Boolean))
+  const cardKeys = () => {
+    if (hotkeys.has('d')) keys.push({ id: 'foot-d', key: 'd', label: 'done' })
+    if (hotkeys.has('a')) keys.push({ id: 'foot-a', key: 'a', label: 'ask' })
+  }
+  if (last && last.kind === 'help') {
+    nav()
+  } else if (last && last.kind === 'task') {
+    // The detail draws its own `d: Done  a: Ask orchestrator` line.
+  } else if (last) {
+    if (selectableRows(lines).length) {
+      nav()
+      keys.push({ id: 'foot-enter', key: '⏎', label: 'open' })
+    }
+  } else if (selectableRows(lines).length) {
+    nav()
+    const row = rowAt(lines, selectionOf())
+    if (row && row.fold) {
+      keys.push({ id: 'nav-fold', key: 'h', label: 'fold', hotkey: 'h', onPress: () => left($) })
+      keys.push({ id: 'nav-open', key: 'l', label: 'unfold', hotkey: 'l', onPress: () => right($) })
+    } else if (row && row.parentFold) {
+      keys.push({ id: 'nav-fold', key: 'h', label: 'fold', hotkey: 'h', onPress: () => left($) })
+      keys.push({ id: 'foot-enter', key: '⏎', label: 'open' })
+    } else {
+      cardKeys()
+      keys.push({ id: 'foot-enter', key: '⏎', label: 'open' })
+    }
+  }
+  keys.push({ id: 'nav-back', key: 'esc', label: path.length ? 'back' : 'close', onPress: () => escLike($), button: true })
+  return keys
+}
+
+/** The footer: the keys, each `key: what` with the key in the accent color. */
+function footer($, e, lines, width, cue) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  return Box({
-    key: 'pane-foot',
-    flexDirection: 'row',
-    columnGap: 2,
-    children: [
-      Button({ key: 'nav-down', label: '↓', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
-      Button({ key: 'nav-up', label: '↑', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
-      Button({ key: 'nav-fold', label: 'fold', hotkey: 'h', plain: true, onPress: () => left($) }),
-      Button({ key: 'nav-open', label: 'open', hotkey: 'l', plain: true, onPress: () => right($) }),
-      // Esc and Enter cannot be Button hotkeys; Enter presses the selected row.
-      Button({ key: 'nav-back', label: 'esc back', plain: true, dimColor: true, onPress: () => escLike($) }),
-      Text({ key: 'foot-enter', children: ['⏎ open'], dimColor: true }),
-    ],
+  const keys = footerKeys($, lines)
+  const children = []
+  let used = 0
+  keys.forEach((k, i) => {
+    if (i) children.push(Text({ key: 'gap-' + i, children: ['  '] }))
+    used += (i ? 2 : 0) + Array.from(k.key + ': ' + k.label).length
+    if (k.hotkey) {
+      children.push(Button({ key: k.id, label: k.label, hotkey: k.hotkey, plain: true, onPress: k.onPress }))
+    } else {
+      const parts = [Text({ key: k.id + '-key', children: [k.key], color: 'suggestion' }), Text({ key: k.id + '-label', children: [': ' + k.label] })]
+      children.push(k.button ? Button({ key: k.id, label: k.key + ': ' + k.label, plain: true, children: parts, onPress: k.onPress }) : Box({ key: k.id, flexDirection: 'row', children: parts }))
+    }
   })
+  if (cue) {
+    const gap = width - used - Array.from(cue.text).length
+    if (gap >= 2) {
+      children.push(Text({ key: 'foot-gap', children: [' '.repeat(gap)] }))
+      children.push(Text({ key: 'foot-cue', children: [cue.text], dimColor: true }))
+    }
+  }
+  return Box({ key: 'pane-foot', flexDirection: 'row', children })
 }
 
 /** A press on a Button of the band or the pane. */
@@ -1124,7 +1260,7 @@ async function markDone($, q) {
   pending[key] = { state: 'sending', at: await nowMs($), title: q.title, question: q, index: Math.max(0, index) }
   const text =
     'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
-    'Close it as done now: task_close it yourself if it is a saga gate or you own its channel; ' +
+    'Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; ' +
     'otherwise send the owner of ' + q.channel + ' a direct message to close it as done, with "Chris marked it done in the board".'
   const unsent = (reason) => {
     if (pending[key] && pending[key].state === 'sending') pending[key] = { ...pending[key], state: 'unsent', reason }
@@ -1140,6 +1276,7 @@ async function markDone($, q) {
         if (pending[key] && pending[key].state === 'sending') {
           pending[key] = { ...pending[key], state: 'closing', at: await nowMs($) }
         }
+        doneTurn = true
         redraw($)
         // The submitted prompt takes the keyboard; the pane asks for it back
         // now and again when the chief's turn completes.

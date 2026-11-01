@@ -48,11 +48,15 @@ wait_idle() {
   sleep 1
   for _ in $(seq 1 90); do tui_text | grep -q '… ([0-9]*s' || return 0; sleep 0.5; done
 }
-# A Done submits a prompt, and the test model may then ask to run a command.
-# Its permission dialog would take the keys below; Esc refuses it.
+# The chief mod must never put a permission prompt in front of the person.
+# One that shows is a failure: it gets a PNG and a FAIL line, then Esc so the
+# rest of the run can go on.
+dialogs=0
 no_dialog() {
   if tui_text | grep -q 'Do you want to proceed\|requires approval'; then
-    note "a permission dialog of the model's own came up; refused it with Esc"
+    dialogs=$((dialogs + 1))
+    note "FAIL: a permission dialog came up ($1); see dialog-$dialogs.png"
+    tui_shot "dialog-$dialogs"
     tui_keys Escape; sleep 0.8
   fi
 }
@@ -62,7 +66,7 @@ node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
 
 trap 'cp "$stub/calls.log" "$TUI_OUT/calls.log" 2>/dev/null; tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-qa-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
-  BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
+  BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=30 \
   claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
 # The trust dialog defaults to "No, exit": Down, then Enter.
 for _ in $(seq 1 40); do
@@ -107,29 +111,39 @@ first="$(node -e "const b=require('$stub/board.json');const q=b.collections[0].n
 start="$(now_ms)"
 board_edit "for (const c of b.collections) c.needs_you = c.needs_you.filter(q => q.title !== $(node -e "console.log(JSON.stringify(process.argv[1]))" "$first"))"
 event
-for _ in $(seq 1 80); do tui_text | grep -q 'closed' && break; sleep 0.25; done
+for _ in $(seq 1 80); do tui_text | grep -q '✓ closed' && break; sleep 0.25; done
 note "Done closed mark after $(since "$start") ms (with an event)"
 shot 12-done-closed 0.2
-no_dialog
+no_dialog "after Done"
 wait_idle
-no_dialog
+no_dialog "after Done's turn"
 # Ask on the next item.
 tui_type a; shot 13-ask 1.5
 note "stub sends: $(grep -c ' send ' "$stub/calls.log" 2>/dev/null || true)"
-no_dialog
+# Done on it too, which the hub never closes: the card says still open.
+tui_type d; sleep 1
+start="$(now_ms)"
+for _ in $(seq 1 120); do tui_text | grep -q 'still open after' && break; no_dialog "in the failed Done"; sleep 0.5; done
+note "Done still open mark after $(since "$start") ms (wait 30 s)"
+shot 13b-done-failed 0.2
+no_dialog "after the failed Done"
+wait_idle
+no_dialog "after the failed Done's turn"
 tui_keys Escape; prompt_reset
 
 # Refresh: a change with no event waits for the poll; one with an event does not.
 # The changed titles are epics, which the inbox pane shows under an unfolded
-# project: 4 unfolds roger-docs-api (Prod cutover), 2 unfolds borant (Hub backup).
-no_dialog
-tui_type 4; sleep 1.2; tui_keys Escape; prompt_reset
-no_dialog
-tui_type 2; sleep 1.2
+# project, scrolled into view with it: 4 is roger-docs-api (Prod cutover), 2
+# is borant (Hub backup).
+no_dialog "before the refresh"
+tui_type 4; sleep 1.5
 start="$(now_ms)"
 board_edit "b = JSON.parse(JSON.stringify(b).replaceAll('Prod cutover', 'Prod cutover (moved)'))"
 for _ in $(seq 1 80); do tui_text | grep -q 'cutover (moved)' && break; sleep 0.25; done
 note "a change with no event showed after $(since "$start") ms"
+shot 14a-refreshed-poll 0.2
+tui_keys Escape; prompt_reset
+tui_type 2; sleep 1.5
 start="$(now_ms)"
 board_edit "b = JSON.parse(JSON.stringify(b).replaceAll('Hub backup to object storage', 'Hub backup to R2'))"
 event
@@ -137,7 +151,7 @@ for _ in $(seq 1 80); do tui_text | grep -q 'Hub backup to R2' && break; sleep 0
 note "a change with an event showed after $(since "$start") ms"
 shot 14-refreshed 0.2
 
-no_dialog
+no_dialog "before the resize"
 # Resize: the other size, then back.
 if [ "$width" -ge 150 ]; then other_w=100 other_h=40; else other_w=200 other_h=50; fi
 tmux -L "$TUI_NAME" resize-window -t tui -x "$other_w" -y "$other_h"
@@ -152,6 +166,7 @@ node "$root/scripts/tui/board-variants.mjs" empty "$stub" >>"$log"
 event
 shot 17-empty 2.5
 
-no_dialog
+no_dialog "before help"
 tui_keys Escape; prompt_reset
 tui_type '/cos help'; sleep 0.5; tui_keys Enter; shot 18-help 2
+note "permission dialogs: $dialogs"

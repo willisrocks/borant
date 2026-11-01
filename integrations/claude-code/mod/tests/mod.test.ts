@@ -296,7 +296,7 @@ async function painted(ui: { drawn: () => Promise<unknown> }) {
   const walk = (node: unknown) => {
     if (!node || typeof node !== 'object') return
     const { props, children } = node as { props?: Record<string, unknown>; children?: unknown[] }
-    if (props?.backgroundColor === 'promptBorder' && typeof props.key === 'string') out.push(props.key)
+    if (props?.backgroundColor === 'userMessageBackground' && typeof props.key === 'string') out.push(props.key)
     for (const child of children || []) walk(child)
   }
   walk(await ui.drawn())
@@ -459,7 +459,7 @@ test('the help opens from the ticker button and /cos help', async ($, on) => {
 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await band.press({ key: 'help' })
-  expect(opened).toEqual(['borant › help'])
+  expect(opened).toEqual(['chief of staff › help'])
   await band.unmount()
 
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -480,7 +480,7 @@ test('j, k, and a focus move select the row across both sections', async ($, on)
   await $.command.run({ command: 'cos', args: 'pane' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  for (const [key, hotkey] of [['nav-down', 'j'], ['nav-up', 'k'], ['nav-fold', 'h'], ['nav-open', 'l']]) {
+  for (const [key, hotkey] of [['nav-down', 'j'], ['nav-up', 'k']]) {
     expect((await ui.find({ key }))?.props.hotkey).toBe(hotkey)
   }
   expect(await selected(ui, 'row-0')).toBe(true)
@@ -533,7 +533,7 @@ test('Enter walks a card to its task, an epic to its tasks, and esc walks back t
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   // Enter on the selected card opens its task, with the breadcrumb.
   await ui.press({ key: 'row-0' })
-  expect(opened).toContain('borant › borant › Create Hetzner bucket borant-hub-backup + 1Password item'.replace('borant › borant', 'borant'))
+  expect(opened).toContain('chief of staff › borant › Create Hetzner bucket borant-hub-backup + 1Password item')
   await ui.press({ key: 'nav-back' })
 
   // Unfold borant, then Enter on its epic Delete borant-2 opens its tasks.
@@ -541,7 +541,7 @@ test('Enter walks a card to its task, an epic to its tasks, and esc walks back t
   await ui.press({ key: 'row-2' })
   await ui.press({ key: 'row-4' })
   await ui.press({ key: 'row-4' })
-  expect(opened).toContain('borant › Elastic compute › Delete borant-2')
+  expect(opened).toContain('chief of staff › borant › Elastic compute › Delete borant-2')
   expect(await ui.find({ type: 'Text', text: /The retire of borant-2/ })).toBeDefined()
   // Enter on a child task opens its detail.
   await ui.press({ key: 'row-0' })
@@ -773,4 +773,50 @@ test('an event from the host stream reads the board again at once', async ($, on
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ type: 'Text', text: /^polling/ })).toBeDefined()
   await band.unmount()
+})
+
+test('inline, the pane draws its own window: the header and keys stay, cues count the rest', async ($, on) => {
+  chiefStubs(on)
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const INLINE = { ...PANE, props: { ...PANE.props, placement: 'inline', bodyColumns: 96, scroll: { offset: 0, bodyRows: 8 } } }
+
+  const ui = await $.ui.mount({ ...INLINE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^chief of staff$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^↓ \d+ more$/ })).toBeDefined()
+  // A card selected: the footer names its d and a, which its own Buttons hold.
+  expect(await ui.find({ key: 'foot-d' })).toBeDefined()
+  expect(await ui.find({ key: 'nav-fold' })).toBeUndefined()
+  // j down to notes, past the window: it scrolls in, the header stays, and
+  // a project selected brings h and l.
+  for (let i = 0; i < 3; i += 1) await ui.press({ key: 'nav-down' })
+  expect(await selected(ui, 'row-3')).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^chief of staff$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^↑ \d+ more$/ })).toBeDefined()
+  expect((await ui.find({ key: 'nav-fold' }))?.props.hotkey).toBe('h')
+  // Unfolded, its lines come into view with it.
+  await ui.press({ key: 'nav-open' })
+  expect(await ui.find({ type: 'Text', text: /plain tasks: \d+ open/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('in the turn a Done started, a call that would ask the person is refused', async ($, on) => {
+  chiefStubs(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('tool.check', () => ({ decision: 'ask' }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ ...SESSION })
+  await $.command.run({ command: 'cos', args: 'pane' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })).decision).toBe('ask')
+  await ui.press({ key: 'done-0' })
+  const held = await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })
+  expect(held.decision).toBe('deny')
+  expect(held.reason).toContain('borant MCP tools')
+  expect((await $.tool.check({ tool: 'mcp__borant__task_close', input: {} })).decision).toBe('deny')
+  // The turn ends: the person is back, and Claude Code decides as before.
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })).decision).toBe('ask')
+  await ui.unmount()
 })
