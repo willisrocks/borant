@@ -138,3 +138,5 @@ note "after the wait: $(tui_text | grep -o 'still open[^│]*' | head -1)"
 # /cos help names every key.
 tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
 tui_type '/cos help'; sleep 0.5; tui_keys Enter; sleep 2; tui_shot 17-help
+# The event stream must reach borant: an event-driven refresh needs it.
+note "event streams started: $(grep -c ' events --follow' "$stub/calls.log" 2>/dev/null || echo 0)"
