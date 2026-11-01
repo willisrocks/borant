@@ -2,7 +2,7 @@
 # Render the chief-of-staff mod in a real Claude Code session at two fixed
 # sizes, drive it with keys, and write an ANSI capture and a PNG for each
 # state. The tui-visual-qa skill (.agents/skills/tui-visual-qa) describes the
-# loop; scripts/tui/cos-scenario.sh covers mouse, chords, and refresh.
+# loop; scripts/tui/cos-scenario.sh covers the keys, Done, Ask, and refresh.
 #
 # Usage:
 #   scripts/cos-visual.sh [plugin-dir] [output-dir] [prefix]
@@ -13,7 +13,7 @@
 #   nix shell nixpkgs#charm-freeze -c scripts/cos-visual.sh \
 #     integrations/claude-code docs/chief-mod-board-ux/captures after
 #
-# States: band, band-focused, pane-opened, pane-moved, at 200x50 and 120x40.
+# States: band, preview, preview-moved, preview-more, at 200x50 and 120x40.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,24 +50,21 @@ for size in 200x50 120x40; do
 
   tui_shot "$tag-band"
 
-  # The band's focus starts on its help chip; j j reaches the first project.
-  tui_keys C-x Tab
-  sleep 0.5
-  tui_type 'j'
-  sleep 0.3
-  tui_type 'j'
-  sleep 0.5
-  tui_shot "$tag-band-focused"
-
-  # Enter opens the pane and gives it the keyboard.
-  tui_keys Enter
+  # A digit at the empty prompt selects its row and opens the preview with
+  # the keys.
+  tui_type '3'
   sleep 1.5
-  tui_shot "$tag-pane-opened"
+  tui_shot "$tag-preview"
 
-  # j moves through the epics and tasks.
+  # j moves the band's selection, and the preview follows.
   tui_type 'j'
   sleep 0.5
-  tui_shot "$tag-pane-moved"
+  tui_shot "$tag-preview-moved"
+
+  # Enter shows more: the project's child tasks.
+  tui_keys Enter
+  sleep 1
+  tui_shot "$tag-preview-more"
 
   tui_stop
 done

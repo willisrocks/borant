@@ -83,5 +83,5 @@ cos-visual plugin-dir="integrations/claude-code" out="docs/chief-mod-board-ux/ca
     nix shell nixpkgs#charm-freeze -c scripts/cos-visual.sh {{plugin-dir}} {{out}} {{prefix}}
 
 # Run the chief mod's interaction scenario (keys, chords, mouse, refresh) at one size.
-cos-scenario plugin-dir="integrations/claude-code" out="/tmp/cos-scenario" width="200" height="50":
-    nix shell nixpkgs#charm-freeze -c scripts/tui/cos-scenario.sh {{plugin-dir}} {{out}} {{width}} {{height}}
+cos-scenario plugin-dir="integrations/claude-code" out="/tmp/cos-scenario" width="200" height="50" board="big":
+    nix shell nixpkgs#charm-freeze -c scripts/tui/cos-scenario.sh {{plugin-dir}} {{out}} {{width}} {{height}} {{board}}

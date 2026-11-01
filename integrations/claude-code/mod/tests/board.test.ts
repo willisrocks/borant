@@ -2,29 +2,37 @@
 import { expect, test } from 'claude-code/testing'
 import board from '../fixtures/board.js'
 import {
+  bandActions,
   activeProjects,
   allProjects,
   allQuestions,
-  bandRowKeys,
+  bandItems,
   bandRows,
   condensedRow,
-  countNeedsYou,
   digest,
   epicState,
   helpLines,
   hhmm,
   isActive,
+  itemActions,
   openTasksLabel,
-  paneHelpRows,
-  paneTabs,
   progressBar,
   projectCount,
   projectSummary,
   rowText,
-  stepKey,
 } from '../board.js'
 
-const updated = '14:32'
+type Cell = { text: string; button?: { key: string; kind: string; hotkey?: string } }
+type Row = { key: string; cells: Cell[]; selected?: boolean }
+
+/** The band's rows as plain text. */
+function texts(rows: Row[]) {
+  return rows.map((r) => rowText(r.cells))
+}
+
+function hotkeys(row: Row) {
+  return row.cells.flatMap((c) => (c.button?.hotkey ? [c.button.hotkey] : []))
+}
 
 /** One project of the fixture, by name: the board lists projects in name order. */
 function projectOf(name: string) {
@@ -34,7 +42,7 @@ function projectOf(name: string) {
 }
 
 test('the board counts what the mockup shows', () => {
-  expect(countNeedsYou(board)).toBe(2)
+  expect(allQuestions(board)).toHaveLength(2)
   expect(allProjects(board).map((p) => p.project)).toEqual(['boopmark', 'borant', 'notes'])
   // boopmark's one epic is done and it has no open task: it is idle.
   expect(activeProjects(board).map((p) => p.project)).toEqual(['borant', 'notes'])
@@ -95,10 +103,7 @@ test('an integer millisecond at and since draw HH:MM, not the fallback', () => {
   expect(hhmm(null)).toBe('--:--')
   expect(hhmm('not a time')).toBe('--:--')
 
-  // The band header and the digest read the fixture's numbers.
-  const head = rowText(bandRows(board, { width: 120 })[0])
-  expect(head).toMatch(/updated \d{2}:\d{2}/)
-  expect(head).not.toContain('--:--')
+  // The digest reads the fixture's numbers.
   const text = digest(board, { width: 96 })
   expect(text).toMatch(/since \d{2}:\d{2}/)
   expect(text).not.toContain('since ?')
@@ -114,46 +119,6 @@ test('the progress bar fills in ten cells, and in eight on a narrow terminal', (
   expect(progressBar(0, 0, 10).empty).not.toContain('\u2591')
 })
 
-test('a project of plain tasks shows its open tasks, not filler or a grey bar', () => {
-  expect(projectSummary(projectOf('notes')).bar.text).toBe('\u2014')
-  const calm = structuredClone(board)
-  calm.collections[0].needs_you = []
-  calm.collections[0].projects = [projectOf('notes')] as (typeof calm.collections)[0]['projects']
-  for (const width of [120, 80]) {
-    const row = rowText(bandRows(calm, { width, updated })[1])
-    expect(row).toContain('plain tasks')
-    expect(row).toContain('\u25cf 3 open tasks')
-    expect(row).not.toContain('no saga')
-    expect(row).not.toContain('no epic yet')
-    expect(row).not.toContain('\u2591')
-    expect(row).not.toContain('\u2014')
-  }
-})
-
-test('rows past nine carry no second [ 9 ]', () => {
-  const many = structuredClone(board)
-  const projects: (typeof many.collections)[0]['projects'] = []
-  for (let i = 0; i < 10; i += 1) {
-    const p = structuredClone(projectOf('borant'))
-    p.project = 'p' + String(i).padStart(2, '0')
-    projects.push(p)
-  }
-  many.collections[0].projects = projects
-  const rows = bandRows(many, { width: 120, updated })
-  // One needs row, then ten project rows: 1 to 9 are numbered, the tenth is not.
-  expect(rowText(rows[9])).toContain('[ 9 ]')
-  expect(rows.filter((r: unknown[]) => rowText(r).includes('[ 9 ]'))).toHaveLength(1)
-  expect(rowText(rows[10])).not.toContain('[')
-  expect(rowText(rows[11])).not.toContain('[')
-  // Each row is still its own button.
-  const keys = rows.flat().flatMap((s: { button?: { kind: string; key: string } }) =>
-    s.button?.kind === 'project' ? [s.button.key] : [],
-  )
-  expect(new Set(keys).size).toBe(10)
-  // The hint names the digits that work.
-  expect(rowText(bandRows(many, { width: 140, updated })[0])).toContain('1-9 open')
-})
-
 test('a gate comes first, then the oldest', () => {
   expect(allQuestions(board).map((q) => q.title)).toEqual([
     'Create Hetzner bucket borant-hub-backup + 1Password item',
@@ -166,113 +131,6 @@ test('a gate comes first, then the oldest', () => {
   later.collections[0].needs_you[0].since = 1793027400000
   expect(allQuestions(later)[0].title).toBe('Create Hetzner bucket borant-hub-backup + 1Password item')
   expect(allQuestions(board)[0].gate).toBe(false)
-})
-
-test('the expanded band has the title rule, the needs-you row, and one row per project', () => {
-  const rows = bandRows(board, { width: 120, updated }).map(rowText)
-  expect(rows).toHaveLength(4)
-  expect(rows[0]).toContain('chief of staff')
-  expect(rows[0]).toContain('2 active · 1 idle · updated 14:32')
-  expect(rows[1]).toContain('[ 1 ]')
-  expect(rows[1]).toContain('▲ Needs you (2)')
-  expect(rows[1]).toContain('Create Hetzner bucket borant-hub-backup + 1Password item')
-  expect(rows[1]).toContain('borant')
-  expect(rows[1]).toContain('+1 more')
-  // The idle boopmark has no row.
-  expect(rows.join('\n')).not.toContain('boopmark')
-  expect(rows[2]).toContain('[ 2 ]')
-  expect(rows[2]).toContain('Elastic compute')
-  expect(rows[2]).toContain('████░░░░░░ 2/5')
-  expect(rows[2]).toContain('2 blocked')
-  expect(rows[2]).toContain('0 needs you')
-  expect(rows[3]).toContain('[ 3 ]')
-  expect(rows[3]).toContain('notes')
-  expect(rows[3]).toContain('3 open tasks')
-  expect(rows[3]).toContain('1 running')
-})
-
-test('the band collapsed to one row is one condensed row', () => {
-  const rows = bandRows(board, { width: 120, maxRows: 1, updated })
-  expect(rows).toHaveLength(1)
-  expect(rowText(rows[0]).trimEnd()).toBe(
-    'cos  [ 1 ] ▲ 2 need you  │   borant  2/5 ■ 2 blocked  │   notes  3 open tasks ■ 1 blocked  │  14:32',
-  )
-  expect(rowText(condensedRow(board, { width: 120, updated })).trimEnd()).toBe(rowText(rows[0]).trimEnd())
-})
-
-test('the condensed row says all clear when nothing waits on the person', () => {
-  const calm = structuredClone(board)
-  calm.collections[0].needs_you = []
-  expect(rowText(condensedRow(calm, { width: 120, updated }))).toContain('✓ all clear')
-})
-
-test('every row fits the terminal at any width', () => {
-  for (const width of [120, 100, 80, 60, 40]) {
-    for (const row of bandRows(board, { width, updated })) {
-      const shown = Array.from(rowText(row))
-      expect(shown.length).toBeLessThanOrEqual(Math.max(20, width))
-    }
-  }
-})
-
-test('a narrow band drops the padded columns and the ten-cell bar', () => {
-  const rows = bandRows(board, { width: 100, updated }).map(rowText)
-  expect(rows[2]).toContain('███░░░░░ 2/5')
-  expect(rows[2]).toContain('■ 2')
-  // The ▲ is the state glyph of the current epic; the needs count is 0.
-  expect(rows[2]).not.toContain('▲ 0')
-  expect(rows[2]).not.toContain('running')
-  expect(rows[3]).toContain('3 open tasks')
-  expect(rows[1]).toContain('Needs you (2)')
-})
-
-test('the band title hints the keys, and drops the hint on a narrow terminal', () => {
-  const wide = bandRows(board, { width: 140, updated })
-  expect(rowText(wide[0])).toContain('chief of staff')
-  expect(rowText(wide[0])).toContain('ctrl+x tab focus')
-  expect(rowText(wide[0])).toContain('1-3 open')
-  expect(rowText(wide[0])).toContain('/cos help')
-  expect(wide[0].some((s: { button?: { kind: string } }) => s.button?.kind === 'help')).toBe(true)
-  expect(Array.from(rowText(wide[0])).length).toBe(140)
-
-  // A narrow band keeps the name and the help button, and drops the hint.
-  const narrow = bandRows(board, { width: 100, updated })
-  expect(rowText(narrow[0])).toContain('chief of staff')
-  expect(rowText(narrow[0])).not.toContain('ctrl+x tab')
-  expect(narrow[0].some((s: { button?: { kind: string } }) => s.button?.kind === 'help')).toBe(true)
-
-  // The digits in the hint follow the rows the band numbers.
-  const one = structuredClone(board)
-  one.collections[0].needs_you = []
-  one.collections[0].projects = [projectOf('borant')] as (typeof one.collections)[0]['projects']
-  expect(rowText(bandRows(one, { width: 140, updated })[0])).toContain('1 open')
-  one.collections[0].projects = []
-  expect(rowText(bandRows(one, { width: 140, updated })[0])).toContain('ctrl+x tab focus')
-  expect(rowText(bandRows(one, { width: 140, updated })[0])).not.toContain(' open')
-})
-
-test('the help view names every key, every command, and both buttons', () => {
-  const text = helpLines({ rows: 3 }).join('\n')
-  expect(text).toContain('1-3')
-  expect(text).toContain('ctrl+x tab')
-  expect(text).toContain('ctrl+x ctrl+a')
-  expect(text).toContain('esc')
-  expect(text).toContain('/cos')
-  expect(text).toContain('/cos <project>')
-  expect(text).toContain('/cos pane')
-  expect(text).toContain('/cos help')
-  expect(text).toContain('[ ? ]')
-  expect(text).toContain('Done')
-  expect(text).toContain('Ask orchestrator')
-  expect(text).toContain('Chris marked done:')
-  expect(text).toContain("sends a question about <item> to its channel's owner")
-  expect(helpLines({ rows: 1 }).join('\n')).toContain('1 opens a row')
-
-  // The pane draws the same lines, each fitted to its width.
-  const rows = paneHelpRows({ rows: 3, width: 60 })
-  expect(rows).toHaveLength(helpLines({ rows: 3 }).length)
-  for (const row of rows) expect(Array.from(rowText(row)).length).toBe(60)
-  expect(rowText(rows[1])).toContain('1-3')
 })
 
 test('the digest lists needs you, then each project with its epics', () => {
@@ -299,40 +157,6 @@ test('the digest of one project holds only that project', () => {
   expect(digest(board, { project: 'boopmark', width: 96 })).toContain('Move production to Fly.io')
 })
 
-test('the project and saga columns take their text before the terminal runs out', () => {
-  const long = structuredClone(board)
-  const project = long.collections[0].projects[1]
-  project.project = 'roger-docs'
-  project.sagas[0].title = 'ROG-4199: LiteLLM proxy rollout'
-  const wide = bandRows(long, { width: 200, updated }).map(rowText)
-  expect(wide[2]).toContain('roger-docs')
-  expect(wide[2]).toContain('ROG-4199: LiteLLM proxy rollout')
-  expect(wide[2]).toContain('rollout \u25b2')
-
-  // At 120 the full name and saga still fit; the epic gives way first.
-  const narrow = bandRows(long, { width: 120, updated }).map(rowText)
-  expect(narrow[2]).toContain('roger-docs')
-  expect(narrow[2]).toContain('ROG-4199: LiteLLM proxy rollout')
-  expect(Array.from(narrow[2]).length).toBe(120)
-
-  // At the wide layout's floor the saga is cut with an ellipsis, not the name.
-  const tight = bandRows(long, { width: 110, updated }).map(rowText)
-  expect(tight[2]).toContain('roger-docs')
-  expect(tight[2]).toContain('\u2026')
-  for (const row of tight) expect(Array.from(row).length).toBeLessThanOrEqual(110)
-})
-
-test('a needs-you title truncates with an ellipsis before its right block', () => {
-  // 120 terminal columns leave the band 115 cells, as the engine's `[-]` mark
-  // takes five; the title used to run into the project badge there.
-  const long = structuredClone(board)
-  long.collections[0].projects[1].project = 'roger-docs'
-  const row = rowText(bandRows(long, { width: 115, updated })[1])
-  expect(row).toContain('\u2026')
-  expect(row).toMatch(/\u2026\s+borant/)
-  expect(row).not.toContain('item borant')
-})
-
 test('the digest sizes its columns like the band and keeps the saga title', () => {
   const long = structuredClone(board)
   const project = long.collections[0].projects[1]
@@ -343,16 +167,6 @@ test('the digest sizes its columns like the band and keeps the saga title', () =
     expect(text).toContain('ROG-4199: LiteLLM proxy rollout')
     expect(text).not.toContain('LiteLL\u2026')
   }
-})
-
-test('a narrow project row drops its stats whole and keeps an ellipsis', () => {
-  // At 55 cells the prefix and the stats cannot both fit; the stats go whole
-  // and the epic title is what gives way, with an ellipsis.
-  const row = rowText(bandRows(board, { width: 55, updated })[2])
-  expect(row).toContain('\u2026')
-  expect(row).not.toContain('\u2588')
-  expect(row).not.toContain('\u2591')
-  expect(row).not.toContain('2/5')
 })
 
 test('a digest line never wraps, even when the transcript is narrow', () => {
@@ -367,40 +181,174 @@ test('a digest line never wraps, even when the transcript is narrow', () => {
   }
 })
 
-test('band j and k walk the row chips, wrap, and start from the help button', () => {
-  const rows = bandRows(board, { width: 140, updated })
-  const keys = bandRowKeys(rows)
-  expect(keys).toEqual(['needs-1', 'project-0', 'project-1'])
-  // The title row holds j, k, and 0 as the band's own Buttons.
-  const title = rows[0].filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).map((s: { button: { hotkey: string } }) => s.button.hotkey)
-  expect(title).toEqual(['j', 'k', '0'])
-  expect(stepKey(keys, 'help', 1)).toBe('needs-1')
-  expect(stepKey(keys, 'help', -1)).toBe('project-1')
-  expect(stepKey(keys, 'needs-1', 1)).toBe('project-0')
-  expect(stepKey(keys, 'project-1', 1)).toBe('needs-1')
-  expect(stepKey(keys, 'needs-1', -1)).toBe('project-1')
-  expect(stepKey([], 'help', 1)).toBeNull()
-
-  // Where the full hint does not fit, the keys stay.
-  const tight = bandRows(board, { width: 100, updated })[0]
-  expect(tight.filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).length).toBe(3)
-  // Beside a docked pane the band can be 60 cells: the title shortens, the keys stay.
-  const docked = bandRows(board, { width: 60, updated })[0]
-  expect(rowText(docked)).toContain('cos')
-  expect(rowText(docked)).toContain(updated)
-  expect(docked.filter((s: { button?: { hotkey?: string } }) => s.button?.hotkey).length).toBe(3)
-  expect(Array.from(rowText(docked)).length).toBe(60)
+test('the band has a title row, one row per needs-you item, and one per active project', () => {
+  const rows = bandRows(board, { width: 120 }) as Row[]
+  const lines = texts(rows)
+  expect(lines).toHaveLength(5)
+  expect(lines[0]).toContain('chief of staff')
+  expect(lines[0]).toContain('2 need you · 2 active · 1 idle')
+  expect(lines[1]).toMatch(/^1: ▲ Create Hetzner bucket borant-hub-backup \+ 1Password item +borant · /)
+  expect(lines[2]).toMatch(/^2: ▲ Revoke old willisrocks gh token\? +borant/)
+  expect(lines[3]).toMatch(/^3: borant +▲ Hub backup to object storage +██░░░ 2\/5  ■2/)
+  expect(lines[4]).toMatch(/^4: notes +● 3 open tasks +■1/)
+  // The idle boopmark has no row, and no project wears a colored badge.
+  expect(lines.join('\n')).not.toContain('boopmark')
+  // Each row's chip is a plain Button with its digit, keyed by the item.
+  expect(rows.slice(1).map((r) => hotkeys(r)[0])).toEqual(['1', '2', '3', '4'])
+  expect(rows.slice(1).map((r) => r.key)).toEqual(bandItems(board).map((i: { key: string }) => i.key))
+  // The rows run the full width; the title row ends where they end.
+  for (const line of lines.slice(1)) expect(Array.from(line).length).toBe(120)
+  expect(Array.from(lines[0]).length).toBeLessThanOrEqual(120)
 })
 
-test('the pane tabs keep all three at every width and mark the open one', () => {
-  const questions = allQuestions(board)
-  for (const width of [80, 40, 30, 24]) {
-    const cells = paneTabs('projects', questions, width)
-    const buttons = cells.filter((c: { button?: unknown }) => c.button) as { text: string; button: { kind: string; active: boolean } }[]
-    expect(buttons.map((b) => b.button.kind)).toEqual(['tab-needs', 'tab-projects', 'tab-help'])
-    expect(buttons.filter((b) => b.button.active).map((b) => b.button.kind)).toEqual(['tab-projects'])
-    expect(Array.from(rowText(cells)).length).toBeLessThanOrEqual(width)
+test('rows past nine keep their columns with a blank chip and no hotkey', () => {
+  const many = structuredClone(board)
+  const projects: (typeof many.collections)[0]['projects'] = []
+  for (let i = 0; i < 10; i += 1) {
+    const p = structuredClone(projectOf('borant'))
+    p.project = 'p' + String(i).padStart(2, '0')
+    projects.push(p)
   }
-  expect(rowText(paneTabs('help', questions, 80))).toBe('[ Needs you (2) ]  [ Projects ]  [ Help ]')
-  expect(rowText(paneTabs('help', questions, 24))).toBe('Needs 2 · Proj · [Help]')
+  many.collections[0].projects = projects
+  const rows = bandRows(many, { width: 120 }) as Row[]
+  // Two needs rows, then ten projects: 1 to 9 have a digit, the last three none.
+  expect(hotkeys(rows[9])).toEqual(['9'])
+  expect(hotkeys(rows[10])).toEqual([])
+  expect(rowText(rows[10].cells)).toMatch(/^ {3}p07 /)
+  expect(rowText(rows[10].cells).indexOf('▲')).toBe(rowText(rows[9].cells).indexOf('▲'))
+  expect(rowText(rows[0].cells)).toContain('1-9 select')
+})
+
+test('the title row names the keys while the board has them, and fits every width', () => {
+  const rest = bandRows(board, { width: 140 }) as Row[]
+  expect(rowText(rest[0].cells)).toContain('1-4 select')
+  expect(hotkeys(rest[0])).toEqual([])
+  const selected = bandItems(board)[0].key
+  const buttons = (item: { key: string }) => bandActions({ done: true, ask: true, buttons: item.key === selected, arg: item.key })
+  const active = bandRows(board, { width: 160, active: true, selected, actionsFor: buttons, fresh: [{ text: 'live', style: 'green' }] }) as Row[]
+  const title = rowText(active[0].cells)
+  expect(title).toContain('j: ↓ k: ↑ move · d done · a ask · ⏎ more · esc prompt')
+  // A key is named only when the selected row draws its button: not while a
+  // Done is under way, and only a after an Ask failed.
+  const closing = bandRows(board, { width: 160, active: true, selected, actionsFor: () => [{ text: '◷ closing 4s', style: 'cyan' }] }) as Row[]
+  expect(rowText(closing[0].cells)).toContain('j: ↓ k: ↑ move · ⏎ more')
+  expect(rowText(closing[0].cells)).not.toMatch(/d done|a ask/)
+  const askFailed = (item: { key: string }) =>
+    bandActions({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: item.key === selected, arg: item.key })
+  const again = bandRows(board, { width: 160, active: true, selected, reserveActions: true, actionsFor: askFailed }) as Row[]
+  expect(rowText(again[1].cells)).toContain('! a: Ask again')
+  expect(rowText(again[0].cells)).toContain('a ask')
+  expect(rowText(again[0].cells)).not.toContain('d done')
+  expect(title).toMatch(/live ─ \[ \? \] ─$/)
+  // j and k are the band's own Buttons, so the keys the hint names reach it.
+  expect(hotkeys(active[0])).toEqual(['j', 'k'])
+  for (const width of [200, 110, 100, 80, 60, 40, 30]) {
+    const row = (bandRows(board, { width, active: true, selected, fresh: [{ text: 'live' }] }) as Row[])[0]
+    expect(Array.from(rowText(row.cells)).length).toBeLessThanOrEqual(width)
+    // j and k are how the keys reach the band: every width keeps them whole.
+    expect(hotkeys(row)).toEqual(['j', 'k'])
+    if (width >= 60) {
+      expect(rowText(row.cells)).toContain(width >= 110 ? 'chief of staff' : 'cos')
+      expect(row.cells.some((c) => c.button?.kind === 'help')).toBe(true)
+    }
+  }
+})
+
+test('the selected item alone draws Done and Ask, and its columns do not move', () => {
+  const items = bandItems(board)
+  const actionsFor = (selected: string) => (item: { key: string }) => bandActions({ done: true, ask: true, buttons: item.key === selected, arg: item.key })
+  const first = bandRows(board, { width: 120, selected: items[0].key, fill: true, reserveActions: true, actionsFor: actionsFor(items[0].key) }) as Row[]
+  const second = bandRows(board, { width: 120, selected: items[1].key, fill: true, reserveActions: true, actionsFor: actionsFor(items[1].key) }) as Row[]
+  expect(rowText(first[1].cells)).toContain('d: Done  a: Ask')
+  expect(rowText(first[2].cells)).not.toContain('d: Done')
+  expect(first.map((r) => hotkeys(r)).flat().filter((k) => k === 'd')).toHaveLength(1)
+  expect(first[1].selected).toBe(true)
+  expect(second[2].selected).toBe(true)
+  // The project after the title starts at the same column either way.
+  expect(rowText(first[2].cells).indexOf('borant')).toBe(rowText(second[2].cells).indexOf('borant'))
+})
+
+test('a project name is never cut while the epic can give way', () => {
+  const long = structuredClone(board)
+  long.collections[0].projects[1].project = 'roger-emr-observability-dashboards'
+  for (const width of [120, 100, 80]) {
+    const line = texts(bandRows(long, { width }) as Row[])[3]
+    expect(line).toContain('roger-emr-observability-dashboards')
+    expect(Array.from(line).length).toBe(width)
+  }
+  // At 60 the epic is down to its floor, so the name gives way, with an ellipsis.
+  const tight = texts(bandRows(long, { width: 60 }) as Row[])[3]
+  expect(tight).toContain('…')
+  expect(Array.from(tight).length).toBe(60)
+})
+
+test('an empty board is one title row, and a collapsed band one row', () => {
+  const calm = structuredClone(board)
+  calm.collections[0].needs_you = []
+  calm.collections[0].projects = [projectOf('boopmark')] as (typeof calm.collections)[0]['projects']
+  const rows = texts(bandRows(calm, { width: 120 }) as Row[])
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toContain('✓ nothing needs you · 0 active · 1 idle')
+  const one = bandRows(board, { width: 120, maxRows: 1 }) as Row[]
+  expect(one).toHaveLength(1)
+  expect(rowText(one[0].cells)).toContain('▲ 2 need you')
+  expect(rowText(condensedRow(board, { width: 120 }))).toContain('borant 2/5 ■2')
+})
+
+test('the help names the keys and the commands', () => {
+  const text = helpLines({ rows: 4 }).join('\n')
+  for (const word of ['1-4', 'j k', 'enter', 'esc', 'ctrl+x tab', '/cos pane', '/cos help', 'Done', 'Ask']) {
+    expect(text).toContain(word)
+  }
+})
+
+test('a band taller than its room keeps the title and the selected row in view', () => {
+  const items = bandItems(board)
+  const rows = bandRows(board, { width: 100, maxRows: 3, selected: items[3].key, fill: true }) as Row[]
+  expect(rows).toHaveLength(3)
+  expect(rowText(rows[0].cells)).toContain('need you')
+  expect(rows[1].key).toBe(items[3].key)
+  expect(rowText(rows[2].cells)).toContain('↑ 3 more')
+  expect(bandRows(board, { width: 100, maxRows: 10 })).toHaveLength(5)
+  // At rest the window starts at row 1, so the digits drawn are the ones armed.
+  const rest = bandRows(board, { width: 100, maxRows: 3, selected: items[3].key }) as Row[]
+  expect(rest[1].key).toBe(items[0].key)
+})
+
+test('a press status never moves a column: every needs row keeps one slot', () => {
+  const items = bandItems(board)
+  const status = [{ text: '✓ asked', style: 'green' }]
+  const plain = bandRows(board, { width: 120, reserveActions: true }) as Row[]
+  const pressed = bandRows(board, {
+    width: 120,
+    reserveActions: true,
+    actionsFor: (item: { key: string }) => (item.key === items[1].key ? bandActions({ status, done: true, buttons: true, arg: item.key }) : []),
+  }) as Row[]
+  // Row 1's title and project stay where they were when row 2 shows a status.
+  expect(rowText(pressed[1].cells)).toBe(rowText(plain[1].cells))
+  const at = rowText(pressed[2].cells).indexOf('✓ asked')
+  const buttons = bandRows(board, {
+    width: 120,
+    reserveActions: true,
+    actionsFor: (item: { key: string }) => (item.key === items[0].key ? bandActions({ done: true, ask: true, buttons: true, arg: item.key }) : []),
+  }) as Row[]
+  expect(at).toBe(rowText(buttons[1].cells).indexOf('d: Done'))
+  // The slot holds the short status and the Done button together.
+  expect(rowText(pressed[2].cells)).toContain('✓ asked  d: Done')
+  // A Done that failed offers Done again, in the same slot.
+  const cells = (p: object) => bandActions(p).map((c: { text: string }) => c.text).join('')
+  expect(cells({ status: [{ text: '! still open', style: 'red' }], done: true, doneAgain: true, ask: true, buttons: true })).toBe('! d: Done again')
+  // An Ask that failed can be sent again, in the same slot.
+  expect(cells({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: true })).toBe('! a: Ask again')
+  // Each button carries the key of its item, which the press acts on.
+  expect(bandActions({ done: true, ask: true, buttons: true, arg: 'q:c/t' }).filter((c: { button?: { arg?: string } }) => c.button).map((c: { button: { arg: string } }) => c.button.arg)).toEqual(['q:c/t', 'q:c/t'])
+  // The preview's line: the full status, then Done again and Ask again.
+  expect(itemActions({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: true }, 'Ask orchestrator').filter((c: { button?: unknown }) => c.button).map((c: { button: { label: string } }) => c.button.label)).toEqual(['Done', 'Ask again'])
+})
+
+test('from 150 columns a project row adds its counts and its orchestrator', () => {
+  const line = texts(bandRows(board, { width: 160 }) as Row[])[3]
+  expect(line).toMatch(/■2/)
+  expect(line).toContain('orchestrator · macbook')
+  expect(texts(bandRows(board, { width: 120 }) as Row[])[3]).not.toContain('orchestrator · macbook')
 })

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# The chief mod's interaction scenario: real keys, chords with a pause, mouse
-# clicks and drags, a background shell chip in the footer, and a live board
-# served by scripts/tui/borant-stub that the run changes, with refresh times.
+# The chief mod's interaction scenario: real keys, the ctrl+x tab chord with a
+# pause, a background shell chip in the footer, and a live board served by
+# scripts/tui/borant-stub that the run changes, with refresh times.
 #
-# Usage: scripts/tui/cos-scenario.sh [plugin-dir] [out] [width] [height]
+# Usage: scripts/tui/cos-scenario.sh [plugin-dir] [out] [width] [height] [board]
 #
-# Writes <out>/<width>/NN-<state>.png (and .txt) for each step, and log.txt
-# with the prompt after each key test, the pane edge after each resize, and
-# how long each board change took to show. The session runs `claude --model
+# board is `big` (12 projects, 6 need you; the default) or `fixture`, from
+# scripts/tui/board-variants.mjs. Writes <out>/<width>/NN-<state>.png (and
+# .txt) for each step, and log.txt with the refresh times and the checks: a
+# line that starts with FAIL is a defect. The session runs `claude --model
 # haiku` with TUI_CLAUDE_FLAGS (lib.sh): the Done step submits a prompt, and
 # the model must neither act on it nor reach the real sessions here.
 set -uo pipefail
@@ -17,6 +18,7 @@ plugin="$(realpath "${1:-$root/integrations/claude-code}")"
 out="${2:-/tmp/cos-scenario}"
 width="${3:-200}"
 height="${4:-50}"
+variant="${5:-big}"
 
 source "$root/scripts/tui/lib.sh"
 export TUI_OUT="$out/$width"
@@ -26,17 +28,10 @@ export BORANT_STUB_DIR="$stub"
 log="$TUI_OUT/log.txt"
 : >"$log"
 note() { echo "$*" | tee -a "$log"; }
-prompt_line() { tui_text | grep '❯' | tail -1; }
-since() { echo $(($(date +%s%3N) - $1)); }
-
-node --input-type=module -e "
-import { board } from '$root/integrations/claude-code/mod/fixtures/board.js'
-import { tasks } from '$root/integrations/claude-code/mod/fixtures/tasks.js'
-import fs from 'fs'
-fs.writeFileSync('$stub/board.json', JSON.stringify(board))
-for (const [c, l] of Object.entries(tasks)) fs.writeFileSync('$stub/tasks-' + c + '.json', JSON.stringify(l))
-"
-: >"$stub/events.jsonl"
+check() { if eval "$2"; then note "PASS $1"; else note "FAIL $1"; fi; }
+now_ms() { node -e 'console.log(Date.now())'; }
+since() { echo $(($(now_ms) - $1)); }
+event() { echo '{"kind":"task.status","channel":"personal-borant"}' >>"$stub/events.jsonl"; }
 board_edit() {
   node --input-type=module -e "
 import fs from 'fs'
@@ -45,13 +40,31 @@ $1
 fs.writeFileSync('$stub/board.json', JSON.stringify(b))
 "
 }
-event() { echo '{"kind":"task.status","channel":"personal-borant"}' >>"$stub/events.jsonl"; }
+json() { node -e "console.log(JSON.stringify(process.argv[1]))" "$1"; }
+# The needs-you titles in the band's order: gates first, then the oldest.
+needs_titles() { node -e "const b=require('$stub/board.json');console.log(b.collections.flatMap(c=>c.needs_you).sort((a,b)=>(b.gate-a.gate)||(a.since-b.since)).map(q=>q.title).join('\n'))"; }
+shot() { sleep "${2:-0.8}"; tui_shot "$1"; }
+# The mod refuses any tool call that would ask the person in a Done's turn,
+# so a permission dialog is a defect: log it, and refuse it to go on.
+nodialog() { if tui_text | grep -q 'Do you want to proceed'; then note "FAIL a permission dialog appeared"; tui_shot "dialog-$(now_ms)"; tui_keys Escape; sleep 1.5; fi; }
+# The keys back at an empty prompt. One Esc leaves the preview; an Esc at the
+# empty prompt would open Claude Code's rewind dialog, so none is pressed there.
+to_prompt() { nodialog; tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3; }
+
+node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
+: >"$stub/events.jsonl"
 
 trap 'tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-scenario-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
   BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
   claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
-tui_wait 'chief of staff' 80 || exit 1
+# The trust dialog defaults to "No, exit": Down, then Enter.
+for _ in $(seq 1 80); do
+  if tui_text | grep -q 'Yes, I trust this folder'; then tui_keys Down; sleep 0.4; tui_keys Enter; fi
+  tui_text | grep -q 'chief of staff\|── cos' && break
+  sleep 0.5
+done
+tui_wait 'chief of staff\|── cos' 20 || exit 1
 sleep 3
 
 # A background shell puts a "1 shell" chip in the footer, which takes keys.
@@ -63,80 +76,109 @@ for _ in 1 2 3 4 5 6; do
   tui_keys C-b; sleep 0.3; tui_keys C-b; sleep 1.5
 done
 note "footer: $(tui_text | tail -1)"
-tui_shot 01-band
+shot 01-band 1
 
-# The band: ctrl+x, a 1 s pause, tab, then j j k.
-tui_keys C-x; sleep 1; tui_keys Tab; sleep 0.8; tui_shot 02-band-focused
-ring="$(tmux -L "$TUI_NAME" capture-pane -e -p -t tui | grep -c $'\e\\[[0-9;]*7m')"
-note "reverse-video cells after the chord (the focus ring): $ring"
-tui_type j; sleep 0.8; tui_shot 03-band-j
-tui_type j; sleep 0.8; tui_shot 04-band-jj
-tui_type k; sleep 0.8; tui_shot 05-band-jjk
-note "prompt after band j j k: [$(prompt_line)]"
-# Enter on the selected row opens it, and the pane takes the keyboard.
-tui_keys Enter; sleep 2.5; tui_type j; sleep 0.8; tui_shot 05a-band-enter-j
-note "prompt after band Enter j: [$(prompt_line)]"
-# Esc goes back to the root, and Esc there closes the pane.
-tui_keys Escape; sleep 0.5; tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+# The event stream runs: the stub logged `borant events --follow`.
+check "the event stream started (calls.log has events --follow)" "grep -q 'events --follow' '$stub/calls.log'"
 
-# A digit from an empty prompt opens a project; j must move in the pane.
-tui_type 3; sleep 2.5; tui_shot 06-digit3
-tui_type j; sleep 0.8; tui_shot 07-digit3-j
-note "prompt after 3 j: [$(prompt_line)]"
-tui_keys Escape; sleep 0.6; tui_keys C-u; sleep 0.3
-# 0 from an empty prompt gives the open pane the keyboard.
-tui_type 0; sleep 2.5; tui_type j; sleep 0.8; tui_shot 08-zero-j
-note "prompt after 0 j: [$(prompt_line)]"
+# The band takes the keys with ctrl+x, a 1 s pause, tab; j and k move its
+# selection, and a docked preview follows it.
+tui_keys C-x; sleep 1; tui_keys Tab; shot 02-band-focused
+tui_type j; shot 03-band-j
+tui_type j; shot 04-band-jj
+tui_type k; shot 05-band-jjk
+# Esc gives the keys back: the band drops its fill and names the digits again.
+tui_keys Escape; shot 05b-band-esc 1.5
+check "the band let the keys go after esc" "grep -q 'select' '$TUI_OUT/05b-band-esc.plain.txt'"
+tui_keys C-u; sleep 0.3
 
-# The pane's width: drag its edge 15 columns right (narrower; it opens at
-# its widest), then ctrl+x left to widen it again.
-edge="$(tui_column 2 '│')"
-if [ "${edge:--1}" -lt 0 ]; then note "pane edge: none (the pane is not docked at $width columns)"; else note "pane edge: $edge"; fi
-if [ "${edge:--1}" -ge 0 ]; then tui_drag $((edge + 1)) $((edge + 16)) 10; sleep 0.8; fi
-note "pane edge after a drag 15 right: $(tui_column 2 '│')"
-tui_shot 09-dragged
-tui_keys C-x; sleep 0.3; tui_keys Left; sleep 0.8
-note "pane edge after ctrl+x left: $(tui_column 2 '│')"
-tui_shot 10-ctrlx-left
+# A digit at the empty prompt selects its row and gives the preview the keys.
+tui_type 1; shot 06-digit1 1.5
+check "the digit did not land in the prompt" "! tui_text | grep '❯' | tail -1 | grep -q '1'"
+tui_type j; shot 07-digit1-j
+tui_keys Enter; shot 08-more 1.5
+to_prompt
 
-# Done: open Needs you with 1 and click [ Done ].
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
-tui_type 1; sleep 2.5; tui_shot 11-needs
-read -r col row < <(tui_find '[ Done ]')
-note "[ Done ] at column ${col:-?} row ${row:-?}"
-[ -n "${row:-}" ] && tui_click $((col + 2)) "$row"
-sleep 0.6; tui_shot 12-done-clicked
-
-# The hub closes the task: the item leaves the board and its event arrives.
-start="$(date +%s%3N)"
-board_edit "for (const c of b.collections) c.needs_you = (c.needs_you || []).filter(q => !String(q.title).startsWith('Create Hetzner'))"
+# Done on the first item: pressed, landed, then the hub closes it.
+tui_type 1; sleep 1.2
+tui_type d; shot 09-done-pressed 0.15
+shot 10-done-landed 3
+first="$(needs_titles | head -1)"
+start="$(now_ms)"
+board_edit "for (const c of b.collections) c.needs_you = c.needs_you.filter(q => q.title !== $(json "$first"))"
 event
-for _ in $(seq 1 120); do tui_text | grep -q 'Needs you (1)' && break; sleep 0.25; done
-note "closed item left the board after $(since "$start") ms (with an event)"
-tui_shot 13-done-closed
+for _ in $(seq 1 80); do tui_text | grep -q '✓ closed' && break; sleep 0.25; done
+note "Done shows closed $(since "$start") ms after the hub closed it (with an event)"
+shot 11-done-closed 0.2
 
-# Refresh: a change with no event waits for the poll; one with an event does not.
-# The needs-you title shows whole in the band at every size.
-start="$(date +%s%3N)"
-board_edit "b = JSON.parse(JSON.stringify(b).replaceAll('Revoke old', 'Revoke stale'))"
-for _ in $(seq 1 120); do tui_text | grep -q 'Revoke stale' && break; sleep 0.25; done
+# Ask on the next item. The closed one keeps its row and the selection 10 s,
+# so j moves on first.
+nodialog
+if tui_text | grep -q 'esc prompt'; then tui_type j; sleep 0.5; else tui_keys C-u; tui_type 2; sleep 1.2; fi
+tui_type a; shot 12-ask 1.5
+check "Ask sent one message (stub send)" "[ \"\$(grep -c ' send ' '$stub/calls.log')\" = 1 ]"
+to_prompt
+
+# Refresh: a change with no event waits for the 5 s poll; one with an event
+# shows at once. "↻ reading" stays at least 600 ms from the start of a read.
+last="$(needs_titles | tail -1)"
+start="$(now_ms)"
+board_edit "for (const c of b.collections) for (const q of c.needs_you) if (q.title === $(json "$last")) q.title = 'Moved: ' + q.title"
+for _ in $(seq 1 80); do tui_text | grep -q 'Moved: ' && break; sleep 0.25; done
 note "a change with no event showed after $(since "$start") ms"
-start="$(date +%s%3N)"
-board_edit "b = JSON.parse(JSON.stringify(b).replaceAll('Revoke stale', 'Revoke expired'))"
+sleep 1
+title="$(needs_titles | tail -1)"
+start="$(now_ms)"
+board_edit "for (const c of b.collections) for (const q of c.needs_you) if (q.title === $(json "$title")) q.title = 'Evented: ' + q.title.replace('Moved: ', '')"
 event
-for _ in $(seq 1 120); do tui_text | grep -q 'Revoke expired' && break; sleep 0.25; done
-note "a change with an event showed after $(since "$start") ms"
-tui_shot 14-refreshed
+for _ in $(seq 1 200); do tui_text | grep -q 'Evented: ' && break; sleep 0.05; done
+evented="$(since "$start")"
+tui_shot 13-reading
+note "a change with an event showed after $evented ms"
+check "an event-driven refresh landed in under 1 s ($evented ms)" "[ $evented -lt 1000 ]"
+shot 14-refreshed 0.8
 
-# A Done that the hub does not close shows "still open" (20 s in this run).
-read -r col row < <(tui_find '[ Done ]')
-[ -n "${row:-}" ] && tui_click $((col + 2)) "$row"
-sleep 1; tui_shot 15-done-pending
-sleep 26; tui_shot 16-still-open
-note "after the wait: $(tui_text | grep -o 'still open[^│]*' | head -1)"
+# A Done the hub never closes shows "still open" after BORANT_COS_DONE_WAIT_S.
+nodialog
+tui_keys C-u; tui_type 1; sleep 1.2
+tui_type d; sleep 1
+nodialog
+for _ in $(seq 1 60); do tui_text | grep -q '! still open' && break; sleep 0.5; done
+nodialog
+shot 15-still-open 0.3
+to_prompt
 
-# /cos help names every key.
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
-tui_type '/cos help'; sleep 0.5; tui_keys Enter; sleep 2; tui_shot 17-help
+# The event stream stops: the title says polling, with the data's age.
+touch "$stub/events.off"
+pkill -f "tail -n0 -F $stub/events.jsonl" || true
+for _ in $(seq 1 40); do tui_text | grep -q 'polling' && break; sleep 0.25; done
+shot 16-polling 2.5
+# The hub stops answering: the board says so, with the reason.
+touch "$stub/board.fail"
+for _ in $(seq 1 40); do tui_text | grep -q 'unavailable' && break; sleep 0.25; done
+shot 17-unavailable 0.5
+rm -f "$stub/board.fail" "$stub/events.off"
+for _ in $(seq 1 60); do tui_text | grep -q ' live ' && break; sleep 0.5; done
+check "the event stream started again after it ended" "tui_text | grep -q ' live '"
+nodialog
+
+# Resize: the other size, then back.
+if [ "$width" -ge 150 ]; then other_w=100 other_h=40; else other_w=200 other_h=50; fi
+tmux -L "$TUI_NAME" resize-window -t tui -x "$other_w" -y "$other_h"
+TUI_PNG_H=0
+shot 18-resized 2
+tmux -L "$TUI_NAME" resize-window -t tui -x "$width" -y "$height"
+TUI_PNG_H=0
+shot 19-resized-back 2
+
+# Empty: nothing needs the person and no project has work.
+node "$root/scripts/tui/board-variants.mjs" empty "$stub" >>"$log"
+event
+shot 20-empty 11
+
+nodialog
+tui_type '/cos help'; sleep 0.5; tui_keys Enter; shot 21-help 2
 # The event stream must reach borant: an event-driven refresh needs it.
 note "event streams started: $(grep -c ' events --follow' "$stub/calls.log" 2>/dev/null || echo 0)"
+grep -c '^FAIL' "$log" >/dev/null && exit 1
+exit 0

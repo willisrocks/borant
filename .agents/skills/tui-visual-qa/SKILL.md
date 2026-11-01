@@ -26,12 +26,15 @@ the mod so far was one of these.
 4. Fix, and run the same steps again.
 
 `just cos-visual` runs the basic mod states at both sizes.
-`just cos-scenario [plugin] [out] [width] [height]` runs the full interaction
-scenario at one size. It covers footer chips, the band keys, Enter, a digit,
-and `0` focus, a pane drag and resize, Done (closed and still open), the
-refresh time with and without an event, and `/cos help`. Each run writes
-`<out>/<width>/NN-<state>.png` and `log.txt`, so runs at several sizes can
-share one `<out>`. Read the log and the PNGs.
+`just cos-scenario [plugin] [out] [width] [height] [board]` runs the full
+interaction scenario at one size, on the `big` board (12 projects, 6 need you)
+or the `fixture`. It covers footer chips, the band keys after ctrl+x tab, a
+digit into the preview, Enter, Done (closed and still open), Ask, the refresh
+time with and without an event, polling, an unavailable board, a resize, the
+empty board, and `/cos help`. Each run writes `<out>/<width>/NN-<state>.png`
+and `log.txt`, so runs at several sizes can share one `<out>`. A log line
+that starts with FAIL is a defect (the event stream did not start, or an
+event-driven refresh took 1 s or more). Read the log and the PNGs.
 
 ## Safety
 

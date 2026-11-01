@@ -170,58 +170,53 @@ for messages and wakes an idle session.
 ### The chief-of-staff board
 
 A session that starts with `BORANT_ROLE=chief` also draws the board: a band
-above the prompt with what needs the person and one row per project, a pane
-with the tabs Needs you and Projects (`/cos pane`, or `[1]` and `[2]` and up
-while the prompt is empty), a toast when a new item needs the person, and
-`/cos` for the digest as text, with `/cos <project>` for one project. Every
-other session registers no timer, no command, and draws nothing.
+above the prompt with one row per item that needs the person and one row per
+project, a preview of the selected row, a toast when a new item needs the
+person, and `/cos` for the digest as text, with `/cos <project>` for one
+project. Every other session registers no timer, no command, and draws
+nothing.
 
-The band, `/cos`, and the Projects tab list only the projects with open work:
+The band and `/cos` list only the projects with open work:
 an open saga, an open epic, or an open plain task. The header counts the rest
 as idle ("2 active · 1 idle"), and `/cos <project>` still shows an idle
 project. A project with plain tasks and no saga or epic shows its count of
-open tasks ("3 open tasks") in place of the saga and epic.
+open tasks ("3 open tasks") in place of its epic.
 
-The band's title row carries a dim hint of the keys and a `[ ? ]` button. The
-help view, a third tab beside Needs you and Projects, opens from that button
-and from `/cos help`, which prints the same text in the transcript without
-starting a turn. `?` on its own at the prompt is Claude Code's own shortcuts
-panel, and a band hotkey may only be a digit or a lowercase letter, so `?` is
-the button's label and `/cos help` is the typed form. The keys are the real
-bindings of Claude Code 2.1.310, which `~/.claude/keybindings.json` can change:
+The band drives the preview. A digit at the empty prompt selects that row and
+opens the preview with the keys; `j` and `k` move the band's selection and the
+preview follows it. Beside the transcript (110 columns and up) the preview is
+a tall card; on a narrower terminal it is a compact block above the band,
+open only while it has the keys. A bare digit cannot give the band itself the
+keyboard in Claude Code (only Ctrl+X Tab or a click does), so the preview
+carries the same keys; wherever the keys are, they do the same thing:
 
 |Key|What it does|
 |---|---|
-|`1`–`9`|open the band's rows: `1` is what needs you, then one per project; the pane takes the keyboard|
-|`0`|give the pane the keyboard, and open it if it is closed|
-|Ctrl+X Tab|focus the band, then each pane, then back to the prompt; Tab must follow within 3 s|
-|Ctrl+X Ctrl+A|collapse the band to one row, and expand it again|
-|`j` `k`|move the selection through the rows, in the band and in the pane|
-|Ctrl+X ← →|widen or narrow the docked pane; dragging its edge works too|
-|`h` `l`|switch tabs; fold or unfold the selected node; `l` also opens a collapsed node or a leaf|
-|Enter|open the selected project, saga, epic, or task: a task opens its detail|
-|Esc|go back one level, and at the top close the pane|
+|`1`–`9`|select a row from the empty prompt: the needs-you items, then one per project. Digits work only from the prompt, not while the preview has the keys|
+|`j` `k`|move the selection; the preview follows|
+|`d`|Done on the selected needs-you item|
+|`a`|Ask the item's orchestrator|
+|Enter|more: a project's child tasks, or a task's status, blockers, PR, and last update|
+|Esc|give the keys back to the prompt; a docked preview stays (Ctrl+X X closes it), an inline one closes|
+|Ctrl+X Tab|give the band the keys: `j` `k`, `d` `a`, and Enter work there; Esc gives them back|
 
-Every row, tab, and button also works with the mouse: a click selects a row, a
-second click (or a click on its `▸`) opens it. Drilling in keeps a breadcrumb in
-the pane title and in a dim line at the top of the pane, for example
-`borant › Elastic compute › Hub backup`. A task's detail shows its title,
-status, owner agent, blockers with their titles and states, its PR link, and the
-time it last changed. On Claude Code 2.1.310 a pane's Up and Down arrows scroll
-the drawing, so `j` and `k` (or the footer's `↑` and `↓` buttons) move the
-selection. Project, epic, and task views read the channel with
-`borant tasks <channel>`; when that read fails the pane says `tasks unavailable`
-quietly. (The board itself names no channel for a project's plain tasks, so
-those appear only in the counts line unless the board names their channel.)
+A click on a row selects it, and a click on the selected row shows more. The
+title row says where the data stands: `live`, `live · 45s` from 30 s on,
+`↻ reading` while a read runs, `polling · 4s` without the event stream,
+`stale · 2m`, or `✕ board unavailable` with the reason. `↻ reading` stays
+at least 600 ms, so a fast read is still seen. `/cos help` prints the
+keys without starting a turn, and the `[ ? ]` button shows them in the preview.
 
-The band and the pane follow `borant events --follow`: a task's status, a
+The band and the preview follow `borant events --follow`: a task's status, a
 lease, an agent, a spawn, or a move reads the board again within about a
-second. A read every 5 s catches what sends no event, such as a new task. The
-title row says how old the board is (`updated just now`, `updated 12s ago`).
-Done on a needs-you item marks the row `marking done…` at once and submits
-"Chris marked done: …" to the chief, which closes a saga gate itself and asks
-the channel's owner to close anything else. The row goes when the task
-closes, and shows `still open` after two minutes.
+second. A read every 5 s catches what sends no event, such as a new task.
+Done submits "Chris marked done: …" to the chief, which closes a saga gate
+itself and asks the channel's owner to close anything else. The item shows
+each step in place of its buttons. A band row keeps one fixed slot for its
+buttons or a short status (`◷ closing 14s`, `✓ closed`, `! still open`,
+`✓ asked`), so a press never moves a column. The preview has the full words:
+`sending to the chief…`, `the chief is closing it · 14s`, `✓ closed` for 10 s
+once the hub closes it, or `still open after 2m` with Done again.
 
 The band reads `borant board --json`. A call from inside an agent's session is
 the agent's read, so the band of a chief shows only its own collection; a
@@ -247,9 +242,13 @@ chief to send it to the orchestrator; the person gets no prompt. That covers a
 background command, a script, a cloud, database, or deploy CLI, a build,
 `git push`, `gh pr merge`, and a write to a file. Reads, the Borant CLI,
 `install_borant.sh`, and writes into a temporary folder (`/tmp`,
-`/private/tmp`, `$TMPDIR`, a Claude Code scratchpad) pass. A session that was already running when
-the plugin reloads keeps its system prompt, so the mod gives it the rule as a
-conversation row, and gives it again after each compaction.
+`/private/tmp`, `$TMPDIR`, a Claude Code scratchpad) pass. In the turn that a
+Done press starts, any tool call that would ask the person is refused too,
+because the person pressed a key on the board and is not at the prompt to
+approve it; the chief closes the task with the Borant MCP tools. A session
+that was already running when the plugin reloads keeps its system prompt, so
+the mod gives it the rule as a conversation row, and gives it again after
+each compaction.
 
 To pick up a new version, run `claude plugin update borant`, then
 `/reload-plugins` in a session that is already open.
