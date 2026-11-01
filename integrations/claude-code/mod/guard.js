@@ -1,8 +1,9 @@
 // The chief's guard: a pure check of one Bash call, so the tests call it with
 // no session. The chief delegates project work to the project's orchestrator,
 // which runs it in a worker. A long session loses its skill to compaction, so
-// the mod states the rule in the system prompt and puts project work that
-// reaches the shell to the person as a permission prompt. Reads stay allowed.
+// the mod states the rule in the system prompt and refuses project work that
+// reaches the shell, with a reason the model reads. The person gets no
+// prompt. Reads, and writes into temporary folders, stay allowed.
 
 /** The rule the chief's system prompt carries, whatever compaction dropped. */
 export const DELEGATION_RULE = [
@@ -71,17 +72,28 @@ export function projectWork(input) {
       if (hit) return 'it runs `' + name + ' ' + hit + '`'
     }
     if (name === 'sed' && w.some((x) => x === '-i' || x.startsWith('-i'))) return 'it edits a file in place'
-    // A redirect into a file writes it; /dev/null and 2>&1 do not.
+    // A redirect into a file writes it; /dev/null, 2>&1, and a temporary
+    // folder do not count.
     const target = command.match(/(?:^|[^0-9&])>>?\s*([^\s&|;]+)/)
-    if (target && !target[1].startsWith('/dev/')) return 'it writes `' + target[1] + '`'
+    if (target && !scratch(target[1])) return 'it writes `' + target[1] + '`'
   }
   return null
 }
 
-/** The permission prompt's text for a call the guard holds. */
+// Folders a redirect may write: devices, temporary folders (macOS keeps
+// $TMPDIR under /var/folders), and a Claude Code scratchpad.
+const SCRATCH = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/', '$TMPDIR/', '${TMPDIR}/']
+
+/** True when a redirect into `path` writes no project file. */
+function scratch(path) {
+  const p = path.replace(/^["']|["']$/g, '')
+  return SCRATCH.some((dir) => p.startsWith(dir)) || p.includes('/scratchpad/')
+}
+
+/** The reason the model reads for a call the guard refuses. */
 export function guardReason(why) {
   return (
-    'Chief guard: this looks like project work (' + why + '). The project\'s orchestrator runs it in a worker, ' +
-    'even after the person approved it: send it there. Allow only if the person asked the chief itself to run this exact command.'
+    'Chief guard: refused, this looks like project work (' + why + '). The project\'s orchestrator runs it in a worker, ' +
+    'even after the person approved it: send it there as a direct message. Do not reword the command to get past this guard.'
   )
 }

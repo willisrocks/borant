@@ -207,6 +207,9 @@ impl Host {
             &cfg.commands,
             !o.members.is_empty(),
         );
+        // The config directory that the session reads, before the shim and the
+        // sandbox wrap the program: the trust mark below goes into its file.
+        let claude_config = borant_launch::trust::launch_config_dir(vars, &program);
         // Resolver mode: the values go into the agent's secret directory, and
         // only its path reaches the launch. The shim hands them to the harness.
         if let Some(issued) = &issued {
@@ -249,10 +252,12 @@ impl Host {
         // Claude Code asks whether it trusts a directory that it does not
         // know, and a git repository root is never covered by the trust of its
         // parent. A launch that sits at that prompt never registers, so the
-        // directory is marked trusted first. A failure still launches: the
-        // prompt is then the visible failure.
+        // directory is marked trusted first, in the config directory that the
+        // session reads. A failure still launches: the prompt is then the
+        // visible failure.
         if o.harness == Harness::ClaudeCode
-            && let Err(e) = borant_launch::trust::trust_launch_folder(&cwd)
+            && let Err(e) =
+                borant_launch::trust::trust_launch_folder(&cwd, claude_config.as_deref())
         {
             tracing::warn!(
                 agent = %o.agent,

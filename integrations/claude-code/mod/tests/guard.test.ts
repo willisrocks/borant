@@ -22,7 +22,8 @@ test('the guard holds project work and passes reads', () => {
     'git push origin main',
     'gh pr merge 12 --squash',
     'sed -i s/a/b/ config.toml',
-    'cat notes > /tmp/out.txt',
+    'cat notes > notes-copy.txt',
+    'echo x >> ./config.toml',
   ]) {
     expect(projectWork({ command })).not.toBeNull()
   }
@@ -34,6 +35,11 @@ test('the guard holds project work and passes reads', () => {
     'gh pr view 12',
     'ls -la 2>&1 | head',
     'grep -rn TODO . > /dev/null',
+    // A temporary folder or a scratchpad is no project file.
+    'borant board --json > /tmp/board.json',
+    'jq . board.json > /private/tmp/b.json',
+    'ls > /var/folders/x1/T/claude-501/scratchpad/ls.txt',
+    'echo hi > /tmp/claude-1000/proj/sess/scratchpad/note.md',
     'jq . board.json',
     // Only the person's laptop can install a release, and the chief does it.
     '~/.bin/install_borant.sh v0.18.6',
@@ -42,7 +48,7 @@ test('the guard holds project work and passes reads', () => {
   }
 })
 
-test('a chief asks the person before project work, and only a chief', async ($, on) => {
+test('a chief is refused project work, with no prompt, and only a chief', async ($, on) => {
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
   mock.clock(on)
   on('command.register', () => ({ value: undefined }))
@@ -52,7 +58,7 @@ test('a chief asks the person before project work, and only a chief', async ($, 
   await $.session.start({ ...SESSION })
 
   const held = await $.tool.check({ tool: 'Bash', input: { command: './steve-688.sh inspect' } })
-  expect(held.decision).toBe('ask')
+  expect(held.decision).toBe('deny')
   expect(held.reason).toContain('orchestrator runs it in a worker')
   expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant board --json' } })).decision).toBe('allow')
 

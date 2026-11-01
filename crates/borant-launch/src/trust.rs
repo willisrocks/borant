@@ -47,13 +47,49 @@ pub fn config_path_from_env() -> Option<PathBuf> {
     config_path(var("CLAUDE_CONFIG_DIR").as_deref(), var("HOME").as_deref())
 }
 
-/// Marks the launch directory `cwd` as trusted for Claude Code, in the file
-/// that [`config_path_from_env`] names.
+/// The `CLAUDE_CONFIG_DIR` that the session of a launch gets, when the launch
+/// sets one itself: a value of its bundles in `vars`, or a `NAME=VALUE`
+/// argument of an `env` program at the head of `program`, as a `[commands]`
+/// override in `host.toml` can carry. `None` when the session inherits the
+/// variable of the daemon.
+pub fn launch_config_dir(vars: &[(String, String)], program: &[String]) -> Option<PathBuf> {
+    const NAME: &str = "CLAUDE_CONFIG_DIR";
+    let from_vars = vars
+        .iter()
+        .find(|(name, value)| name == NAME && !value.is_empty())
+        .map(|(_, value)| PathBuf::from(value));
+    let from_env_program = || {
+        let (first, rest) = program.split_first()?;
+        if Path::new(first).file_name()? != "env" {
+            return None;
+        }
+        // The options and assignments of `env` come before its program; `-u`
+        // and `-C` take the next argument.
+        let mut found = None;
+        let mut args = rest.iter();
+        while let Some(arg) = args.next() {
+            if arg == "-u" || arg == "--unset" || arg == "-C" || arg == "--chdir" {
+                args.next();
+            } else if let Some(value) = arg.strip_prefix("CLAUDE_CONFIG_DIR=") {
+                found = (!value.is_empty()).then(|| PathBuf::from(value));
+            } else if !arg.starts_with('-') && !arg.contains('=') {
+                break;
+            }
+        }
+        found
+    };
+    from_vars.or_else(from_env_program)
+}
+
+/// Marks the launch directory `cwd` as trusted for Claude Code, in the
+/// `.claude.json` of `config_dir` (from [`launch_config_dir`]) when the launch
+/// sets one, and otherwise in the file that [`config_path_from_env`] names.
 ///
 /// A failure leaves the launch to the prompt, which is then the visible
 /// failure; the caller logs it and starts the harness anyway.
-pub fn trust_launch_folder(cwd: &Path) -> io::Result<()> {
-    let file = config_path_from_env().ok_or_else(|| {
+pub fn trust_launch_folder(cwd: &Path, config_dir: Option<&Path>) -> io::Result<()> {
+    let file = config_dir.map(|dir| dir.join(".claude.json"));
+    let file = file.or_else(config_path_from_env).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "neither CLAUDE_CONFIG_DIR nor HOME is set, so there is no .claude.json to mark",
@@ -368,5 +404,49 @@ mod tests {
             Some(PathBuf::from("/home/a/.claude.json"))
         );
         assert_eq!(config_path(None, None), None);
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_launch_config_dir_comes_from_the_bundles_then_an_env_program() {
+        let vars = vec![("CLAUDE_CONFIG_DIR".to_owned(), "/p/a".to_owned())];
+        let claude = strings(&["claude", "--dangerously-skip-permissions"]);
+        assert_eq!(
+            launch_config_dir(&vars, &claude),
+            Some(PathBuf::from("/p/a"))
+        );
+        let env = strings(&[
+            "/usr/bin/env",
+            "-u",
+            "X",
+            "CLAUDE_CONFIG_DIR=/p/b",
+            "claude",
+            "CLAUDE_CONFIG_DIR=/not/an/env/arg",
+        ]);
+        assert_eq!(launch_config_dir(&[], &env), Some(PathBuf::from("/p/b")));
+        assert_eq!(launch_config_dir(&vars, &env), Some(PathBuf::from("/p/a")));
+        assert_eq!(launch_config_dir(&[], &claude), None);
+        let empty = vec![("CLAUDE_CONFIG_DIR".to_owned(), String::new())];
+        assert_eq!(launch_config_dir(&empty, &claude), None);
+    }
+
+    /// A fresh clone folder is trusted in the profile that the session reads,
+    /// not in the daemon's own file, so its first launch shows no dialog.
+    #[test]
+    fn a_fresh_folder_is_trusted_in_the_launch_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        fs::create_dir(&profile).unwrap();
+        let cwd = dir.path().join("work/a1/repo");
+        fs::create_dir_all(&cwd).unwrap();
+
+        trust_launch_folder(&cwd, Some(&profile)).unwrap();
+
+        let key = cwd.canonicalize().unwrap();
+        let file = read(&profile.join(".claude.json"));
+        assert_eq!(file["projects"][key.to_str().unwrap()], trusted(), "{file}");
     }
 }
