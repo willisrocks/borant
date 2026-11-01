@@ -244,15 +244,11 @@ function needsRows(q, i, st, cols) {
   let showCtx = true
   const over = CHIP + 2 + titleWidth + GAP + ctxWidth + actsWidth - st.width
   if (over > 0) {
-    // Give way on this row only: the context column first loses its padding,
-    // then the title shrinks, then the context goes.
-    ctxWidth = Math.min(ctxWidth, width(context))
-    const still = CHIP + 2 + titleWidth + GAP + ctxWidth + actsWidth - st.width
-    if (still > 0) titleWidth = Math.max(16, titleWidth - still)
-    if (CHIP + 2 + titleWidth + GAP + ctxWidth + actsWidth > st.width) {
-      showCtx = false
-      titleWidth = Math.max(10, st.width - CHIP - 2 - actsWidth)
-    }
+    // Give way on this row only, keeping the title column where it is: the
+    // status and buttons take the context's place, then the title shrinks.
+    showCtx = false
+    const still = CHIP + 2 + titleWidth + actsWidth - st.width
+    if (still > 0) titleWidth = Math.max(10, titleWidth - still)
   }
   const shownTitle = truncate(title, titleWidth)
   const lead = chip(ordinal, key, 'needs', i, [text(glyph + ' ', glyphStyle), text(shownTitle, titleStyle)])

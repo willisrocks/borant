@@ -251,7 +251,7 @@ export function helpLines(options = {}) {
   const digits = digitRange(options.rows) || '1'
   const row = (key, what) => '  ' + pad(key, 21) + what
   return [
-    'keys (the band above the prompt holds them all)',
+    'keys',
     row(digits, 'select a row from an empty prompt: needs-you items, then projects'),
     row('j k', 'move the selection down and up'),
     row('space', 'open the selected row in place, or close it (its digit too)'),
