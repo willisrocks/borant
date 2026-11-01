@@ -39,6 +39,7 @@ import {
 } from '../mod/nav.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
+import { CLOSED_SHOW_MS, freshness, withClosed } from '../mod/status.js'
 
 /** The pane's id, and its tab label. */
 const PANE = 'cos'
@@ -72,10 +73,14 @@ let updated = ''
 let lastReadAt = 0
 /** When the last read succeeded, by the session clock, for the header's age. */
 let lastOkAt = null
-/** Done presses by `<channel>/<task>`: `{ state, at, title, reason }`. */
+/** Done presses by `<channel>/<task>`, as mod/status.js names their states. */
 let pending = {}
-/** Ask presses, by question: `{ state: 'sending' | 'sent' | 'failed', owner }`. */
+/** Ask presses, by question: `{ state: 'sending' | 'sent' | 'failed', owner, time, reason }`. */
 let asked = {}
+/** A board read runs now. */
+let reading = false
+/** The event stream runs, so a change shows within about a second. */
+let live = false
 /**
  * The rule is owed to the conversation: a session that was running when the
  * mod loaded keeps the system prompt it started with, and a compaction can
@@ -108,6 +113,8 @@ let paneFocused = false
 let clickMark = null
 /** The terminal's width, as last measured while drawing the band. */
 let columns = 0
+/** The session clock as of the last draw or read, for the drawing's ages. */
+let clockNow = 0
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -144,6 +151,7 @@ export function register(on) {
     try {
       if (!isChief || e.requestId !== PANE) return next(e)
       measure(e)
+      clockNow = await nowMs($)
       const width = widthOf(e)
       paneWidth = width
       paneFocused = Boolean(e.props && e.props.isFocused)
@@ -395,6 +403,7 @@ function followEvents($) {
     for (;;) {
       try {
         const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
+        live = true
         let rest = ''
         for await (const piece of stream) {
           if (!piece || piece.stream !== 'stdout') continue
@@ -405,6 +414,7 @@ function followEvents($) {
       } catch {
         // No borant, or an old one: the timer still reads the board.
       }
+      live = false
       try {
         await $.clock.sleep(EVENTS_RETRY_MS)
       } catch {
@@ -460,6 +470,18 @@ async function age($) {
   return updated
 }
 
+/** The title row's freshness word: live, reading, polling, stale, or unavailable. */
+async function fresh($) {
+  let now = null
+  try {
+    now = await $.clock.now()
+  } catch {
+    now = null
+  }
+  const ageMs = now === null || lastOkAt === null ? null : Math.max(0, now - lastOkAt)
+  return freshness({ unavailable: unavailable && !board, reading, live, ageMs })
+}
+
 /** Read the board and note what is new. Never throws. */
 async function refresh($, force = false) {
   if (!isChief || !config) return
@@ -472,7 +494,14 @@ async function refresh($, force = false) {
   }
   if (!force && now - lastReadAt < DEBOUNCE_MS) return
   lastReadAt = now
-  const result = await readBoard($, config)
+  reading = true
+  redraw($)
+  let result
+  try {
+    result = await readBoard($, config)
+  } finally {
+    reading = false
+  }
   if (!result.board) {
     // A failed read draws an empty board with the reason, never the stale one:
     // a session that refuses to read as the person must say so.
@@ -491,20 +520,26 @@ async function refresh($, force = false) {
 }
 
 /**
- * A pending Done whose item left the board is done: the hub closed the task
- * (or answered it), so its mark goes. One still there after DONE_WAIT_MS
- * shows as still open, and its Done button comes back.
+ * A Done whose item left the board landed: the hub closed the task (or
+ * answered it). Its row stays CLOSED_SHOW_MS as closed, then goes. One the
+ * hub has not closed DONE_WAIT_MS after the prompt landed shows as still open,
+ * and its Done button comes back.
  */
 function settlePending($, now) {
   const open = new Set(allQuestions(board).map(questionKey))
   for (const [key, mark] of Object.entries(pending)) {
-    if (!open.has(key)) {
-      delete pending[key]
-      if (mark.state === 'pending') toast($, 'closed: ' + mark.title)
-    } else if (mark.state === 'pending' && now - mark.at >= doneWaitMs) {
-      const reason = 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s'
-      pending[key] = { ...mark, state: 'failed', reason }
-      toast($, 'still open (' + reason + '): ' + mark.title)
+    if (mark.state === 'closed') {
+      if (now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
+    } else if (!open.has(key)) {
+      if (mark.state === 'unsent') {
+        delete pending[key]
+      } else {
+        pending[key] = { ...mark, state: 'closed', closedAt: now }
+        toast($, 'closed: ' + mark.title)
+      }
+    } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
+      pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
+      toast($, 'still open: ' + mark.title)
     }
   }
 }
@@ -563,13 +598,19 @@ function rowsNow() {
     folds,
     board,
     tasks: taskLists(),
-    questions: allQuestions(board),
+    questions: drawnQuestions(),
     pending,
+    now: clockNow,
     asked,
     help: helpLines({ rows: rowCount() }),
     selection: selectionOf(),
     width: paneWidth,
   })
+}
+
+/** The needs-you items as drawn: the board's, with the ones a Done just closed. */
+function drawnQuestions() {
+  return withClosed(allQuestions(board), pending, clockNow)
 }
 
 function selectableRows(rows) {
@@ -896,6 +937,8 @@ function styleProps(style) {
       return { color: 'yellow', bold: true }
     case 'red':
       return { color: 'red' }
+    case 'cyan':
+      return { color: 'cyan' }
     case 'green':
     case 'done':
       return { color: 'green' }
@@ -1134,9 +1177,9 @@ function press($, button) {
     case 'tab-help':
       return selectTab($, 'help')
     case 'done':
-      return markDone($, allQuestions(board)[button.arg])
+      return markDone($, drawnQuestions()[button.arg])
     case 'ask':
-      return askOwner($, allQuestions(board)[button.arg])
+      return askOwner($, drawnQuestions()[button.arg])
     default:
       return redraw($)
   }
@@ -1182,7 +1225,7 @@ async function askOwner($, q) {
   } catch (err) {
     why = String(err?.message || err)
   }
-  asked[key] = { state: ok ? 'sent' : 'failed', owner }
+  asked[key] = ok ? { state: 'sent', owner, time: hhmm(await nowMs($)) } : { state: 'failed', owner, reason: truncate(why, 40) }
   if (ok) {
     await tell(
       $,
@@ -1206,28 +1249,43 @@ async function askOwner($, q) {
  */
 async function markDone($, q) {
   if (!q) return redraw($)
-  let now = 0
-  try {
-    now = await $.clock.now()
-  } catch {
-    now = 0
-  }
   const key = questionKey(q)
-  pending[key] = { state: 'pending', at: now, title: q.title }
+  const index = allQuestions(board).findIndex((x) => questionKey(x) === key)
+  pending[key] = { state: 'sending', at: await nowMs($), title: q.title, question: q, index: Math.max(0, index) }
   const text =
     'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
     'Close it as done now: task_close it yourself if it is a saga gate or you own its channel; ' +
     'otherwise send the owner of ' + q.channel + ' a direct message to close it as done, with "Chris marked it done in the board".'
-  // The prompt submits when the session is idle; a press must not wait.
+  const unsent = (reason) => {
+    if (pending[key] && pending[key].state === 'sending') pending[key] = { ...pending[key], state: 'unsent', reason }
+    redraw($)
+  }
+  // The prompt submits when the session is idle and resolves once it is in; a
+  // press must not wait for that.
   try {
-    $.prompt.submit({ text }).catch(() => {
-      pending[key] = { ...pending[key], state: 'failed', reason: 'the prompt was not sent' }
-      redraw($)
-    })
+    $.prompt
+      .submit({ text })
+      .then(async (out) => {
+        if (out && out.drop) return unsent('the prompt was refused')
+        if (pending[key] && pending[key].state === 'sending') {
+          pending[key] = { ...pending[key], state: 'closing', at: await nowMs($) }
+        }
+        redraw($)
+      })
+      .catch(() => unsent('the prompt was not sent'))
   } catch {
-    pending[key] = { ...pending[key], state: 'failed', reason: 'the prompt was not sent' }
+    unsent('the prompt was not sent')
   }
   return redraw($)
+}
+
+/** The session clock, or 0 without one. */
+async function nowMs($) {
+  try {
+    return await $.clock.now()
+  } catch {
+    return 0
+  }
 }
 
 function redraw($) {

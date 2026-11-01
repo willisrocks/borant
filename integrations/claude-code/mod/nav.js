@@ -30,6 +30,7 @@ import {
   text,
   truncate,
 } from './board.js'
+import { canDone, pressStatus } from './status.js'
 
 /** The pane's tabs, in the order h and l cycle them. */
 export const TABS = ['needs', 'projects', 'help']
@@ -243,18 +244,13 @@ export function needsRows(state, width, selection) {
     const context = [q.project || '', q.attention_msg || (q.gate ? 'gate' : ''), 'since ' + hhmm(q.since, '?')]
       .filter(Boolean)
       .join(' \u00b7 ')
-    // A Done the person pressed: pending until the hub closes the task, then
-    // the row goes; failed when the task stayed open, and Done comes back.
+    // A Done or an Ask the person pressed shows where it is, before the title,
+    // so a narrow pane does not cut it off.
     const mark = pending[questionKey(q)]
-    // The mark goes before the title, so a narrow pane does not cut it off.
-    const segments = [text(GLYPH.needs + ' ', 'yellow')]
-    if (mark && mark.state === 'pending') segments.push(text('marking done\u2026 ', 'yellow'))
-    if (mark && mark.state === 'failed') segments.push(text('still open \u00b7 ', 'red'))
-    const asking = (state.asked || {})[questionKey(q)]
-    if (asking && asking.state === 'sending') segments.push(text('asking\u2026 ', 'dim'))
-    if (asking && asking.state === 'sent') segments.push(text('asked ' + asking.owner + ' \u00b7 ', 'dim'))
-    if (asking && asking.state === 'failed') segments.push(text('ask failed \u00b7 ', 'red'))
-    segments.push(text(q.title || '', 'yellowBold'), text('  ' + context, 'dim'))
+    const status = pressStatus(mark, (state.asked || {})[questionKey(q)], state.now || 0)
+    const segments = [text((q.closed ? GLYPH.done : GLYPH.needs) + ' ', q.closed ? 'green' : 'yellow')]
+    if (status) segments.push(...status, text(' \u00b7 ', 'dim'))
+    segments.push(text(q.title || '', q.closed ? 'dim' : 'yellowBold'), text('  ' + context, 'dim'))
     out.push(
       nodeRow({
         marker: '\u25b8',
@@ -262,12 +258,14 @@ export function needsRows(state, width, selection) {
         segments,
       }),
     )
+    if (q.closed) {
+      out.push(row({ segments: [text(' ')] }))
+      return
+    }
     // A narrow pane cannot cut a Button, so the label shortens instead.
     const ask = width < 40 ? 'Ask' : 'Ask orchestrator'
     const buttons = [{ key: 'ask-' + i, label: ask, kind: 'ask', arg: i }]
-    if (!mark || mark.state !== 'pending') {
-      buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
-    }
+    if (canDone(mark)) buttons.unshift({ key: 'done-' + i, label: 'Done', kind: 'done', arg: i })
     // The buttons sit under the title, after the ▸ and the ▲, so they read as
     // the question's own; a blank row then ends the group.
     out.push(row({ buttons, buttonIndent: BUTTON_INDENT }))

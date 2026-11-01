@@ -723,7 +723,7 @@ test('a band press hands the keyboard to the pane it opens', async ($, on) => {
   await band.unmount()
 })
 
-test('Done marks the row at once, and drops it when the hub closes the task', async ($, on) => {
+test('Done shows each step: the chief is closing it, closed, then the row goes', async ($, on) => {
   const prompts: string[] = []
   const toasts: string[] = []
   let live = JSON.parse(JSON.stringify(board))
@@ -755,19 +755,23 @@ test('Done marks the row at once, and drops it when the hub closes the task', as
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'done-0' })
   expect(prompts).toHaveLength(1)
-  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeDefined()
-  // While pending, the row has no Done to press twice.
+  // The prompt landed: the chief has it, and the hub has not closed the task.
+  expect(await ui.find({ type: 'Text', text: /the chief is closing it/ })).toBeDefined()
+  // While it is under way, the row has no Done to press twice.
   expect(await ui.find({ type: 'Button', key: 'done-0' })).toBeUndefined()
 
-  // The hub closes it: the next read drops the item and its mark.
+  // The hub closes it: the next read shows the row as closed for a while.
   live = JSON.parse(JSON.stringify(live))
   for (const c of live.collections) {
     c.needs_you = (c.needs_you || []).filter((q: { task: string }) => q.task !== '01M5ZG00000000000000000015')
   }
   await clock.advance(5000)
-  expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /closed/ })).toBeDefined()
   expect(toasts).toContain('closed: Create Hetzner bucket borant-hub-backup + 1Password item')
+  // Then it goes.
+  await clock.advance(15000)
+  expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /closing it|closed/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -782,10 +786,10 @@ test('a Done the hub has not closed after two minutes shows as still open', asyn
   await $.command.run({ command: 'cos', args: 'pane' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'done-0' })
-  expect(await ui.find({ type: 'Text', text: /marking done/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /the chief is closing it/ })).toBeDefined()
   await clock.advance(120000)
   // The mark is short and goes before the title, so the row still names the item.
-  expect(await ui.find({ type: 'Text', text: /^still open/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /still open after 2m/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
   expect((await ui.find({ type: 'Button', key: 'done-0' }))?.props.label).toBe('Done')
   await ui.unmount()
