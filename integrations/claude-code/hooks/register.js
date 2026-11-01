@@ -37,6 +37,8 @@ const DONE_WAIT_MS = 120000
 let doneWaitMs = DONE_WAIT_MS
 /** Keys typed into the empty prompt act on the band this long after the last one. */
 const COMPOSER_KEYS_MS = 30000
+/** How often the mod checks that the band's ring still holds the keys. */
+const RING_PROBE_MS = 500
 
 /** Set to `chief` by the role check, and nothing else ever turns the mod on. */
 let isChief = false
@@ -74,6 +76,8 @@ let selectedAt = 0
 let open = null
 /** The band's ring holds the keyboard (ctrl+x tab, a click), as ui.focus said. */
 let bandHasKeys = false
+/** The element the band's ring is on, as last moved or reported. */
+let ringKey = null
 /** Counts band keys, so an old idle timer knows a newer key came. */
 let touches = 0
 /** The chip a person's click just put the ring on, so that press selects. */
@@ -131,17 +135,24 @@ export function register(on) {
     try {
       if (isChief) {
         const key = typeof e.element === 'string' ? e.element : null
-        bandHasKeys = key !== null
+        // A plugin's own move names no element here; only the person's empty
+        // one (the ring leaving the band's elements) means the keys went.
+        if (key === null && e.origin?.kind === 'plugin') return next(e)
+        setRing($, key !== null)
+        ringKey = key
         if (key === null && selected !== null) {
-          selected = null
-          open = null
-          redraw($)
+          leaveBand($)
         } else if (isRowKey(key) && key !== selected) {
           if (e.origin && e.origin.kind === 'person') markClick($, key)
           if (e.origin?.kind === 'person' || selected === null) {
             if (open !== key) open = null
             selected = key
             redraw($)
+            // The redraw adds j, k, Done, and Ask ahead of rows, and the ring
+            // keeps its place in the order, not its row: put it back.
+            $.clock.after(0, () => {
+              reveal($, key).catch(() => {})
+            })
           }
         }
       }
@@ -482,6 +493,50 @@ function markClick($, key) {
   }
 }
 
+/** Whether the band's ring holds the keyboard; a change redraws the hint. */
+function setRing($, holds) {
+  if (holds === bandHasKeys) return
+  bandHasKeys = holds
+  redraw($)
+  if (holds) watchRing($)
+}
+
+/**
+ * Esc hands the keys back to the prompt without a ui.focus event, so while
+ * the ring holds them the mod asks for them again every half second: the
+ * engine refuses a site that lost them, and the band leaves its selection.
+ */
+let watching = false
+function watchRing($) {
+  if (watching) return
+  watching = true
+  const tick = () => {
+    if (!bandHasKeys || selected === null) {
+      watching = false
+      return
+    }
+    $.ui
+      .focus({ requestId: BAND, key: ringKey || selected })
+      .then((out) => {
+        if (out && out.deny) {
+          watching = false
+          bandHasKeys = false
+          leaveBand($)
+          return
+        }
+        $.clock.after(RING_PROBE_MS, tick)
+      })
+      .catch(() => {
+        watching = false
+      })
+  }
+  try {
+    $.clock.after(RING_PROBE_MS, tick)
+  } catch {
+    watching = false
+  }
+}
+
 /** The band's keys as typed into an empty composer. */
 // Enter and Esc never reach prompt.edit (Enter submits; Esc is the editor's),
 // so from the prompt a space opens the row.
@@ -571,11 +626,8 @@ async function reveal($, key) {
   // does not hold them, as after a digit typed at the prompt.
   const focus = async () => {
     const out = await $.ui.focus({ requestId: BAND, key }).catch(() => ({ deny: 'no band' }))
-    const holds = !(out && out.deny)
-    if (holds !== bandHasKeys) {
-      bandHasKeys = holds
-      redraw($)
-    }
+    if (!(out && out.deny)) ringKey = key
+    setRing($, !(out && out.deny))
   }
   try {
     await focus()
