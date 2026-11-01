@@ -224,23 +224,39 @@ test('the title row names the keys while the board has them, and fits every widt
   expect(rowText(rest[0].cells)).toContain('1-4 select')
   expect(hotkeys(rest[0])).toEqual([])
   const selected = bandItems(board)[0].key
-  const active = bandRows(board, { width: 160, active: true, selected, fresh: [{ text: 'live', style: 'green' }] }) as Row[]
+  const buttons = (item: { key: string }) => bandActions({ done: true, ask: true, buttons: item.key === selected, arg: item.key })
+  const active = bandRows(board, { width: 160, active: true, selected, actionsFor: buttons, fresh: [{ text: 'live', style: 'green' }] }) as Row[]
   const title = rowText(active[0].cells)
   expect(title).toContain('j: ↓ k: ↑ move · d done · a ask · ⏎ more · esc prompt')
+  // A key is named only when the selected row draws its button: not while a
+  // Done is under way, and only a after an Ask failed.
+  const closing = bandRows(board, { width: 160, active: true, selected, actionsFor: () => [{ text: '◷ closing 4s', style: 'cyan' }] }) as Row[]
+  expect(rowText(closing[0].cells)).toContain('j: ↓ k: ↑ move · ⏎ more')
+  expect(rowText(closing[0].cells)).not.toMatch(/d done|a ask/)
+  const askFailed = (item: { key: string }) =>
+    bandActions({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: item.key === selected, arg: item.key })
+  const again = bandRows(board, { width: 160, active: true, selected, reserveActions: true, actionsFor: askFailed }) as Row[]
+  expect(rowText(again[1].cells)).toContain('! a: Ask again')
+  expect(rowText(again[0].cells)).toContain('a ask')
+  expect(rowText(again[0].cells)).not.toContain('d done')
   expect(title).toMatch(/live ─ \[ \? \] ─$/)
   // j and k are the band's own Buttons, so the keys the hint names reach it.
   expect(hotkeys(active[0])).toEqual(['j', 'k'])
-  for (const width of [200, 110, 100, 80, 60, 40]) {
+  for (const width of [200, 110, 100, 80, 60, 40, 30]) {
     const row = (bandRows(board, { width, active: true, selected, fresh: [{ text: 'live' }] }) as Row[])[0]
     expect(Array.from(rowText(row.cells)).length).toBeLessThanOrEqual(width)
-    expect(rowText(row.cells)).toContain(width >= 110 ? 'chief of staff' : 'cos')
-    expect(row.cells.some((c) => c.button?.kind === 'help')).toBe(true)
+    // j and k are how the keys reach the band: every width keeps them whole.
+    expect(hotkeys(row)).toEqual(['j', 'k'])
+    if (width >= 60) {
+      expect(rowText(row.cells)).toContain(width >= 110 ? 'chief of staff' : 'cos')
+      expect(row.cells.some((c) => c.button?.kind === 'help')).toBe(true)
+    }
   }
 })
 
 test('the selected item alone draws Done and Ask, and its columns do not move', () => {
   const items = bandItems(board)
-  const actionsFor = (selected: string) => (item: { key: string }) => itemActions(null, true, null, item.key === selected)
+  const actionsFor = (selected: string) => (item: { key: string }) => bandActions({ done: true, ask: true, buttons: item.key === selected, arg: item.key })
   const first = bandRows(board, { width: 120, selected: items[0].key, fill: true, reserveActions: true, actionsFor: actionsFor(items[0].key) }) as Row[]
   const second = bandRows(board, { width: 120, selected: items[1].key, fill: true, reserveActions: true, actionsFor: actionsFor(items[1].key) }) as Row[]
   expect(rowText(first[1].cells)).toContain('d: Done  a: Ask')
@@ -306,7 +322,7 @@ test('a press status never moves a column: every needs row keeps one slot', () =
   const pressed = bandRows(board, {
     width: 120,
     reserveActions: true,
-    actionsFor: (item: { key: string }) => (item.key === items[1].key ? bandActions(status, true, null, true) : []),
+    actionsFor: (item: { key: string }) => (item.key === items[1].key ? bandActions({ status, done: true, buttons: true, arg: item.key }) : []),
   }) as Row[]
   // Row 1's title and project stay where they were when row 2 shows a status.
   expect(rowText(pressed[1].cells)).toBe(rowText(plain[1].cells))
@@ -314,13 +330,20 @@ test('a press status never moves a column: every needs row keeps one slot', () =
   const buttons = bandRows(board, {
     width: 120,
     reserveActions: true,
-    actionsFor: (item: { key: string }) => (item.key === items[0].key ? bandActions(null, true, null, true) : []),
+    actionsFor: (item: { key: string }) => (item.key === items[0].key ? bandActions({ done: true, ask: true, buttons: true, arg: item.key }) : []),
   }) as Row[]
   expect(at).toBe(rowText(buttons[1].cells).indexOf('d: Done'))
   // The slot holds the short status and the Done button together.
   expect(rowText(pressed[2].cells)).toContain('✓ asked  d: Done')
   // A Done that failed offers Done again, in the same slot.
-  expect(bandActions([{ text: '! still open', style: 'red' }], true, { state: 'failed' }, true).map((c: { text: string }) => c.text).join('')).toBe('! d: Done again')
+  const cells = (p: object) => bandActions(p).map((c: { text: string }) => c.text).join('')
+  expect(cells({ status: [{ text: '! still open', style: 'red' }], done: true, doneAgain: true, ask: true, buttons: true })).toBe('! d: Done again')
+  // An Ask that failed can be sent again, in the same slot.
+  expect(cells({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: true })).toBe('! a: Ask again')
+  // Each button carries the key of its item, which the press acts on.
+  expect(bandActions({ done: true, ask: true, buttons: true, arg: 'q:c/t' }).filter((c: { button?: { arg?: string } }) => c.button).map((c: { button: { arg: string } }) => c.button.arg)).toEqual(['q:c/t', 'q:c/t'])
+  // The preview's line: the full status, then Done again and Ask again.
+  expect(itemActions({ status: [{ text: '! ask failed', style: 'red' }], done: true, ask: true, askAgain: true, buttons: true }, 'Ask orchestrator').filter((c: { button?: unknown }) => c.button).map((c: { button: { label: string } }) => c.button.label)).toEqual(['Done', 'Ask again'])
 })
 
 test('from 150 columns a project row adds its counts and its orchestrator', () => {

@@ -42,6 +42,14 @@ import { CLOSED_SHOW_MS, canDone, freshness, pressStatus, pressStatusShort, with
 /** The preview pane's id and title. */
 const PANE = 'cos'
 const PANE_TITLE = 'chief of staff'
+/** The docked preview's width, as asked: wide enough for a card's title and
+ * fields. Claude Code caps it at 45% of the terminal, and a width the person
+ * dragged or keyed wins over it. */
+const PANE_COLUMNS = 80
+/** A docked preview narrower than this draws the compact block, as inline. */
+const NARROW_PANE = 52
+/** From this width the preview's key line names its keys in words. */
+const WORDY_KEYS = 56
 /** The selection's background, in the band and in the preview: the theme's
  * user-message grey, darker than promptBorder, so yellow titles, colored
  * glyphs and blue keys keep their colors and stay readable on it. */
@@ -69,6 +77,9 @@ let doneWaitMs = DONE_WAIT_MS
 const INLINE_IDLE_MS = 400
 /** "↻ reading" shows at least this long, so a fast read is still seen. */
 const READING_SHOWN_MS = 600
+/** While the band holds the keys, how often the mod checks that it still
+ * does: Esc out of the band raises no ui.focus event. */
+const BAND_CHECK_MS = 500
 /** The band's ring goes back to the selected row this long after a redraw:
  * the engine keeps the ring by its place in the band, not by its element. */
 const RING_SETTLE_MS = 80
@@ -96,8 +107,9 @@ let reading = false
 let readStartedAt = null
 /** The event stream runs, so a change shows within about a second. */
 let live = false
-/** The chief's turn runs a Done's prompt: no tool may ask the person in it. */
-let doneTurn = false
+/** The id of the chief's turn that runs a Done's prompt, while it runs: no
+ * tool may ask the person in it. Set at turn.start, which carries the prompt. */
+let doneTurnId = null
 /**
  * The rule is owed to the conversation: a session that was running when the
  * mod loaded keeps the system prompt it started with, and a compaction can
@@ -108,9 +120,12 @@ let ruleOwed = false
 let pushQueued = false
 /** The needs-you items the last drawing saw; a new one raises a toast. */
 let seenNeeds = null
-/** The selected band row, by its key, and its place, for when it goes. */
+/** The selected band row, by its key, and its place, for when it goes. When
+ * it leaves the board the row now at its place is shown, but takes no Done
+ * or Ask until the person selects a row again (`selMoved`). */
 let selKey = null
 let selIndex = 0
+let selMoved = false
 /** Enter's "more" in the preview, and the help view in place of the preview. */
 let more = false
 let helpShown = false
@@ -121,8 +136,10 @@ let paneOpen = false
 let placement = null
 let paneFocused = false
 let paneWidth = 60
-/** The band holds the keys (after ctrl+x tab or a click). */
+/** The band holds the keys (after ctrl+x tab or a click), and the element
+ * its ring is on, as its ui.focus events and the mod's own moves name it. */
 let bandFocused = false
+let bandRingKey = null
 /** The terminal, as last measured while drawing the band. */
 let columns = 0
 let fullscreen = true
@@ -208,13 +225,17 @@ export function register(on) {
     try {
       if (isChief) {
         const has = typeof e.element === 'string'
+        if (has) bandRingKey = e.element
         if (has !== bandFocused) {
           bandFocused = has
           redraw($)
           // ctrl+x tab puts the ring on the band's first element, which may be
           // a key of the title row: move it to the selected row, so Enter acts
           // on that row.
-          if (has) ringToSelected($)
+          if (has) {
+            ringToSelected($)
+            watchBand($)
+          }
         }
       }
     } catch {
@@ -316,13 +337,13 @@ export function register(on) {
     if (!isChief || verdict.decision === 'deny') return verdict
     const why = e.tool === 'Bash' ? projectWork(e.input) : null
     if (why) return { decision: 'deny', reason: guardReason(why) }
-    if (doneTurn && verdict.decision === 'ask' && e.agentId === undefined) return { decision: 'deny', reason: DONE_TURN_REASON }
+    if (doneTurnId && verdict.decision === 'ask' && e.agentId === undefined) return { decision: 'deny', reason: DONE_TURN_REASON }
     return verdict
   })
 
   on('turn.complete', async ($, e, next) => {
     const out = await next(e)
-    if (e.agentId === undefined) doneTurn = false
+    if (e.agentId === undefined && e.turnId === doneTurnId) doneTurnId = null
     return out
   })
 
@@ -336,6 +357,16 @@ export function register(on) {
   on('turn.start', async ($, e, next) => {
     try {
       await ensureStarted($)
+      // A Done's own turn, not one it was queued behind: the guard holds in
+      // it, and the chief has the prompt, so the item is closing from now.
+      if (isChief && e.agentId === undefined) {
+        const done = Object.entries(pending).find(([, m]) => m.state === 'sending' && m.prompt === e.text)
+        doneTurnId = done ? e.turnId : null
+        if (done) {
+          pending[done[0]] = { ...done[1], state: 'closing', at: await nowMs($) }
+          redraw($)
+        }
+      }
       if (isChief && ruleOwed && e.agentId === undefined) {
         ruleOwed = false
         await tell($, DELEGATION_RULE)
@@ -550,7 +581,13 @@ async function refresh($, force = false) {
   unavailable = false
   reason = ''
   announceNew($)
+  // A row a Done closed stays CLOSED_SHOW_MS and then goes: that is no news.
+  const closedRow = Object.values(pending).some((m) => m.state === 'closed' && 'q:' + questionKey(m.question) === selKey)
   settlePending($, now)
+  if (selKey && !items().some((i) => i.key === selKey)) {
+    selMoved = true
+    if (!closedRow) toast($, 'the selected item left the board')
+  }
 }
 
 /**
@@ -561,6 +598,8 @@ async function refresh($, force = false) {
  */
 function settlePending($, now) {
   const open = new Set(allQuestions(board).map(questionKey))
+  // An Ask's mark goes with its item.
+  for (const key of Object.keys(asked)) if (!open.has(key)) delete asked[key]
   for (const [key, mark] of Object.entries(pending)) {
     if (mark.state === 'closed') {
       if (now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
@@ -631,6 +670,11 @@ function active() {
   return paneFocused || bandFocused
 }
 
+/** The preview draws the compact block: inline, or in a narrow dock. */
+function compactPane() {
+  return placement === 'inline' || paneWidth < NARROW_PANE
+}
+
 /** Whether a digit at the empty prompt reaches prompt.edit: from 144 columns. */
 function promptDigits() {
   return columns >= ASKED_COLUMNS
@@ -649,20 +693,35 @@ function docked() {
  */
 function actionsFor(item, selected, buttons, askLabel = 'Ask orchestrator', statusCap = Infinity) {
   if (!item || item.kind !== 'needs') return []
-  const key = questionKey(item.q)
-  const mark = pending[key]
-  const status = pressStatus(mark, asked[key], clockNow)
-  const mine = Boolean(buttons && selected && selected.key === item.key && !item.q.closed && active())
-  return itemActions(status, canDone(mark) && !item.q.closed, mark, mine, askLabel, statusCap)
+  return itemActions(presses(item, selected, buttons, pressStatus), askLabel, statusCap)
 }
 
 /** A band row's buttons or short status, in the row's fixed slot. */
 function bandActionsFor(item, selected, buttons) {
   if (!item || item.kind !== 'needs') return []
+  return bandActions(presses(item, selected, buttons, pressStatusShort))
+}
+
+/**
+ * What a needs-you item can do now. Done while no Done is under way; Ask
+ * while no Ask is under way or sent and no Done is under way; each again
+ * after it failed. The buttons are the selected item's alone.
+ */
+function presses(item, selected, buttons, statusOf) {
   const key = questionKey(item.q)
   const mark = pending[key]
-  const mine = Boolean(buttons && selected && selected.key === item.key && !item.q.closed && active())
-  return bandActions(pressStatusShort(mark, asked[key], clockNow), canDone(mark) && !item.q.closed, mark, mine)
+  const ask = asked[key]
+  const open = !item.q.closed
+  const done = open && canDone(mark)
+  return {
+    status: statusOf(mark, ask, clockNow),
+    done,
+    doneAgain: done && Boolean(mark),
+    ask: open && done && (!ask || ask.state === 'failed'),
+    askAgain: Boolean(ask && ask.state === 'failed'),
+    buttons: Boolean(buttons && selected && selected.key === item.key && open && active() && !selMoved),
+    arg: item.key,
+  }
 }
 
 function select(key) {
@@ -672,6 +731,7 @@ function select(key) {
   if (key !== selKey) more = false
   selKey = key
   selIndex = index
+  selMoved = false
   helpShown = false
 }
 
@@ -709,10 +769,38 @@ function ringToSelected($) {
     $.clock.after(RING_SETTLE_MS, () => {
       const { item } = current()
       if (!bandFocused || !item) return
-      $.ui.focus({ requestId: BAND, key: item.key }).catch(() => {})
+      $.ui.focus({ requestId: BAND, key: item.key })
+        .then((r) => {
+          if (!r || !r.deny) bandRingKey = item.key
+        })
+        .catch(() => {})
     })
   } catch {
     // Without a clock the ring stays where the engine put it.
+  }
+}
+
+/**
+ * While the band holds the keys, ask now and then for the ring on the element
+ * it is already on: that moves nothing, and a site that no longer holds the
+ * keyboard (Esc gave them back) answers with a deny. The band then drops its
+ * fill and its keys hint.
+ */
+function watchBand($) {
+  try {
+    $.clock.after(BAND_CHECK_MS, () => {
+      if (!bandFocused || !bandRingKey) return
+      $.ui.focus({ requestId: BAND, key: bandRingKey })
+        .then((r) => {
+          if (r && r.deny && /keyboard/.test(r.deny)) {
+            bandFocused = false
+            redraw($)
+          } else watchBand($)
+        })
+        .catch(() => watchBand($))
+    })
+  } catch {
+    // Without a clock, typing at the prompt still clears it (prompt.edit).
   }
 }
 
@@ -742,7 +830,7 @@ async function showHelp($) {
 async function openPane($, focus) {
   try {
     const rows = Math.max(3, paneLinesCount())
-    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, ...(focus ? { focus: true } : {}) })
+    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: PANE_COLUMNS, ...(focus ? { focus: true } : {}) })
     if (opened && opened.isPlaced === false) return false
     paneOpen = true
     return true
@@ -751,15 +839,17 @@ async function openPane($, focus) {
   }
 }
 
-/** Close the preview soon, if `still()` holds then. */
+/** Close the preview soon, if the last `still()` asked holds then. */
 let closePending = false
+let closeWhen = () => false
 function closeSoon($, still) {
+  closeWhen = still
   if (closePending) return
   closePending = true
   try {
     $.clock.after(INLINE_IDLE_MS, () => {
       closePending = false
-      if (!paneOpen || !still()) return
+      if (!paneOpen || !closeWhen()) return
       paneOpen = false
       placement = null
       paneFocused = false
@@ -804,7 +894,7 @@ async function paneLines($) {
   if (helpShown) return helpPreview(helpLines({ rows: items().length }), width)
   if (!board) return [[seg('board unavailable' + (reason ? ' · ' + reason : ''), 'dim')]]
   const { item } = current()
-  const compact = placement === 'inline'
+  const compact = compactPane()
   // The header counts within the row's group: `needs you · 2 of 6`, `project · 3 of 9`.
   const group = items().filter((i) => item && i.kind === item.kind)
   const index = group.findIndex((i) => i.key === item?.key)
@@ -940,37 +1030,54 @@ function tree($, e, rows) {
  */
 function paneBody($, e, lines, focused) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  const inline = placement === 'inline'
+  const compact = compactPane()
   // The selected row's title lines draw on the band row's own background, so
-  // the two read as one selection.
-  const children = lines.map((line, i) =>
-    Box({
+  // the two read as one selection. A line of buttons keeps a gap between them
+  // however narrow the pane is.
+  const children = lines.map((line, i) => {
+    if (line.some((s) => s.button)) {
+      const indent = line.length && /^ +$/.test(line[0].text) ? line[0].text.length : 0
+      return Box({
+        key: 'pane-line-' + i,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        columnGap: 2,
+        paddingLeft: indent,
+        children: line.filter((s) => s.button || s.text.trim()).map((s, j) => element($, e, s, 'pane-' + i + '-' + j, false)),
+      })
+    }
+    return Box({
       key: 'pane-line-' + i,
       flexDirection: 'row',
       ...(line.selected ? { backgroundColor: SELECTED_BG } : {}),
       children: line.map((s, j) => element($, e, s, 'pane-' + i + '-' + j, Boolean(line.selected))),
-    }),
-  )
+    })
+  })
   const label = helpShown ? '\u23ce back' : more ? '\u23ce less' : '\u23ce more'
   const { item } = current()
-  const actions = inline && !helpShown ? actionsFor(item, item, true, 'Ask orchestrator', 36) : []
+  const actions = compact && !helpShown ? actionsFor(item, item, true, 'Ask orchestrator', 36) : []
+  // The key line: j, k, and Enter must be the pane's own Buttons to reach it.
+  // In a narrow pane they go without their words, and wrap whole.
+  const wordy = paneWidth >= WORDY_KEYS
   const keys = Box({
     key: 'pane-keys',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 1,
     children: [
       Button({ key: 'pane-down', label: '\u2193', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
-      Text({ key: 'pane-keys-gap', children: [' '] }),
       Button({ key: 'pane-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
-      Text({ key: 'pane-keys-move', children: [' move \u00b7 '], dimColor: true }),
+      ...(wordy ? [Text({ key: 'pane-keys-move', children: ['move \u00b7'], dimColor: true })] : []),
       Button({ key: 'pane-more', label, plain: true, autoFocus: true, onPress: () => (helpShown ? backFromHelp($) : toggleMore($)) }),
-      Text({ key: 'pane-keys-esc', children: [' \u00b7 esc prompt'], dimColor: true }),
-      ...(actions.length ? [Text({ key: 'pane-keys-sep', children: ['   '] })] : []),
-      ...actions.map((s, j) => element($, e, s, 'pane-act-' + j, false)),
+      ...(wordy ? [Text({ key: 'pane-keys-esc', children: ['\u00b7 esc prompt'], dimColor: true })] : []),
     ],
   })
+  const actionLine = actions.length
+    ? [Box({ key: 'pane-actions', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, children: actions.map((s, j) => element($, e, s, 'pane-act-' + j, false)) })]
+    : []
   // The key line names keys only the pane can take: drawn while it holds them.
   if (!focused) return Box({ flexDirection: 'column', children })
-  if (inline) return Box({ flexDirection: 'column', children: [keys, ...children] })
+  if (compact) return Box({ flexDirection: 'column', children: [keys, ...actionLine, ...children] })
   return Box({ flexDirection: 'column', children: [keys, Text({ key: 'pane-keys-gap-line', children: [' '] }), ...children] })
 }
 
@@ -991,18 +1098,24 @@ function press($, button) {
     case 'help':
       return showHelp($)
     case 'done':
-      return markDone($, selectedQuestion())
+      return markDone($, pressedQuestion($, button.arg))
     case 'ask':
-      return askOwner($, selectedQuestion())
+      return askOwner($, pressedQuestion($, button.arg))
     default:
       return redraw($)
   }
 }
 
-/** The selected needs-you item, if it is one that can still be acted on. */
-function selectedQuestion() {
-  const { item } = current()
-  return item && item.kind === 'needs' && !item.q.closed ? item.q : null
+/**
+ * The item a Done or Ask button was drawn for, by its key. When it left the
+ * board between the drawing and the press, the press does nothing and says
+ * so: it never acts on the row that moved into its place.
+ */
+function pressedQuestion($, key) {
+  const item = items().find((i) => i.key === key)
+  if (item && item.kind === 'needs' && !item.q.closed) return item.q
+  toast($, 'that item is no longer on the board')
+  return null
 }
 
 /**
@@ -1026,6 +1139,8 @@ async function askOwner($, q) {
   if (!q) return redraw($)
   const owner = q.owner || (findProject(board, q.project)?.orchestrators || [])[0]?.agent
   const key = questionKey(q)
+  // One Ask at a time: a second a while it is sending, or after it was sent, does nothing.
+  if (asked[key] && asked[key].state !== 'failed') return redraw($)
   if (!owner) {
     asked[key] = { state: 'failed', owner: '' }
     toast($, 'ask: no orchestrator owns ' + q.channel)
@@ -1070,12 +1185,16 @@ async function askOwner($, q) {
 async function markDone($, q) {
   if (!q) return redraw($)
   const key = questionKey(q)
+  // A second d before the first is in does nothing: the mark is set at once.
+  if (!canDone(pending[key])) return redraw($)
   const index = allQuestions(board).findIndex((x) => questionKey(x) === key)
-  pending[key] = { state: 'sending', at: await nowMs($), title: q.title, question: q, index: Math.max(0, index) }
   const text =
     'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
     'Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; ' +
     'otherwise send the owner of ' + q.channel + ' a direct message to close it as done, with "Chris marked it done in the board".'
+  // It stays "sending" until the chief's turn with this prompt starts
+  // (turn.start), which can wait behind a turn already running.
+  pending[key] = { state: 'sending', at: clockNow, title: q.title, question: q, index: Math.max(0, index), prompt: text }
   const unsent = (reason) => {
     if (pending[key] && pending[key].state === 'sending') pending[key] = { ...pending[key], state: 'unsent', reason }
     redraw($)
@@ -1085,12 +1204,8 @@ async function markDone($, q) {
   try {
     $.prompt
       .submit({ text })
-      .then(async (out) => {
+      .then((out) => {
         if (out && out.drop) return unsent('the prompt was refused')
-        if (pending[key] && pending[key].state === 'sending') {
-          pending[key] = { ...pending[key], state: 'closing', at: await nowMs($) }
-        }
-        doneTurn = true
         redraw($)
       })
       .catch(() => unsent('the prompt was not sent'))

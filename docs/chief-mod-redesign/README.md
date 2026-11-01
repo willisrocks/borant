@@ -7,7 +7,8 @@ Real Claude Code 2.1.316 sessions in tmux, with a live board from
   on the fixture board. The 12-project shots of the band and the Needs-you tab
   come from a run on main of the same mod code.
 - After: this branch, driven by the new `scripts/tui/cos-scenario.sh` on the
-  12-project board (`scripts/tui/board-variants.mjs big`).
+  12-project board (`scripts/tui/board-variants.mjs big`), at 200x50, 100x40,
+  and 110x40, where the docked preview is narrow.
 
 The PNGs are not from `freeze` or `pngquant`, which are not installed on the
 laptop that made them. They come from tmux `capture-pane -e`, an ANSI-to-HTML
@@ -38,3 +39,10 @@ can show the greys differently.
 | Ask sent | | ![](after-100-ask.png) |
 | Done, still open after the wait | | ![](after-100-still-open.png) |
 | `/cos help` | | ![](after-100-help.png) |
+
+## 110 columns: a narrow dock
+
+| State | After |
+|---|---|
+| A digit, then j: the compact preview in a narrow dock | ![](after-110-narrow-dock.png) |
+| Esc out of the band: it lets the keys go | ![](after-110-band-esc.png) |

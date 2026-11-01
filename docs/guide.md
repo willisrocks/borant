@@ -198,7 +198,7 @@ carries the same keys; wherever the keys are, they do the same thing:
 |`a`|Ask the item's orchestrator|
 |Enter|more: a project's child tasks, or a task's status, blockers, PR, and last update|
 |Esc|give the keys back to the prompt; a docked preview stays (Ctrl+X X closes it), an inline one closes|
-|Ctrl+X Tab|give the band the keys; the same keys work there|
+|Ctrl+X Tab|give the band the keys: `j` `k`, `d` `a`, and Enter work there; Esc gives them back|
 
 A click on a row selects it, and a click on the selected row shows more. The
 title row says where the data stands: `live`, `live · 45s` from 30 s on,

@@ -41,11 +41,11 @@ const PANE = {
 const ENGINE_ROW = { type: 'Text', props: {}, children: ['drawn by Claude Code'] }
 
 /** The stubs every chief test needs: the clock, the pane, the ring, the scroll. */
-function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], focused: string[] = [], toasts: string[] = []) {
+function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], focused: string[] = [], toasts: string[] = [], mode = 'fixture') {
   // The kit hands test files its own typed `on`, which only registers stubs.
   const on = kit as (name: string, hook: (...args: unknown[]) => unknown) => void
 
-  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: mode })
   const clock = mock.clock(on)
   on('command.register', () => ({ value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
@@ -69,6 +69,7 @@ function chiefStubs(kit: unknown, opened: string[] = [], closes: string[] = [], 
     closes.push(e.id)
     return { value: undefined }
   })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   return clock
 }
 
@@ -543,13 +544,17 @@ test('Done shows each step: the chief is closing it, closed, then the row goes',
     return { value: { exitCode: 0, stdout: JSON.stringify(live), stderr: '' } }
   })
 
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   await $.session.start({ ...SESSION })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await band.press({ key: GATE })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'done' })
+  // d d, the second before the first is drawn: one prompt.
+  await Promise.all([ui.press({ key: 'done' }), ui.press({ key: 'done' })])
   expect(prompts).toHaveLength(1)
-  // The prompt landed: the chief has it, and the hub has not closed the task.
+  expect(await ui.find({ type: 'Text', text: /sending to the chief/ })).toBeDefined()
+  // The chief's turn with the prompt starts: the hub has not closed the task.
+  await $.turn.start({ text: prompts[0], turnId: 't1' })
   expect(await ui.find({ type: 'Text', text: /the chief is closing it/ })).toBeDefined()
   // While it is under way, the row has no Done to press twice.
   expect(await ui.find({ type: 'Button', key: 'done' })).toBeUndefined()
@@ -584,6 +589,7 @@ test('a Done the hub has not closed after two minutes shows as still open', asyn
   await band.press({ key: GATE })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'done' })
+  await $.turn.start({ text: prompts[0], turnId: 't1' })
   expect(await ui.find({ type: 'Text', text: /the chief is closing it/ })).toBeDefined()
   await clock.advance(120000)
   // The mark is short and goes before the title, so the row still names the item.
@@ -636,9 +642,13 @@ test('the event stream starts from a timer, reads the board at once on an event,
   expect(spawns).toHaveLength(2)
 })
 
-test('in the turn a Done started, a call that would ask the person is refused', async ($, on) => {
+test('in the turn a Done started, a call that would ask the person is refused, and only in that turn', async ($, on) => {
+  const prompts: string[] = []
   chiefStubs(on)
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
   on('tool.check', () => ({ decision: 'ask' }))
   on('turn.complete', () => ({ text: '' }))
   await $.session.start({ ...SESSION })
@@ -648,12 +658,115 @@ test('in the turn a Done started, a call that would ask the person is refused', 
 
   expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })).decision).toBe('ask')
   await pane.press({ key: 'done' })
+  // The Done is queued behind the person's own turn: that turn's asks are theirs.
+  await $.turn.start({ text: 'what is left today?', turnId: 't0' })
+  expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })).decision).toBe('ask')
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't0', reason: 'answer' })
+  // The Done's own turn starts.
+  await $.turn.start({ text: prompts[0], turnId: 't1' })
   const held = await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })
   expect(held.decision).toBe('deny')
   expect(held.reason).toContain('borant MCP tools')
   // The turn ends: the person is back, and Claude Code decides as before.
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   expect((await $.tool.check({ tool: 'Bash', input: { command: 'borant --help' } })).decision).toBe('ask')
+  await pane.unmount()
+  await band.unmount()
+})
+
+test('a failed Ask offers Ask again, and a a sends once', async ($, on) => {
+  const sends: string[][] = []
+  const toasts: string[] = []
+  let fail = true
+  let live = JSON.parse(JSON.stringify(board))
+  chiefStubs(on, [], [], [], toasts, 'cli')
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv[1] === 'send') {
+      sends.push(argv)
+      return { value: { exitCode: fail ? 1 : 0, stdout: '', stderr: fail ? 'hub unreachable' : '' } }
+    }
+    if (argv.includes('tasks')) return { value: { exitCode: 0, stdout: '[]', stderr: '' } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(live), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await pane.press({ key: 'ask' })
+  expect(sends).toHaveLength(1)
+  expect(await pane.find({ type: 'Text', text: /ask failed/ })).toBeDefined()
+  expect((await pane.find({ type: 'Button', key: 'ask' }))?.props.label).toBe('Ask again')
+  // Again, and this time it lands; a a, the second before the first is drawn, sends once.
+  fail = false
+  await Promise.all([pane.press({ key: 'ask' }), pane.press({ key: 'ask' })])
+  expect(sends).toHaveLength(2)
+  expect(await pane.find({ type: 'Button', key: 'ask' })).toBeUndefined()
+  await pane.unmount()
+  await band.unmount()
+})
+
+test('when the selected item leaves the board, the row in its place takes no Done or Ask until selected', async ($, on) => {
+  const prompts: string[] = []
+  const toasts: string[] = []
+  let live = JSON.parse(JSON.stringify(board))
+  const clock = chiefStubs(on, [], [], [], toasts, 'cli')
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) return { value: { exitCode: 0, stdout: '[]', stderr: '' } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(live), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Button', key: 'done' })).toBeDefined()
+
+  // Someone else closes it: the next row slides into its place without buttons.
+  live = JSON.parse(JSON.stringify(live))
+  for (const c of live.collections) c.needs_you = (c.needs_you || []).filter((q: { task: string }) => q.task !== '01M5ZG00000000000000000015')
+  await clock.advance(5000)
+  expect(toasts).toContain('the selected item left the board')
+  expect(await pane.find({ type: 'Button', key: 'done' })).toBeUndefined()
+  expect(prompts).toHaveLength(0)
+  // Selecting it again brings them back.
+  await pane.press({ key: 'pane-down' })
+  await pane.press({ key: 'pane-up' })
+  expect(await pane.find({ type: 'Button', key: 'done' })).toBeDefined()
+  await pane.unmount()
+  await band.unmount()
+})
+
+test('a narrow docked preview draws the compact block, its keys without words, and a gap between its buttons', async ($, on) => {
+  const opens: { columns?: number }[] = []
+  mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
+  mock.clock(on)
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.render', () => ENGINE_ROW)
+  on('ui.open', ($, e) => {
+    opens.push({ columns: e.columns })
+    return { value: { isPlaced: true } }
+  })
+  on('ui.focus', () => ({ value: {} }))
+  on('ui.close', () => ({ value: undefined }))
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  // The preview asks for a width that fits a card; a width the person kept wins.
+  expect(opens[0].columns).toBe(80)
+  const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 26 }, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /^move/ })).toBeUndefined()
+  expect((await pane.find({ type: 'Button', key: 'pane-down' }))?.props.hotkey).toBe('j')
+  expect((await pane.find({ key: 'pane-actions' }))?.props.columnGap).toBe(2)
+  expect(await pane.find({ type: 'Button', key: 'done' })).toBeDefined()
+  // The compact block: no field labels, the title first.
+  expect(await pane.find({ type: 'Text', text: /^ {2}owner/ })).toBeUndefined()
   await pane.unmount()
   await band.unmount()
 })

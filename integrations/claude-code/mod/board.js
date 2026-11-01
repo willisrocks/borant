@@ -268,7 +268,7 @@ export function helpLines(options = {}) {
     row('enter', 'more: a project’s tasks, or a task’s status, blockers, PR'),
     row('esc', 'back to the prompt; a docked preview stays, an inline one closes'),
     row('click', 'a row selects it; the selected row again shows more'),
-    row('ctrl+x tab', 'the band takes the keys (the same keys work there)'),
+    row('ctrl+x tab', 'the band takes the keys: j k, d a, enter; esc gives them back'),
     row('ctrl+x x', 'close the preview'),
     '',
     'commands',
@@ -317,9 +317,9 @@ function keyText(key, word) {
   return [text(key, 'key'), text(word ? ' ' + word : '', 'dim')]
 }
 
-/** A Button with a hotkey, drawn plain: `d: Done`. */
-function keyButton(key, label, kind, hotkey) {
-  return { text: hotkey + ': ' + label, style: 'hotkey', button: { key, label, kind, hotkey, plain: true } }
+/** A Button with a hotkey, drawn plain: `d: Done`. `arg` names what it acts on. */
+function keyButton(key, label, kind, hotkey, arg) {
+  return { text: hotkey + ': ' + label, style: 'hotkey', button: { key, label, kind, hotkey, plain: true, arg } }
 }
 
 /** The age of a needs-you item when the board was read: `42m`. */
@@ -342,23 +342,23 @@ export function ageText(ms) {
 }
 
 /**
- * Where a needs-you item stands, in place of its buttons: the Done or Ask
- * status, and the Done button while one can be pressed. `status` is what
- * pressStatus (mod/status.js) gave, `done` the Done mark; `buttons` draws the
- * buttons at all (only the selected item has them, as hotkeys are per site);
- * `statusCap` the most cells the status takes.
+ * What a needs-you item can do now, for its buttons: `{ status, done,
+ * doneAgain, ask, askAgain, buttons, arg }`. `status` is what pressStatus or
+ * pressStatusShort (mod/status.js) gave; `done` and `ask` say whether that
+ * button can be pressed, and the `Again` flags relabel it after a failure;
+ * `buttons` draws them at all (only the selected item has them, as a hotkey
+ * is one per site); `arg` is the item's key, which the press acts on.
  */
-export function itemActions(status, canPress, done, buttons, askLabel = 'Ask', statusCap = Infinity) {
+
+/** The preview's line of an item: its full status, then its buttons. */
+export function itemActions(p, askLabel = 'Ask', statusCap = Infinity) {
   const out = []
   // A long status ("asked orch-roger-emr-observability-dashboards at 10:25")
   // is cut where room is short; the preview card shows it whole.
-  if (status) out.push(...(span(status) > statusCap ? fitEllipsis(status, statusCap) : status))
-  if (!buttons) return out
-  if (canPress) {
-    if (out.length) out.push(text('  '))
-    out.push(keyButton('done', done ? 'Done again' : 'Done', 'done', 'd'))
-  }
-  if (!status) out.push(text('  '), keyButton('ask', askLabel, 'ask', 'a'))
+  if (p.status) out.push(...(span(p.status) > statusCap ? fitEllipsis(p.status, statusCap) : p.status))
+  if (!p.buttons) return out
+  if (p.done) out.push(keyButton('done', p.doneAgain ? 'Done again' : 'Done', 'done', 'd', p.arg))
+  if (p.ask) out.push(keyButton('ask', p.askAgain ? 'Ask again' : askLabel, 'ask', 'a', p.arg))
   return out
 }
 
@@ -369,15 +369,18 @@ export const ACTION_SLOT = 17
 export const STATUS_SLOT = 13
 
 /**
- * A band row's buttons or short status (pressStatusShort), in ACTION_SLOT
- * cells at most. `buttons` draws the buttons (the selected item only, as a
- * hotkey is one per site); a Done that failed offers `d: Done again`.
+ * A band row's buttons or short status, in ACTION_SLOT cells at most. After a
+ * failure the row offers the press again: `! d: Done again`, `! a: Ask again`.
  */
-export function bandActions(status, canPress, done, buttons) {
-  if (!buttons || !canPress) return status || []
-  if (!status) return [keyButton('done', 'Done', 'done', 'd'), text('  '), keyButton('ask', 'Ask', 'ask', 'a')]
-  if (done) return [text('! ', 'red'), keyButton('done', 'Done again', 'done', 'd')]
-  const withDone = [...status, text('  '), keyButton('done', 'Done', 'done', 'd')]
+export function bandActions(p) {
+  const status = p.status || []
+  if (!p.buttons) return status
+  const done = p.done ? keyButton('done', p.doneAgain ? 'Done again' : 'Done', 'done', 'd', p.arg) : null
+  const ask = p.ask ? keyButton('ask', p.askAgain ? 'Ask again' : 'Ask', 'ask', 'a', p.arg) : null
+  if (!status.length) return [done, done && ask ? text('  ') : null, ask].filter(Boolean)
+  if (done && p.doneAgain) return [text('! ', 'red'), done]
+  if (ask && p.askAgain) return [text('! ', 'red'), ask]
+  const withDone = done ? [...status, text('  '), done] : status
   return span(withDone) <= ACTION_SLOT ? withDone : status
 }
 
@@ -532,7 +535,9 @@ export function bandHint(o, form) {
   const sep = text(' · ', 'dim')
   if (form === 'keys') return [j, text(' '), k]
   const out = [j, text(' '), k, text(' move', 'dim')]
-  if (form === 'full' && o.needs) out.push(sep, ...keyText('d', 'done'), sep, ...keyText('a', 'ask'))
+  // d and a only where the selected row draws that button.
+  if (form === 'full' && o.keys?.done) out.push(sep, ...keyText('d', 'done'))
+  if (form === 'full' && o.keys?.ask) out.push(sep, ...keyText('a', 'ask'))
   out.push(sep, ...keyText('⏎', 'more'), sep, ...keyText('esc', 'prompt'))
   return out
 }
@@ -565,19 +570,26 @@ export function titleRow(board, o) {
   // With `fitTo` (where the rows end) the row is as wide as its fullest form
   // or the rows, whichever is wider, up to the full width.
   if (o.fitTo) width = Math.min(full, Math.max(o.fitTo, width - build(true, bandHint(o, 'full'), fresh).dashes + 4))
+  // While the board has the keys, j and k are this row's Buttons, and the
+  // only way those keys reach the band: they stay in every form, and the
+  // counts and the freshness word go first.
+  const keys = bandHint(o, 'keys')
   const forms = [
     [true, bandHint(o, 'full'), fresh],
     [true, bandHint(o, 'short'), fresh],
     [false, bandHint(o, 'short'), fresh],
-    [false, bandHint(o, 'keys'), fresh],
-    [false, bandHint(o, 'keys'), fresh.slice(0, 1)],
-    [false, [], fresh.slice(0, 1)],
-    [null, [], fresh.slice(0, 1)],
+    [false, keys, fresh],
+    [false, keys, fresh.slice(0, 1)],
+    [null, keys, fresh.slice(0, 1)],
+    [null, keys, []],
+    ...(o.active ? [] : [[false, [], fresh.slice(0, 1)], [null, [], fresh.slice(0, 1)]]),
   ]
   for (const [idle, hint, freshParts] of forms) {
     const built = build(idle, hint, freshParts)
     if (built.dashes >= 4) return fit(built.row, width)
   }
+  // Narrower still: the keys first, so they are never cut, then the summary.
+  if (o.active) return fit([text(RULE + RULE + ' ', 'faint'), ...keys, text(' ' + RULE + ' ', 'faint'), ...summary], width)
   const last = forms[forms.length - 1]
   return fitEllipsis(build(last[0], last[1], last[2]).row, width)
 }
@@ -614,16 +626,19 @@ export function bandRows(board, o = {}) {
   const selected = o.selected || null
   const needs = items.filter((i) => i.kind === 'needs')
   const projects = items.filter((i) => i.kind === 'project')
-  const selectedItem = items.find((i) => i.key === selected)
   const opts = {
     ...o,
     width,
     board,
     actionsFor: o.actionsFor || (() => []),
-    needs: Boolean(selectedItem && selectedItem.kind === 'needs' && !selectedItem.q.closed),
-    rows: items.length,
   }
   const body = [...needsRows(needs, 0, opts), ...projectRows(projects, needs.length, opts)]
+  // The hint names d and a only when the selected row draws those buttons,
+  // and the digits only of the rows drawn at rest: the band's window starts
+  // at the top, and a bare digit reaches only a drawn chip.
+  const pressable = new Set((body.find((r) => r.key === selected)?.cells || []).filter((c) => c.button).map((c) => c.button.kind))
+  opts.keys = { done: pressable.has('done'), ask: pressable.has('ask') }
+  opts.rows = Math.min(items.length, 1 + body.length > maxRows ? Math.max(1, maxRows - 2) : items.length)
   // The title row ends where the rows do, so its hint and freshness sit by
   // the content, not across an empty stretch at the terminal's far edge.
   const used = Math.max(0, ...body.map((r) => r.used || 0))

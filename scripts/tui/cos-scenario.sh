@@ -87,7 +87,10 @@ tui_keys C-x; sleep 1; tui_keys Tab; shot 02-band-focused
 tui_type j; shot 03-band-j
 tui_type j; shot 04-band-jj
 tui_type k; shot 05-band-jjk
-to_prompt
+# Esc gives the keys back: the band drops its fill and names the digits again.
+tui_keys Escape; shot 05b-band-esc 1.5
+check "the band let the keys go after esc" "grep -q 'select' '$TUI_OUT/05b-band-esc.plain.txt'"
+tui_keys C-u; sleep 0.3
 
 # A digit at the empty prompt selects its row and gives the preview the keys.
 tui_type 1; shot 06-digit1 1.5
