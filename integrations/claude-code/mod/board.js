@@ -248,21 +248,25 @@ export function findProject(board, name) {
  * Every key and command of the board, as `/cos help` prints it.
  */
 export function helpLines(options = {}) {
-  const digits = digitRange(options.rows) || '1'
+  const digits = digitRange(options.rows)
   const row = (key, what) => '  ' + pad(key, 21) + what
   return [
-    'keys',
-    row(digits, 'select a row from an empty prompt: needs-you items, then projects'),
+    'keys, typed at the empty prompt',
+    ...(digits ? [row(digits, 'select a row: needs-you items, then projects')] : []),
     row('j k', 'move the selection down and up'),
     row('space', 'open the selected row in place, or close it (its digit too)'),
-    row('d', 'Done on the selected needs-you item'),
-    row('a', 'Ask orchestrator about the selected needs-you item'),
-    row('', 'after a digit these keys work from the empty prompt for 30 s;'),
-    row('', 'any other key types, and the selection goes'),
-    row('ctrl+x tab', 'give the band the keyboard (press tab within 3 s): then'),
-    row('', 'enter opens, and esc goes back to the prompt'),
+    row('d d', 'Done on the selected needs-you item (the first d only arms it)'),
+    row('a a', 'Ask orchestrator about it, the same way'),
+    row('any other key', 'types as usual (an armed d or a is typed too); the selection goes'),
+    row('10 s idle', 'the selection goes by itself'),
+    row('note', 'Claude Code keeps enter and esc for the prompt, so space opens there'),
+    '',
+    'keys with the band\u2019s ring',
+    row('ctrl+x tab, a click', 'give the band the keyboard (press tab within 3 s)'),
+    row('j k, enter', 'move, and open or close the selected row'),
+    row('d, a', 'press Done or Ask on the selected item at once'),
+    row('esc', 'go back to the prompt'),
     row('ctrl+x ctrl+a', 'collapse the band to one row, or expand it'),
-    row('click', 'a row selects it; a second click opens it'),
     '',
     'commands',
     row('/cos', 'the board as text'),

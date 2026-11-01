@@ -261,7 +261,7 @@ test('a digit selects its row, and the band then holds j, k, d, and a', async ($
 
   await ui.press({ key: GATE })
   // The whole row draws selected, and only it carries Done and Ask.
-  expect((await ui.find({ key: 'band-row-' + GATE }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-' + GATE }))?.props.backgroundColor).toBe('subtle')
   expect((await ui.find({ key: 'band-row-' + TOKEN }))?.props.backgroundColor).toBeUndefined()
   expect((await ui.find({ type: 'Button', key: 'done' }))?.props.hotkey).toBe('d')
   expect((await ui.find({ type: 'Button', key: 'ask' }))?.props.hotkey).toBe('a')
@@ -271,14 +271,14 @@ test('a digit selects its row, and the band then holds j, k, d, and a', async ($
 
   // j and k move the selection, and wrap; a project row has no Done.
   await ui.press({ key: 'band-down' })
-  expect((await ui.find({ key: 'band-row-' + TOKEN }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-' + TOKEN }))?.props.backgroundColor).toBe('subtle')
   await ui.press({ key: 'band-down' })
-  expect((await ui.find({ key: 'band-row-p:borant' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-p:borant' }))?.props.backgroundColor).toBe('subtle')
   expect(await ui.find({ type: 'Button', key: 'done' })).toBeUndefined()
   await ui.press({ key: 'band-up' })
   await ui.press({ key: 'band-up' })
   await ui.press({ key: 'band-up' })
-  expect((await ui.find({ key: 'band-row-p:notes' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-p:notes' }))?.props.backgroundColor).toBe('subtle')
 
   // The ring leaving the band hands the keys back to the prompt.
   await $.ui.focus({ component: 'AbovePrompt', requestId: 'above-prompt', origin: { kind: 'person' } })
@@ -308,10 +308,14 @@ test('after a digit, the band keys typed at the empty prompt act on the band and
 
   await ui.press({ key: GATE })
   expect((await type('j')).text).toBe('')
-  expect((await ui.find({ key: 'band-row-' + TOKEN }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-' + TOKEN }))?.props.backgroundColor).toBe('subtle')
   expect((await type('k')).text).toBe('')
   await type(' ')
   expect(await ui.find({ type: 'Text', text: /owner orchestrator/ })).toBeDefined()
+  // The first d only arms Done, and the row asks for a second.
+  expect((await type('d')).text).toBe('')
+  expect(prompts).toHaveLength(0)
+  expect(await ui.find({ type: 'Text', text: / again: Done/ })).toBeDefined()
   expect((await type('d')).text).toBe('')
   expect(prompts).toHaveLength(1)
 
@@ -319,9 +323,17 @@ test('after a digit, the band keys typed at the empty prompt act on the band and
   expect((await type('x')).text).toBe('x')
   expect((await ui.find({ key: 'band-row-' + GATE }))?.props.backgroundColor).toBeUndefined()
 
-  // Thirty idle seconds after a digit, the prompt's keys are its own again.
+  // A prompt that starts with d types whole: the armed d comes back, and
+  // nothing is pressed.
+  await ui.press({ key: TOKEN })
+  await type('d')
+  expect((await type('e')).text).toBe('de')
+  expect(prompts).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: / again: Done/ })).toBeUndefined()
+
+  // Ten idle seconds after a digit, the prompt's keys are its own again.
   await ui.press({ key: 'p:notes' })
-  await clock.advance(30000)
+  await clock.advance(10000)
   expect((await type('d')).text).toBe('d')
   await ui.unmount()
 })
@@ -336,7 +348,7 @@ test('pressing the selected row again opens it in place, and again closes it', a
   // The project's epics, its orchestrator, all on the selection.
   expect(await ui.find({ type: 'Text', text: /Delete borant-2/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /orchestrator · online/ })).toBeDefined()
-  expect((await ui.find({ key: 'band-row-p:borant-orch-0' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-p:borant-orch-0' }))?.props.backgroundColor).toBe('subtle')
   await ui.press({ key: 'p:borant' })
   expect(await ui.find({ type: 'Text', text: /Delete borant-2/ })).toBeUndefined()
 
@@ -360,7 +372,7 @@ test('a click selects a row, and a second click opens it', async ($, on) => {
     await ui.press({ key: 'p:borant' })
   }
   await click()
-  expect((await ui.find({ key: 'band-row-p:borant' }))?.props.backgroundColor).toBe('promptBorder')
+  expect((await ui.find({ key: 'band-row-p:borant' }))?.props.backgroundColor).toBe('subtle')
   expect(await ui.find({ type: 'Text', text: /Delete borant-2/ })).toBeUndefined()
   await click()
   expect(await ui.find({ type: 'Text', text: /Delete borant-2/ })).toBeDefined()
@@ -456,7 +468,7 @@ test('Ask orchestrator sends to the channel owner itself, and the chief is only 
   expect(sends[0][3]).toContain('Answer the chief')
   expect(prompts).toHaveLength(0)
   expect(toasts).toContain('asked orchestrator: Revoke old willisrocks gh token?')
-  expect(await ui.find({ type: 'Text', text: /asked orchestrator/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ asked/ })).toBeDefined()
   expect((await ui.find({ type: 'Button', key: 'ask' }))?.props.label).toBe('Ask again')
 
   // The chief is told with a row it reads, not a prompt that starts a turn.
@@ -494,14 +506,18 @@ test('an event from the host stream reads the board again at once', async ($, on
   })
 
   await $.session.start({ ...SESSION })
+  // The stream starts from a timer, outside the hook that started the mod.
+  await clock.advance(0)
   expect(spawned).toEqual(['borant', 'events', '--follow', '--json'])
   const first = reads
   await clock.advance(300)
   expect(reads).toBe(first + 1)
 
-  // The title row says how fresh the board is: this stream has ended, so
-  // the 5 s timer reads it.
+  // The title row says how fresh the board is: a read shows for a moment,
+  // and this stream has ended, so then the 5 s timer reads it.
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /↻ reading/ })).toBeDefined()
+  await clock.advance(400)
   expect(await band.find({ type: 'Text', text: /^polling/ })).toBeDefined()
   await band.unmount()
 })

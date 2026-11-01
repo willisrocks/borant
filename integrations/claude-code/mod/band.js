@@ -147,7 +147,12 @@ export function titleRow(board, st) {
     text(' '),
     button('band-up', 'band-up', [text('↑', 'plain')], { hotkey: 'k' }),
   ]
-  const da = st.needsSelected ? [sep(' · '), key('d'), sep(' done · '), key('a'), sep(' ask')] : []
+  const can = st.selectedButtons || {}
+  const da = [
+    ...(can.d ? [sep(' · '), key('d'), sep(' done')] : []),
+    ...(can.a ? [sep(' · '), key('a'), sep(' ask')] : []),
+  ]
+  const daShort = [...(can.d ? [sep(' · '), key('d')] : []), ...(can.a ? [sep(' · '), key('a')] : [])]
   // With the band's ring (ctrl+x tab, a click) Enter opens and esc leaves;
   // from the prompt after a digit, space opens and any other key types.
   const open = st.ring ? '⏎' : 'space'
@@ -156,7 +161,7 @@ export function titleRow(board, st) {
     ? [
         [...jk, sep(' move · '), key(open), sep(' open'), ...da, sep(' · '), ...leave],
         [...jk, sep(' move · '), key(open), sep(' open'), ...da],
-        [...jk, sep(' · '), key(open), ...(st.needsSelected ? [sep(' · '), key('d'), sep(' '), key('a')] : [])],
+        [...jk, sep(' · '), key(open), ...daShort],
         jk,
       ]
     : [
@@ -187,42 +192,99 @@ function needsContext(q, at, full) {
   return parts.filter(Boolean).join(' · ')
 }
 
+/** The room the selected row keeps after its title: the widest Done and Ask
+ * buttons, or a short status with one-word buttons. */
+const BUTTONS = width('✓ asked at 10:41   d: Done   a: Ask')
+
 /**
- * The status and the buttons of one needs-you item: a press status replaces
- * the buttons in the same place, and Done again or Ask again come back once
- * a press failed or an ask landed. Buttons only when `withButtons`.
+ * Which buttons a needs-you item shows: `{ d, a }`, each a label or absent.
+ * The title row's hint names d and a from the same answer, so a hint never
+ * names a key that does nothing.
  */
-export function actions(q, st, withButtons) {
+export function buttonsOf(q, st) {
+  if (!q || q.closed) return {}
   const key = questionKey(q)
   const done = (st.pending || {})[key]
   const ask = (st.asked || {})[key]
-  const status = q.closed ? [text(GLYPH.done + ' closed', 'green')] : pressStatus(done, ask, st.now || 0)
+  if (!pressStatus(done, ask, st.now || 0)) return { d: 'Done', a: 'Ask orchestrator' }
+  if (done && canDone(done)) return { d: 'Done again' }
+  if (!done && ask && ask.state !== 'sending') return { d: 'Done', a: 'Ask again' }
+  return {}
+}
+
+/**
+ * The status and the buttons of one needs-you item: a press status replaces
+ * the buttons in the same place, and Done again or Ask again come back once
+ * a press failed or an ask landed. Buttons only when `withButtons`. A first
+ * d or a typed at the prompt arms the press: the row asks for it again.
+ */
+export function actions(q, st, withButtons) {
+  const key = questionKey(q)
+  if (withButtons && st.armed && st.armed.item === key && !q.closed) {
+    const what = st.armed.key === 'd' ? 'Done' : 'Ask ' + (st.armed.owner || 'orchestrator')
+    return [text(st.armed.key, 'key'), text(' again: ' + what, 'yellowBold'), text(' · any other key cancels', 'dim')]
+  }
+  const status = q.closed ? [text(GLYPH.done + ' closed', 'green')] : pressStatus((st.pending || {})[key], (st.asked || {})[key], st.now || 0)
   const out = status ? [...status] : []
-  if (!withButtons || q.closed) return out
-  const doneButton = (label) => button('done', 'done', [text(label, 'plain')], { hotkey: 'd', arg: key })
-  const askButton = (label) => button('ask', 'ask', [text(label, 'plain')], { hotkey: 'a', arg: key })
-  const buttons = []
-  if (!status) buttons.push(doneButton('Done'), askButton('Ask orchestrator'))
-  else if (done && canDone(done)) buttons.push(doneButton('Done again'))
-  else if (!done && ask && ask.state !== 'sending') buttons.push(doneButton('Done'), askButton('Ask again'))
-  for (const b of buttons) {
+  if (!withButtons) return out
+  const can = buttonsOf(q, st)
+  for (const hotkey of ['d', 'a']) {
+    if (!can[hotkey]) continue
     if (out.length) out.push(text('   '))
-    out.push(b)
+    out.push(button(hotkey === 'd' ? 'done' : 'ask', hotkey === 'd' ? 'done' : 'ask', [text(can[hotkey], 'plain')], { hotkey, arg: key }))
   }
   return out
 }
 
-/** The title and context widths of the needs-you rows, and which context form. */
-function needsColumns(questions, w, at) {
-  const titles = Math.max(0, ...questions.map((q) => width(q.title || '')))
-  const full = Math.max(0, ...questions.map((q) => width(needsContext(q, at, true))))
-  // The attention words stay only while every title shows whole.
-  if (w - CHIP - 2 - GAP - full >= titles) return { title: titles, ctx: full, full: true }
-  // Then the title comes first: the context column keeps at most 28% of the
-  // row, and a longer context is cut with an ellipsis.
-  const short = Math.max(0, ...questions.map((q) => width(needsContext(q, at, false))))
-  const ctx = Math.min(short, Math.max(14, Math.floor(w * 0.28)))
-  return { title: Math.max(10, Math.min(titles, w - CHIP - 2 - GAP - ctx)), ctx, full: false }
+/**
+ * Where the project columns start, as cells from the left: the edges a
+ * needs-you context can line up with.
+ */
+function projectEdges(cols) {
+  const edges = []
+  let at = CHIP + cols.name + GAP
+  if (cols.saga) {
+    edges.push(at)
+    at += cols.saga + GAP
+  }
+  edges.push(at)
+  at += cols.epic + GAP
+  edges.push(at)
+  at += cols.bar + 1 + cols.ratio
+  if (cols.counts) {
+    at += GAP
+    edges.push(at)
+    at += cols.counts
+  }
+  if (cols.orch) edges.push(at + GAP)
+  return edges
+}
+
+/**
+ * The needs-you columns: one title width for every row, so the title column
+ * never moves, and the context after it. The title column fits the longest
+ * title where it can, else four titles in five, and its end lines up with a
+ * project column when one is near; it leaves room for the Done and Ask
+ * buttons. A cut title shows whole when its row opens.
+ */
+function needsColumns(questions, w, at, edges) {
+  const titles = questions.map((q) => width(q.title || '')).sort((a, b) => a - b)
+  const most = titles[titles.length - 1] || 0
+  const most80 = titles[Math.max(0, Math.ceil(titles.length * 0.8) - 1)] || 0
+  const lead = CHIP + 2
+  const cap = Math.max(10, Math.min(Math.floor(w * 0.6), w - lead - GAP - BUTTONS))
+  // A project edge as a title width: the context then starts on that edge.
+  const snaps = edges.map((e) => e - lead - GAP).filter((t) => t >= 10 && t <= cap)
+  const near = (need) => snaps.find((t) => t >= need && t - need <= 20)
+  // One title far longer than the rest is cut, and shows whole when open.
+  const outlier = most > most80 + 20
+  const want = outlier ? most80 : most
+  const title = want > cap ? cap : (near(want) ?? want)
+  const slot = w - lead - title - GAP
+  const fullest = Math.max(0, ...questions.map((q) => width(needsContext(q, at, true))))
+  const full = fullest <= slot
+  const ctx = Math.min(slot, full ? fullest : Math.max(0, ...questions.map((q) => width(needsContext(q, at, false)))))
+  return { title, slot, ctx, full }
 }
 
 function needsRows(q, i, st, cols) {
@@ -233,28 +295,21 @@ function needsRows(q, i, st, cols) {
   const glyphStyle = q.closed ? 'green' : 'yellow'
   const titleStyle = q.closed ? 'dim' : 'yellowBold'
   const title = q.title || ''
-  const ordinal = st.ordinal(i)
+  const shownTitle = truncate(title, cols.title)
+  // The chip is the digit and the glyph: the ring's mark stays that small.
+  const segments = [...chip(st.ordinal(i), key, 'needs', i, [text(glyph, glyphStyle)]), text(' '), text(pad(shownTitle, cols.title), titleStyle), text(' '.repeat(GAP))]
   const context = needsContext(q, st.at, cols.full)
-  // The selected row carries its buttons at its end, unless it is open. A
-  // long status gives way before the buttons and a 16-cell title do.
-  const acts = isOpen ? [] : shorten(actions(q, st, selected), st.width - CHIP - 2 - 16 - GAP)
-  const actsWidth = acts.length ? GAP + segWidth(acts) : 0
-  let titleWidth = cols.title
-  let ctxWidth = cols.ctx
-  let showCtx = true
-  const over = CHIP + 2 + titleWidth + GAP + ctxWidth + actsWidth - st.width
-  if (over > 0) {
-    // Give way on this row only, keeping the title column where it is: the
-    // status and buttons take the context's place, then the title shrinks.
-    showCtx = false
-    const still = CHIP + 2 + titleWidth + actsWidth - st.width
-    if (still > 0) titleWidth = Math.max(10, titleWidth - still)
+  // The status and buttons follow the context when both fit, else they take
+  // its place; the status gives way first, then the context. The title
+  // column stays put.
+  const acts = isOpen ? [] : actions(q, st, selected)
+  if (!acts.length) {
+    segments.push(text(cutContext(context, cols.slot), 'dim'))
+  } else if (cols.ctx + GAP + segWidth(acts) <= cols.slot) {
+    segments.push(text(pad(cutContext(context, cols.ctx), cols.ctx), 'dim'), text(' '.repeat(GAP)), ...acts)
+  } else {
+    segments.push(...fitStatus(acts, cols.slot))
   }
-  const shownTitle = truncate(title, titleWidth)
-  const lead = chip(ordinal, key, 'needs', i, [text(glyph + ' ', glyphStyle), text(shownTitle, titleStyle)])
-  const segments = [...lead, text(' '.repeat(titleWidth - width(shownTitle)))]
-  if (showCtx) segments.push(text(' '.repeat(GAP)), text(pad(cutContext(context, ctxWidth), ctxWidth), 'dim'))
-  if (acts.length) segments.push(text(' '.repeat(GAP)), ...acts)
   const rows = [{ key: 'row-' + key, segments: fitRow(segments, st.width), selected }]
   if (!isOpen) return rows
 
@@ -265,16 +320,17 @@ function needsRows(q, i, st, cols) {
   const project = findProject(st.board, q.project)
   const owner = q.owner || (project?.orchestrators || [])[0]?.agent || ''
   const orch = (project?.orchestrators || []).find((o) => o.agent === owner)
+  // The row shows the project and attention already when its context is full.
   const detail = [
-    !cols.full || !showCtx ? q.attention_msg : '',
+    ...(cols.full ? [] : [q.project, q.attention_msg]),
     activeSaga(project)?.title,
     owner ? 'owner ' + owner : 'no owner',
     orch?.host,
     orch ? (orch.busy ? 'busy' : orch.online === false ? 'offline' : 'online') : '',
     q.channel,
   ].filter(Boolean)
-  wrap(detail.join(' · '), room).forEach((l, j) => line('detail-' + j, [text(l, 'dim')]))
-  const all = shorten(actions(q, st, !q.closed), room)
+  wrapParts(detail, room).forEach((l, j) => line('detail-' + j, [text(l, 'dim')]))
+  const all = fitStatus(actions(q, st, !q.closed), room)
   if (all.length) line('actions', all)
   return rows
 }
@@ -287,12 +343,48 @@ function cutContext(context, w) {
   return truncate(parts.slice(0, -1).join(' · ') || context, Math.max(1, w - width(tail))) + tail
 }
 
-/** Cut the status (the first, plain segment) so the segments fit `room`. */
-function shorten(segs, room) {
-  const over = segWidth(segs) - room
-  if (over <= 0 || !segs.length || segs[0].button) return segs
-  const first = segs[0]
-  return [{ ...first, text: truncate(first.text, Math.max(4, width(first.text) - over)) }, ...segs.slice(1)]
+/**
+ * Fit a status and its buttons in `room`: the buttons stay whole, and the
+ * status (the first, plain segment) gives way, first the owner of an ask
+ * (`✓ asked at 10:41`; the open row names it), then the button labels to
+ * one word (`a: Ask`), then the status's tail.
+ */
+function fitStatus(segs, room) {
+  if (segWidth(segs) <= room || !segs.length || segs[0].button) return segs
+  // An armed press drops its "any other key cancels" first.
+  if (segs[0].style === 'key') return segs.slice(0, 2)
+  let first = { ...segs[0], text: segs[0].text.replace(/^✓ asked \S+ at /, '✓ asked at ') }
+  let rest = segs.slice(1)
+  if (segWidth([first, ...rest]) > room) rest = rest.map(shortButton)
+  const over = segWidth([first, ...rest]) - room
+  if (over > 0) first = { ...first, text: truncate(first.text, Math.max(4, width(first.text) - over)) }
+  return [first, ...rest]
+}
+
+/** A Done or Ask button with its label cut to one word. */
+function shortButton(s) {
+  if (!s.button) return s
+  const b = s.button
+  return button(b.key, b.kind, [text(b.parts.map((p) => p.text).join('').split(' ')[0], 'plain')], { hotkey: b.hotkey, arg: b.arg })
+}
+
+/** Join parts with ` · ` into lines of at most `w` cells, breaking between parts. */
+function wrapParts(parts, w) {
+  const out = []
+  let line = ''
+  for (const part of parts) {
+    const next = line ? line + ' · ' + part : part
+    if (width(next) <= w) {
+      line = next
+      continue
+    }
+    if (line) out.push(line)
+    const pieces = wrap(part, w)
+    line = pieces.pop() || ''
+    out.push(...pieces)
+  }
+  if (line) out.push(line)
+  return out
 }
 
 /**
@@ -306,6 +398,13 @@ function chip(ordinal, key, kind, arg, parts) {
 }
 
 // -------------------------------------------------------------- project rows
+
+/** The count kinds, in their column order, as words and as glyphs. */
+const COUNTS = [
+  { kind: 'running', word: (n) => n + ' running', glyph: null, style: 'plain' },
+  { kind: 'blocked', word: (n) => n + ' blocked', glyph: (n) => GLYPH.blocked + n, style: 'red' },
+  { kind: 'needs', word: (n) => n + ' needs you', glyph: (n) => GLYPH.needs + n, style: 'yellow' },
+]
 
 /** What one project row shows, before the columns are sized. */
 function projectCells(p) {
@@ -321,20 +420,29 @@ function projectCells(p) {
     epic: current ? current.epic.title : s.plain ? openTasksLabel(p) : 'no epic yet',
     done: s.bar.label,
     summary: s,
-    words: [
-      s.running ? text(s.running + ' running', 'plain') : null,
-      s.blocked ? text(s.blocked + ' blocked', 'red') : null,
-      s.needs ? text(s.needs + ' needs you', 'yellow') : null,
-    ].filter(Boolean),
-    glyphs: [
-      s.blocked ? text(GLYPH.blocked + s.blocked, 'red') : null,
-      s.needs ? text(GLYPH.needs + s.needs, 'yellow') : null,
-    ].filter(Boolean),
-    orch: orch ? orch.agent + (orch.busy ? ' · busy' : '') : 'no orchestrator',
+    counts: { running: s.running, blocked: s.blocked, needs: s.needs },
+    orch: orch ? [orch.agent, ...(orch.busy ? ['busy'] : [])] : ['no orchestrator'],
   }
 }
 
-const joined = (segs) => segs.flatMap((s, i) => (i ? [text('  '), s] : [s]))
+/** The text of one count, as a word or a glyph count; '' for none. */
+function countText(c, n, words) {
+  if (!n) return ''
+  const f = words ? c.word : c.glyph
+  return f ? f(n) : ''
+}
+
+/**
+ * The count slots: one per kind any row has, each as wide as its widest
+ * text, so a kind always sits in the same place and a zero leaves a blank.
+ */
+function countSlots(cells, words) {
+  return COUNTS.map((c) => ({ ...c, width: Math.max(0, ...cells.map((cell) => width(countText(c, cell.counts[c.kind], words)))) })).filter(
+    (slot) => slot.width > 0,
+  )
+}
+
+const slotsWidth = (slots) => slots.reduce((n, s, i) => n + s.width + (i ? GAP : 0), 0)
 
 /**
  * The column widths of the project rows. Each column starts from its longest
@@ -348,10 +456,8 @@ export function projectColumns(cells, w) {
   const name = most((c) => width(c.name))
   const saga = most((c) => width(c.saga))
   const epic = most((c) => 2 + width(c.epic))
-  const orch = most((c) => width(c.orch))
+  const orch = most((c) => width(c.orch.join(' · ')))
   const ratio = most((c) => (c.plain ? 0 : width(c.done)))
-  const words = most((c) => segWidth(joined(c.words)))
-  const glyphs = most((c) => segWidth(joined(c.glyphs)))
   const steps = [
     { orch: true, words: true, saga: true, bar: 10 },
     { orch: false, words: true, saga: true, bar: 10 },
@@ -360,7 +466,8 @@ export function projectColumns(cells, w) {
     { orch: false, words: false, saga: false, bar: 5 },
   ]
   for (const step of steps) {
-    const counts = step.words ? words : glyphs
+    const slots = countSlots(cells, step.words)
+    const counts = slotsWidth(slots)
     const sagaMin = step.saga ? Math.min(saga, 20) : 0
     const epicMin = Math.min(epic, 26)
     const orchMin = step.orch ? Math.min(orch, 12) : 0
@@ -368,17 +475,31 @@ export function projectColumns(cells, w) {
     const fixed = CHIP + name + GAP + (step.saga ? GAP : 0) + GAP + barWidth + (counts ? GAP + counts : 0) + (step.orch ? GAP : 0)
     let room = w - fixed - sagaMin - epicMin - orchMin
     if (room < 0) continue
+    // The room goes to the epic, then the orchestrator's name, then the saga
+    // (an open row shows the saga whole); what is left goes to the last column.
     const e = epicMin + Math.min(room, epic - epicMin)
     room -= e - epicMin
+    const o = step.orch ? orchMin + Math.min(room, orch - orchMin) : 0
+    room -= o - orchMin
     const s = step.saga ? sagaMin + Math.min(room, saga - sagaMin) : 0
     room -= s - sagaMin
-    return { ...step, name, saga: s, epic: e, orch: step.orch ? orchMin + room : 0, ratio, counts }
+    return { ...step, name, saga: s, epic: e, orch: step.orch ? o + room : 0, ratio, counts, slots }
   }
   // Even the smallest step does not fit: the name gives way too.
-  const counts = glyphs
+  const slots = countSlots(cells, false)
+  const counts = slotsWidth(slots)
   const left = w - (CHIP + GAP + GAP + 6 + ratio + (counts ? GAP + counts : 0))
   const epicWidth = Math.max(8, Math.min(epic, Math.floor(left / 2)))
-  return { orch: false, words: false, saga: 0, bar: 5, name: Math.max(6, left - epicWidth), epic: epicWidth, ratio, counts }
+  return { orch: false, words: false, saga: 0, bar: 5, name: Math.max(6, left - epicWidth), epic: epicWidth, ratio, counts, slots }
+}
+
+/** Parts joined with ` · `, whole parts dropped from the end to fit `w`. */
+function cutParts(parts, w) {
+  for (let n = parts.length; n > 0; n -= 1) {
+    const joinedText = parts.slice(0, n).join(' · ')
+    if (width(joinedText) <= w) return joinedText
+  }
+  return truncate(parts[0] || '', w)
 }
 
 function projectRows(p, i, st, cells, cols) {
@@ -394,10 +515,13 @@ function projectRows(p, i, st, cells, cols) {
   if (cells.plain) segments.push(text(' '.repeat(cols.bar + 1 + cols.ratio)))
   else segments.push(text(bar.filled, 'green'), text(bar.empty, 'faint'), text(' ' + pad(bar.label, cols.ratio)))
   if (cols.counts) {
-    const counts = joined(cols.words ? cells.words : cells.glyphs)
-    segments.push(text(' '.repeat(GAP)), ...counts, text(' '.repeat(cols.counts - segWidth(counts))))
+    segments.push(text(' '.repeat(GAP)))
+    cols.slots.forEach((slot, j) => {
+      if (j) segments.push(text(' '.repeat(GAP)))
+      segments.push(text(pad(countText(slot, cells.counts[slot.kind], cols.words), slot.width), slot.style))
+    })
   }
-  if (cols.orch) segments.push(text(' '.repeat(GAP)), text(truncate(cells.orch, cols.orch), 'dim'))
+  if (cols.orch) segments.push(text(' '.repeat(GAP)), text(cutParts(cells.orch, cols.orch), 'dim'))
   const rows = [{ key: 'row-' + key, segments: fitRow(segments, st.width), selected }]
   if (!isOpen) return rows
 
@@ -414,7 +538,7 @@ function projectRows(p, i, st, cells, cols) {
     s.blocked ? s.blocked + ' blocked' : '',
     s.needs ? s.needs + ' need you' : '',
   ].filter(Boolean)
-  wrap(about.join(' · '), room).forEach((l, j) => line('orch-' + j, [text(l, 'dim')]))
+  wrapParts(about, room).forEach((l, j) => line('orch-' + j, [text(l, 'dim')]))
   const epics = [...(activeSaga(p)?.epics || []), ...(p?.epics || [])]
   const items = []
   let done = 0
@@ -427,8 +551,8 @@ function projectRows(p, i, st, cells, cols) {
     items.push([text(GLYPH[state] + ' ', state), text(epic.title || ''), text('  ' + epicNote(epic, state), state === 'waiting' ? 'dim' : state)])
   }
   if (done) items.push([text(GLYPH.done + ' ' + done + ' done', 'done')])
-  if (!epics.length) items.push([text(GLYPH[cells.state] + ' ', cells.state), text(openTasksLabel(p))])
-  // The epics flow across lines, four cells apart; one too long is cut.
+  // The epics flow across lines, four cells apart; one too long is cut. A
+  // project of plain tasks has no epic, and its row already counts them.
   let current = []
   let n = 0
   for (const item of items) {
@@ -453,9 +577,10 @@ function projectRows(p, i, st, cells, cols) {
 
 /**
  * The band's rows. `st` holds `{ width, maxRows, selected, open, focused,
- * fresh, unavailable, reason, questions, pending, asked, now }`: `selected`
- * and `open` are chip keys, `questions` the needs-you items as drawn (with
- * the ones a Done just closed). With room for one row it is the condensed row.
+ * ring, armed, fresh, unavailable, reason, questions, pending, asked, now }`:
+ * `selected` and `open` are chip keys, `questions` the needs-you items as
+ * drawn (with the ones a Done just closed). With room for one row it is the
+ * condensed row.
  */
 export function bandRows(board, state = {}) {
   const w = Math.max(40, state.width || 100)
@@ -466,28 +591,19 @@ export function bandRows(board, state = {}) {
   const rowCount = questions.length + projects.length
   const keys = [...questions.map(needsKey), ...projects.map(projectKey)]
   const selected = keys.includes(state.selected) ? state.selected : null
-  const st = {
-    ...state,
-    board,
-    width: w,
-    questions,
-    rowCount,
-    selected,
-    focused: Boolean(state.focused),
-    needsSelected: Boolean(selected && selected.startsWith('q:') && !questions.find((q) => needsKey(q) === selected)?.closed),
-    at: stampOf(board?.at),
-  }
+  const base = { ...state, board, width: w, questions, rowCount, selected, focused: Boolean(state.focused), at: stampOf(board?.at) }
+  const st = { ...base, selectedButtons: buttonsOf(questions.find((q) => needsKey(q) === selected), base) }
   const rows = [{ key: 'title', segments: titleRow(board, st), selected: false }]
   if (rowCount === 0) {
     rows.push({ key: 'empty', segments: fitRow([text('   no project has open work', 'dim')], w), selected: false })
     return rows
   }
-  if (questions.length) {
-    const cols = needsColumns(questions, w, st.at)
-    questions.forEach((q, i) => rows.push(...needsRows(q, i, { ...st, ordinal: () => i + 1 }, cols)))
-  }
   const cells = projects.map(projectCells)
   const cols = projectColumns(cells, w)
+  if (questions.length) {
+    const needCols = needsColumns(questions, w, st.at, projects.length ? projectEdges(cols) : [])
+    questions.forEach((q, i) => rows.push(...needsRows(q, i, { ...st, ordinal: () => i + 1 }, needCols)))
+  }
   projects.forEach((p, i) =>
     rows.push(...projectRows(p, i, { ...st, ordinal: () => questions.length + i + 1 }, cells[i], cols)),
   )

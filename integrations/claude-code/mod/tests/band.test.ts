@@ -92,3 +92,32 @@ test('the empty board says nothing needs you, in one dim row', () => {
   expect(rows[1].trim()).toBe('no project has open work')
   expect(rows).toHaveLength(2)
 })
+
+test('each count kind keeps its own place, and a zero leaves a blank', () => {
+  const rows = lines(bandRows(crowded(), { width: 200 }))
+  const borant = rows.find((r) => r.startsWith('3: borant'))!
+  const notes = rows.find((r) => r.startsWith('4: notes'))!
+  // borant has no running task: its blocked count sits under notes' blocked.
+  expect(borant.indexOf('2 blocked')).toBe(notes.indexOf('1 blocked'))
+})
+
+test('a status never moves the title column, and the hint names only keys that act', () => {
+  const pending = { 'personal-borant/01M5ZG00000000000000000015': { state: 'closing', at: 0, title: 'x' } }
+  const asked = { 'personal-borant/01M5ZG00000000000000000016': { state: 'sent', owner: 'orch-roger-emr-observability-dashboards', time: '10:41' } }
+  for (const width of [200, 100]) {
+    const rows = bandRows(board, { width, selected: GATE, focused: true, pending, asked })
+    const text = lines(rows)
+    const titleAt = (row: string, title: string) => row.indexOf(title)
+    expect(titleAt(text[1], 'Create Hetzner')).toBe(titleAt(text[2], 'Revoke old'))
+    // The context column starts in one place on both rows, status or not.
+    expect(text[1]).toContain('the chief is closing it')
+    // Done is under way: the hint has no d, and the row no Done button.
+    expect(text[0]).not.toContain(' d done')
+    expect(rows[1].segments.some((s) => s.button?.key === 'done')).toBe(false)
+    for (const row of text) expect(Array.from(row).length).toBe(width)
+  }
+  // Narrow, an ask's status drops the owner's name before the title gives way.
+  const narrow = lines(bandRows(board, { width: 90, selected: 'q:personal-borant/01M5ZG00000000000000000016', focused: true, asked }))
+  expect(narrow[2]).toContain('Revoke old willisrocks gh token?')
+  expect(narrow[2]).toContain('✓ asked at 10:41')
+})

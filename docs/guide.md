@@ -191,14 +191,22 @@ keys are the real bindings of Claude Code 2.1.310:
 
 |Key|What it does|
 |---|---|
-|`1`–`9`|from an empty prompt: select that row; the band then holds the keys|
+|`1`–`9`|from an empty prompt: select that row|
 |`j` `k`|move the selection down and up, wrapping at the ends|
-|Enter|open the selected row in place, or close it; its digit again does the same|
-|`d`|Done on the selected needs-you item|
-|`a`|Ask orchestrator about the selected needs-you item|
-|Esc|back to the prompt|
-|Ctrl+X Tab|focus the band without a digit; Tab must follow within 3 s|
+|Space|open the selected row in place, or close it; its digit again does the same|
+|`d` `d`|Done on the selected needs-you item: the first `d` arms it, the second presses|
+|`a` `a`|Ask orchestrator about the selected needs-you item, the same way|
+|any other key|types as usual, an armed `d` or `a` too, and the selection goes|
+|Ctrl+X Tab|give the band the keyboard; Tab must follow within 3 s|
 |Ctrl+X Ctrl+A|collapse the band to one row, and expand it again|
+
+After a digit the keyboard stays in the prompt: Claude Code gives a site the
+keys only on Ctrl+X Tab or a click. So the mod reads `j`, `k`, Space, `d`, and
+`a` typed into the empty prompt for 10 s after the last one, and Enter and Esc
+stay Claude Code's. A prompt that starts with `d` or `a` still types whole:
+the first letter only arms the press, and the next key puts it back. With the
+band's own focus (Ctrl+X Tab, or a click), Enter opens a row, `d` and `a`
+press at once, and Esc goes back to the prompt.
 
 A click selects a row, and a second click opens it. An open needs-you item
 shows its whole title, its saga, owner, host, and channel, and its buttons on

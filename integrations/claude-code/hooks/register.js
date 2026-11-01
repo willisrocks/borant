@@ -6,19 +6,22 @@
 // no timer, no command, and draws nothing.
 //
 // The band is the one place for the keys (the "ledger band" design). A digit
-// at an empty prompt presses that row's chip and the band takes the keys with
-// the row selected; j and k move, Enter opens the row in place (one at a
-// time), d and a act on a selected needs-you item, and esc goes back to the
-// prompt. The selection is recorded here: the mod's own `$.ui.focus` does not
-// come back through its `ui.focus` hook.
+// at an empty prompt selects that row, and the keys stay in the prompt (only
+// the person gives a site the keyboard), so the band reads them there: j and
+// k move, space opens the row in place (one at a time), d and a arm Done and
+// Ask on a selected needs-you item and a second d or a presses it, and any
+// other key types as usual. With the band's own ring (ctrl+x tab, a click)
+// Enter opens and esc goes back to the prompt. The selection is recorded
+// here: the mod's own `$.ui.focus` does not come back through its `ui.focus`
+// hook.
 //
 // Shapes and rules come from docs/superpowers/specs/2026-10-26-sagas-and-epics-design.md.
 
 import { allQuestions, activeProjects, digest, findProject, helpLines, hhmm, questionKey, stepKey, truncate } from '../mod/board.js'
-import { bandKeys, bandRows } from '../mod/band.js'
+import { bandKeys, bandRows, buttonsOf } from '../mod/band.js'
 import { readBoard, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
-import { CLOSED_SHOW_MS, canDone, freshness, withClosed } from '../mod/status.js'
+import { CLOSED_SHOW_MS, freshness, withClosed } from '../mod/status.js'
 
 /** The band's render instance, as its ui.focus events name it. */
 const BAND = 'above-prompt'
@@ -36,7 +39,13 @@ const EVENTS_RETRY_MS = 5000
 const DONE_WAIT_MS = 120000
 let doneWaitMs = DONE_WAIT_MS
 /** Keys typed into the empty prompt act on the band this long after the last one. */
-const COMPOSER_KEYS_MS = 30000
+const COMPOSER_KEYS_MS = 10000
+/** A d or an a typed at the prompt waits this long for its second press. */
+const ARM_MS = 5000
+/** "↻ reading" shows at least this long, so a fast read is seen. */
+const READING_SHOWN_MS = 400
+/** The selected row's background: dark under bright text in a dark theme. */
+const SELECTED_BG = 'subtle'
 /** How often the mod checks that the band's ring still holds the keys. */
 const RING_PROBE_MS = 500
 
@@ -56,6 +65,8 @@ let pending = {}
 let asked = {}
 /** A board read runs now. */
 let reading = false
+/** Until when the title row says "↻ reading", by the session clock. */
+let readingUntil = 0
 /** The event stream runs, so a change shows within about a second. */
 let live = false
 /**
@@ -82,8 +93,13 @@ let ringKey = null
 let touches = 0
 /** The chip a person's click just put the ring on, so that press selects. */
 let clicked = null
+/** A d or an a typed at the prompt, waiting for its second press:
+ * `{ key, item, owner }`, the item a question key. */
+let armed = null
 /** The terminal's width, as last measured while drawing the band. */
 let columns = 0
+/** The band's row budget, as last drawn: a taller band scrolls. */
+let bandRowsMax = Infinity
 /** The session clock as of the last draw, for the drawing's ages. */
 let clockNow = 0
 
@@ -102,6 +118,7 @@ export function register(on) {
       await ensureStarted($)
       if (!isChief || (!board && !unavailable)) return next(e)
       measure(e)
+      bandRowsMax = typeof e.props?.maxRows === 'number' ? e.props.maxRows : Infinity
       clockNow = await nowMs($)
       keepSelection($)
       const rows = bandRows(board, {
@@ -109,6 +126,7 @@ export function register(on) {
         maxRows: e.props?.maxRows,
         selected,
         open,
+        armed,
         focused: selected !== null,
         // From the prompt (after a digit) the keys differ: space opens, and
         // any other key types. Only with the ring do Enter and esc work.
@@ -184,21 +202,27 @@ export function register(on) {
   // the keys in the composer (only the person gives a site the keyboard). So
   // while a row is selected and the prompt is empty, the band's keys typed
   // there act on the band and are consumed. Any other edit is typing: the
-  // prompt has the keys, and the selection goes.
+  // prompt has the keys, and the selection goes. A d or an a only arms its
+  // press; the second one presses. A key that is not a band key cancels it
+  // and types, with the armed letter put back, so a prompt that starts
+  // "deploy" or "add" types whole and presses nothing.
   on('prompt.edit', async ($, e, next) => {
+    let replay = ''
     try {
       if (isChief && selected !== null) {
         const key = composerKey(e)
         if (key && BAND_KEYS.has(key)) {
-          await bandKey($, key)
+          await composerBandKey($, key)
           return { text: e.text, cursor: e.cursor }
         }
+        // Typing puts the armed letter back; Backspace or a cursor key only cancels.
+        replay = armed && e.text === '' && e.inputText ? armed.key : ''
         leaveBand($)
       }
     } catch {
       // An edit is never worth an error.
     }
-    return next(e)
+    return next(replay ? { ...e, inputText: replay + e.inputText } : e)
   })
 
   // The chief's rule, in the system prompt, where compaction cannot drop it
@@ -312,7 +336,16 @@ async function start($) {
   }
 
   await refresh($, true)
-  if (mode === 'cli') followEvents($)
+  // The stream starts from a timer, outside this hook's dispatch: a child
+  // spawned inside a hook belongs to that dispatch, and in a session this one
+  // never reached borant (no `events` call in the QA stub's log).
+  if (mode === 'cli') {
+    try {
+      $.clock.after(0, () => followEvents($))
+    } catch {
+      // Without a timer the poll still reads the board.
+    }
+  }
 }
 
 /**
@@ -382,7 +415,7 @@ async function fresh($) {
     now = null
   }
   const ageMs = now === null || lastOkAt === null ? null : Math.max(0, now - lastOkAt)
-  return freshness({ unavailable: unavailable && !board, reading, live, ageMs })
+  return freshness({ unavailable: unavailable && !board, reading: reading || (now !== null && now < readingUntil), live, ageMs })
 }
 
 /** Read the board and note what is new. Never throws. */
@@ -398,12 +431,19 @@ async function refresh($, force = false) {
   if (!force && now - lastReadAt < DEBOUNCE_MS) return
   lastReadAt = now
   reading = true
+  readingUntil = now + READING_SHOWN_MS
   redraw($)
   let result
   try {
     result = await readBoard($, config)
   } finally {
     reading = false
+    // A fast read still shows "↻ reading" for a moment, then the age.
+    try {
+      $.clock.after(READING_SHOWN_MS, () => redraw($))
+    } catch {
+      // The next draw clears it.
+    }
   }
   if (!result.board) {
     // A failed read draws an empty board with the reason, never the stale one:
@@ -438,6 +478,12 @@ function settlePending($, now) {
       } else {
         pending[key] = { ...mark, state: 'closed', closedAt: now }
         toast($, 'closed: ' + mark.title)
+        // The closed row goes when its time is up, not at the next read.
+        try {
+          $.clock.after(CLOSED_SHOW_MS, () => redraw($))
+        } catch {
+          // The next read clears it.
+        }
       }
     } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
       pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
@@ -498,7 +544,10 @@ function setRing($, holds) {
   if (holds === bandHasKeys) return
   bandHasKeys = holds
   redraw($)
-  if (holds) watchRing($)
+  if (holds) {
+    disarm($)
+    watchRing($)
+  }
 }
 
 /**
@@ -548,17 +597,48 @@ function composerKey(e) {
   return String(e.key.key || '')
 }
 
-/** One band key, from the band's own Buttons or from the empty composer. */
+/**
+ * One band key typed at the empty prompt. j, k, and space act at once; d and
+ * a arm their press on the selected needs-you item, and the same key again
+ * presses it. Only a key the row draws a button for arms.
+ */
+function composerBandKey($, key) {
+  touch($)
+  if (key === 'd' || key === 'a') {
+    const q = selected && selected.startsWith('q:') ? questionOf(selected.slice(2)) : null
+    if (!q || !buttonsOf(q, { pending, asked, now: clockNow })[key]) return disarm($)
+    if (armed && armed.key === key && armed.item === questionKey(q)) {
+      armed = null
+      return key === 'd' ? markDone($, q).catch(() => {}) : void askOwner($, q).catch(() => {})
+    }
+    armed = { key, item: questionKey(q), owner: key === 'a' ? ownerOf(q) : '' }
+    const mark = armed
+    try {
+      $.clock.after(ARM_MS, () => {
+        if (armed === mark) disarm($)
+      })
+    } catch {
+      // The next key still cancels it.
+    }
+    return redraw($)
+  }
+  disarm($)
+  return bandKey($, key)
+}
+
+/** A d or an a typed at the prompt no longer waits for its second press. */
+function disarm($) {
+  if (armed === null) return
+  armed = null
+  redraw($)
+}
+
+/** j, k, and space: from the band's own Buttons or from the empty composer. */
 function bandKey($, key) {
   touch($)
   if (key === 'j') return bandMove($, 1).catch(() => {})
   if (key === 'k') return bandMove($, -1).catch(() => {})
   if (key === ' ' || key === 'space') return pressRow($, selected).catch(() => {})
-  const q = selected && selected.startsWith('q:') ? questionOf(selected.slice(2)) : null
-  if (!q) return
-  if (key === 'd' && canDone(pending[questionKey(q)])) return markDone($, q).catch(() => {})
-  // Ask waits on `borant send`; the key returns at once and the row shows it.
-  if (key === 'a' && !(asked[questionKey(q)]?.state === 'sending')) void askOwner($, q).catch(() => {})
 }
 
 /**
@@ -579,9 +659,10 @@ function touch($) {
 /** The prompt has the keys again: no row is selected, and none is open. */
 function leaveBand($) {
   touches += 1
-  if (selected === null && open === null) return
+  if (selected === null && open === null && armed === null) return
   selected = null
   open = null
+  armed = null
   redraw($)
 }
 
@@ -612,6 +693,7 @@ function keepSelection($) {
 /** Select a row: draw it selected, and put the ring and the window on it. */
 async function select($, key) {
   if (open !== key) open = null
+  if (key !== selected) armed = null
   selected = key
   touch($)
   redraw($)
@@ -637,8 +719,12 @@ async function reveal($, key) {
   } catch {
     // The band does not hold the keys.
   }
+  // A row that fits in the first window with the title row shows the title
+  // too (the keys and how fresh the board is); a later one scrolls to itself.
+  const index = board ? bandKeys(board, drawnQuestions()).indexOf(key) : -1
+  const to = index >= 0 && index + 2 + (open ? 4 : 0) <= bandRowsMax ? 'start' : { key }
   try {
-    await $.ui.scroll({ to: { key }, in: BAND, block: 'nearest' })
+    await $.ui.scroll({ to, in: BAND, block: 'nearest' })
   } catch {
     // A band that fits needs no scroll.
   }
@@ -683,7 +769,7 @@ function press($, button) {
     case 'band-up':
       return bandKey($, 'k')
     case 'help':
-      return toast($, 'keys: ' + digitsHint() + 'j k move · ⏎ open · d done · a ask · esc prompt · /cos help')
+      return toast($, 'keys: ' + digitsHint() + 'j k move · space open · d d done · a a ask · type to leave · /cos help')
     case 'done':
       return markDone($, questionOf(button.arg))
     case 'ask':
@@ -765,17 +851,17 @@ function tree($, e, rows) {
   const chips = rows.flatMap((r) => r.segments.filter((s) => s.button && isRowKey(s.button.key)).map((s) => s.button.key))
   // The ring starts on the selected row when the band takes the keys.
   const first = chips.includes(selected) ? selected : chips[0]
-  const textProps = (style, onSelection, bar) => {
+  const textProps = (style, onSelection) => {
     const props = styleProps(style)
-    if (!onSelection) return props
-    // On the selection background every cell takes the inverse text color,
-    // so dim and colored cells stay readable; the bar keeps its green fill.
-    // Bold goes: many terminals draw bold black as grey, grey on grey.
-    return { ...props, ...(bar ? {} : { color: 'inverseText' }), dimColor: false, bold: false }
+    // On the dark selection background the colors and bold stay, and dim
+    // words draw at full strength, which dim on grey would not be readable.
+    // The empty part of a bar stays faint.
+    if (!onSelection || style === 'faint') return props
+    return { ...props, dimColor: false }
   }
   const element = (s, key, onSelection) => {
     const b = s.button
-    if (!b) return Text({ key, children: [s.text], ...textProps(s.style, onSelection, s.text.startsWith('█')) })
+    if (!b) return Text({ key, children: [s.text], ...textProps(s.style, onSelection) })
     const label = b.parts.map((p) => p.text).join('')
     if (b.chrome) return Button({ key: b.key, label, onPress: () => press($, b) })
     const props = {
@@ -795,7 +881,7 @@ function tree($, e, rows) {
       Box({
         key: 'band-' + row.key,
         flexDirection: 'row',
-        ...(row.selected ? { backgroundColor: 'promptBorder' } : {}),
+        ...(row.selected ? { backgroundColor: SELECTED_BG } : {}),
         children: row.segments.map((s, j) => element(s, row.key + '-' + j, row.selected)),
       }),
     ),
@@ -819,9 +905,14 @@ async function tell($, text) {
  * itself, as the person, and the chief is only told, with a row and no turn.
  * A prompt would have the chief answer it in its own session.
  */
+/** The agent an Ask goes to: the item's owner, else its project's orchestrator. */
+function ownerOf(q) {
+  return q.owner || (findProject(board, q.project)?.orchestrators || [])[0]?.agent || ''
+}
+
 async function askOwner($, q) {
   if (!q) return redraw($)
-  const owner = q.owner || (findProject(board, q.project)?.orchestrators || [])[0]?.agent
+  const owner = ownerOf(q)
   const key = questionKey(q)
   if (!owner) {
     asked[key] = { state: 'failed', owner: '' }
