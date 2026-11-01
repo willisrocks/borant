@@ -98,8 +98,8 @@ let clicked = null
 let armed = null
 /** The terminal's width, as last measured while drawing the band. */
 let columns = 0
-/** The band's row budget, as last drawn: a taller band scrolls. */
-let bandRowsMax = Infinity
+/** The rows the band's scroll window shows, as last drawn. */
+let bandWindow = Infinity
 /** The session clock as of the last draw, for the drawing's ages. */
 let clockNow = 0
 
@@ -118,7 +118,8 @@ export function register(on) {
       await ensureStarted($)
       if (!isChief || (!board && !unavailable)) return next(e)
       measure(e)
-      bandRowsMax = typeof e.props?.maxRows === 'number' ? e.props.maxRows : Infinity
+      const shown = e.props?.scroll?.bodyRows ?? e.props?.maxRows
+      bandWindow = typeof shown === 'number' ? shown : Infinity
       clockNow = await nowMs($)
       keepSelection($)
       const rows = bandRows(board, {
@@ -721,8 +722,9 @@ async function reveal($, key) {
   }
   // A row that fits in the first window with the title row shows the title
   // too (the keys and how fresh the board is); a later one scrolls to itself.
+  // The window loses a row to the engine's "↓ N more" line.
   const index = board ? bandKeys(board, drawnQuestions()).indexOf(key) : -1
-  const to = index >= 0 && index + 2 + (open ? 4 : 0) <= bandRowsMax ? 'start' : { key }
+  const to = index >= 0 && index + 2 + (open ? 4 : 0) <= bandWindow - 1 ? 'start' : { key }
   try {
     await $.ui.scroll({ to, in: BAND, block: 'nearest' })
   } catch {
