@@ -6,9 +6,10 @@
 dir="${BORANT_STUB_DIR:?set BORANT_STUB_DIR}"
 echo "$(date +%s.%N) $*" >>"$dir/calls.log"
 case "$1" in
-  board) cat "$dir/board.json" ;;
+  # A test stops the hub with board.fail, and the event stream with events.off.
+  board) [ -e "$dir/board.fail" ] && { echo "hub unreachable" >&2; exit 1; }; cat "$dir/board.json" ;;
   tasks) cat "$dir/tasks-$2.json" 2>/dev/null || echo '[]' ;;
-  events) exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
+  events) [ -e "$dir/events.off" ] && exit 1; exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
   hook) exit 0 ;;
   # The Ask button sends as the person; a test only records it.
   send) exit 0 ;;
