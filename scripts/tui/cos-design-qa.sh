@@ -42,7 +42,7 @@ shot() { sleep "${2:-0.8}"; tui_shot "$1"; }
 node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
 : >"$stub/events.jsonl"
 
-trap 'tui_stop; rm -rf "$stub"' EXIT
+trap 'cp "$stub/calls.log" "$TUI_OUT/calls.log" 2>/dev/null; tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-qa-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
   BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
   claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
@@ -68,14 +68,26 @@ note "prompt after 1: [$(tui_text | grep '❯' | tail -1)]"
 tui_type j; shot 03-j
 tui_type j; shot 04-jj
 tui_type k; shot 05-jjk
-tui_keys Enter; shot 06-enter 1.5
-tui_keys Escape; shot 07-esc
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+# Ledger band: the keys stay in the prompt after a digit (only the person
+# gives a site the keyboard), so space opens there, and typing leaves. Esc
+# is the editor's: in vim mode it goes to NORMAL, where digits are counts.
+tui_type ' '; shot 06-space-open 1.5
+tui_type ' '; shot 07-space-close
+tui_type x; shot 07a-typed-leaves; tui_keys C-u; sleep 0.3
 
-# A project row by its digit, then Enter on it.
+# The person's own focus chord: ctrl+x, then tab within 3 s; then j, Enter,
+# and esc in the band itself.
+tui_keys C-x; sleep 1; tui_keys Tab; shot 07b-ctrlx-tab 1
+tui_type j; shot 07c-ctrlx-j
+tui_keys Enter; shot 07d-ctrlx-enter 1.5
+tui_keys Escape; shot 07e-ctrlx-esc
+tui_text | tail -3 | grep -q -- '-- NORMAL --' && tui_type i
+tui_keys C-u; sleep 0.3
+
+# A project row by its digit, then space on it.
 tui_type 8; shot 08-digit8 1.5
-tui_keys Enter; shot 09-digit8-enter 1.5
-tui_keys Escape; sleep 0.5; tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+tui_type ' '; shot 09-digit8-open 1.5
+tui_type x; sleep 0.3; tui_keys C-u; sleep 0.3
 
 # Done on the first item with its key: pressed, landed, then the hub closes it.
 tui_type 1; sleep 1.2
@@ -88,10 +100,12 @@ event
 for _ in $(seq 1 80); do tui_text | grep -q 'closed' && break; sleep 0.25; done
 note "Done closed mark after $(since "$start") ms (with an event)"
 shot 12-done-closed 0.2
-# Ask on the next item.
+# Ask on the next item: in the ledger band d and a act on the selected row,
+# so j moves to the next item first.
+tui_type j; sleep 0.8
 tui_type a; shot 13-ask 1.5
 note "stub sends: $(grep -c ' send ' "$stub/calls.log" 2>/dev/null || true)"
-tui_keys Escape; sleep 0.5; tui_keys C-u; sleep 0.3
+tui_type x; sleep 0.3; tui_keys C-u; sleep 0.3
 
 # Refresh: a change with no event waits for the poll; one with an event does not.
 start="$(now_ms)"

@@ -1,49 +1,25 @@
-// borant's chief-of-staff mod, v0.0.1. It draws the board above the prompt,
-// a pane with Needs you, Projects, and Help, a toast when something new needs
-// the person, and the `/cos` digest. Only a chief session sees any of it: the
-// role comes from BORANT_ROLE, which is how a chief is started (see
+// borant's chief-of-staff mod. It draws the board in the band above the
+// prompt, raises a toast when something new needs the person, and answers
+// `/cos`. Only a chief session sees any of it: the role comes from
+// BORANT_ROLE, which is how a chief is started (see
 // crates/borant/src/hook.rs, session_start). Every other session registers
 // no timer, no command, and draws nothing.
 //
-// The pane navigates the same way everywhere. The engine's own focus ring is
-// the selection: Tab and the arrows move it, j and k move it through our row
-// Buttons with `$.ui.focus`, Enter presses the focused row Button, Esc reaches
-// us as a refused `ui.close`, and h and l fold, drill, and switch tabs. A row
-// is one Button, so a click selects it and a second click opens it.
+// The band is the one place for the keys (the "ledger band" design). A digit
+// at an empty prompt presses that row's chip and the band takes the keys with
+// the row selected; j and k move, Enter opens the row in place (one at a
+// time), d and a act on a selected needs-you item, and esc goes back to the
+// prompt. The selection is recorded here: the mod's own `$.ui.focus` does not
+// come back through its `ui.focus` hook.
 //
-// Shapes and rules come from docs/superpowers/specs/2026-10-26-sagas-and-epics-design.md
-// and the approved mockup in docs/superpowers/specs/2026-10-27-chief-mod-mockup/.
+// Shapes and rules come from docs/superpowers/specs/2026-10-26-sagas-and-epics-design.md.
 
-import {
-  bandRowKeys,
-  bandRows,
-  allQuestions,
-  activeProjects,
-  digest,
-  helpLines,
-  hhmm,
-  paneTabs,
-  stepKey,
-  text as seg,
-  truncate,
-} from '../mod/board.js'
-import {
-  SELECTED,
-  TABS,
-  breadcrumb,
-  channelsFor,
-  findProject,
-  rowsFor,
-  questionKey,
-  viewKey,
-} from '../mod/nav.js'
-import { readBoard, readTasks, sourceMode } from '../mod/source.js'
+import { allQuestions, activeProjects, digest, findProject, helpLines, hhmm, questionKey, stepKey, truncate } from '../mod/board.js'
+import { bandKeys, bandRows } from '../mod/band.js'
+import { readBoard, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
-import { CLOSED_SHOW_MS, freshness, withClosed } from '../mod/status.js'
+import { CLOSED_SHOW_MS, canDone, freshness, withClosed } from '../mod/status.js'
 
-/** The pane's id, and its tab label. */
-const PANE = 'cos'
-const PANE_TITLE = 'Chief of staff'
 /** The band's render instance, as its ui.focus events name it. */
 const BAND = 'above-prompt'
 /** How often the board is read while the session is the chief: the fallback
@@ -59,8 +35,8 @@ const EVENTS_RETRY_MS = 5000
  * shortens it with BORANT_COS_DONE_WAIT_S. */
 const DONE_WAIT_MS = 120000
 let doneWaitMs = DONE_WAIT_MS
-/** How many times a band press asks for the pane's keyboard. */
-const FOCUS_TRIES = 3
+/** Keys typed into the empty prompt act on the band this long after the last one. */
+const COMPOSER_KEYS_MS = 30000
 
 /** Set to `chief` by the role check, and nothing else ever turns the mod on. */
 let isChief = false
@@ -69,7 +45,6 @@ let board = null
 let unavailable = false
 /** The reason of the last failed read, for a person to see. */
 let reason = ''
-let updated = ''
 let lastReadAt = 0
 /** When the last read succeeded, by the session clock, for the header's age. */
 let lastOkAt = null
@@ -91,29 +66,21 @@ let ruleOwed = false
 let pushQueued = false
 /** The needs-you items the last drawing saw; a new one raises a toast. */
 let seenNeeds = null
-/** The open tab, and where drilling in has gone. */
-let tab = 'needs'
-let path = []
-/** Which nodes are folded, and which row each view's selection sits on. */
-let folds = {}
-let selections = new Map()
-/** One channel's tasks, as `borant tasks` printed them, or null on failure. */
-let taskCache = new Map()
-/** The pane is open, at this title, and the width it last drew at. */
-let paneOpen = false
-let paneTitle = ''
-let paneWidth = 60
-/** The band Button that holds the keyboard, so its whole row draws selected. */
-let bandKey = null
-/** True for the frame that hands the band's keyboard to the pane. */
-let bandHidden = false
-/** True while the pane holds the keyboard, as its last drawing said. */
-let paneFocused = false
-/** The row a mouse click just focused, so the click selects instead of opening. */
-let clickMark = null
+/** The selected row's chip key while the band holds the keys, else null. */
+let selected = null
+/** Where the selected row sat, for when it leaves the board. */
+let selectedAt = 0
+/** The row open in place, a chip key; only ever the selected row. */
+let open = null
+/** The band's ring holds the keyboard (ctrl+x tab, a click), as ui.focus said. */
+let bandHasKeys = false
+/** Counts band keys, so an old idle timer knows a newer key came. */
+let touches = 0
+/** The chip a person's click just put the ring on, so that press selects. */
+let clicked = null
 /** The terminal's width, as last measured while drawing the band. */
 let columns = 0
-/** The session clock as of the last draw or read, for the drawing's ages. */
+/** The session clock as of the last draw, for the drawing's ages. */
 let clockNow = 0
 
 export function register(on) {
@@ -129,85 +96,51 @@ export function register(on) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     try {
       await ensureStarted($)
-      if (!isChief) return next(e)
-      measure(e)
-      if (!board) {
-        if (!unavailable) return next(e)
-        const width = widthOf(e)
-        const room = Math.max(8, width - 'cos  board unavailable'.length - 4)
-        const detail = reason ? ' \u00b7 ' + truncate(reason, room) : ''
-        const row = [seg('cos  ', 'dim'), seg('board unavailable', 'faint'), seg(detail, 'dim')]
-        return tree($, e, [row], 'band')
-      }
-      const width = widthOf(e)
-      const rows = bandRows(board, { width, maxRows: e.props?.maxRows, updated: await age($) })
-      return tree($, e, rows, 'band')
-    } catch {
-      return next(e)
-    }
-  })
-
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    try {
-      if (!isChief || e.requestId !== PANE) return next(e)
+      if (!isChief || (!board && !unavailable)) return next(e)
       measure(e)
       clockNow = await nowMs($)
-      const width = widthOf(e)
-      paneWidth = width
-      paneFocused = Boolean(e.props && e.props.isFocused)
-      return paneBody($, e, width)
+      keepSelection($)
+      const rows = bandRows(board, {
+        width: widthOf(e),
+        maxRows: e.props?.maxRows,
+        selected,
+        open,
+        focused: selected !== null,
+        // From the prompt (after a digit) the keys differ: space opens, and
+        // any other key types. Only with the ring do Enter and esc work.
+        ring: bandHasKeys,
+        fresh: await fresh($),
+        unavailable: !board,
+        reason,
+        questions: drawnQuestions(),
+        pending,
+        asked,
+        now: clockNow,
+      })
+      // Without a board only the title row says why.
+      return tree($, e, board ? rows : rows.slice(0, 1))
     } catch {
       return next(e)
     }
   })
 
-  // The band's ring names the row Button it is on. The whole row draws
-  // selected, not only the `[ n ]` chip, and the row clears when the ring
-  // leaves the band's elements.
+  // The band's ring names the row chip it is on, and that row is the
+  // selection. The ring taking the band (ctrl+x tab, a click, autoFocus)
+  // selects; the ring leaving the band's elements clears it.
   on('ui.focus', { requestId: BAND }, async ($, e, next) => {
     try {
       if (isChief) {
         const key = typeof e.element === 'string' ? e.element : null
-        if (key !== bandKey) {
-          bandKey = key
+        bandHasKeys = key !== null
+        if (key === null && selected !== null) {
+          selected = null
+          open = null
           redraw($)
-        }
-      }
-    } catch {
-      // A focus move is never worth an error.
-    }
-    return next(e)
-  })
-
-  // The engine moves the focus ring with Tab, the arrows, and a click; a row
-  // taking it is the selection, and a click that is about to press the same
-  // row is marked so it selects rather than opens.
-  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    try {
-      if (isChief && bandKey) {
-        // The band no longer has the keys, so its row is not selected; its
-        // normal colors read better than a frozen highlight.
-        bandKey = null
-        redraw($)
-      }
-      if (isChief && typeof e.element === 'string') {
-        const key = e.element
-        if (key.startsWith('row-')) {
-          const ordinal = Number(key.slice(4))
-          if (Number.isFinite(ordinal)) {
-            const wasSelected = selectionOf() === ordinal
-            if (e.origin && e.origin.kind === 'person') {
-              const mark = { key, wasSelected }
-              clickMark = mark
-              try {
-                $.clock.after(0, () => {
-                  if (clickMark === mark) clickMark = null
-                })
-              } catch {
-                clickMark = null
-              }
-            }
-            setSelection(ordinal)
+        } else if (isRowKey(key) && key !== selected) {
+          if (e.origin && e.origin.kind === 'person') markClick($, key)
+          if (e.origin?.kind === 'person' || selected === null) {
+            if (open !== key) open = null
+            selected = key
             redraw($)
           }
         }
@@ -218,56 +151,38 @@ export function register(on) {
     return next(e)
   })
 
-  // Esc (with closeOnEscape) and ctrl+x x raise this. Deeper than the root it
-  // goes back a level and keeps the pane open; at the root it closes.
-  on('ui.close', async ($, e, next) => {
-    try {
-      if (isChief && e.id === PANE && e.origin && e.origin.kind === 'person' && path.length) {
-        await back($)
-        return { deny: 'back one level' }
-      }
-      if (e.id === PANE) {
-        paneOpen = false
-        if (bandKey) {
-          bandKey = null
-          redraw($)
-        }
-      }
-    } catch {
-      // Fall through: the pane closes.
-    }
-    return next(e)
-  })
-
   on('command.run', { command: 'cos' }, async ($, e) => {
     await ensureStarted($).catch(() => {})
     try {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
       // A command runs from the prompt, which now has the keys.
-      if (bandKey) {
-        bandKey = null
-        redraw($)
-      }
+      leaveBand($)
       await refresh($, true)
       const args = String(e.args || '').trim()
       if (args === 'help') return { text: helpText() }
-      if (args === 'pane') return openPane($)
-      if (!board) return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
-      // A docked pane can take up to 45% of the terminal; keep the digest
-      // inside the transcript column it leaves, so it never wraps.
-      const width = Math.max(48, Math.floor((columns || 96) * 0.55) - 1)
+      if (args === 'pane') return { text: 'cos: the board is the band above the prompt now; ' + digitsHint() + '/cos help for the keys' }
+      if (!board) return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
+      const width = Math.max(48, (columns || 96) - 2)
       return { text: digest(board, { project: args || null, width }) }
     } catch {
-      return { text: 'cos: board unavailable' + (reason ? ' \u00b7 ' + reason : '') }
+      return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
     }
   })
 
-  // Typing means the prompt has the keys; the band's ring is no longer there.
+  // A digit at an empty prompt presses a row's chip, but the engine leaves
+  // the keys in the composer (only the person gives a site the keyboard). So
+  // while a row is selected and the prompt is empty, the band's keys typed
+  // there act on the band and are consumed. Any other edit is typing: the
+  // prompt has the keys, and the selection goes.
   on('prompt.edit', async ($, e, next) => {
     try {
-      if (isChief && bandKey) {
-        bandKey = null
-        redraw($)
+      if (isChief && selected !== null) {
+        const key = composerKey(e)
+        if (key && BAND_KEYS.has(key)) {
+          await bandKey($, key)
+          return { text: e.text, cursor: e.cursor }
+        }
+        leaveBand($)
       }
     } catch {
       // An edit is never worth an error.
@@ -316,8 +231,7 @@ export function register(on) {
     try {
       if (isChief) {
         await refresh($)
-        await refreshTasks($)
-        $.ui.invalidate('ui.render')
+        redraw($)
       }
     } catch {
       // Quiet: a refresh never disturbs a turn.
@@ -368,8 +282,8 @@ async function start($) {
   try {
     await $.command.register({
       name: 'cos',
-      description: 'The chief-of-staff board: /cos, /cos <project>, /cos pane, or /cos help',
-      argumentHint: '[help|pane|project]',
+      description: 'The chief-of-staff board: /cos, /cos <project>, or /cos help',
+      argumentHint: '[help|project]',
       immediate: true,
     })
   } catch {
@@ -379,10 +293,7 @@ async function start($) {
   try {
     $.clock.every(REFRESH_MS, () => {
       refresh($)
-        .then(async () => {
-          await refreshTasks($)
-          $.ui.invalidate('ui.render')
-        })
+        .then(() => redraw($))
         .catch(() => {})
     })
   } catch {
@@ -443,31 +354,12 @@ function pushRefresh($) {
     $.clock.after(PUSH_DELAY_MS, () => {
       pushQueued = false
       refresh($, true)
-        .then(async () => {
-          await refreshTasks($)
-          redraw($)
-        })
+        .then(() => redraw($))
         .catch(() => {})
     })
   } catch {
     pushQueued = false
   }
-}
-
-/** The header's "updated" text: how long ago the last read succeeded. */
-async function age($) {
-  let now = 0
-  try {
-    now = await $.clock.now()
-  } catch {
-    return updated
-  }
-  if (lastOkAt === null || now < lastOkAt) return updated
-  const seconds = Math.floor((now - lastOkAt) / 1000)
-  if (seconds < 5) return 'just now'
-  if (seconds < 60) return seconds + 's ago'
-  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
-  return updated
 }
 
 /** The title row's freshness word: live, reading, polling, stale, or unavailable. */
@@ -511,7 +403,6 @@ async function refresh($, force = false) {
     return
   }
   board = result.board
-  updated = hhmm(board.at, updated)
   lastOkAt = now
   unavailable = false
   reason = ''
@@ -569,337 +460,197 @@ function announceNew($) {
   seenNeeds = keys
 }
 
-/** The view's name, which keys its remembered selection. */
-function currentKey() {
-  return viewKey({ tab, path })
-}
-
-function selectionOf() {
-  const value = selections.get(currentKey())
-  return typeof value === 'number' ? value : 0
-}
-
-function setSelection(ordinal) {
-  selections.set(currentKey(), Math.max(0, Number(ordinal) || 0))
-}
-
-/** The task lists of the cache, by channel: an array, or null on failure. */
-function taskLists() {
-  const out = {}
-  for (const [channel, entry] of taskCache) out[channel] = entry.list
-  return out
-}
-
-/** The current view's rows, as mod/nav.js builds them. */
-function rowsNow() {
-  return rowsFor({
-    tab,
-    path,
-    folds,
-    board,
-    tasks: taskLists(),
-    questions: drawnQuestions(),
-    pending,
-    now: clockNow,
-    asked,
-    help: helpLines({ rows: rowCount() }),
-    selection: selectionOf(),
-    width: paneWidth,
-  })
-}
 
 /** The needs-you items as drawn: the board's, with the ones a Done just closed. */
 function drawnQuestions() {
   return withClosed(allQuestions(board), pending, clockNow)
 }
 
-function selectableRows(rows) {
-  return rows.filter((r) => r.selectable)
+function isRowKey(key) {
+  return typeof key === 'string' && (key.startsWith('q:') || key.startsWith('p:'))
 }
 
-function rowAt(rows, ordinal) {
-  return selectableRows(rows)[ordinal] || null
-}
-
-/** Read a view's channels, if the cache does not hold them yet. Never throws. */
-async function ensureTasks($, channels) {
-  for (const channel of channels) {
-    if (taskCache.has(channel)) continue
-    const result = await readTasks($, config, channel)
-    taskCache.set(channel, { list: result.tasks, reason: result.reason })
-  }
-}
-
-/** Read again the channels of the open view, on the board's tick. */
-async function refreshTasks($) {
-  if (!isChief || !config || !paneOpen || path.length === 0) return
-  for (const channel of channelsFor({ path, board })) {
-    const result = await readTasks($, config, channel)
-    taskCache.set(channel, { list: result.tasks, reason: result.reason })
-  }
-}
-
-/** Read the tasks the view needs and draw it. */
-async function land($) {
-  await ensureTasks($, channelsFor({ path, board }))
-  await setTitle($)
-  redraw($)
-  await focusRow($, selectionOf())
-}
-
-async function setTitle($) {
-  if (!paneOpen) return
-  const title = breadcrumb(path)
-  if (title === paneTitle) return
-  try {
-    await $.ui.open({ id: PANE, title, closeOnEscape: true })
-    paneTitle = title
-  } catch {
-    // The title is cosmetic.
-  }
-}
-
-async function openPane($) {
-  // The help view explains the board without one, so it opens on its own.
-  if (!board && tab !== 'help') return { text: 'cos: board unavailable' }
-  try {
-    const title = breadcrumb(path)
-    const opened = await $.ui.open({ id: PANE, title, focus: true, closeOnEscape: true })
-    if (opened && opened.isPlaced === false) {
-      return { text: 'cos: the pane needs a wider terminal (144 columns)' }
-    }
-    paneOpen = true
-    paneTitle = title
-    await land($)
-    return {}
-  } catch {
-    return { text: 'cos: the pane did not open' }
-  }
-}
-
-/**
- * Open the pane from a band press. The band holds the keyboard while its
- * Button runs, and the engine refuses a pane's `focus` then. Draw the band
- * without its controls for one frame, so the keys fall back to the empty
- * composer, then open the pane for real and draw the controls again.
- */
-async function openFromBand($) {
-  const answer = await openPane($)
-  try {
-    $.clock.after(50, () => {
-      handoff($).catch(() => {})
-    })
-  } catch {
-    // No clock: the pane opens without the keyboard, and ctrl+x tab reaches it.
-  }
-  return answer
-}
-
-/**
- * Drop the band's keys, focus the pane, then draw the band's controls again.
- * A slow frame can leave the band holding the keys when the pane asks, and
- * the engine then opens the pane without them: ask again until the pane's
- * drawing says it has the keyboard.
- */
-async function handoff($) {
-  try {
-    bandHidden = true
-    redraw($)
-    for (let tries = 0; tries < FOCUS_TRIES; tries += 1) {
-      await $.clock.sleep(50 + tries * 100)
-      if (!(await takePaneFocus($))) break
-      await $.clock.sleep(100)
-      if (paneFocused) break
-    }
-    await focusRow($, selectionOf())
-  } finally {
-    bandHidden = false
-    redraw($)
-  }
-}
-
-/** The band's 0: the pane takes the keyboard, opened where it was if closed. */
-async function focusPane($) {
-  if (!paneOpen) return openFromBand($)
+/** A click puts the ring on a row just before it presses it: that press selects. */
+function markClick($, key) {
+  clicked = key
   try {
     $.clock.after(0, () => {
-      handoff($).catch(() => {})
+      if (clicked === key) clicked = null
     })
   } catch {
-    // No clock: ctrl+x tab reaches the pane.
+    clicked = null
   }
-  return redraw($)
+}
+
+/** The band's keys as typed into an empty composer. */
+// Enter and Esc never reach prompt.edit (Enter submits; Esc is the editor's),
+// so from the prompt a space opens the row.
+const BAND_KEYS = new Set(['j', 'k', 'd', 'a', ' ', 'space'])
+
+/** The one plain key of an edit to an empty prompt, or null. */
+function composerKey(e) {
+  if (e.text !== '' || !e.key || e.key.ctrl || e.key.meta || e.key.shift) return null
+  return String(e.key.key || '')
+}
+
+/** One band key, from the band's own Buttons or from the empty composer. */
+function bandKey($, key) {
+  touch($)
+  if (key === 'j') return bandMove($, 1).catch(() => {})
+  if (key === 'k') return bandMove($, -1).catch(() => {})
+  if (key === ' ' || key === 'space') return pressRow($, selected).catch(() => {})
+  const q = selected && selected.startsWith('q:') ? questionOf(selected.slice(2)) : null
+  if (!q) return
+  if (key === 'd' && canDone(pending[questionKey(q)])) return markDone($, q).catch(() => {})
+  // Ask waits on `borant send`; the key returns at once and the row shows it.
+  if (key === 'a' && !(asked[questionKey(q)]?.state === 'sending')) void askOwner($, q).catch(() => {})
 }
 
 /**
- * The band's j and k: move the band's ring through its row chips, the
- * needs-you row and one per project, as Tab does, wrapping at the ends.
+ * Keys typed into the composer act on the band only for a while after the
+ * last band key, so a prompt typed later never starts with a stray Done.
  */
-async function bandMove($, delta) {
-  const keys = bandRowKeys(bandRows(board, { width: columns || 120 }))
-  // With no move recorded, the ring is where autoFocus put it: the first row.
-  const key = stepKey(keys, bandKey || keys[0], delta)
-  if (!key) return
+function touch($) {
+  const mark = ++touches
   try {
-    // The mod's own move does not come back through its ui.focus hook, so
-    // the row it lands on is recorded here, and the band draws it selected.
-    const moved = await $.ui.focus({ requestId: BAND, key })
-    if (!moved || !moved.deny) {
-      bandKey = key
+    $.clock.after(COMPOSER_KEYS_MS, () => {
+      if (mark === touches && !bandHasKeys) leaveBand($)
+    })
+  } catch {
+    // Without a clock the selection stays until the next typed key.
+  }
+}
+
+/** The prompt has the keys again: no row is selected, and none is open. */
+function leaveBand($) {
+  touches += 1
+  if (selected === null && open === null) return
+  selected = null
+  open = null
+  redraw($)
+}
+
+/**
+ * A selected row that left the board (a Done closed it) hands the selection
+ * to the row now in its place, so the keys keep working.
+ */
+function keepSelection($) {
+  if (selected === null || !board) return
+  const keys = bandKeys(board, drawnQuestions())
+  if (keys.includes(selected)) {
+    selectedAt = keys.indexOf(selected)
+    return
+  }
+  selected = keys[Math.min(selectedAt, keys.length - 1)] || null
+  open = null
+  if (selected === null) return
+  const key = selected
+  try {
+    $.clock.after(0, () => {
+      reveal($, key).catch(() => {})
+    })
+  } catch {
+    // The ring stays where the engine put it.
+  }
+}
+
+/** Select a row: draw it selected, and put the ring and the window on it. */
+async function select($, key) {
+  if (open !== key) open = null
+  selected = key
+  touch($)
+  redraw($)
+  await reveal($, key)
+}
+
+async function reveal($, key) {
+  // The engine keeps the ring at its place in the band's order through a
+  // redraw, and the selected row's Done and Ask move the rows under it, so
+  // the ring is put on the row again once the new drawing is in.
+  // The answer also says who has the keys: the engine refuses a site that
+  // does not hold them, as after a digit typed at the prompt.
+  const focus = async () => {
+    const out = await $.ui.focus({ requestId: BAND, key }).catch(() => ({ deny: 'no band' }))
+    const holds = !(out && out.deny)
+    if (holds !== bandHasKeys) {
+      bandHasKeys = holds
       redraw($)
     }
+  }
+  try {
+    await focus()
+    $.clock.after(80, () => {
+      if (selected === key) focus()
+    })
   } catch {
     // The band does not hold the keys.
   }
-}
-
-/** Ask the engine for the pane's keyboard, and say whether it took. */
-async function takePaneFocus($) {
   try {
-    const title = breadcrumb(path)
-    const opened = await $.ui.open({ id: PANE, title, focus: true, closeOnEscape: true })
-    if (opened && opened.isPlaced === false) return false
-    paneOpen = true
-    paneTitle = title
-    return true
+    await $.ui.scroll({ to: { key }, in: BAND, block: 'nearest' })
   } catch {
-    return false
+    // A band that fits needs no scroll.
   }
-}
-
-/** Move the selection one row, as j, k, and the arrows do. */
-async function move($, delta) {
-  const rows = rowsNow()
-  const count = selectableRows(rows).length
-  if (count === 0) return
-  const current = Math.min(selectionOf(), count - 1)
-  const next = Math.min(count - 1, Math.max(0, current + delta))
-  setSelection(next)
-  redraw($)
-  await focusRow($, next)
-}
-
-/** Land the engine's focus ring and the pane's window on one row. */
-async function focusRow($, ordinal) {
-  try {
-    await $.ui.focus({ requestId: PANE, key: 'row-' + ordinal })
-  } catch {
-    // A row not drawn yet, or a pane without the keys.
-  }
-  try {
-    await $.ui.scroll({ to: { key: 'row-' + ordinal }, in: PANE, block: 'nearest' })
-  } catch {
-    // A drawing that fits needs no scroll.
-  }
-}
-
-/** h and the left arrow: fold an open node, else go back, else the last tab. */
-async function left($) {
-  const row = rowAt(rowsNow(), selectionOf())
-  if (row && row.open && row.open.kind === 'fold' && row.open.isOpen) return toggleFold($, row)
-  if (path.length) return back($)
-  return switchTab($, -1)
-}
-
-/** l and the right arrow: unfold a closed node, else open it, else the next tab. */
-async function right($) {
-  const row = rowAt(rowsNow(), selectionOf())
-  if (row && row.open && row.open.kind === 'fold' && !row.open.isOpen) return toggleFold($, row)
-  if (row && row.drill) return drill($, row.drill)
-  return switchTab($, 1)
-}
-
-/** A tab button, or a band row that opens one: the tab from its root. */
-async function selectTab($, name) {
-  tab = name
-  path = []
-  redraw($)
-  await setTitle($)
-  await ensureTasks($, channelsFor({ path, board }))
-  await focusRow($, selectionOf())
-}
-
-async function toggleFold($, row) {
-  folds[row.open.key] = !row.open.isOpen
-  const count = selectableRows(rowsNow()).length
-  if (count) setSelection(Math.min(selectionOf(), count - 1))
-  redraw($)
-  await focusRow($, selectionOf())
-}
-
-async function switchTab($, delta) {
-  const index = Math.max(0, TABS.indexOf(tab))
-  tab = TABS[(index + delta + TABS.length) % TABS.length]
-  path = []
-  redraw($)
-  await setTitle($)
-  await focusRow($, Math.min(selectionOf(), Math.max(0, selectableRows(rowsNow()).length - 1)))
-}
-
-/** Drill into a project, an epic, or a task. */
-async function drill($, node) {
-  if (!node) return
-  path = [...path, node]
-  setSelection(0)
-  redraw($)
-  await land($)
-}
-
-/** Go back one level, out of a drilled-in view, or out of a tab. */
-async function back($) {
-  path = path.slice(0, -1)
-  redraw($)
-  await land($)
-}
-
-/** Esc, and the footer's esc button: back a level, then close at the root. */
-async function escLike($) {
-  if (path.length) return back($)
-  paneOpen = false
-  try {
-    await $.ui.close({ id: PANE })
-  } catch {
-    // A pane that is already gone needs nothing.
-  }
-  redraw($)
-}
-
-/** The ▸ or ▾ beside a row: open a row that drills in, or fold a group. */
-async function pressOpen($, row) {
-  if (row.drill) return drill($, row.drill)
-  if (row.open.kind === 'fold') return toggleFold($, row)
-  return redraw($)
 }
 
 /**
- * A press on a row: the first one selects it, and pressing it again opens it.
- * Enter drills a project, an epic, or a task in; h and l fold a group. A click
- * focuses the row just before its press, so that first press only selects.
+ * A row's chip: a digit, Enter on the ring, or a click. The first press
+ * selects the row; pressing the selected row again opens it in place, or
+ * closes it.
  */
-async function pressRow($, row) {
-  const ordinal = Number(String(row.key).slice(4))
-  if (!Number.isFinite(ordinal)) return
-  const activate = async () => {
-    if (row.drill) return drill($, row.drill)
-    if (row.open && row.open.kind === 'fold') return toggleFold($, row)
-    return redraw($)
+async function pressRow($, key) {
+  if (clicked === key) {
+    clicked = null
+    return select($, key)
   }
-  const mark = clickMark
-  const clicked = mark && mark.key === row.key
-  if (clicked) clickMark = null
-  const wasSelected = selectionOf() === ordinal
-  if (clicked ? mark.wasSelected : wasSelected) return activate()
-  setSelection(ordinal)
+  if (selected !== key) return select($, key)
+  open = open === key ? null : key
   redraw($)
-  await focusRow($, ordinal)
+  await reveal($, key)
 }
 
-/** The rows the band numbers: the needs-you row, then one per project. */
+/** j and k: the next or the previous row, wrapping at the ends. */
+async function bandMove($, delta) {
+  const keys = bandKeys(board, drawnQuestions())
+  const key = stepKey(keys, selected || keys[0], delta)
+  if (key) await select($, key)
+}
+
+/** The needs-you item of a Done or an Ask button, by its question key. */
+function questionOf(key) {
+  return drawnQuestions().find((q) => questionKey(q) === key && !q.closed) || null
+}
+
+/** A press on a Button of the band. */
+function press($, button) {
+  switch (button.kind) {
+    case 'needs':
+    case 'project':
+      return pressRow($, button.key)
+    case 'band-down':
+      return bandKey($, 'j')
+    case 'band-up':
+      return bandKey($, 'k')
+    case 'help':
+      return toast($, 'keys: ' + digitsHint() + 'j k move · ⏎ open · d done · a ask · esc prompt · /cos help')
+    case 'done':
+      return markDone($, questionOf(button.arg))
+    case 'ask':
+      return askOwner($, questionOf(button.arg))
+    default:
+      return redraw($)
+  }
+}
+
+/** The rows the digits select: one per needs-you item, then one per project. */
 function rowCount() {
-  return (allQuestions(board).length ? 1 : 0) + activeProjects(board).length
+  return allQuestions(board).length + activeProjects(board).length
 }
 
-/** The help view as the transcript shows it, the same text as the pane tab. */
+function digitsHint() {
+  const n = Math.min(9, rowCount())
+  return n ? (n === 1 ? '1' : '1-' + n) + ' select · ' : ''
+}
+
 function helpText() {
   return helpLines({ rows: rowCount() }).join('\n')
 }
@@ -927,262 +678,76 @@ function styleProps(style) {
       return { dimColor: true, bold: true }
     case 'bold':
       return { bold: true }
-    case 'select':
-      return { color: 'cyan', bold: true }
-    case 'white':
-      return { color: 'white', bold: true }
+    case 'key':
+      return { color: 'suggestion' }
     case 'yellow':
+    case 'needs':
       return { color: 'yellow' }
     case 'yellowBold':
       return { color: 'yellow', bold: true }
     case 'red':
+    case 'blocked':
       return { color: 'red' }
     case 'cyan':
       return { color: 'cyan' }
     case 'green':
     case 'done':
       return { color: 'green' }
-    case 'doneDim':
-      return { color: 'green', dimColor: true }
     case 'blue':
     case 'running':
       return { color: 'blue' }
     case 'magenta':
     case 'scheduled':
       return { color: 'magenta' }
-    case 'blocked':
-      return { color: 'red' }
-    case 'needs':
-      return { color: 'yellow' }
-    case 'badgeBlue':
-      return { backgroundColor: 'blue', color: 'black', bold: true }
-    case 'badgeMagenta':
-      return { backgroundColor: 'magenta', color: 'black', bold: true }
-    case 'hotkey':
-      return { bold: true }
     default:
       return {}
   }
 }
 
-/** The band: rows of segments, a Button where a segment names one. */
-function tree($, e, rows, prefix) {
-  const { Box, Text, Button } = $.ui.resolve(e)
-  // ctrl+x tab lands the band's ring on its first row, so the focus shows at
-  // once and j moves on from there.
-  const first = bandRowKeys(rows)[0]
-  const element = (s, key, selected) => {
-    if (s.button && bandHidden) return Text({ key, children: [s.text], ...styleProps(s.style) })
-    if (s.button) {
-      const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
-      if (s.button.hotkey) props.hotkey = s.button.hotkey
-      if (s.button.key === first) props.autoFocus = true
-      if (s.button.plain) {
-        props.plain = true
-        props.dimColor = !selected
-      }
-      return Button(props)
-    }
-    const props = { key, children: [s.text], ...styleProps(s.style) }
-    if (selected) {
-      // On the selection background every cell takes the inverse text color,
-      // so dim and colored cells stay readable. Chips keep their background,
-      // and the bar keeps its green fill. Bold goes: many terminals draw bold
-      // black as grey, which reads grey on grey.
-      if (!String(s.text).startsWith('\u2588')) props.color = 'inverseText'
-      props.dimColor = false
-      props.bold = false
-    }
-    return Text(props)
-  }
-  return Box({
-    flexDirection: 'column',
-    children: rows.map((row, i) => {
-      // The row's chip names the row. A row with the keyboard draws on the
-      // selected background, not only the chip the engine's ring marks.
-      const chip = row.find((s) => s.button && (s.button.kind === 'project' || s.button.kind === 'needs'))
-      const selected = Boolean(chip && bandKey === chip.button.key)
-      return Box({
-        key: prefix + '-row-' + i,
-        flexDirection: 'row',
-        ...(selected ? { backgroundColor: 'promptBorder' } : {}),
-        children: row.map((s, j) => element(s, prefix + '-' + i + '-' + j, selected)),
-      })
-    }),
-  })
-}
-
-/** The pane: its tabs, a breadcrumb, the view's rows, and the key footer. */
-function paneBody($, e, width) {
-  const { Box, Text, Button, Link } = $.ui.resolve(e)
-  const children = []
-  children.push(
-    Box({
-      key: 'pane-tabs',
-      flexDirection: 'row',
-      children: tabCells($, e, width).map((s, i) => {
-        if (s.button) {
-          const props = { key: s.button.key, label: s.button.label, onPress: () => press($, s.button) }
-          // The open tab is the primary Button; the others are dim.
-          if (s.button.active) props.variant = 'primary'
-          else props.dimColor = true
-          if (s.button.plain) props.plain = true
-          return Button(props)
-        }
-        return Text({ key: 'tab-gap-' + i, children: [s.text], ...styleProps(s.style) })
-      }),
-    }),
-  )
-  if (path.length) {
-    children.push(Text({ key: 'pane-crumb', children: ['  ' + breadcrumb(path)], dimColor: true }))
-  }
-  children.push(Text({ key: 'pane-blank', children: [' '] }))
-
-  rowsNow().forEach((r, i) => {
-    const cells = []
-    if (r.open) {
-      cells.push(
-        Button({
-          key: 'open-' + i,
-          label: r.marker === ' ' ? '\u25b8' : r.marker,
-          plain: true,
-          dimColor: true,
-          onPress: () => pressOpen($, r),
-        }),
-      )
-    } else {
-      cells.push(Text({ key: 'mark-' + i, children: [r.marker] }))
-    }
-    // The selection mark takes the gap's one cell, so the row's text stays put.
-    cells.push(
-      Box({
-        key: r.selectable ? 'gap-' + r.key : 'mark-gap-' + i,
-        children: [Text({ children: [r.selected ? SELECTED : ' '], ...(r.selected ? styleProps('select') : {}) })],
-      }),
-    )
-    if (r.selectable) {
-      const props = {
-        key: r.key,
-        plain: true,
-        children: r.segments.map((s) =>
-          Text({ children: [s.text], wrap: 'truncate', ...styleProps(s.style) }),
-        ),
-        onPress: () => pressRow($, r),
-      }
-      if (selectionOf() === Number(String(r.key).slice(4))) props.autoFocus = true
-      cells.push(Button(props))
-    } else if (r.link) {
-      for (const [j, s] of r.segments.entries()) {
-        cells.push(Text({ key: 'pane-row-' + i + '-' + j, children: [s.text], ...styleProps(s.style) }))
-      }
-      cells.push(Link({ key: 'link-' + i, href: r.link.href, label: r.link.label }))
-    } else {
-      cells.push(
-        Box({
-          flexDirection: 'row',
-          children: r.segments.map((s, j) =>
-            Text({ key: 'pane-row-' + i + '-' + j, children: [s.text], wrap: 'truncate', ...styleProps(s.style) }),
-          ),
-        }),
-      )
-    }
-    // A row of buttons is the buttons alone: its blank text line would put a
-    // row between a question and its own buttons.
-    if (!r.buttons.length) children.push(Box({ key: 'pane-line-' + i, flexDirection: 'row', children: cells }))
-    if (r.buttons.length) {
-      children.push(
-        Box({
-          key: 'pane-buttons-' + i,
-          flexDirection: 'row',
-          columnGap: 2,
-          ...(r.buttonIndent ? { paddingLeft: r.buttonIndent } : {}),
-          children: r.buttons.map((b) =>
-            Button({ key: b.key, label: b.label, onPress: () => press($, b) }),
-          ),
-        }),
-      )
-    }
-  })
-
-  children.push(Text({ key: 'pane-foot-blank', children: [' '] }))
-  children.push(footer($, e))
-  return Box({ flexDirection: 'column', children })
-}
-
-/** The pane's tab row, fitted to the pane's width. */
-function tabCells($, e, width) {
-  return paneTabs(tab, allQuestions(board), width)
-}
-
 /**
- * The footer: the keys as clickable Buttons, so the mouse can move too, and
- * a line of the other keys under them, cut rather than wrapped in a narrow
- * pane.
+ * The band: one Box per row, a Button where a segment names one. A selected
+ * row, with its open lines, draws on the selection background to the edge.
  */
-function footer($, e) {
+function tree($, e, rows) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  return Box({
-    key: 'pane-foot',
-    flexDirection: 'column',
-    children: [
-      Box({
-        key: 'pane-foot-keys',
-        flexDirection: 'row',
-        columnGap: 2,
-        children: [
-          Button({ key: 'nav-down', label: '\u2193', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
-          Button({ key: 'nav-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
-          Button({ key: 'nav-left', label: '\u2190', hotkey: 'h', plain: true, onPress: () => left($) }),
-          Button({ key: 'nav-right', label: '\u2192', hotkey: 'l', plain: true, onPress: () => right($) }),
-          // esc cannot be a Button hotkey, so its label names the key the way
-          // the hotkeys draw theirs.
-          Button({ key: 'nav-back', label: 'esc: back', plain: true, onPress: () => escLike($) }),
-        ],
-      }),
-      Text({
-        key: 'pane-foot-hint',
-        children: ['enter open \u00b7 ctrl+x \u2190\u2192 or drag the edge: width'],
-        dimColor: true,
-        wrap: 'truncate',
-      }),
-    ],
-  })
-}
-
-/** A press on a cell of the band or the pane. */
-function press($, button) {
-  switch (button.kind) {
-    case 'needs':
-      tab = 'needs'
-      path = []
-      return openFromBand($)
-    case 'project':
-      tab = 'projects'
-      path = [{ kind: 'project', project: button.arg }]
-      return openFromBand($)
-    case 'help':
-      tab = 'help'
-      path = []
-      return openFromBand($)
-    case 'band-down':
-      return bandMove($, 1)
-    case 'band-up':
-      return bandMove($, -1)
-    case 'band-pane':
-      return focusPane($)
-    case 'tab-needs':
-      return selectTab($, 'needs')
-    case 'tab-projects':
-      return selectTab($, 'projects')
-    case 'tab-help':
-      return selectTab($, 'help')
-    case 'done':
-      return markDone($, drawnQuestions()[button.arg])
-    case 'ask':
-      return askOwner($, drawnQuestions()[button.arg])
-    default:
-      return redraw($)
+  const chips = rows.flatMap((r) => r.segments.filter((s) => s.button && isRowKey(s.button.key)).map((s) => s.button.key))
+  // The ring starts on the selected row when the band takes the keys.
+  const first = chips.includes(selected) ? selected : chips[0]
+  const textProps = (style, onSelection, bar) => {
+    const props = styleProps(style)
+    if (!onSelection) return props
+    // On the selection background every cell takes the inverse text color,
+    // so dim and colored cells stay readable; the bar keeps its green fill.
+    // Bold goes: many terminals draw bold black as grey, grey on grey.
+    return { ...props, ...(bar ? {} : { color: 'inverseText' }), dimColor: false, bold: false }
   }
+  const element = (s, key, onSelection) => {
+    const b = s.button
+    if (!b) return Text({ key, children: [s.text], ...textProps(s.style, onSelection, s.text.startsWith('█')) })
+    const label = b.parts.map((p) => p.text).join('')
+    if (b.chrome) return Button({ key: b.key, label, onPress: () => press($, b) })
+    const props = {
+      key: b.key,
+      label,
+      plain: true,
+      children: b.parts.map((p, i) => Text({ key: b.key + '-' + i, children: [p.text], ...textProps(p.style, onSelection) })),
+      onPress: () => press($, b),
+    }
+    if (b.hotkey) props.hotkey = b.hotkey
+    if (b.key === first) props.autoFocus = true
+    return Button(props)
+  }
+  return Box({
+    flexDirection: 'column',
+    children: rows.map((row) =>
+      Box({
+        key: 'band-' + row.key,
+        flexDirection: 'row',
+        ...(row.selected ? { backgroundColor: 'promptBorder' } : {}),
+        children: row.segments.map((s, j) => element(s, row.key + '-' + j, row.selected)),
+      }),
+    ),
+  })
 }
 
 /**
