@@ -428,6 +428,21 @@ mod tests {
         ]);
         assert_eq!(launch_config_dir(&[], &env), Some(PathBuf::from("/p/b")));
         assert_eq!(launch_config_dir(&vars, &env), Some(PathBuf::from("/p/a")));
+        // A profile path with spaces, as Orca keeps on macOS, is one argument.
+        let spaced = strings(&[
+            "env",
+            "CLAUDE_CONFIG_DIR=/Users/c/Library/Application Support/orca/claude-profiles/p/home",
+            "claude",
+            "--dangerously-skip-permissions",
+            "--plugin-dir",
+            "/x",
+        ]);
+        assert_eq!(
+            launch_config_dir(&[], &spaced),
+            Some(PathBuf::from(
+                "/Users/c/Library/Application Support/orca/claude-profiles/p/home"
+            ))
+        );
         assert_eq!(launch_config_dir(&[], &claude), None);
         let empty = vec![("CLAUDE_CONFIG_DIR".to_owned(), String::new())];
         assert_eq!(launch_config_dir(&empty, &claude), None);

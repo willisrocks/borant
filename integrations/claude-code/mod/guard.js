@@ -30,17 +30,61 @@ const SUBCOMMANDS = {
 // The chief installs Borant releases on the person's laptop: only it can.
 const ALLOWED_SCRIPTS = ['install_borant.sh']
 
-/** The simple commands of a shell line, split on ;, &&, ||, |, and newlines. */
+/**
+ * The simple commands of a shell line, split on ;, &&, ||, |, and newlines
+ * outside quotes.
+ */
 function commandsOf(line) {
-  return String(line || '')
-    .split(/\n|;|&&|\|\||\|/)
-    .map((c) => c.trim())
-    .filter(Boolean)
+  const out = []
+  let cur = ''
+  let quote = ''
+  const s = String(line || '')
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i]
+    if (quote) {
+      if (c === quote) quote = ''
+      cur += c
+    } else if (c === '"' || c === "'") {
+      quote = c
+      cur += c
+    } else if (c === '\n' || c === ';' || c === '|' || (c === '&' && s[i + 1] === '&')) {
+      if ((c === '|' || c === '&') && s[i + 1] === c) i += 1
+      out.push(cur)
+      cur = ''
+    } else {
+      cur += c
+    }
+  }
+  out.push(cur)
+  return out.map((c) => c.trim()).filter(Boolean)
+}
+
+/** The words of a simple command, split on blanks outside quotes, quotes removed. */
+function split(command) {
+  const out = []
+  let cur = null
+  let quote = ''
+  for (const c of command) {
+    if (quote) {
+      if (c === quote) quote = ''
+      else cur += c
+    } else if (c === '"' || c === "'") {
+      quote = c
+      cur = cur ?? ''
+    } else if (/\s/.test(c)) {
+      if (cur !== null) out.push(cur)
+      cur = null
+    } else {
+      cur = (cur ?? '') + c
+    }
+  }
+  if (cur !== null) out.push(cur)
+  return out
 }
 
 /** The first word, past `sudo`, `env`, and VAR=value prefixes. */
 function words(command) {
-  const all = command.split(/\s+/)
+  const all = split(command)
   let i = 0
   while (i < all.length && (all[i] === 'sudo' || all[i] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(all[i]))) i += 1
   return all.slice(i)
@@ -74,8 +118,12 @@ export function projectWork(input) {
     if (name === 'sed' && w.some((x) => x === '-i' || x.startsWith('-i'))) return 'it edits a file in place'
     // A redirect into a file writes it; /dev/null, 2>&1, and a temporary
     // folder do not count.
-    const target = command.match(/(?:^|[^0-9&])>>?\s*([^\s&|;]+)/)
-    if (target && !scratch(target[1])) return 'it writes `' + target[1] + '`'
+    // A `>` inside quotes is text; a quoted target keeps its spaces.
+    const quoted = []
+    const masked = command.replace(/"[^"]*"|'[^']*'/g, (q) => '\u0000' + (quoted.push(q.slice(1, -1)) - 1) + '\u0000')
+    const target = masked.match(/(?:^|[^0-9&])>>?\s*([^\s&|;]+)/)
+    const path = target && target[1].replace(/\u0000(\d+)\u0000/g, (_, n) => quoted[Number(n)])
+    if (path && !scratch(path)) return 'it writes `' + path + '`'
   }
   return null
 }

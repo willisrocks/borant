@@ -24,6 +24,9 @@ test('the guard holds project work and passes reads', () => {
     'sed -i s/a/b/ config.toml',
     'cat notes > notes-copy.txt',
     'echo x >> ./config.toml',
+    // A Python script on stdin still runs Python.
+    'P="/Users/chris/Library/Application Support/x/.claude.json"; python3 - "$P" <<\'EOF\'',
+    'echo "a b" > "notes copy.txt"',
   ]) {
     expect(projectWork({ command })).not.toBeNull()
   }
@@ -35,6 +38,10 @@ test('the guard holds project work and passes reads', () => {
     'gh pr view 12',
     'ls -la 2>&1 | head',
     'grep -rn TODO . > /dev/null',
+    // Quotes keep a value with spaces in one word, and a > inside them is text.
+    'P="/Users/chris/Library/Application Support/orca/x/.claude.json"; jq . "$P"',
+    'grep -n "a > b; c | d" notes.md',
+    'echo hi > "/tmp/with space/x.txt"',
     // A temporary folder or a scratchpad is no project file.
     'borant board --json > /tmp/board.json',
     'jq . board.json > /private/tmp/b.json',

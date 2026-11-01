@@ -532,7 +532,10 @@ async fn watchdog_fails_a_launch_at_a_dialog_at_once() {
 #[tokio::test]
 async fn a_claude_launch_trusts_its_fresh_folder_in_the_session_profile() {
     let profile = tempfile::tempdir().unwrap();
-    let dir = profile.path().to_path_buf();
+    // A profile path with a space, as Orca keeps one on macOS.
+    let dir = profile.path().join("Application Support/home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file_dir = dir.clone();
     let f = fixture_with(Duration::from_secs(600), |cfg| {
         cfg.harnesses = vec![Harness::ClaudeCode];
         cfg.commands.claude = Some(vec![
@@ -554,8 +557,7 @@ async fn a_claude_launch_trusts_its_fresh_folder_in_the_session_profile() {
 
     let cwd = f.dir.path().join("work/a1").canonicalize().unwrap();
     let file: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(profile.path().join(".claude.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&std::fs::read(file_dir.join(".claude.json")).unwrap()).unwrap();
     assert_eq!(
         file["projects"][cwd.to_str().unwrap()]["hasTrustDialogAccepted"],
         json!(true),
