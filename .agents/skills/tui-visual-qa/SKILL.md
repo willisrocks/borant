@@ -28,13 +28,19 @@ the mod so far was one of these.
 `just cos-visual` runs the basic mod states at both sizes.
 `just cos-scenario [plugin] [out] [width] [height] [board]` runs the full
 interaction scenario at one size, on the `big` board (12 projects, 6 need you)
-or the `fixture`. It covers footer chips, the band keys after ctrl+x tab, a
-digit into the preview, Enter, Done (closed and still open), Ask, the refresh
-time with and without an event, polling, an unavailable board, a resize, the
-empty board, and `/cos help`. Each run writes `<out>/<width>/NN-<state>.png`
-and `log.txt`, so runs at several sizes can share one `<out>`. A log line
-that starts with FAIL is a defect (the event stream did not start, or an
-event-driven refresh took 1 s or more). Read the log and the PNGs.
+or the `fixture`. It drives board mode with a PNG after every key: 0, each
+digit, j and k, a live board update in the middle of navigation, Enter and
+the details, ?, Done (closed and still open), Ask, Esc, typing at the prompt
+after Esc, Tab and Shift+Tab, and vim insert and normal mode. Then the
+refresh time with an event, an unavailable board, a resize, the empty board,
+and `/cos help`. Each run writes `<out>/<width>/NN-<state>.png` and
+`log.txt`, so runs at several sizes can share one `<out>`. A log line that
+starts with FAIL is a defect: a key that reached the prompt in board mode, a
+key that did not reach it after Esc, a column that moved across the live
+update (`scripts/tui/columns.mjs` compares the plain captures), or a slow
+refresh. LIMIT names what the mod API cannot do. Read the log and the PNGs.
+Where `freeze` is not installed (a Mac without nix), `tui_shot` renders the
+PNG with headless Chrome in a profile of its own; run the script directly.
 
 ## Safety
 
@@ -102,3 +108,15 @@ Code's mod API cannot do something, say which limit, quote the type docs
   until the pane's own drawing says it has the keyboard.
 - A mod's own `$.ui.focus` does not come back through its `ui.focus` hook.
   Record the move yourself.
+- A focused pane or band gives a key to the mod only when a Button has it as
+  its hotkey. Any other letter goes to the prompt. A focused `Input` gets
+  every printable key, the arrows, and Enter: board mode is a pane whose only
+  focusable element is an Input.
+- Tab in a focused pane moves the ring to the pane's close mark, and a letter
+  then goes to the prompt. Deny that move in a `ui.focus` hook.
+- Claude Code 2.1.316 wraps a prompt that a mod submits in words of its own,
+  before and after it. Match a submitted prompt in `turn.start` by
+  `includes`, not by equality.
+- In vim normal mode a bare digit goes to vim, and no event reaches a mod.
+- An empty prompt holds a no-break space or a dim suggestion. A check for
+  "nothing typed" looks for the key it typed.

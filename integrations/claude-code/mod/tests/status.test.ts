@@ -1,6 +1,6 @@
 // What the board says about itself and about a press, with plain values.
 import { expect, test } from 'claude-code/testing'
-import { ageText, freshness, pressStatus, withClosed } from '../status.js'
+import { ageText, freshness, pressStatus, pressStatusShort, withClosed } from '../status.js'
 
 test('ages read short', () => {
   expect(ageText(45000)).toBe('45s')
@@ -10,17 +10,17 @@ test('ages read short', () => {
   expect(ageText(50 * 3600000)).toBe('2d')
 })
 
-test('the freshness word: live, its age after 30 s, reading, polling, stale, unavailable', () => {
-  expect(freshness({ live: true, ageMs: 3000 }).text).toBe('live')
-  expect(freshness({ live: true, ageMs: 45000 }).text).toBe('live · 45s')
-  expect(freshness({ live: true, reading: true, ageMs: 3000 }).text).toBe('↻ reading')
-  expect(freshness({ live: false, ageMs: 4000 }).text).toBe('polling · 4s')
-  expect(freshness({ live: true, ageMs: 120000 })).toEqual({ text: 'stale · 2m', style: 'yellow' })
-  expect(freshness({ unavailable: true }).style).toBe('red')
+test('a healthy board says nothing about itself; a stale or failed one does', () => {
+  expect(freshness({ ageMs: 3000 })).toBeNull()
+  expect(freshness({ ageMs: 45000 })).toBeNull()
+  expect(freshness({ ageMs: 120000 })).toEqual({ text: 'stale · 2m', style: 'yellow' })
+  expect(freshness({ unavailable: true })?.style).toBe('red')
 })
 
 test('a press says where it is, and a closed item keeps its place for a while', () => {
-  expect(pressStatus({ state: 'closing', at: 0 }, null, 14000)?.[0].text).toBe('◷ the chief is closing it · 14s')
+  // Nothing in a status counts up: it changes only when the press moves on.
+  expect(pressStatus({ state: 'closing', at: new Date(2026, 0, 1, 14, 32).getTime() }, null, 14000)?.[0].text).toBe('◷ the chief is closing it, since 14:32')
+  expect(pressStatusShort({ state: 'closing', at: 0 }, null, 14000)?.[0].text).toBe('◷ closing')
   expect(pressStatus({ state: 'failed', waitMs: 120000 }, null, 0)?.[0].text).toBe('! still open after 2m')
   expect(pressStatus(null, { state: 'sent', owner: 'orchestrator', time: '14:32' })?.[0].text).toBe('✓ asked orchestrator at 14:32')
   expect(pressStatus(null, null)).toBeNull()

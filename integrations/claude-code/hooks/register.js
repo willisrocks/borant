@@ -5,13 +5,15 @@
 // crates/borant/src/hook.rs, session_start). Every other session registers no
 // timer, no command, and draws nothing.
 //
-// The band drives the preview. A digit at the empty prompt selects a row and
-// opens the preview pane with the keyboard; j and k move the band's
-// selection and the preview follows; d and a act on the selected item; Enter
-// shows more; Esc gives the keys back to the prompt and the preview stays.
-// A bare digit cannot give the band itself the keyboard (the engine gives
-// that only to ctrl+x tab or a click), so the preview pane carries the same
-// keys: wherever the keys are, they do the same thing.
+// Board mode holds the keyboard, as a vim mode does. A bare 0 at the empty
+// prompt (the band's `0: board mode` Button) or a row's digit opens the
+// preview pane with the keys, and the pane's only focusable element is an
+// Input: while it has the focus, Claude Code gives every printable key to it
+// and none to the prompt. The mod reads each key from the Input's change
+// (1-9 select, j k move, d Done, a Ask, ? help) and Enter from its submit
+// (details). Esc gives the keys back to the prompt and closes the pane. Tab
+// and Shift+Tab move the focus off the Input, and the band and the pane then
+// say that board mode is off.
 //
 // The digit reaches the mod two ways. From 144 columns the prompt.edit hook
 // takes it and opens the preview. Below 144 the engine places only a pane
@@ -22,18 +24,7 @@
 // inline (a narrow one) it is a compact block over the band, open only while
 // it has the keys.
 
-import {
-  allQuestions,
-  bandActions,
-  bandItems,
-  bandRows,
-  digest,
-  helpLines,
-  itemActions,
-  text as seg,
-  truncate,
-  hhmm,
-} from '../mod/board.js'
+import { allQuestions, bandItems, bandRows, digest, helpLines, text as seg, truncate, hhmm } from '../mod/board.js'
 import { channelsFor, helpPreview, previewLines, questionKey, findProject } from '../mod/preview.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
@@ -48,8 +39,8 @@ const PANE_TITLE = 'chief of staff'
 const PANE_COLUMNS = 80
 /** A docked preview narrower than this draws the compact block, as inline. */
 const NARROW_PANE = 52
-/** From this width the preview's key line names its keys in words. */
-const WORDY_KEYS = 56
+/** From this width the board-mode field names its keys in words. */
+const WORDY_KEYS = 64
 /** The selection's background, in the band and in the preview: the theme's
  * user-message grey, darker than promptBorder, so yellow titles, colored
  * glyphs and blue keys keep their colors and stay readable on it. */
@@ -58,8 +49,6 @@ const SELECTED_BG = 'userMessageBackground'
  * command, a prompt, or a press behind it). A digit taken by prompt.edit is
  * none of those, so there the band's chips keep the digits as hotkeys. */
 const ASKED_COLUMNS = 144
-/** The band's render instance, as its ui.focus events name it. */
-const BAND = 'above-prompt'
 /** How often the board is read while the session is the chief: the fallback
  * for changes the event stream does not carry, such as a new task. */
 const REFRESH_MS = 5000
@@ -73,16 +62,10 @@ const EVENTS_RETRY_MS = 5000
  * shortens it with BORANT_COS_DONE_WAIT_S. */
 const DONE_WAIT_MS = 120000
 let doneWaitMs = DONE_WAIT_MS
+/** How long after asking for the keys the mod checks that the pane has them. */
+const FOCUS_CHECK_MS = 400
 /** An inline preview that lost the keys closes after this long. */
 const INLINE_IDLE_MS = 400
-/** "↻ reading" shows at least this long, so a fast read is still seen. */
-const READING_SHOWN_MS = 600
-/** While the band holds the keys, how often the mod checks that it still
- * does: Esc out of the band raises no ui.focus event. */
-const BAND_CHECK_MS = 500
-/** The band's ring goes back to the selected row this long after a redraw:
- * the engine keeps the ring by its place in the band, not by its element. */
-const RING_SETTLE_MS = 80
 /** What the chief reads when a tool in a Done's turn would ask the person. */
 const DONE_TURN_REASON =
   'Chief mod: refused. This turn comes from a Done the person pressed on the board, and they are not at the prompt to approve tools. ' +
@@ -102,11 +85,6 @@ let lastOkAt = null
 let pending = {}
 /** Ask presses, by question: `{ state: 'sending' | 'sent' | 'failed', owner, time, reason }`. */
 let asked = {}
-/** A board read runs now, and when the last one started (session clock). */
-let reading = false
-let readStartedAt = null
-/** The event stream runs, so a change shows within about a second. */
-let live = false
 /** The id of the chief's turn that runs a Done's prompt, while it runs: no
  * tool may ask the person in it. Set at turn.start, which carries the prompt. */
 let doneTurnId = null
@@ -136,13 +114,16 @@ let paneOpen = false
 let placement = null
 let paneFocused = false
 let paneWidth = 60
-/** The band holds the keys (after ctrl+x tab or a click), and the element
- * its ring is on, as its ui.focus events and the mod's own moves name it. */
-let bandFocused = false
-let bandRingKey = null
+/** Board mode's key field: it is drawn afresh, empty, after each key (a new
+ * key), and the text each field held last tells a new key from an old one. */
+let fieldGen = 0
+const fieldSeen = new Map()
+/** Board-mode keys run one after another, in the order typed. Each board
+ * mode has its own number: a key still queued when board mode ends is dropped. */
+let keyChain = Promise.resolve()
+let boardGen = 0
 /** The terminal, as last measured while drawing the band. */
 let columns = 0
-let fullscreen = true
 /** The session clock as of the last draw, for the drawing's ages. */
 let clockNow = 0
 
@@ -167,7 +148,7 @@ export function register(on) {
         if (!unavailable) return next(e)
         const label = width >= 110 ? 'chief of staff' : 'cos'
         const room = Math.max(8, width - label.length - 31)
-        const row = [seg('── ', 'faint'), seg(label, 'bold'), seg(' ─ ', 'faint'), await fresh($)]
+        const row = [seg('── ', 'faint'), seg(label, 'bold'), seg(' ─ ', 'faint'), freshness({ unavailable: true })]
         if (reason) row.push(seg(' · ' + truncate(reason, room), 'dim'))
         return tree($, e, [{ key: 'band-title', cells: row }])
       }
@@ -179,10 +160,8 @@ export function register(on) {
         questions: drawnQuestions(),
         selected: cur.item ? cur.item.key : null,
         active: active(),
-        fill: active(),
-        reserveActions: docked() || bandFocused,
-        actionsFor: (item) => bandActionsFor(item, cur.item, docked() || bandFocused),
-        fresh: [await fresh($)],
+        statusFor: (item) => shortStatus(item),
+        stale: await stale($),
         digitKeys: !promptDigits(),
       })
       return tree($, e, rows)
@@ -209,9 +188,9 @@ export function register(on) {
         redrawSoon($)
       }
       paneWidth = typeof props.bodyColumns === 'number' && props.bodyColumns > 0 ? props.bodyColumns : 60
-      if (place === 'inline' && !focused && !bandFocused) {
-        // Inline, the preview is the band's while the keys are on the board.
-        closeSoon($, () => placement === 'inline' && !paneFocused && !bandFocused)
+      if (place === 'inline' && !focused) {
+        // Inline, the preview is there only in board mode.
+        closeSoon($, () => placement === 'inline' && !paneFocused)
       }
       return paneBody($, e, await paneLines($), focused)
     } catch {
@@ -219,35 +198,22 @@ export function register(on) {
     }
   })
 
-  // The band's ring: it holds the keys while the ring is on one of our
-  // elements, and lets them go when the ring leaves (Esc, or the prompt).
-  on('ui.focus', { requestId: BAND }, async ($, e, next) => {
-    try {
-      if (isChief) {
-        const has = typeof e.element === 'string'
-        if (has) bandRingKey = e.element
-        if (has !== bandFocused) {
-          bandFocused = has
-          redraw($)
-          // ctrl+x tab puts the ring on the band's first element, which may be
-          // a key of the title row: move it to the selected row, so Enter acts
-          // on that row.
-          if (has) {
-            ringToSelected($)
-            watchBand($)
-          }
-        }
-      }
-    } catch {
-      // A focus move is never worth an error.
+  // In board mode the ring stays on the key field: Tab or Shift+Tab would put
+  // it on the pane's close mark, where a letter goes to the prompt while the
+  // board still looks modal. Esc still gives the keys back.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    if (isChief && e.origin?.kind === 'person' && !String(e.element || '').startsWith('board-keys-')) {
+      return { deny: 'board mode keeps the keys on its field; esc gives them back' }
     }
     return next(e)
   })
 
-  // ctrl+x x, or the close mark: the preview goes, and "more" with it.
+  // Esc in board mode, ctrl+x x, or the close mark: the preview goes, and
+  // "more" with it.
   on('ui.close', async ($, e, next) => {
     try {
       if (e.id === PANE) {
+        boardGen += 1
         paneOpen = false
         paneFocused = false
         placement = null
@@ -265,10 +231,6 @@ export function register(on) {
     await ensureStarted($).catch(() => {})
     try {
       if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
-      if (bandFocused) {
-        bandFocused = false
-        redraw($)
-      }
       await refresh($, true)
       const args = String(e.args || '').trim()
       if (args === 'help') return { text: helpText() }
@@ -305,8 +267,7 @@ export function register(on) {
           return { text: e.text, cursor: e.cursor }
         }
       }
-      if (isChief && (bandFocused || paneFocused)) {
-        bandFocused = false
+      if (isChief && paneFocused) {
         paneFocused = false
         redraw($)
       }
@@ -359,8 +320,12 @@ export function register(on) {
       await ensureStarted($)
       // A Done's own turn, not one it was queued behind: the guard holds in
       // it, and the chief has the prompt, so the item is closing from now.
+      // Claude Code wraps a plugin's prompt in words of its own ("The borant
+      // plugin sent a message:" before it, a note after it), so the turn's
+      // text holds the prompt. Each Done's prompt names its task.
       if (isChief && e.agentId === undefined) {
-        const done = Object.entries(pending).find(([, m]) => m.state === 'sending' && m.prompt === e.text)
+        const text = String(e.text || '')
+        const done = Object.entries(pending).find(([, m]) => m.state === 'sending' && text.includes(m.prompt))
         doneTurnId = done ? e.turnId : null
         if (done) {
           pending[done[0]] = { ...done[1], state: 'closing', at: await nowMs($) }
@@ -475,8 +440,6 @@ function followEvents($) {
 async function streamEvents($) {
   try {
     const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
-    live = true
-    redraw($)
     let rest = ''
     for await (const piece of stream) {
       if (!piece || piece.stream !== 'stdout') continue
@@ -487,8 +450,6 @@ async function streamEvents($) {
   } catch {
     // No borant, or an old one: the 5 s poll still reads the board.
   }
-  live = false
-  redraw($)
   try {
     $.clock.after(EVENTS_RETRY_MS, () => {
       streamEvents($).catch(() => {})
@@ -528,17 +489,11 @@ function pushRefresh($) {
   }
 }
 
-/** The title row's freshness word: live, reading, polling, stale, or unavailable. */
-async function fresh($) {
-  let now = null
-  try {
-    now = await $.clock.now()
-  } catch {
-    now = null
-  }
-  const ageMs = now === null || lastOkAt === null ? null : Math.max(0, now - lastOkAt)
-  const shown = reading || (now !== null && readStartedAt !== null && now - readStartedAt < READING_SHOWN_MS)
-  return freshness({ unavailable: unavailable && !board, reading: shown, live, ageMs })
+/** `stale · 2m` once no read succeeded for a while, or null: a healthy board
+ * says nothing about itself, so nothing on it moves. */
+async function stale($) {
+  const now = await nowMs($)
+  return freshness({ ageMs: lastOkAt === null ? null : Math.max(0, now - lastOkAt) })
 }
 
 /** Read the board and note what is new. Never throws. */
@@ -553,21 +508,7 @@ async function refresh($, force = false) {
   }
   if (!force && now - lastReadAt < DEBOUNCE_MS) return
   lastReadAt = now
-  reading = true
-  readStartedAt = now
-  redraw($)
-  let result
-  try {
-    result = await readBoard($, config)
-  } finally {
-    reading = false
-    // The word stays READING_SHOWN_MS from the start; one redraw then takes it off.
-    try {
-      $.clock.after(READING_SHOWN_MS, () => redraw($))
-    } catch {
-      // Without a clock the next drawing takes it off.
-    }
-  }
+  const result = await readBoard($, config)
   if (!result.board) {
     // A failed read draws an empty board with the reason, never the stale one:
     // a session that refuses to read as the person must say so.
@@ -582,8 +523,8 @@ async function refresh($, force = false) {
   reason = ''
   announceNew($)
   // A row a Done closed stays CLOSED_SHOW_MS and then goes: that is no news.
-  const closedRow = Object.values(pending).some((m) => m.state === 'closed' && 'q:' + questionKey(m.question) === selKey)
-  settlePending($, now)
+  const closedRow = Object.values(pending).some((m) => (m.state === 'closed' || m.state === 'moved') && 'q:' + questionKey(m.question) === selKey)
+  await settlePending($, now)
   if (selKey && !items().some((i) => i.key === selKey)) {
     selMoved = true
     if (!closedRow) toast($, 'the selected item left the board')
@@ -596,25 +537,36 @@ async function refresh($, force = false) {
  * hub has not closed DONE_WAIT_MS after the prompt landed shows as still open,
  * and its Done button comes back.
  */
-function settlePending($, now) {
+async function settlePending($, now) {
   const open = new Set(allQuestions(board).map(questionKey))
   // An Ask's mark goes with its item.
   for (const key of Object.keys(asked)) if (!open.has(key)) delete asked[key]
   for (const [key, mark] of Object.entries(pending)) {
-    if (mark.state === 'closed') {
+    if (mark.state === 'closed' || mark.state === 'moved') {
       if (now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
     } else if (!open.has(key)) {
       if (mark.state === 'unsent') {
         delete pending[key]
       } else {
-        pending[key] = { ...mark, state: 'closed', closedAt: now }
-        toast($, 'closed: ' + mark.title)
+        // The item left needs-you. That is closed only when the task is: a
+        // task that went back to work leaves the list too.
+        const status = await taskStatus($, mark.question)
+        pending[key] = { ...mark, state: status === 'closed' ? 'closed' : 'moved', status, closedAt: now }
+        toast($, (status === 'closed' ? 'closed: ' : 'no longer needs you: ') + mark.title)
       }
     } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
       pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
       toast($, 'still open: ' + mark.title)
     }
   }
+}
+
+/** A task's status as the hub has it now, or null when the read fails. */
+async function taskStatus($, q) {
+  const result = await readTasks($, config, q.channel)
+  taskCache.set(q.channel, result.tasks)
+  const task = (result.tasks || []).find((t) => t.id === q.task)
+  return task ? task.status : null
 }
 
 function toast($, text) {
@@ -665,9 +617,9 @@ function current() {
   return { item: list[index], index, count: list.length }
 }
 
-/** Whether the board has the keys: the preview pane, or the band itself. */
+/** Whether the board has the keys: board mode, the pane's key field focused. */
 function active() {
-  return paneFocused || bandFocused
+  return paneFocused
 }
 
 /** The preview draws the compact block: inline, or in a narrow dock. */
@@ -680,157 +632,172 @@ function promptDigits() {
   return columns >= ASKED_COLUMNS
 }
 
-/** Whether the preview docks beside the transcript, or sits inline. */
-function docked() {
-  if (placement) return placement === 'dock'
-  return fullscreen && columns >= 110
-}
-
-/**
- * The cells after a needs-you item's columns: its Done or Ask status, and the
- * Done and Ask buttons on the selected item when `buttons` (a hotkey is one
- * per site, so only one item has them).
- */
-function actionsFor(item, selected, buttons, askLabel = 'Ask orchestrator', statusCap = Infinity) {
-  if (!item || item.kind !== 'needs') return []
-  return itemActions(presses(item, selected, buttons, pressStatus), askLabel, statusCap)
-}
-
-/** A band row's buttons or short status, in the row's fixed slot. */
-function bandActionsFor(item, selected, buttons) {
-  if (!item || item.kind !== 'needs') return []
-  return bandActions(presses(item, selected, buttons, pressStatusShort))
-}
-
-/**
- * What a needs-you item can do now. Done while no Done is under way; Ask
- * while no Ask is under way or sent and no Done is under way; each again
- * after it failed. The buttons are the selected item's alone.
- */
-function presses(item, selected, buttons, statusOf) {
+/** The marks of a needs-you item: its Done, its Ask, and whether it is open. */
+function marks(item) {
   const key = questionKey(item.q)
-  const mark = pending[key]
-  const ask = asked[key]
-  const open = !item.q.closed
+  return { mark: pending[key], ask: asked[key], open: !item.q.closed }
+}
+
+/** A band row's short status, in its fixed tail. */
+function shortStatus(item) {
+  if (!item || item.kind !== 'needs') return []
+  const { mark, ask } = marks(item)
+  return pressStatusShort(mark, ask, clockNow) || []
+}
+
+/** The preview's full status of the item: `◷ the chief is closing it, since 14:32`. */
+function fullStatus(item) {
+  if (!item || item.kind !== 'needs') return []
+  const { mark, ask } = marks(item)
+  return pressStatus(mark, ask, clockNow) || []
+}
+
+/**
+ * What d and a can do on the selected item now: Done while no Done is under
+ * way, Ask while no Ask is under way or sent and no Done is under way, each
+ * again after it failed. Neither on a project, a closed item, or a row that
+ * moved into the place of one that left the board.
+ */
+function presses(item) {
+  if (!item || item.kind !== 'needs' || selMoved) return { done: false, ask: false }
+  const { mark, ask, open } = marks(item)
   const done = open && canDone(mark)
-  return {
-    status: statusOf(mark, ask, clockNow),
-    done,
-    doneAgain: done && Boolean(mark),
-    ask: open && done && (!ask || ask.state === 'failed'),
-    askAgain: Boolean(ask && ask.state === 'failed'),
-    buttons: Boolean(buttons && selected && selected.key === item.key && open && active() && !selMoved),
-    arg: item.key,
-  }
+  return { done, ask: done && (!ask || ask.state === 'failed') }
 }
 
 function select(key) {
   const list = items()
   const index = list.findIndex((i) => i.key === key)
   if (index < 0) return
-  if (key !== selKey) more = false
   selKey = key
   selIndex = index
   selMoved = false
   helpShown = false
 }
 
-/** A row's digit or a click on it: select it and show it; the selected row again shows more. */
+/** A row's digit at the prompt or a click on it: select it and enter board mode. */
 async function chipPress($, key) {
-  if (active() && key === selKey && !helpShown) return toggleMore($)
   select(key)
   redraw($)
-  await openPane($, true)
+  await enterBoard($)
+  if (more) await ensureTasks($)
 }
 
-/** j and k: the next or the previous row, wrapping at the ends. */
+/**
+ * 0 at the empty prompt: board mode on the selected row. Claude Code gives
+ * the pane the keys only from an empty prompt that holds them: not from text
+ * in the prompt, and not while the band holds them (after ctrl+x tab). Then
+ * the person is told how, rather than left with a preview that has no keys.
+ */
+async function enterBoard($) {
+  helpShown = false
+  redraw($)
+  if (!(await openPane($, true))) return
+  try {
+    $.clock.after(FOCUS_CHECK_MS, () => {
+      if (paneOpen && !paneFocused) toast($, 'board mode needs the keys at an empty prompt: esc, then 0')
+    })
+  } catch {
+    // Without a clock the pane still says board mode is off.
+  }
+}
+
+/**
+ * The key field's text changed: the characters after what that field held
+ * last are new keys. The field is drawn afresh after each key, so it stays
+ * empty; a key typed before that redraw lands in the old field, and its text
+ * there tells it apart. Backspace types nothing.
+ */
+function fieldInput($, value, e) {
+  const field = (e && e.element) || ''
+  const typed = inserted(fieldSeen.get(field) || '', value)
+  fieldSeen.set(field, value)
+  if (fieldSeen.size > 8) fieldSeen.delete(fieldSeen.keys().next().value)
+  if (!typed) return keyChain
+  fieldGen += 1
+  redraw($)
+  // A key queued in one board mode never runs in the next one.
+  const mode = boardGen
+  for (const key of Array.from(typed)) keyChain = keyChain.then(() => (mode === boardGen ? boardKey($, key) : undefined)).catch(() => {})
+  return keyChain
+}
+
+/**
+ * What one edit put into a field: the text between what the old and the new
+ * value share at their start and at their end. A key typed after Left lands
+ * in the middle, and only that key is new.
+ */
+function inserted(before, after) {
+  const a = Array.from(before)
+  const b = Array.from(after)
+  let lead = 0
+  while (lead < a.length && lead < b.length && a[lead] === b[lead]) lead += 1
+  let trail = 0
+  while (trail < a.length - lead && trail < b.length - lead && a[a.length - 1 - trail] === b[b.length - 1 - trail]) trail += 1
+  return b.slice(lead, b.length - trail).join('')
+}
+
+/** One key in board mode. A key the board does not use does nothing. */
+async function boardKey($, key) {
+  if (/^[1-9]$/.test(key)) {
+    const item = items()[Number(key) - 1]
+    if (!item) return
+    select(item.key)
+    redraw($)
+    if (more) await ensureTasks($)
+    return
+  }
+  if (key === 'j') return move($, 1)
+  if (key === 'k') return move($, -1)
+  if (key === '?') {
+    helpShown = !helpShown
+    return redraw($)
+  }
+  if (key !== 'd' && key !== 'a') return
+  const { item } = current()
+  const can = presses(item)
+  // Done and Ask run beside the keys: a slow send never holds up j or k.
+  if (key === 'd' && can.done) return void markDone($, pressedQuestion($, item.key)).catch(() => {})
+  if (key === 'a' && can.ask) return void askOwner($, pressedQuestion($, item.key)).catch(() => {})
+  toast($, (key === 'd' ? 'd: Done' : 'a: Ask') + ' needs a needs-you item, selected, with no Done under way')
+}
+
+/** Enter in board mode: details, or back from details or the help. */
+function fieldSubmit($) {
+  keyChain = keyChain.then(() => (helpShown ? backFromHelp($) : toggleMore($))).catch(() => {})
+  return keyChain
+}
+
+/** j and k: the next or the previous row, wrapping at the ends. Details stay open. */
 async function move($, delta) {
   const list = items()
   if (!list.length) return
   const { index } = current()
   select(list[(index + delta + list.length) % list.length].key)
   redraw($)
-  // With the keys in the band (ctrl+x tab), a docked preview opens beside it
-  // and follows; it does not take the keys.
-  if (bandFocused && !paneOpen && docked()) await openPane($, false)
-  // The ring follows, so Enter in the band acts on the selected row.
-  if (bandFocused) ringToSelected($)
   if (more) await ensureTasks($)
 }
 
-/**
- * Put the band's ring on the selected row's chip once the band has drawn: the
- * engine keeps the ring by its place in the band, and a redraw that adds or
- * drops a row's Done and Ask moves every chip after them. A mod's own focus
- * move does not come back through its ui.focus hook.
- */
-function ringToSelected($) {
-  try {
-    $.clock.after(RING_SETTLE_MS, () => {
-      const { item } = current()
-      if (!bandFocused || !item) return
-      $.ui.focus({ requestId: BAND, key: item.key })
-        .then((r) => {
-          if (!r || !r.deny) bandRingKey = item.key
-        })
-        .catch(() => {})
-    })
-  } catch {
-    // Without a clock the ring stays where the engine put it.
-  }
-}
-
-/**
- * While the band holds the keys, ask now and then for the ring on the element
- * it is already on: that moves nothing, and a site that no longer holds the
- * keyboard (Esc gave them back) answers with a deny. The band then drops its
- * fill and its keys hint.
- */
-function watchBand($) {
-  try {
-    $.clock.after(BAND_CHECK_MS, () => {
-      if (!bandFocused || !bandRingKey) return
-      $.ui.focus({ requestId: BAND, key: bandRingKey })
-        .then((r) => {
-          if (r && r.deny && /keyboard/.test(r.deny)) {
-            bandFocused = false
-            redraw($)
-          } else watchBand($)
-        })
-        .catch(() => watchBand($))
-    })
-  } catch {
-    // Without a clock, typing at the prompt still clears it (prompt.edit).
-  }
-}
-
-/** Enter: the preview's "more", read on first use. */
+/** Enter: the preview's details, read on first use. */
 async function toggleMore($) {
   helpShown = false
   more = !more
   redraw($)
-  if (!paneOpen) await openPane($, false)
   if (more) {
     await ensureTasks($)
     redraw($)
   }
 }
 
-/** The help view in the preview. */
-async function showHelp($) {
-  helpShown = true
-  redraw($)
-  await openPane($, true)
-}
-
 /**
- * Open (or retitle) the preview. With `focus` it takes the keys: a press at
- * the empty prompt leaves them with the prompt, which can hand them on.
+ * Open (or retitle) the preview. With `focus` it is board mode: it takes the
+ * keys (a press at the empty prompt leaves them with the prompt, which can
+ * hand them on), and Esc gives them back and closes it.
  */
 async function openPane($, focus) {
   try {
     const rows = Math.max(3, paneLinesCount())
-    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: PANE_COLUMNS, ...(focus ? { focus: true } : {}) })
+    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: PANE_COLUMNS, ...(focus ? { focus: true, closeOnEscape: true } : {}) })
     if (opened && opened.isPlaced === false) return false
     paneOpen = true
     return true
@@ -908,8 +875,8 @@ async function paneLines($) {
     compact,
     more,
     tasks: taskLists(),
-    actions: actionsFor(item, item, true, 'Ask orchestrator', Infinity),
-    fresh: [await fresh($)],
+    actions: fullStatus(item),
+    fresh: [],
   })
 }
 
@@ -918,7 +885,7 @@ function paneLinesCount() {
   if (helpShown) return helpLines({ rows: items().length }).length + 1
   const { item, index, count } = current()
   if (!item) return 1
-  return previewLines({ board, item, index, count, width: paneWidth, compact: true, more, tasks: taskLists(), actions: [] }).length + 1
+  return previewLines({ board, item, index, count, width: paneWidth, compact: true, more, tasks: taskLists(), actions: [] }).length + 2
 }
 
 /** The help as the transcript shows it, the same text as the preview's help view. */
@@ -929,7 +896,6 @@ function helpText() {
 function measure(e) {
   const c = e.viewport && e.viewport.columns
   if (typeof c === 'number' && c > 0) columns = c
-  if (e.viewport && typeof e.viewport.isFullscreen === 'boolean') fullscreen = e.viewport.isFullscreen
 }
 
 function widthOf(e) {
@@ -952,6 +918,8 @@ function styleProps(style) {
       return { bold: true }
     case 'key':
       return { color: 'suggestion' }
+    case 'modeOn':
+      return { color: 'suggestion', bold: true, inverse: true }
     case 'yellow':
     case 'needs':
       return { color: 'yellow' }
@@ -1022,63 +990,53 @@ function tree($, e, rows) {
 }
 
 /**
- * The preview: its key line, then its lines. The key line comes first in
- * both places because the engine keeps the pane's ring by position: when a
- * project (no Done or Ask) follows a needs-you item, a ring after the
- * buttons would land on another key, and Enter would press it. Inline the
- * key line also carries the item's Done and Ask, after the keys.
+ * The keys board mode takes, for the key field: the words where there is
+ * room, the letters alone where there is not. d and a only for an item they
+ * act on.
+ */
+function keysHint() {
+  const can = presses(current().item)
+  if (paneWidth < WORDY_KEYS) return ['1-9 j k', can.done ? 'd' : '', can.ask ? 'a' : '', '?'].filter(Boolean).join(' ') + ' · esc exit'
+  const keys = ['1-9 j k move']
+  if (can.done) keys.push('d done')
+  if (can.ask) keys.push('a ask')
+  keys.push('? help', 'esc exit')
+  return keys.join(' · ')
+}
+
+/**
+ * The preview: board mode's key field, then its lines. The field is the
+ * pane's only focusable element, so every key reaches it: a Button here
+ * would let Up, Down, or Tab move the focus onto it, and a letter typed then
+ * would go to the prompt. Inline, the item's status sits under the field.
  */
 function paneBody($, e, lines, focused) {
-  const { Box, Text, Button } = $.ui.resolve(e)
+  const { Box, Text, Input } = $.ui.resolve(e)
   const compact = compactPane()
   // The selected row's title lines draw on the band row's own background, so
-  // the two read as one selection. A line of buttons keeps a gap between them
-  // however narrow the pane is.
-  const children = lines.map((line, i) => {
-    if (line.some((s) => s.button)) {
-      const indent = line.length && /^ +$/.test(line[0].text) ? line[0].text.length : 0
-      return Box({
-        key: 'pane-line-' + i,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        columnGap: 2,
-        paddingLeft: indent,
-        children: line.filter((s) => s.button || s.text.trim()).map((s, j) => element($, e, s, 'pane-' + i + '-' + j, false)),
-      })
-    }
-    return Box({
+  // the two read as one selection.
+  const children = lines.map((line, i) =>
+    Box({
       key: 'pane-line-' + i,
       flexDirection: 'row',
       ...(line.selected ? { backgroundColor: SELECTED_BG } : {}),
       children: line.map((s, j) => element($, e, s, 'pane-' + i + '-' + j, Boolean(line.selected))),
-    })
+    }),
+  )
+  const field = Input({
+    key: 'board-keys-' + fieldGen,
+    label: focused ? 'board mode' : 'board mode off',
+    placeholder: focused ? keysHint() : '0 at an empty prompt turns it on',
+    value: '',
+    submitLabel: helpShown || more ? 'back' : 'details',
+    autoFocus: true,
+    onInput: (value, ev) => fieldInput($, value, ev),
+    onSubmit: () => fieldSubmit($),
   })
-  const label = helpShown ? '\u23ce back' : more ? '\u23ce less' : '\u23ce more'
-  const { item } = current()
-  const actions = compact && !helpShown ? actionsFor(item, item, true, 'Ask orchestrator', 36) : []
-  // The key line: j, k, and Enter must be the pane's own Buttons to reach it.
-  // In a narrow pane they go without their words, and wrap whole.
-  const wordy = paneWidth >= WORDY_KEYS
-  const keys = Box({
-    key: 'pane-keys',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    columnGap: 1,
-    children: [
-      Button({ key: 'pane-down', label: '\u2193', hotkey: 'j', plain: true, onPress: () => move($, 1) }),
-      Button({ key: 'pane-up', label: '\u2191', hotkey: 'k', plain: true, onPress: () => move($, -1) }),
-      ...(wordy ? [Text({ key: 'pane-keys-move', children: ['move \u00b7'], dimColor: true })] : []),
-      Button({ key: 'pane-more', label, plain: true, autoFocus: true, onPress: () => (helpShown ? backFromHelp($) : toggleMore($)) }),
-      ...(wordy ? [Text({ key: 'pane-keys-esc', children: ['\u00b7 esc prompt'], dimColor: true })] : []),
-    ],
-  })
-  const actionLine = actions.length
-    ? [Box({ key: 'pane-actions', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, children: actions.map((s, j) => element($, e, s, 'pane-act-' + j, false)) })]
-    : []
-  // The key line names keys only the pane can take: drawn while it holds them.
-  if (!focused) return Box({ flexDirection: 'column', children })
-  if (compact) return Box({ flexDirection: 'column', children: [keys, ...actionLine, ...children] })
-  return Box({ flexDirection: 'column', children: [keys, Text({ key: 'pane-keys-gap-line', children: [' '] }), ...children] })
+  const status = compact && !helpShown ? fullStatus(current().item) : []
+  const statusLine = status.length ? [Box({ key: 'pane-status', flexDirection: 'row', children: status.map((s, j) => element($, e, s, 'pane-status-' + j)) })] : []
+  if (compact) return Box({ flexDirection: 'column', children: [field, ...statusLine, ...children] })
+  return Box({ flexDirection: 'column', children: [field, Text({ key: 'pane-field-gap', children: [' '] }), ...children] })
 }
 
 async function backFromHelp($) {
@@ -1086,21 +1044,13 @@ async function backFromHelp($) {
   redraw($)
 }
 
-/** A press on a cell of the band or the preview. */
+/** A press on a cell of the band: a row's chip, or the board-mode Button. */
 function press($, button) {
   switch (button.kind) {
     case 'select':
       return chipPress($, button.arg)
-    case 'band-down':
-      return move($, 1)
-    case 'band-up':
-      return move($, -1)
-    case 'help':
-      return showHelp($)
-    case 'done':
-      return markDone($, pressedQuestion($, button.arg))
-    case 'ask':
-      return askOwner($, pressedQuestion($, button.arg))
+    case 'board':
+      return enterBoard($)
     default:
       return redraw($)
   }

@@ -9,6 +9,7 @@
 
 import {
   GLYPH,
+  cellsOf,
   activeSaga,
   allProjects,
   epicNote,
@@ -89,7 +90,7 @@ export function wrap(value, width) {
   let line = ''
   for (const word of String(value || '').split(/\s+/).filter(Boolean)) {
     const next = line ? line + ' ' + word : word
-    if (Array.from(next).length <= w) line = next
+    if (cellsOf(next) <= w) line = next
     else {
       if (line) lines.push(line)
       line = truncate(word, w)
@@ -140,7 +141,7 @@ function epicsOf(project) {
 /** One line per epic: glyph, title, and its state in words, in two columns. */
 function epicLines(epics, width, indent = '  ') {
   const room = Math.max(8, width - indent.length - 2 - 14)
-  const col = Math.min(room, Math.max(8, ...epics.map((e) => Array.from(e.title || '').length)))
+  const col = Math.min(room, Math.max(8, ...epics.map((e) => cellsOf(e.title || ''))))
   return epics.map((epic) => {
     const state = epicState(epic)
     return [
@@ -200,7 +201,7 @@ function childLines(list, epic, indent) {
 
 /** The header: `needs you · 1 of 6` at the left, the freshness at the right. */
 function header(left, right, width) {
-  const used = Array.from(left).length + right.reduce((n, s) => n + Array.from(s.text).length, 0)
+  const used = cellsOf(left) + right.reduce((n, s) => n + cellsOf(s.text), 0)
   return [text(left, 'dim'), text(' '.repeat(Math.max(1, width - used))), ...right]
 }
 
@@ -255,7 +256,11 @@ function needsCard(s, width) {
     return out
   }
   const out = [header('needs you' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
-  wrap(q.title, width - 2).forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
+  // The title takes two lines, padded or cut, so a title that changes on a
+  // refresh never moves the fields under it.
+  const lines = wrap(q.title, width - 2)
+  const two = lines.length > 2 ? [lines[0], truncate(lines.slice(1).join(' '), width - 2)] : [...lines, ''].slice(0, 2)
+  two.forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
   if (s.actions && s.actions.length) out.push([text(' ')], [text('  '), ...s.actions])
   out.push([text(' ')])
   out.push(field('project', [text(q.project || '?', 'bold'), ...(saga ? [text(DOT + saga.title, 'dim')] : [])]))
@@ -337,7 +342,7 @@ function projectCard(s, width) {
     for (const epic of open) {
       const state = epicState(epic)
       const cellText = GLYPH[state] + ' ' + epic.title + '   '
-      if (used + Array.from(cellText).length > width && line.length > 1) {
+      if (used + cellsOf(cellText) > width && line.length > 1) {
         out.push(line)
         lines += 1
         if (lines === 2) break
@@ -345,7 +350,7 @@ function projectCard(s, width) {
         used = 2
       }
       line.push(text(GLYPH[state] + ' ', state), text(epic.title + '   '))
-      used += Array.from(cellText).length
+      used += cellsOf(cellText)
     }
     if (done) line.push(text(GLYPH.done + ' ' + done + ' done', 'dim'))
     if (lines < 2 && line.length > 1) out.push(line)
@@ -362,7 +367,7 @@ function projectCard(s, width) {
   out.push([text(' ')])
   out.push([text('  ' + pad('tasks', 10), 'dim'), text(countText.join(DOT) || 'none open')])
   return out.map((line) => {
-    const fitted = fit(line, width)
+    const fitted = fitEllipsis(line, width)
     if (line.selected) fitted.selected = true
     return fitted
   })
@@ -370,5 +375,17 @@ function projectCard(s, width) {
 
 /** The help view, as lines. */
 export function helpPreview(lines, width) {
-  return lines.map((line) => fitEllipsis([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], Math.max(24, width)))
+  const w = Math.max(24, width)
+  const out = []
+  for (const line of lines) {
+    if (!line.startsWith('  ') || cellsOf(line) <= w) {
+      out.push(fitEllipsis([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], w))
+      continue
+    }
+    // A key row: its words wrap under the words, after the key column.
+    const keyCells = 18
+    const words = wrap(line.slice(keyCells), w - keyCells)
+    words.forEach((part, i) => out.push(fit([text((i ? ' '.repeat(keyCells) : line.slice(0, keyCells)) + part)], w)))
+  }
+  return out
 }

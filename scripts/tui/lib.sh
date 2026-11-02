@@ -18,7 +18,7 @@ TUI_OUT="${TUI_OUT:-/tmp/tui}"
 # real sessions on this machine: Claude Code lets a session list and message
 # the others, and removing variables does not hide them.
 # shellcheck disable=SC2034 # used by the scripts that source this file
-TUI_CLAUDE_FLAGS=(--permission-mode default --disallowedTools SendMessage ListAgents)
+TUI_CLAUDE_FLAGS=(--permission-mode default --disallowedTools SendMessage ListAgents --settings '{"skipDangerousModePermissionPrompt":true}')
 
 # tui_start <name> <width> <height> <command...>: start the program in a new
 # tmux server named <name>, at a fixed size, with the mouse on.
@@ -62,12 +62,33 @@ tui_png_height() {
   od -An -tu1 -j20 -N4 "$1" 2>/dev/null | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'
 }
 
+# Headless Chrome renders the PNG where freeze is not installed (a Mac with
+# Chrome and no nix): scripts/tui/ansi-html.mjs turns the capture into a page.
+TUI_CHROME="${TUI_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+TUI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+tui_chrome_png() {
+  local txt="$1" png="$2" profile
+  node "$TUI_LIB_DIR/ansi-html.mjs" "$txt" "${txt%.txt}.html" "$TUI_W" || return 1
+  # A profile of its own, so the person's Chrome is never touched.
+  profile="$(mktemp -d)"
+  "$TUI_CHROME" --headless=new --disable-gpu --hide-scrollbars --no-first-run --user-data-dir="$profile" \
+    --window-size="$((TUI_W * 843 / 100 + 30)),$((TUI_H * 17 + 24))" --screenshot="$png" \
+    "file://${txt%.txt}.html" >/dev/null 2>&1
+  rm -rf "$profile"
+  [ -s "$png" ]
+}
+
 # tui_shot <name>: write <name>.txt (ANSI), <name>.plain.txt, and <name>.png.
 # freeze sometimes cuts the last rows off under load. Every full shot of one
 # session has the same height, so a shorter one is taken again.
 tui_shot() {
   tmux -L "$TUI_NAME" capture-pane -e -p -t tui >"$TUI_OUT/$1.txt"
   tmux -L "$TUI_NAME" capture-pane -p -t tui >"$TUI_OUT/$1.plain.txt"
+  if ! command -v freeze >/dev/null; then
+    tui_chrome_png "$TUI_OUT/$1.txt" "$TUI_OUT/$1.png" || echo "tui_shot: no PNG for $1" >&2
+    return 0
+  fi
   local _ height
   for _ in 1 2 3 4; do
     # freeze reads stdin when it is not a terminal, and waits forever in a

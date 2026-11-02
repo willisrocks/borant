@@ -182,41 +182,51 @@ as idle ("2 active · 1 idle"), and `/cos <project>` still shows an idle
 project. A project with plain tasks and no saga or epic shows its count of
 open tasks ("3 open tasks") in place of its epic.
 
-The band drives the preview. A digit at the empty prompt selects that row and
-opens the preview with the keys; `j` and `k` move the band's selection and the
-preview follows it. Beside the transcript (110 columns and up) the preview is
-a tall card; on a narrower terminal it is a compact block above the band,
-open only while it has the keys. A bare digit cannot give the band itself the
-keyboard in Claude Code (only Ctrl+X Tab or a click does), so the preview
-carries the same keys; wherever the keys are, they do the same thing:
+Board mode holds the keyboard, as a vim mode does. Press `0` at the empty
+prompt to enter it: the band's title row shows `0: board mode` at rest and
+`board mode · esc exit` while it is on. A row's digit at the empty prompt
+enters board mode on that row. In board mode every key goes to the board and
+none goes to the prompt, until you press Esc. Board mode opens the preview of
+the selected row. Beside the transcript (110 columns and up) the preview is a
+tall card. On a narrower terminal it is a compact block above the band.
 
-|Key|What it does|
+|Key|What it does in board mode|
 |---|---|
-|`1`–`9`|select a row from the empty prompt: the needs-you items, then one per project. Digits work only from the prompt, not while the preview has the keys|
+|`1`–`9`|select a row: the needs-you items, then one per project|
 |`j` `k`|move the selection; the preview follows|
+|Enter|details: a project's child tasks, or a task's status, blockers, PR, and last update. Enter again goes back. `j` and `k` keep the details open|
 |`d`|Done on the selected needs-you item|
 |`a`|Ask the item's orchestrator|
-|Enter|more: a project's child tasks, or a task's status, blockers, PR, and last update|
-|Esc|give the keys back to the prompt; a docked preview stays (Ctrl+X X closes it), an inline one closes|
-|Ctrl+X Tab|give the band the keys: `j` `k`, `d` `a`, and Enter work there; Esc gives them back|
+|`?`|the help; `?` or Enter goes back|
+|Esc|leave board mode: the preview closes and the keys go back to the prompt|
 
-A click on a row selects it, and a click on the selected row shows more. The
-title row says where the data stands: `live`, `live · 45s` from 30 s on,
-`↻ reading` while a read runs, `polling · 4s` without the event stream,
-`stale · 2m`, or `✕ board unavailable` with the reason. `↻ reading` stays
-at least 600 ms, so a fast read is still seen. `/cos help` prints the
-keys without starting a turn, and the `[ ? ]` button shows them in the preview.
+Tab and Shift+Tab do not leave board mode. In vim normal mode, Claude Code
+gives a bare digit to vim and tells the mod nothing, so press `i` first and
+then `0`: the band says `(vim: i 0)`. A `0` or a digit in a prompt that holds
+text stays text. A click on a row enters board mode on that row. Claude Code
+gives board mode the keys only from an empty prompt that holds them. After
+Ctrl+X Tab the band holds them, so `0` there says to press Esc and then `0`.
+
+The band is a grid of columns that depends on its width alone: the title, the
+project and age of a needs-you item or the bar and counts of a project, then
+a press status or the orchestrator. Every text is cut to its column with an
+ellipsis, so a refresh never moves a column. The band says nothing about a
+healthy board. It shows `stale · 2m` when no read succeeded for 90 s, and
+`✕ board unavailable` with the reason when the read fails. `/cos help` prints
+the keys without a turn.
 
 The band and the preview follow `borant events --follow`: a task's status, a
 lease, an agent, a spawn, or a move reads the board again within about a
 second. A read every 5 s catches what sends no event, such as a new task.
 Done submits "Chris marked done: …" to the chief, which closes a saga gate
-itself and asks the channel's owner to close anything else. The item shows
-each step in place of its buttons. A band row keeps one fixed slot for its
-buttons or a short status (`◷ closing 14s`, `✓ closed`, `! still open`,
-`✓ asked`), so a press never moves a column. The preview has the full words:
-`sending to the chief…`, `the chief is closing it · 14s`, `✓ closed` for 10 s
-once the hub closes it, or `still open after 2m` with Done again.
+itself and asks the channel's owner to close anything else. The band row
+shows each step in its status column: `◷ sending`, `◷ closing`, `✓ closed`,
+`! still open`, or `✓ asked` after an Ask. `✓ closed` shows only when the
+task is closed. An item that leaves needs-you for another reason shows
+`→ not closed`. The preview has the full words:
+`sending to the chief…`, `the chief is closing it, since 14:32`, `✓ closed`
+for 10 s once the hub closes it, or `still open after 2m`, and then `d`
+works again. No status counts up, so nothing moves while you wait.
 
 The band reads `borant board --json`. A call from inside an agent's session is
 the agent's read, so the band of a chief shows only its own collection; a
