@@ -387,8 +387,14 @@ scenario_liveness() {
   dc start hub >/dev/null || return 1
   wait_for "the hub back" hub_answers || return 1
 
-  wait_for "the spawn is ended, not running" spawn_ended lworker || return 1
-  wait_for "the owner hears the relaunch" log_has host-a lboss "agent lworker was relaunched" || return 1
+  if ! wait_for "the spawn is ended, not running" spawn_ended lworker; then
+    dc start git >/dev/null 2>&1
+    return 1
+  fi
+  if ! wait_for "the owner hears the relaunch" log_has host-a lboss "agent lworker was relaunched"; then
+    dc start git >/dev/null 2>&1
+    return 1
+  fi
   dc start git >/dev/null || return 1
   wait_for "the recovered session" spawn_recovered lworker || return 1
 
