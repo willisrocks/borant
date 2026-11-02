@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint;
+use crate::outbox::OutboxKind;
 use crate::{Host, LocalSess, Queued, terminate};
 
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
@@ -544,6 +545,40 @@ impl Host {
             .or_else(|| s.paused.then(|| HUB_DOWN_WHY.to_owned()))
     }
 
+    /// Tells the hub that a session ended. A hub that does not take the end
+    /// would otherwise keep the session: the request waits in the outbox and
+    /// is sent again after the hub is back. The hub ignores an end for a
+    /// session that it does not know or that has already ended.
+    pub(crate) async fn tell_end(&self, req: CtlRequest, id: SessionId) {
+        if let Err(e) = self.hub(&req).await {
+            tracing::warn!(
+                session = %id,
+                "could not tell the hub about the end, it is retried: {}",
+                e.message
+            );
+            self.queue_end(&req, id);
+        }
+    }
+
+    /// Queues the end of a session for the outbox flusher. It costs no wait
+    /// on the hub, so a restore can use it while the hub is still down.
+    pub(crate) fn queue_end(&self, req: &CtlRequest, id: SessionId) {
+        let payload = match serde_json::to_vec(req) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(session = %id, "encode the end: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .inner
+            .outbox
+            .push(OutboxKind::End, &id.to_string(), &payload)
+        {
+            tracing::error!(session = %id, "outbox write failed: {e}");
+        }
+    }
+
     /// Ends a local session and tells the hub.
     pub async fn end_session(&self, id: SessionId, reason: &str) {
         let Some(s) = self.state().sessions.remove(&id) else {
@@ -561,17 +596,16 @@ impl Host {
                 },
             )
             .await;
-            if s.fenced.is_none() {
-                let req = CtlRequest::EndSession {
-                    session: id,
-                    agent: r.agent.clone(),
-                    token: r.token,
-                    reason: reason.into(),
-                };
-                if let Err(e) = self.hub(&req).await {
-                    tracing::warn!(session = %id, "could not tell the hub about the end: {}", e.message);
-                }
-            }
+            // A fenced session ends too: the hub ignores an end for a
+            // session that it lost or that has already ended, and one that
+            // it still holds must learn of the exit.
+            let req = CtlRequest::EndSession {
+                session: id,
+                agent: r.agent.clone(),
+                token: r.token,
+                reason: reason.into(),
+            };
+            self.tell_end(req, id).await;
         }
         if let Some(agent) = s.agent() {
             self.forget_secrets(&agent, s.secrets_dir.clone()).await;
@@ -721,6 +755,9 @@ impl Host {
             )
         };
         let remote = self.remote_for(&repo);
+        // The branch at snapshot time, so a restore checks it out before it
+        // applies the wip tree.
+        let branch = checkpoint::current_branch(&repo.root).await;
         match checkpoint::create(&repo.root, &remote, &agent, last.as_deref(), vars.pairs()).await {
             Ok(Some((tree, sha))) => {
                 if let Some(s) = self.state().sessions.get_mut(&id) {
@@ -732,6 +769,7 @@ impl Host {
                     SessionEventBody::Checkpoint {
                         git_ref: checkpoint::wip_ref(&agent),
                         sha,
+                        branch,
                     },
                 )
                 .await;

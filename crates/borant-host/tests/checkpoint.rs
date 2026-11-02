@@ -113,9 +113,19 @@ async fn restore_reproduces_files_on_new_root() {
         .unwrap();
     let facts = checkpoint::detect(&work, None).await.unwrap();
     let root = d.path().join("other-host");
-    let dir = checkpoint::restore(&root, &facts.info, &agent(), r, Some(&sha), None, None, &[])
-        .await
-        .unwrap();
+    let dir = checkpoint::restore(
+        &root,
+        &facts.info,
+        &agent(),
+        r,
+        Some(&sha),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("a.txt")).unwrap(),
         "edited\n"
@@ -128,6 +138,138 @@ async fn restore_reproduces_files_on_new_root() {
     let status = git(&dir, &["status", "--porcelain"]);
     assert!(status.contains("M a.txt"), "{status}");
     assert!(status.contains("?? b.txt"), "{status}");
+}
+
+#[tokio::test]
+async fn current_branch_reports_the_checkout() {
+    let (_d, _remote, work) = setup();
+    assert_eq!(
+        checkpoint::current_branch(&work).await.as_deref(),
+        Some("main")
+    );
+    git(&work, &["checkout", "-q", "--detach"]);
+    assert_eq!(
+        checkpoint::current_branch(&work).await,
+        None,
+        "a detached HEAD names no branch"
+    );
+}
+
+/// A restore over a dirty tree on another branch: the work goes to a stale
+/// ref first, and the tree ends on the branch of the checkpoint with its
+/// files.
+#[tokio::test]
+async fn restore_saves_a_dirty_tree_and_keeps_the_checkpoint_branch() {
+    let (d, remote, work) = setup();
+    let r = remote.to_str().unwrap();
+    // The repo of the launch is on main, as the spawn left it.
+    let facts = checkpoint::detect(&work, None).await.unwrap();
+    git(&work, &["checkout", "-q", "-b", "feat/x"]);
+    std::fs::write(work.join("a.txt"), "feature\n").unwrap();
+    git(&work, &["commit", "-q", "-am", "feature"]);
+    let (_, sha) = checkpoint::create(&work, r, &agent(), None, &[])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let root = d.path().join("other-host");
+    let dir = checkpoint::restore(&root, &facts.info, &agent(), r, None, None, None, None, &[])
+        .await
+        .unwrap();
+    // Work that no checkpoint took sits in the agent dir on main.
+    std::fs::write(dir.join("a.txt"), "scratch that must survive\n").unwrap();
+
+    checkpoint::restore(
+        &root,
+        &facts.info,
+        &agent(),
+        r,
+        Some(&sha),
+        Some("feat/x"),
+        None,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat/x");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "feature\n",
+        "the wip tree lands on the checkpoint branch"
+    );
+    let stale: Vec<String> = git(
+        &remote,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/borant/w1/stale",
+        ],
+    )
+    .lines()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        stale.len(),
+        1,
+        "the dirty tree went to one stale ref: {stale:?}"
+    );
+    assert_eq!(
+        git(&remote, &["show", &format!("{}:a.txt", stale[0])]),
+        "scratch that must survive"
+    );
+}
+
+/// A worktree that a crash left behind still holds its branch. The restore
+/// prunes it, so the checkout of the checkpoint branch works.
+#[tokio::test]
+async fn restore_prunes_a_stale_worktree_that_holds_the_branch() {
+    let (d, remote, work) = setup();
+    let r = remote.to_str().unwrap();
+    let facts = checkpoint::detect(&work, None).await.unwrap();
+    git(&work, &["checkout", "-q", "-b", "feat/x"]);
+    std::fs::write(work.join("a.txt"), "feature\n").unwrap();
+    git(&work, &["commit", "-q", "-am", "feature"]);
+    git(&work, &["push", "-q", "origin", "feat/x"]);
+    let (_, sha) = checkpoint::create(&work, r, &agent(), None, &[])
+        .await
+        .unwrap()
+        .unwrap();
+
+    let root = d.path().join("other-host");
+    let dir = checkpoint::restore(&root, &facts.info, &agent(), r, None, None, None, None, &[])
+        .await
+        .unwrap();
+    git(&dir, &["fetch", "-q", "origin"]);
+    git(&dir, &["branch", "feat/x", "origin/feat/x"]);
+    let linked = d.path().join("linked");
+    git(
+        &dir,
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "feat/x"],
+    );
+    // The directory is gone, but git still holds `feat/x` for the worktree.
+    std::fs::remove_dir_all(&linked).unwrap();
+
+    checkpoint::restore(
+        &root,
+        &facts.info,
+        &agent(),
+        r,
+        Some(&sha),
+        Some("feat/x"),
+        None,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat/x");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "feature\n"
+    );
 }
 
 #[tokio::test]

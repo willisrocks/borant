@@ -21,6 +21,7 @@ fn order(agent: &str) -> LaunchOrder {
         harness: Harness::Fake,
         repo: None,
         wip: None,
+        wip_branch: None,
         channels: vec![],
         prompt: "go".into(),
         reason: MoveReason::Spawn,

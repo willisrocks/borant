@@ -26,6 +26,9 @@ pub enum OutboxKind {
     Append,
     /// A swarm event: `target` is the kind, `payload` is the event JSON.
     Event,
+    /// A control request that the hub must not lose, such as the end of a
+    /// session: `target` is the session ID, `payload` is the request JSON.
+    End,
 }
 
 impl OutboxKind {
@@ -34,6 +37,7 @@ impl OutboxKind {
             Self::Publish => "publish",
             Self::Append => "append",
             Self::Event => "event",
+            Self::End => "end",
         }
     }
 
@@ -42,6 +46,7 @@ impl OutboxKind {
             "publish" => Some(Self::Publish),
             "append" => Some(Self::Append),
             "event" => Some(Self::Event),
+            "end" => Some(Self::End),
             _ => None,
         }
     }

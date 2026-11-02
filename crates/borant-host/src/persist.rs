@@ -8,7 +8,7 @@ use std::sync::Arc;
 use borant_core::model::Harness;
 use borant_core::ports::LaunchHandle;
 use borant_core::ports::secrets::{BundleName, MemberName};
-use borant_core::proto::{ApiError, Registered};
+use borant_core::proto::{ApiError, CtlRequest, Registered};
 use borant_core::{AgentId, ChannelName, CollectionName, RoleName, SessionId};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -158,6 +158,20 @@ impl Host {
         let mut jobs = Vec::new();
         for s in saved {
             if !s.pid.is_some_and(pid_alive) {
+                // The session is gone, but the hub may still hold its lease
+                // and its spawn record. The end waits in the outbox, so a hub
+                // that is down now still learns of it.
+                if let Some(reg) = &s.reg
+                    && s.pid.is_some()
+                {
+                    let req = CtlRequest::EndSession {
+                        session: s.id,
+                        agent: reg.agent.clone(),
+                        token: reg.token,
+                        reason: "the harness process ended while the host was down".into(),
+                    };
+                    self.queue_end(&req, s.id);
+                }
                 continue;
             }
             let agent = s.reg.as_ref().map(|r| r.agent.clone());
@@ -285,7 +299,7 @@ mod tests {
     use borant_memory::{MemoryBus, MemorySession};
 
     use super::*;
-    use crate::outbox::Outbox;
+    use crate::outbox::{Outbox, OutboxKind};
 
     /// A session log whose read does not answer before the step timeout, as a
     /// long log over a slow link does not.
@@ -334,12 +348,17 @@ mod tests {
     /// The session table of one live session of this process, of `turn`, in
     /// `home`.
     fn save_one(home: &Path, agent: &AgentId, turn: u64) {
+        save_pid(home, agent, turn, std::process::id());
+    }
+
+    /// The session table of one session of `pid`, of `turn`, in `home`.
+    fn save_pid(home: &Path, agent: &AgentId, turn: u64, pid: u32) -> SessionId {
         let id = SessionId::new();
         let saved = vec![Saved {
             id,
             harness: Harness::Fake,
             harness_session_id: None,
-            pid: Some(std::process::id()),
+            pid: Some(pid),
             cwd: home.to_path_buf(),
             agent_hint: None,
             channel_hint: None,
@@ -366,6 +385,38 @@ mod tests {
             serde_json::to_vec(&saved).unwrap(),
         )
         .unwrap();
+        id
+    }
+
+    /// A saved session whose harness process is gone when the daemon starts:
+    /// the hub must still learn of its end, so the end waits in the outbox
+    /// instead of blocking the restore on a hub that may be down.
+    #[tokio::test]
+    async fn restore_queues_the_end_of_a_dead_saved_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent: AgentId = "w1".parse().unwrap();
+        let dead = {
+            let mut child = std::process::Command::new("true").spawn().unwrap();
+            let pid = child.id();
+            child.wait().unwrap();
+            pid
+        };
+        let id = save_pid(dir.path(), &agent, 0, dead);
+        let host = host_at(dir.path(), Arc::new(MemorySession::new()));
+
+        host.restore().await;
+
+        assert!(
+            host.state().sessions.is_empty(),
+            "a dead saved session is not restored"
+        );
+        let items = host.inner.outbox.peek(10).unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].kind, OutboxKind::End);
+        match serde_json::from_slice::<CtlRequest>(&items[0].payload).unwrap() {
+            CtlRequest::EndSession { session, .. } => assert_eq!(session, id),
+            other => panic!("the outbox holds an end, got {other:?}"),
+        }
     }
 
     /// A session log over a slow link must not hold the restore: the step is

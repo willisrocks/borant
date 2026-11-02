@@ -44,6 +44,12 @@ impl FakeLauncher {
     fn calls(&self) -> Vec<String> {
         self.inner.lock().unwrap().calls.clone()
     }
+
+    /// The sessions of every agent die, as when a tmux server is killed; the
+    /// handles stay, so `is_running` says false for each.
+    fn kill_all(&self) {
+        self.inner.lock().unwrap().running.clear();
+    }
 }
 
 #[async_trait::async_trait]
@@ -267,6 +273,51 @@ async fn watchdog_leaves_a_registered_launch_alone() {
         launch_failures(&f.seen)
     );
     assert_eq!(registered.agent, Some(agent));
+
+    f.stop.cancel();
+    drop(f.dir);
+}
+
+/// A tmux session can die while its PID stays alive, because the PID was
+/// reused or outlived the session: the launcher says the launch is gone, so
+/// the session ends and `ps` stops showing it.
+#[tokio::test]
+async fn a_dead_launch_ends_a_session_with_a_live_pid() {
+    let f = fixture(Duration::from_secs(60)).await;
+    let agent: AgentId = "a1".parse().unwrap();
+    f.host.launch(order(&agent)).await.unwrap();
+    let cwd = f.dir.path().join("work/a1");
+    let registered = f
+        .host
+        .register(LocalRegister {
+            harness: Harness::Fake,
+            // A live process that is not the launch.
+            pid: Some(std::process::id()),
+            cwd: cwd.to_string_lossy().into_owned(),
+            agent: Some(agent.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("the registration");
+    f.launcher.kill_all();
+
+    f.host.check_liveness().await;
+
+    let ends: Vec<(borant_core::SessionId, String)> = f
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| match r {
+            CtlRequest::EndSession {
+                session, reason, ..
+            } => Some((*session, reason.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 1, "{ends:?}");
+    assert_eq!(ends[0].0, registered.session);
+    assert_eq!(ends[0].1, "the launched session is gone");
 
     f.stop.cancel();
     drop(f.dir);

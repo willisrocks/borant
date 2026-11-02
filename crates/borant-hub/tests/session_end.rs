@@ -7,11 +7,12 @@ mod common;
 
 use borant_core::events::{EventFilter, SwarmEvent, SwarmEventBody, kind_of};
 use borant_core::model::{
-    Agent, ChannelKind, Harness, Lease, LeaseState, MoveReason, NewTask, Task, TaskStatus,
+    Agent, ChannelKind, Harness, Lease, LeaseState, MoveReason, NewTask, SessionEvent,
+    SessionEventBody, Task, TaskStatus,
 };
-use borant_core::ports::{EventLog, StateStore};
+use borant_core::ports::{EventLog, SessionStore, StateStore};
 use borant_core::proto::{CtlRequest, HostCommand, Registered, ToolCall};
-use borant_core::{ChannelName, keys};
+use borant_core::{ChannelName, EventId, Timestamp, keys};
 use common::{Fx, next_cmd};
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -272,4 +273,52 @@ async fn session_end_without_a_claim_releases_as_before() {
         LeaseState::Released { parked: false, .. }
     ));
     assert!(relaunches(&events(&fx).await).is_empty());
+}
+
+/// The relaunch restores from the newest checkpoint: its commit and the
+/// branch that was checked out when it was taken, not the branch of the
+/// original spawn.
+#[tokio::test]
+async fn session_end_restores_the_branch_of_the_newest_checkpoint() {
+    let fx = Fx::new();
+    let (owner, w) = setup(&fx).await;
+    claim(&fx, &owner, &w).await;
+    let mut h1: BoxStream<'static, HostCommand> = fx.commands("h1").await;
+    let checkpoint = |sha: &str, branch: &str| SessionEvent {
+        id: EventId::new(),
+        agent: w.agent.clone(),
+        session: Some(w.session),
+        harness: Harness::Fake,
+        host: "h1".parse().unwrap(),
+        turn: 0,
+        at: Timestamp(1_000_000),
+        body: SessionEventBody::Checkpoint {
+            git_ref: format!("refs/borant/{}/wip", w.agent),
+            sha: sha.into(),
+            branch: Some(branch.into()),
+        },
+    };
+    fx.sessions
+        .append(&w.agent, &checkpoint("aaa", "feat/old"))
+        .await
+        .unwrap();
+    fx.sessions
+        .append(&w.agent, &checkpoint("bbb", "feat/new"))
+        .await
+        .unwrap();
+
+    end(&fx, &w, "session shutdown").await;
+
+    match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => {
+            assert_eq!(o.agent, w.agent);
+            assert_eq!(o.wip.as_deref(), Some("bbb"), "the newest checkpoint");
+            assert_eq!(
+                o.wip_branch.as_deref(),
+                Some("feat/new"),
+                "the branch of the newest checkpoint"
+            );
+        }
+        other => panic!("expected a relaunch, got {other:?}"),
+    }
 }

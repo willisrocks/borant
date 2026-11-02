@@ -64,6 +64,7 @@ fn order(remote: &Path, setup: &str) -> LaunchOrder {
             subdir: String::new(),
         }),
         wip: None,
+        wip_branch: None,
         channels: vec!["api".parse().unwrap()],
         prompt: "go".into(),
         reason: MoveReason::Spawn,
@@ -75,7 +76,9 @@ fn order(remote: &Path, setup: &str) -> LaunchOrder {
             name: "web".parse().unwrap(),
             remote_url: remote.to_string_lossy().into_owned(),
             default_branch: "main".into(),
-            checkpoint_remote: Some("/srv/ckpt.git".into()),
+            // A restore of an existing clone saves a dirty tree to this
+            // remote before it checks out, so it must be a real repository.
+            checkpoint_remote: Some(remote.to_string_lossy().into_owned()),
             setup: Some(setup.into()),
             test: None,
             collection: None,
@@ -108,7 +111,8 @@ async fn setup_runs_once_in_a_new_clone() {
     );
     // The clone keeps the checkpoint remote of the project.
     let facts = checkpoint::detect(&clone, None).await.unwrap();
-    assert_eq!(facts.checkpoint_remote.as_deref(), Some("/srv/ckpt.git"));
+    let ckpt = remote.to_string_lossy().into_owned();
+    assert_eq!(facts.checkpoint_remote.as_deref(), Some(ckpt.as_str()));
     // The new clone borrows the objects of the mirror of the project.
     let mirror = fx.dir.path().join("projects/web.git");
     assert!(mirror.join("HEAD").is_file(), "no mirror at {mirror:?}");

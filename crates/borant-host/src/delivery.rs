@@ -194,7 +194,9 @@ impl Host {
     /// inbox loop logs and delivers it like any received message, and an idle
     /// session wakes.
     pub(crate) async fn wake_unpaused(&self) {
-        const TEXT: &str = "Borant is back. Your tools work again. Continue your task.";
+        const TEXT: &str = "Borant is back. Your tools work again. Continue your task. \
+If the borant MCP tools are missing, use the `borant` CLI from Bash, and ask the \
+person to run /mcp to reconnect.";
         let targets: Vec<(SessionId, AgentId)> = {
             let mut st = self.state();
             let mut targets = Vec::new();
@@ -631,6 +633,34 @@ impl Host {
                     },
                     Err(e) => {
                         tracing::warn!(kind = %item.target, "drop undecodable outbox event: {e}");
+                        true
+                    }
+                },
+                OutboxKind::End => match serde_json::from_slice::<CtlRequest>(&item.payload) {
+                    Ok(req) => match self.hub(&req).await {
+                        Ok(_) => true,
+                        Err(e) => {
+                            if self.outbox_failing_now() {
+                                tracing::warn!(
+                                    session = %item.target,
+                                    "outbox end failed, will retry: {}",
+                                    e.message
+                                );
+                            } else {
+                                tracing::debug!(
+                                    session = %item.target,
+                                    "outbox end failed, will retry: {}",
+                                    e.message
+                                );
+                            }
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            session = %item.target,
+                            "drop an undecodable outbox end: {e}"
+                        );
                         true
                     }
                 },

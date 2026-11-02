@@ -224,6 +224,7 @@ fn order(name: &str, members: BTreeMap<BundleName, MemberName>) -> LaunchOrder {
         harness: Harness::Fake,
         repo: None,
         wip: None,
+        wip_branch: None,
         channels: Vec::new(),
         prompt: "go".into(),
         reason: MoveReason::Spawn,

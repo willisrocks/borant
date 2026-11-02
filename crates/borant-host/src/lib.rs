@@ -906,18 +906,32 @@ impl Host {
 }
 
 impl Host {
-    /// Ends local sessions whose harness process exited, and stops launches
-    /// that did not register in time. Public for tests.
+    /// Ends local sessions whose harness process or launch is gone, and stops
+    /// launches that did not register in time. Public for tests.
     pub async fn check_liveness(&self) {
-        let dead: Vec<SessionId> = self
+        // A PID can be reused, and a dead tmux session can leave a live PID
+        // behind. So a launched session is dead when either the process or
+        // the launch is gone.
+        let sessions: Vec<(SessionId, Option<u32>, Option<LaunchHandle>)> = self
             .state()
             .sessions
             .values()
-            .filter(|s| s.pid.is_some_and(|p| !pid_alive(p)))
-            .map(|s| s.id)
+            .map(|s| (s.id, s.pid, s.launch.clone()))
             .collect();
-        for sid in dead {
-            self.end_session(sid, "the harness process exited").await;
+        let mut dead: Vec<(SessionId, &'static str)> = Vec::new();
+        for (sid, pid, launch) in sessions {
+            if pid.is_some_and(|p| !pid_alive(p)) {
+                dead.push((sid, "the harness process exited"));
+                continue;
+            }
+            if let Some(handle) = &launch
+                && matches!(self.inner.launcher.is_running(handle).await, Ok(false))
+            {
+                dead.push((sid, "the launched session is gone"));
+            }
+        }
+        for (sid, reason) in dead {
+            self.end_session(sid, reason).await;
         }
         self.check_launch_timeouts().await;
     }

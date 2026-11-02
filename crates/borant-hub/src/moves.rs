@@ -348,10 +348,17 @@ impl Hub {
         Self::queue(mem, reservation);
 
         let events = self.sessions.read(&agent.id).await.unwrap_or_default();
-        let wip = events.iter().rev().find_map(|(_, e)| match &e.body {
-            SessionEventBody::Checkpoint { sha, .. } => Some(sha.clone()),
+        // The newest checkpoint gives both the wip commit and the branch
+        // that was checked out when it was taken, so a restore returns to
+        // that branch instead of the branch of the original spawn.
+        let checkpoint = events.iter().rev().find_map(|(_, e)| match &e.body {
+            SessionEventBody::Checkpoint { sha, branch, .. } => Some((sha.clone(), branch.clone())),
             _ => None,
         });
+        let (wip, wip_branch) = match checkpoint {
+            Some((sha, branch)) => (Some(sha), branch),
+            None => (None, None),
+        };
         let from_harness = events
             .iter()
             .rev()
@@ -391,6 +398,7 @@ impl Hub {
             harness,
             repo: agent.repo.clone(),
             wip,
+            wip_branch,
             channels: agent.channels.clone(),
             prompt,
             reason,
