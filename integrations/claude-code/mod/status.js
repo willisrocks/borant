@@ -5,35 +5,34 @@
 // A Done mark is `{ state, at, title, ... }`, keyed by `<channel>/<task>`:
 //   sending   the press happened; the prompt to the chief is not in yet
 //   closing   the prompt landed at `at`; the hub has not closed the task
-//   closed    the task left the board at `closedAt`; the row stays CLOSED_SHOW_MS
+//   closed    the task left the board at `closedAt`, closed; the row stays CLOSED_SHOW_MS
+//   moved     it left needs-you at `closedAt` but is not closed (`status`)
+//   unknown   it left needs-you at `closedAt`, and its status read failed
 //   failed    the hub did not close it within the wait (`reason`)
 //   unsent    the prompt did not land (`reason`)
 // An Ask mark is `{ state: 'sending' | 'sent' | 'failed', owner, at, reason }`.
 
-import { ageText, text } from './board.js'
+import { ageText, hhmm, text } from './board.js'
 
 export { ageText }
 
 /** A closed item's row stays this long, so the person sees it land. */
 export const CLOSED_SHOW_MS = 10000
-/** The age shows in the freshness word only from this age on. */
-export const AGE_SHOWN_MS = 30000
 /** From this age on, the board is stale. */
 export const STALE_MS = 90000
 
 /**
- * The freshness word of the title row, as one segment: `live`, `live · 45s`,
- * `↻ reading`, `polling · 4s`, `stale · 2m`, or `✕ board unavailable`.
- * `state` is `{ unavailable, reading, live, ageMs }`; `ageMs` is the time
- * since the last read that succeeded, or null when none did.
+ * What the title row says about the data, as one segment, or null while it is
+ * fresh: nothing moves while the board is healthy. `stale · 2m` once no read
+ * succeeded for STALE_MS, `✕ board unavailable` when the read fails.
+ * `state` is `{ unavailable, ageMs }`; `ageMs` is the time since the last
+ * read that succeeded, or null when none did.
  */
 export function freshness(state = {}) {
   if (state.unavailable) return text('✕ board unavailable', 'red')
-  if (state.reading) return text('↻ reading', 'cyan')
   const age = typeof state.ageMs === 'number' ? state.ageMs : null
   if (age !== null && age >= STALE_MS) return text('stale · ' + ageText(age), 'yellow')
-  if (state.live) return text(age !== null && age >= AGE_SHOWN_MS ? 'live · ' + ageText(age) : 'live', 'green')
-  return text('polling' + (age !== null ? ' · ' + ageText(age) : ''), 'dim')
+  return null
 }
 
 /**
@@ -43,8 +42,10 @@ export function freshness(state = {}) {
 export function pressStatus(done, ask, now = 0) {
   if (done) {
     if (done.state === 'sending') return [text('◷ sending to the chief…', 'cyan')]
-    if (done.state === 'closing') return [text('◷ the chief is closing it · ' + ageText(now - done.at), 'cyan')]
+    if (done.state === 'closing') return [text('◷ the chief is closing it, since ' + hhmm(done.at), 'cyan')]
     if (done.state === 'closed') return [text('✓ closed', 'green')]
+    if (done.state === 'moved') return [text('→ no longer needs you, but not closed' + (done.status ? ': ' + String(done.status).replace('_', ' ') : ''), 'yellow')]
+    if (done.state === 'unknown') return [text('? left the board; its status could not be read', 'yellow')]
     if (done.state === 'failed') return [text('! still open after ' + ageText(done.waitMs || now - done.at), 'red')]
     if (done.state === 'unsent') return [text('! not sent' + (done.reason ? ': ' + done.reason : ''), 'red')]
   }
@@ -58,13 +59,15 @@ export function pressStatus(done, ask, now = 0) {
 
 /**
  * The same status in at most 13 cells, for a band row's fixed slot; the
- * preview shows the full words. Null when the item shows its buttons.
+ * preview shows the full words. Nothing in it counts up, so it never moves.
  */
 export function pressStatusShort(done, ask, now = 0) {
   if (done) {
     if (done.state === 'sending') return [text('◷ sending', 'cyan')]
-    if (done.state === 'closing') return [text('◷ closing ' + ageText(now - done.at), 'cyan')]
+    if (done.state === 'closing') return [text('◷ closing', 'cyan')]
     if (done.state === 'closed') return [text('✓ closed', 'green')]
+    if (done.state === 'moved') return [text('→ not closed', 'yellow')]
+    if (done.state === 'unknown') return [text('? status', 'yellow')]
     if (done.state === 'failed') return [text('! still open', 'red')]
     if (done.state === 'unsent') return [text('! not sent', 'red')]
   }
@@ -82,16 +85,21 @@ export function canDone(done) {
 }
 
 /**
- * The needs-you items to draw: the board's, and each item a Done closed in
- * the last CLOSED_SHOW_MS, at the place it had, marked `closed: true`.
+ * The needs-you items to draw: the board's, and each item a Done took off
+ * it in the last CLOSED_SHOW_MS, at the place it had: `closed: true` when
+ * the hub closed it, `gone: true` when it left needs-you otherwise. An item
+ * that is back on the board is drawn once, as the board has it.
  */
 export function withClosed(questions, pending, now = 0) {
   const out = [...questions]
+  const open = new Set(questions.map((q) => String(q.channel) + '/' + String(q.task)))
   const ghosts = Object.values(pending || {})
-    .filter((m) => m.state === 'closed' && m.question && now - m.closedAt < CLOSED_SHOW_MS)
+    .filter((m) => ['closed', 'moved', 'unknown'].includes(m.state) && m.question && now - m.closedAt < CLOSED_SHOW_MS)
+    .filter((m) => !open.has(String(m.question.channel) + '/' + String(m.question.task)))
     .sort((a, b) => (a.index || 0) - (b.index || 0))
   for (const mark of ghosts) {
-    out.splice(Math.min(mark.index || 0, out.length), 0, { ...mark.question, closed: true })
+    const ghost = mark.state === 'closed' ? { ...mark.question, closed: true } : { ...mark.question, gone: true }
+    out.splice(Math.min(mark.index || 0, out.length), 0, ghost)
   }
   return out
 }

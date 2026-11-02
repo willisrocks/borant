@@ -19,6 +19,9 @@ export const GLYPH = {
   scheduled: '\u25c7',
 }
 
+/** The glyph of a needs-you item that left the board without a close. */
+export const GONE = '\u2013'
+
 const BRANCH = '\u2502'
 const RULE = '\u2500'
 
@@ -32,37 +35,80 @@ export function rowText(row) {
   return row.map((s) => s.text).join('')
 }
 
+/** Code points that take no cell: combining marks, a zero-width joiner,
+ * variation selectors. */
+function zeroWidth(cp) {
+  return cp === 0x200d || (cp >= 0x300 && cp <= 0x36f) || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef)
+}
+
+/** Ranges a terminal draws two cells wide: CJK, Hangul, full-width forms, and emoji. */
+const WIDE = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x23e9, 0x23ec], [0x23f0, 0x23f0], [0x23f3, 0x23f3], [0x25fd, 0x25fe],
+  [0x2614, 0x2615], [0x26a1, 0x26a1], [0x26aa, 0x26ab], [0x26bd, 0x26be], [0x26c4, 0x26c5], [0x26d4, 0x26d4],
+  [0x26ea, 0x26ea], [0x26f2, 0x26f5], [0x26fa, 0x26fd], [0x2705, 0x2705], [0x270a, 0x270b], [0x2728, 0x2728],
+  [0x274c, 0x274c], [0x274e, 0x274e], [0x2753, 0x2757], [0x2795, 0x2797], [0x27b0, 0x27b0], [0x27bf, 0x27bf],
+  [0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60],
+  [0xffe0, 0xffe6], [0x1f300, 0x1f64f], [0x1f680, 0x1f6ff], [0x1f900, 0x1f9ff], [0x1fa70, 0x1faff], [0x20000, 0x3fffd],
+]
+
+/** The cells one character takes in a terminal: 0, 1, or 2. */
+function charCells(ch) {
+  const cp = ch.codePointAt(0)
+  if (zeroWidth(cp)) return 0
+  return WIDE.some(([a, b]) => cp >= a && cp <= b) ? 2 : 1
+}
+
+/** The cells a text takes in a terminal. */
+export function cellsOf(value) {
+  let n = 0
+  for (const ch of String(value)) n += charCells(ch)
+  return n
+}
+
+/** The head of a text that fits in `room` cells, and the cells it takes. */
+function head(value, room) {
+  let out = ''
+  let used = 0
+  for (const ch of String(value)) {
+    const w = charCells(ch)
+    if (used + w > room) break
+    out += ch
+    used += w
+  }
+  return { text: out, used }
+}
+
 /** Cut text to `width` cells, with an ellipsis. */
 export function truncate(value, width) {
   if (width <= 0) return ''
-  const chars = Array.from(String(value))
-  if (chars.length <= width) return String(value)
-  if (width === 1) return '\u2026'
-  return chars.slice(0, width - 1).join('') + '\u2026'
+  if (cellsOf(value) <= width) return String(value)
+  if (width === 1) return '…'
+  return head(value, width - 1).text + '…'
 }
 
 /** Pad text to exactly `width` cells, cutting it when it is longer. */
 export function pad(value, width) {
   const cut = truncate(value, width)
-  return cut + ' '.repeat(Math.max(0, width - Array.from(cut).length))
+  return cut + ' '.repeat(Math.max(0, width - cellsOf(cut)))
 }
 
 /** Like `fit`, but a row that does not fit loses its tail with an ellipsis. */
 export function fitEllipsis(segments, width) {
-  const total = segments.reduce((n, s) => n + Array.from(s.text).length, 0)
+  const total = segments.reduce((n, s) => n + cellsOf(s.text), 0)
   if (total <= width) return fit(segments, width)
   const room = Math.max(0, width - 1)
   const out = []
   let used = 0
   for (const s of segments) {
     if (used >= room) break
-    const take = Array.from(s.text).slice(0, room - used).join('')
-    if (take) {
-      out.push({ ...s, text: take })
-      used += Array.from(take).length
+    const take = head(s.text, room - used)
+    if (take.text) {
+      out.push({ ...s, text: take.text })
+      used += take.used
     }
   }
-  out.push(text('\u2026', out.length ? out[out.length - 1].style : 'plain'))
+  out.push(text('…', out.length ? out[out.length - 1].style : 'plain'))
   used += 1
   if (used < width) out.push(text(' '.repeat(width - used)))
   return out
@@ -74,9 +120,9 @@ export function fit(segments, width) {
   let used = 0
   for (const s of segments) {
     if (used >= width) break
-    const take = Array.from(s.text).slice(0, width - used).join('')
-    if (take) out.push({ ...s, text: take })
-    used += Array.from(take).length
+    const take = head(s.text, width - used)
+    if (take.text) out.push({ ...s, text: take.text })
+    used += take.used
   }
   if (used < width) out.push(text(' '.repeat(width - used)))
   return out
@@ -259,17 +305,17 @@ export function helpLines(options = {}) {
   const digits = digitRange(options.rows) || '1-9'
   const row = (key, what) => '  ' + pad(key, 16) + what
   return [
-    'keys',
-    row(digits, 'select a row and open the preview; it takes the keys'),
-    row('', 'digits work only from an empty prompt'),
+    'board mode: every key goes to the board until esc',
+    row('0', 'enter board mode, from an empty prompt'),
+    row(digits, 'select a row; from the prompt it enters too'),
     row('j k', 'move the selection; the preview follows'),
+    row('enter', 'details; enter again goes back'),
     row('d', 'Done on the selected needs-you item'),
     row('a', 'Ask its orchestrator'),
-    row('enter', 'more: a project’s tasks, or a task’s status, blockers, PR'),
-    row('esc', 'back to the prompt; a docked preview stays, an inline one closes'),
-    row('click', 'a row selects it; the selected row again shows more'),
-    row('ctrl+x tab', 'the band takes the keys: j k, d a, enter; esc gives them back'),
-    row('ctrl+x x', 'close the preview'),
+    row('?', 'this help; ? or enter goes back'),
+    row('esc', 'leave: the keys go back to the prompt'),
+    row('vim normal', 'press i, then 0'),
+    row('click', 'a row selects it'),
     '',
     'commands',
     row('/cos', 'the board as text'),
@@ -277,18 +323,26 @@ export function helpLines(options = {}) {
     row('/cos pane', 'open the preview'),
     row('/cos help', 'this help'),
     '',
-    'buttons',
-    row('Done', 'tells the chief to close the item; the row shows each step:'),
-    row('', 'sending, the chief is closing it, closed, or still open'),
-    row('Ask', 'sends a question to the channel’s owner; the chief relays it'),
+    'done and ask',
+    row('d', 'the chief closes the item; the row shows'),
+    row('', 'sending, closing, closed, or still open'),
+    row('a', 'asks the owner; the chief relays the reply'),
   ]
 }
 
 // The band: a title row, then one row per needs-you item and one per active
-// project. Every row is a list of cells: `{ text, style }`, or a cell with a
-// `button` the renderer draws as a plain Button, `N: ` for a row's digit.
+// project. Every row sits on one grid of columns that depends on the band's
+// width alone, never on the data, so a live update never moves a column:
+//
+//   chip  glyph  main ......................  meta ....................  tail ..........
+//   1:    ▲      the needs-you title          project · age              a press status
+//   7:    ●      project name  its epic       ██░░░ 2/5   ●2  ■1  ▲1     orchestrator
+//
+// Every text is cut to its column with an ellipsis. A row is a list of cells:
+// `{ text, style }`, or a cell with a `button` the renderer draws as a plain
+// Button, `N: ` for a row's digit.
 
-const cells = (value) => Array.from(String(value)).length
+const cells = cellsOf
 const span = (segments) => segments.reduce((n, s) => n + cells(s.text), 0)
 
 /** The band's rows, in order: each needs-you item, then each active project. */
@@ -306,20 +360,11 @@ export function bandItems(board, questions = allQuestions(board)) {
  */
 export function chip(item, index, digitKeys = true) {
   const digit = index < 9 ? String(index + 1) : ''
-  const button = { key: item.key, label: digit ? '' : '   ', kind: 'select', arg: item.key, plain: true }
+  const title = item.kind === 'needs' ? item.q.title : item.project.project
+  const button = { key: item.key, label: digit ? '' : '   ', title: String(title || item.key), kind: 'select', arg: item.key, plain: true }
   if (digit && digitKeys) button.hotkey = digit
   else if (digit) button.digit = digit
   return { text: digit ? digit + ': ' : '   ', style: 'hotkey', button }
-}
-
-/** A key the hint names: the letter in the accent color, then its word. */
-function keyText(key, word) {
-  return [text(key, 'key'), text(word ? ' ' + word : '', 'dim')]
-}
-
-/** A Button with a hotkey, drawn plain: `d: Done`. `arg` names what it acts on. */
-function keyButton(key, label, kind, hotkey, arg) {
-  return { text: hotkey + ': ' + label, style: 'hotkey', button: { key, label, kind, hotkey, plain: true, arg } }
 }
 
 /** The age of a needs-you item when the board was read: `42m`. */
@@ -341,47 +386,28 @@ export function ageText(ms) {
   return Math.floor(h / 24) + 'd'
 }
 
-/**
- * What a needs-you item can do now, for its buttons: `{ status, done,
- * doneAgain, ask, askAgain, buttons, arg }`. `status` is what pressStatus or
- * pressStatusShort (mod/status.js) gave; `done` and `ask` say whether that
- * button can be pressed, and the `Again` flags relabel it after a failure;
- * `buttons` draws them at all (only the selected item has them, as a hotkey
- * is one per site); `arg` is the item's key, which the press acts on.
- */
-
-/** The preview's line of an item: its full status, then its buttons. */
-export function itemActions(p, askLabel = 'Ask', statusCap = Infinity) {
-  const out = []
-  // A long status ("asked orch-roger-emr-observability-dashboards at 10:25")
-  // is cut where room is short; the preview card shows it whole.
-  if (p.status) out.push(...(span(p.status) > statusCap ? fitEllipsis(p.status, statusCap) : p.status))
-  if (!p.buttons) return out
-  if (p.done) out.push(keyButton('done', p.doneAgain ? 'Done again' : 'Done', 'done', 'd', p.arg))
-  if (p.ask) out.push(keyButton('ask', p.askAgain ? 'Ask again' : askLabel, 'ask', 'a', p.arg))
-  return out
-}
-
-/** The cells a needs-you row keeps for its buttons or its status, on every
- * row, so a press never moves a column: `d: Done  a: Ask` is 15. */
-export const ACTION_SLOT = 17
-/** The slot of a band that draws no buttons: a short status, `◷ closing 12m`. */
+/** The short status a needs row shows in its tail: `◷ closing`, `✓ asked`. */
 export const STATUS_SLOT = 13
+/** The meta column: `██░░░ 2/5   ●2  ■1  ▲1 `, or `borant · 42m`. A band
+ * under 100 cells has the narrow one, with the most urgent count alone. */
+export const META = 24
+const NARROW_META = 16
+/** The widest main column. Past it the rows end early, so the meta never sits
+ * far from a short title on a wide terminal. */
+export const MAIN_MAX = 100
+const GAP = 2
 
 /**
- * A band row's buttons or short status, in ACTION_SLOT cells at most. After a
- * failure the row offers the press again: `! d: Done again`, `! a: Ask again`.
+ * The band's columns at one width: `{ main, meta, tail, row }`, in cells.
+ * The chip and the glyph take five cells before `main`. A column with no
+ * room is 0 and left out: the tail first, then the meta. `row` is where every
+ * row ends.
  */
-export function bandActions(p) {
-  const status = p.status || []
-  if (!p.buttons) return status
-  const done = p.done ? keyButton('done', p.doneAgain ? 'Done again' : 'Done', 'done', 'd', p.arg) : null
-  const ask = p.ask ? keyButton('ask', p.askAgain ? 'Ask again' : 'Ask', 'ask', 'a', p.arg) : null
-  if (!status.length) return [done, done && ask ? text('  ') : null, ask].filter(Boolean)
-  if (done && p.doneAgain) return [text('! ', 'red'), done]
-  if (ask && p.askAgain) return [text('! ', 'red'), ask]
-  const withDone = done ? [...status, text('  '), done] : status
-  return span(withDone) <= ACTION_SLOT ? withDone : status
+export function bandGrid(width) {
+  const meta = width >= 100 ? META : width >= 56 ? NARROW_META : 0
+  const tail = width >= 140 ? 32 : width >= 90 ? STATUS_SLOT + 4 : 0
+  const main = Math.max(8, Math.min(MAIN_MAX, width - 5 - (meta ? GAP + meta : 0) - (tail ? GAP + tail : 0)))
+  return { main, meta, tail, row: 5 + main + (meta ? GAP + meta : 0) + (tail ? GAP + tail : 0) }
 }
 
 /** The state of a project's plain tasks, for a project with no epic. */
@@ -418,180 +444,128 @@ function cell(segments, width) {
 }
 
 /**
- * The rows of the needs-you items: digit, glyph, title, `project · age`, and
- * the action slot. Every row has the same columns, so the slot and its
- * buttons sit at one place whichever row is selected and whatever a press
- * shows. The title takes the room first, after `project · age` for all
- * but the longest; a name is cut before its age. Leftover space goes after
- * the slot, at the row's end.
+ * A needs-you row: digit, glyph, title, `project · age`, and the status of a
+ * Done or an Ask. Where the band has no tail, the status takes the meta's
+ * place while there is one.
  */
-function needsRows(items, start, o) {
-  if (!items.length) return []
-  const metas = items.map(({ q }) => ({ name: q.project || '?', age: waited(q, o.board) }))
-  const metaLen = (m) => cells(m.name) + (m.age ? 3 + cells(m.age) : 0)
-  const longestMeta = Math.max(...metas.map(metaLen))
-  const longestTitle = Math.max(8, ...items.map(({ q }) => cells(q.title || '')))
-  // The slot holds buttons only where the band draws them (`reserveActions`);
-  // elsewhere a short status, at most STATUS_SLOT cells.
-  const slot = o.reserveActions ? ACTION_SLOT : STATUS_SLOT
-  const room = o.width - 5 - 2 - 2 - slot
-  // `project · age` fits all but the longest one in full, in at most 40% of
-  // the room; the longest is cut at its name. More room goes to it first.
-  const sorted = metas.map(metaLen).sort((a, b) => b - a)
-  const metaMin = Math.min(longestMeta, Math.max(14, Math.min(sorted[1] ?? sorted[0], Math.floor(room * 0.4))))
-  const meta = Math.max(metaMin, Math.min(longestMeta, room - longestTitle))
-  const title = Math.max(12, Math.min(longestTitle, room - meta))
-  return items.map((item, i) => {
-    const { q } = item
-    const m = metas[i]
-    const ageCells = m.age ? 3 + cells(m.age) : 0
-    const glyph = q.closed ? text(GLYPH.done + ' ', 'green') : text(GLYPH.needs + ' ', 'yellow')
-    const metaCells = [text(truncate(m.name, Math.max(4, meta - ageCells)), 'bold'), ...(m.age ? [text(' · ' + m.age, 'dim')] : [])]
-    const row = [
-      chip(item, start + i, o.digitKeys !== false),
-      glyph,
-      ...cell([text(q.title || '', q.closed ? 'dim' : 'yellowBold')], title),
-      text('  '),
-      ...cell(metaCells, meta),
-      text('  '),
-      ...fitEllipsis(o.actionsFor(item), slot).filter((c) => c.text !== '' || c.button),
-    ]
-    return { key: item.key, cells: fit(row, o.width), used: 5 + title + 2 + meta + 2 + slot }
-  })
+function needsRow(item, index, g, o) {
+  const { q } = item
+  const status = o.statusFor(item) || []
+  const age = waited(q, o.board)
+  const ageCells = age ? 3 + cells(age) : 0
+  const where = [text(truncate(q.project || '?', Math.max(4, g.meta - ageCells)), 'bold'), ...(age ? [text(' · ' + age, 'dim')] : [])]
+  const row = [
+    chip(item, index, o.digitKeys !== false),
+    q.closed ? text(GLYPH.done + ' ', 'green') : q.gone ? text(GONE + ' ', 'dim') : text(GLYPH.needs + ' ', 'yellow'),
+    ...cell([text(q.title || '', q.closed || q.gone ? 'dim' : 'yellowBold')], g.main),
+  ]
+  if (g.meta) row.push(text('  '), ...cell(!g.tail && status.length ? status : where, g.meta))
+  if (g.tail) row.push(text('  '), ...cell(status, g.tail))
+  return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
 }
 
-/** The orchestrator column of a wide project row: `orch-borant · hetzner-1 · busy`. */
+/** The orchestrator column of a project row: `orch-borant · busy · hetzner-1`.
+ * The state comes before the host, so a long host is what gets cut. */
 function orchText(project) {
   const orch = (project?.orchestrators || [])[0]
   if (!orch) return 'no orchestrator'
   const state = orch.online === false ? 'offline' : orch.busy ? 'busy' : 'online'
-  return [orch.agent, orch.host, state].filter(Boolean).join(' · ')
+  return [orch.agent, state, orch.host].filter(Boolean).join(' · ')
 }
 
-/** The task counts of a wide project row, each in its own column: running, blocked, needs you. */
-function countCells(project) {
+/**
+ * A project's task counts, each in its own four cells: running, blocked,
+ * needs you. With `narrow`, the most urgent one alone: needs you, then
+ * blocked, then running.
+ */
+function countCells(project, narrow = false) {
   const c = project?.tasks || {}
   const one = (n, glyph, style) => (n ? text(pad(glyph + n, 4), style) : text('    '))
+  const needs = (c.needs_human || 0) + (c.stuck || 0)
+  if (narrow) {
+    if (needs) return [one(needs, GLYPH.needs, 'yellow')]
+    if (c.blocked) return [one(c.blocked, GLYPH.blocked, 'red')]
+    return [one(c.running || 0, GLYPH.running, 'blue')]
+  }
+  return [one(c.running || 0, GLYPH.running, 'blue'), one(c.blocked || 0, GLYPH.blocked, 'red'), one(needs, GLYPH.needs, 'yellow')]
+}
+
+/**
+ * A project row: digit, the state of its current epic, its name and that
+ * epic in the main column, then a five-cell bar, done/total, and the counts
+ * in the meta, and its orchestrator in the tail.
+ */
+function projectRow(item, index, g, o) {
+  const p = projectParts(item.project)
+  const name = Math.min(34, Math.max(6, Math.floor(g.main * 0.35)))
+  const row = [
+    chip(item, index, o.digitKeys !== false),
+    text(GLYPH[p.state] + ' ', p.state),
+    ...cell([text(item.project.project, 'bold')], name),
+    text(' '),
+    ...cell([text(p.epic)], g.main - name - 1),
+  ]
+  if (g.meta) row.push(text('  '), ...cell([text(p.filled, 'green'), text(p.empty, 'faint'), text(' ' + pad(p.ratio, 5) + ' '), ...countCells(item.project, g.meta < META)], g.meta))
+  if (g.tail) row.push(text('  '), ...cell([text(orchText(item.project), 'dim')], g.tail))
+  return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
+}
+
+/**
+ * The mode at the title row's end. At rest it is the Button that enters
+ * board mode, `0: board mode`, pressed by a bare 0 at the empty prompt; in
+ * board mode it says how to leave. Both end at the row's end, and the rule
+ * before them takes up the difference, so nothing else moves.
+ */
+export function modeCells(active) {
+  if (active) return [text('board mode', 'modeOn'), text(' · ', 'dim'), text('esc', 'key'), text(' exit', 'dim')]
   return [
-    one(c.running || 0, GLYPH.running, 'blue'),
-    one(c.blocked || 0, GLYPH.blocked, 'red'),
-    one((c.needs_human || 0) + (c.stuck || 0), GLYPH.needs, 'yellow'),
+    { text: '0: board mode', style: 'hotkey', button: { key: 'board', label: 'board mode', kind: 'board', hotkey: '0', plain: true } },
+    // In vim normal mode a bare 0 is vim's, and no mod sees it.
+    text(' (vim: i 0)', 'dim'),
   ]
 }
 
 /**
- * The rows of the active projects: digit, name, the current epic with its
- * glyph, a five-cell bar, done/total, and the counts that need a look. The
- * name column takes the longest name; the epic gives way first. From 150
- * columns a row also has running, blocked, and needs-you counts in columns,
- * and the orchestrator with its host.
- */
-function projectRows(items, start, o) {
-  if (!items.length) return []
-  const wide = o.width >= 150
-  const parts = items.map(({ project }) => projectParts(project))
-  const longestName = Math.max(4, ...items.map(({ project }) => cells(project.project)))
-  const longestEpic = Math.max(4, ...parts.map((p) => cells(p.epic)))
-  const ratio = Math.max(0, ...parts.map((p) => cells(p.ratio)))
-  const counts = wide ? 12 : Math.max(0, ...parts.map((p) => span(p.counts)))
-  const orch = wide ? Math.max(...items.map(({ project }) => cells(orchText(project)))) : 0
-  const tail = 2 + 5 + 1 + ratio + (counts ? 2 + counts : 0) + (orch ? 2 + orch : 0)
-  let name = longestName
-  let epic = Math.min(longestEpic, o.width - 3 - name - 1 - 2 - tail)
-  if (epic < 12) {
-    // The epic gives way first, down to twelve cells; then the names are cut.
-    epic = Math.min(longestEpic, 12)
-    name = Math.max(6, Math.min(longestName, o.width - 3 - 1 - 2 - epic - tail))
-  }
-  return items.map((item, i) => {
-    const p = parts[i]
-    const row = [
-      chip(item, start + i, o.digitKeys !== false),
-      ...cell([text(item.project.project, 'bold')], name),
-      text(' '),
-      text(GLYPH[p.state] + ' ', p.state),
-      ...cell([text(p.epic)], epic),
-      text('  '),
-      text(p.filled, 'green'),
-      text(p.empty, 'faint'),
-      text(' '),
-      ...cell([text(p.ratio)], ratio),
-    ]
-    if (wide) row.push(text('  '), ...countCells(item.project), text('  '), text(orchText(item.project), 'dim'))
-    else if (counts) row.push(text('  '), ...cell(p.counts, counts))
-    return { key: item.key, cells: fit(row.filter((s) => s.text !== ''), o.width), used: 3 + name + 3 + epic + tail }
-  })
-}
-
-/**
- * The hint in the title row. At rest it names the digits; while the board has
- * the keys (the preview pane, or the band after a click or ctrl+x tab) it
- * names every key. j and k are the band's own Buttons, so they work there too.
- */
-export function bandHint(o, form) {
-  if (!o.active) return o.rows ? [text(digitRange(o.rows) + ' select', 'dim')] : []
-  const j = keyButton('band-down', '↓', 'band-down', 'j')
-  const k = keyButton('band-up', '↑', 'band-up', 'k')
-  const sep = text(' · ', 'dim')
-  if (form === 'keys') return [j, text(' '), k]
-  const out = [j, text(' '), k, text(' move', 'dim')]
-  // d and a only where the selected row draws that button.
-  if (form === 'full' && o.keys?.done) out.push(sep, ...keyText('d', 'done'))
-  if (form === 'full' && o.keys?.ask) out.push(sep, ...keyText('a', 'ask'))
-  out.push(sep, ...keyText('⏎', 'more'), sep, ...keyText('esc', 'prompt'))
-  return out
-}
-
-/**
- * The title row: `── chief of staff ─ 2 need you · 3 active · 1 idle ──── <hint>
- * ─ <freshness> ─ [ ? ] ─`. Forms are tried from the fullest; the first that
- * leaves the rule four cells is drawn.
+ * The title row: `── chief of staff ─ 6 need you · 9 active · 3 idle ───── 0:
+ * board mode ─`, as wide as the rows. The mode sits at the end, right
+ * aligned, so a count that grows never moves it. A stale board says so just
+ * before it. Narrower, the idle count goes first, then the active count.
  */
 export function titleRow(board, o) {
-  const full = o.width
-  const questions = (o.questions || []).filter((q) => !q.closed)
+  const width = Math.min(o.width, Math.max(o.rowWidth || 0, 48))
+  const questions = (o.questions || []).filter((q) => !q.closed && !q.gone)
   const all = allProjects(board).length
   const active = activeProjects(board).length
   const summary = questions.length
     ? [text(questions.length + ' need you', 'yellowBold')]
     : [text(GLYPH.done + ' nothing needs you', 'green')]
-  const counts = (idle) =>
-    idle === null ? text('') : text(' · ' + active + ' active' + (idle && all - active ? ' · ' + (all - active) + ' idle' : ''), 'dim')
-  const help = { text: '[ ? ]', style: 'button', button: { key: 'help', label: '?', kind: 'help' } }
-  const label = full >= 110 ? 'chief of staff' : 'cos'
-  const fresh = o.fresh || []
-  let width = full
-  const build = (idle, hint, freshParts) => {
-    const left = [text(RULE + RULE + ' ', 'faint'), text(label, 'bold'), text(' ' + RULE + ' ', 'faint'), ...summary, counts(idle)]
-    const right = [...(hint.length ? [text(' '), ...hint, text(' ' + RULE, 'faint')] : []), text(' '), ...freshParts, text(' ' + RULE + ' ', 'faint'), help, text(' ' + RULE, 'faint')]
+  // Board mode holds its rows still: what arrived meanwhile shows after esc.
+  // Like the counts, the note goes when the row has no room for it.
+  const waiting = o.waiting ? [text(' · +' + o.waiting + ' after esc', 'dim')] : []
+  const waitingShort = o.waiting ? [text(' · +' + o.waiting + ' new', 'dim')] : []
+  const label = width >= 110 ? 'chief of staff' : 'cos'
+  const mode = modeCells(o.active)
+  const stale = o.stale ? [o.stale, text(' ' + RULE + ' ', 'faint')] : []
+  const build = (counts) => {
+    const left = [text(RULE + RULE + ' ', 'faint'), text(label, 'bold'), text(' ' + RULE + ' ', 'faint'), ...summary, ...counts]
+    const right = [text(' '), ...stale, ...mode, text(' ' + RULE, 'faint')]
     const dashes = width - span(left) - 1 - span(right)
     return { dashes, row: [...left, text(' ' + RULE.repeat(Math.max(0, dashes)), 'faint'), ...right] }
   }
-  // With `fitTo` (where the rows end) the row is as wide as its fullest form
-  // or the rows, whichever is wider, up to the full width.
-  if (o.fitTo) width = Math.min(full, Math.max(o.fitTo, width - build(true, bandHint(o, 'full'), fresh).dashes + 4))
-  // While the board has the keys, j and k are this row's Buttons, and the
-  // only way those keys reach the band: they stay in every form, and the
-  // counts and the freshness word go first.
-  const keys = bandHint(o, 'keys')
+  const idle = all - active
   const forms = [
-    [true, bandHint(o, 'full'), fresh],
-    [true, bandHint(o, 'short'), fresh],
-    [false, bandHint(o, 'short'), fresh],
-    [false, keys, fresh],
-    [false, keys, fresh.slice(0, 1)],
-    [null, keys, fresh.slice(0, 1)],
-    [null, keys, []],
-    ...(o.active ? [] : [[false, [], fresh.slice(0, 1)], [null, [], fresh.slice(0, 1)]]),
+    [...waiting, text(' · ' + active + ' active' + (idle ? ' · ' + idle + ' idle' : ''), 'dim')],
+    [...waiting, text(' · ' + active + ' active', 'dim')],
+    waiting,
+    waitingShort,
+    [],
   ]
-  for (const [idle, hint, freshParts] of forms) {
-    const built = build(idle, hint, freshParts)
-    if (built.dashes >= 4) return fit(built.row, width)
+  for (const counts of forms) {
+    const built = build(counts)
+    if (built.dashes >= 3) return fit(built.row, o.width)
   }
-  // Narrower still: the keys first, so they are never cut, then the summary.
-  if (o.active) return fit([text(RULE + RULE + ' ', 'faint'), ...keys, text(' ' + RULE + ' ', 'faint'), ...summary], width)
-  const last = forms[forms.length - 1]
-  return fitEllipsis(build(last[0], last[1], last[2]).row, width)
+  // Narrower still: the mode first, so its key is never cut, then the summary.
+  return fit([text(RULE + ' ', 'faint'), ...mode, text(' ' + RULE + ' ', 'faint'), ...summary], o.width)
 }
 
 /** The band as one row, for a band with room for one row. */
@@ -605,56 +579,48 @@ export function condensedRow(board, o) {
     parts.push(text('  ' + BRANCH + '  ', 'faint'), text(project.project, 'bold'), text(' ' + (p.ratio || openTasksLabel(project))))
     if (p.counts.length) parts.push(text(' '), ...p.counts)
   }
-  const fresh = o.fresh || []
-  const room = width - span(fresh) - 2
-  return fit([...fitEllipsis(parts, room), text('  '), ...fresh], width)
+  // The mode comes first in the room: its key, or how to leave, is never cut.
+  const mode = modeCells(o.active)
+  const room = Math.max(0, width - span(mode) - 2)
+  return fit([...fitEllipsis(parts, room), text('  '), ...mode], width)
 }
 
 /**
  * The band: the title row, then one row per needs-you item and per active
- * project. `o` is `{ width, maxRows, questions, selected, active, fill,
- * actionsFor, reserveActions, fresh, digitKeys }`; `actionsFor(item)` gives the cells
- * after an item's columns (mod/status.js decides them). Each row is
- * `{ key, cells, selected }`.
+ * project. `o` is `{ width, gridWidth, maxRows, questions, items, waiting,
+ * selected, active, statusFor, stale, digitKeys }`: `statusFor(item)` gives a
+ * needs row's short press status (mod/status.js), `active` says the board has
+ * the keys (board mode), which fills the selected row. `items` replaces the
+ * rows bandItems gives (board mode holds them still), `waiting` counts the
+ * rows held back, and `gridWidth` lays the columns out narrower than the band
+ * (as wide as it is with the preview docked). Each row is `{ key, cells,
+ * selected }`.
  */
 export function bandRows(board, o = {}) {
   const width = Math.max(20, o.width || 100)
   const maxRows = o.maxRows === undefined || o.maxRows === null ? Infinity : o.maxRows
   const questions = o.questions || allQuestions(board)
-  const items = bandItems(board, questions)
+  const items = o.items || bandItems(board, questions)
   if (maxRows <= 1) return [{ key: 'band-condensed', cells: condensedRow(board, { ...o, width, questions }) }]
   const selected = o.selected || null
+  const g = bandGrid(Math.min(width, o.gridWidth || width))
+  const opts = { ...o, width, board, statusFor: o.statusFor || (() => []) }
   const needs = items.filter((i) => i.kind === 'needs')
   const projects = items.filter((i) => i.kind === 'project')
-  const opts = {
-    ...o,
-    width,
-    board,
-    actionsFor: o.actionsFor || (() => []),
-  }
-  const body = [...needsRows(needs, 0, opts), ...projectRows(projects, needs.length, opts)]
-  // The hint names d and a only when the selected row draws those buttons,
-  // and the digits only of the rows drawn at rest: the band's window starts
-  // at the top, and a bare digit reaches only a drawn chip.
-  const pressable = new Set((body.find((r) => r.key === selected)?.cells || []).filter((c) => c.button).map((c) => c.button.kind))
-  opts.keys = { done: pressable.has('done'), ask: pressable.has('ask') }
-  opts.rows = Math.min(items.length, 1 + body.length > maxRows ? Math.max(1, maxRows - 2) : items.length)
-  // The title row ends where the rows do, so its hint and freshness sit by
-  // the content, not across an empty stretch at the terminal's far edge.
-  const used = Math.max(0, ...body.map((r) => r.used || 0))
-  const rows = [{ key: 'band-title', cells: titleRow(board, { ...opts, fitTo: Math.max(used, 100), questions }) }, ...body]
-  for (const row of rows) row.selected = Boolean(o.fill && row.key === selected)
+  const body = [...needs.map((item, i) => needsRow(item, i, g, opts)), ...projects.map((item, i) => projectRow(item, needs.length + i, g, opts))]
+  const rows = [{ key: 'band-title', cells: titleRow(board, { ...opts, rowWidth: g.row, questions }) }, ...body]
+  for (const row of rows) row.selected = Boolean(o.active && row.key === selected)
   // At rest the window starts at the top, so the digits a person reads from
-  // the prompt are the ones drawn, and armed; with the keys on the board it
-  // follows the selection.
-  return windowed(rows, maxRows, o.fill ? selected : null, width, o.active)
+  // the prompt are the ones drawn, and armed; in board mode it follows the
+  // selection.
+  return windowed(rows, maxRows, o.active ? selected : null, width, o.active)
 }
 
 /**
  * The band in at most `maxRows` rows, the title always first: a band taller
- * than its room would let the engine scroll the title, and the data's age
- * with it, out of view. The window keeps the selected row inside, and a last
- * dim row says how many rows are above and below it.
+ * than its room would let the engine scroll the title out of view. The
+ * window keeps the selected row inside, and a last dim row says how many
+ * rows are above and below it.
  */
 export function windowed(rows, maxRows, selected, width, active = false) {
   if (rows.length <= maxRows) return rows
@@ -666,11 +632,11 @@ export function windowed(rows, maxRows, selected, width, active = false) {
   if (maxRows < 3) return [title, ...shown]
   const above = start
   const below = body.length - start - shown.length
-  const note = [above ? '\u2191 ' + above + ' more' : '', below ? '\u2193 ' + below + ' more' : ''].filter(Boolean).join(' \u00b7 ')
-  // The keys that reach the hidden rows: j and k while the board has the
-  // keys; at rest a digit selects a drawn row and j or k goes on from there.
-  const how = active ? 'j k' : digitRange(shown.length + above) + ' then j k'
-  return [title, ...shown, { key: 'band-more', cells: fit([text('   ' + note + ' \u00b7 ' + how, 'dim')], width) }]
+  const note = [above ? '↑ ' + above + ' more' : '', below ? '↓ ' + below + ' more' : ''].filter(Boolean).join(' · ')
+  // The keys that reach the hidden rows: j and k in board mode; at rest, 0
+  // enters board mode and j or k goes on from there.
+  const how = active ? 'j k' : '0 then j k'
+  return [title, ...shown, { key: 'band-more', cells: fit([text('   ' + note + ' · ' + how, 'dim')], width) }]
 }
 
 /** The short words after an epic's title in the pane. */
@@ -688,8 +654,8 @@ export function epicNote(epic, state) {
  * prefix, the bar, and an eight-cell orchestrator line.
  */
 export function digestColumns(projects, width) {
-  const project = Math.max(10, ...projects.map((p) => Array.from(String(p?.project || '?')).length))
-  const saga = Math.max(17, ...projects.map((p) => Array.from(projectSummary(p).saga).length))
+  const project = Math.max(10, ...projects.map((p) => cellsOf(String(p?.project || '?'))))
+  const saga = Math.max(17, ...projects.map((p) => cellsOf(projectSummary(p).saga)))
   // The orchestrator line is the tail: it takes what is left, and the
   // project and saga columns get the rest first.
   const budget = width - (3 + 1 + 1 + 14 + 3)
@@ -721,7 +687,7 @@ export function digest(board, options = {}) {
   for (const project of projects) {
     const s = projectSummary(project, 10)
     const left = BRANCH + '  ' + pad(s.project, columns.project) + ' ' + pad(s.saga, columns.saga) + ' ' + (s.plain ? openTasksLabel(project) : s.bar.text)
-    const room = Math.max(0, width - Array.from(left).length)
+    const room = Math.max(0, width - cellsOf(left))
     let tail = ''
     if (room >= 4) tail = ' \u00b7 ' + truncate(orchestratorLine(project), room - 3)
     else if (room >= 2) tail = ' \u2026'

@@ -9,6 +9,8 @@
 
 import {
   GLYPH,
+  GONE,
+  cellsOf,
   activeSaga,
   allProjects,
   epicNote,
@@ -82,21 +84,41 @@ export function localTime(at, fallback = '?') {
   return date.getFullYear() + '-' + two(date.getMonth() + 1) + '-' + two(date.getDate()) + ' ' + two(date.getHours()) + ':' + two(date.getMinutes())
 }
 
-/** Words wrapped to `width` cells; a word longer than a line is cut. */
-export function wrap(value, width) {
+/** Words wrapped to `width` cells. A word longer than a line is cut, or
+ * with `split` it goes on over the next lines, so nothing of it is lost. */
+export function wrap(value, width, split = false) {
   const w = Math.max(4, width)
   const lines = []
   let line = ''
   for (const word of String(value || '').split(/\s+/).filter(Boolean)) {
     const next = line ? line + ' ' + word : word
-    if (Array.from(next).length <= w) line = next
+    if (cellsOf(next) <= w) line = next
     else {
       if (line) lines.push(line)
-      line = truncate(word, w)
+      line = split ? word : truncate(word, w)
+      while (split && cellsOf(line) > w) {
+        const chars = Array.from(line)
+        let take = 0
+        let used = 0
+        while (take < chars.length && used + cellsOf(chars[take]) <= w) used += cellsOf(chars[take++])
+        lines.push(chars.slice(0, take).join(''))
+        line = chars.slice(take).join('')
+      }
     }
   }
   if (line || lines.length === 0) lines.push(line)
   return lines
+}
+
+/** How many lines the details give a title: all of it, wrapped. */
+export function titleLineCount(title, width) {
+  return wrap(title, Math.max(24, width) - 2, true).length
+}
+
+/** A title in exactly `n` lines: padded, or cut with an ellipsis on the last. */
+function fixedLines(lines, n, width) {
+  if (lines.length <= n) return [...lines, ...Array(n - lines.length).fill('')]
+  return [...lines.slice(0, n - 1), truncate(lines.slice(n - 1).join(' '), width)]
 }
 
 /** A line drawn on the selection's background: the selected row's own title. */
@@ -125,9 +147,10 @@ function ownerParts(board, q) {
   const orch = orchs.find((o) => o.agent === q.owner) || (q.owner ? null : orchs[0])
   const agent = q.owner || orch?.agent
   if (!agent) return [text('no orchestrator', 'dim')]
+  // The state comes before the host, so a long host is what gets cut.
   const out = [text(agent, 'bold')]
-  if (orch?.host) out.push(text(DOT + orch.host, 'dim'))
   if (orch) out.push(text(DOT + (orch.online === false ? 'offline' : orch.busy ? 'busy' : 'online'), orch.online === false ? 'red' : 'dim'))
+  if (orch?.host) out.push(text(DOT + orch.host, 'dim'))
   return out
 }
 
@@ -140,7 +163,7 @@ function epicsOf(project) {
 /** One line per epic: glyph, title, and its state in words, in two columns. */
 function epicLines(epics, width, indent = '  ') {
   const room = Math.max(8, width - indent.length - 2 - 14)
-  const col = Math.min(room, Math.max(8, ...epics.map((e) => Array.from(e.title || '').length)))
+  const col = Math.min(room, Math.max(8, ...epics.map((e) => cellsOf(e.title || ''))))
   return epics.map((epic) => {
     const state = epicState(epic)
     return [
@@ -200,7 +223,7 @@ function childLines(list, epic, indent) {
 
 /** The header: `needs you · 1 of 6` at the left, the freshness at the right. */
 function header(left, right, width) {
-  const used = Array.from(left).length + right.reduce((n, s) => n + Array.from(s.text).length, 0)
+  const used = cellsOf(left) + right.reduce((n, s) => n + cellsOf(s.text), 0)
   return [text(left, 'dim'), text(' '.repeat(Math.max(1, width - used))), ...right]
 }
 
@@ -230,8 +253,8 @@ function needsCard(s, width) {
   const saga = activeSaga(project)
   const tasks = s.tasks || {}
   const says = q.attention_msg || (q.gate ? 'the saga gate: approve to start' : 'waits on you')
-  const glyph = q.closed ? text(GLYPH.done + ' ', 'green') : text(GLYPH.needs + ' ', 'yellow')
-  const titleStyle = q.closed ? 'dim' : 'yellowBold'
+  const glyph = q.closed ? text(GLYPH.done + ' ', 'green') : q.gone ? text(GONE + ' ', 'dim') : text(GLYPH.needs + ' ', 'yellow')
+  const titleStyle = q.closed || q.gone ? 'dim' : 'yellowBold'
   if (s.compact) {
     const where = [q.project, saga?.title, says, waited(q, board), ...ownerParts(board, q).map((p) => p.text.replace(/^ · /, ''))].filter(Boolean)
     const out = [
@@ -251,11 +274,22 @@ function needsCard(s, width) {
     }
     // The buttons and keys sit in the block's key line (the renderer's); more
     // takes the place of the saga, as the block has four rows at most.
-    if (s.more) return [out[0], ...compactDetail(tasks[q.channel], q.task)]
+    // Details show the whole title, wrapped, in place of the one cut line,
+    // in the lines it had when they opened: a refresh never moves the rest.
+    if (s.more) {
+      const all = wrap(q.title || '', width - 2, true)
+      const lines = s.titleHold ? fixedLines(all, s.titleHold, width - 2) : all
+      return [...lines.map((line, i) => selected([i ? text('  ') : glyph, text(line, titleStyle)])), ...compactDetail(tasks[q.channel], q.task)]
+    }
     return out
   }
   const out = [header('needs you' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
-  wrap(q.title, width - 2).forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
+  // The title takes two lines, padded or cut, so a title that changes on a
+  // refresh never moves the fields under it. Details show all of it, in the
+  // lines it had when they opened.
+  const all = wrap(q.title, width - 2, s.more)
+  const two = fixedLines(all, s.more ? s.titleHold || all.length : 2, width - 2)
+  two.forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
   if (s.actions && s.actions.length) out.push([text(' ')], [text('  '), ...s.actions])
   out.push([text(' ')])
   out.push(field('project', [text(q.project || '?', 'bold'), ...(saga ? [text(DOT + saga.title, 'dim')] : [])]))
@@ -337,7 +371,7 @@ function projectCard(s, width) {
     for (const epic of open) {
       const state = epicState(epic)
       const cellText = GLYPH[state] + ' ' + epic.title + '   '
-      if (used + Array.from(cellText).length > width && line.length > 1) {
+      if (used + cellsOf(cellText) > width && line.length > 1) {
         out.push(line)
         lines += 1
         if (lines === 2) break
@@ -345,7 +379,7 @@ function projectCard(s, width) {
         used = 2
       }
       line.push(text(GLYPH[state] + ' ', state), text(epic.title + '   '))
-      used += Array.from(cellText).length
+      used += cellsOf(cellText)
     }
     if (done) line.push(text(GLYPH.done + ' ' + done + ' done', 'dim'))
     if (lines < 2 && line.length > 1) out.push(line)
@@ -353,7 +387,8 @@ function projectCard(s, width) {
   }
   const out = [header('project' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
   out.push(selected([text(project.project, 'bold')]))
-  if (saga) wrap(saga.title, width - 2).forEach((line) => out.push(selected([text('  ' + line)])))
+  // The saga's title takes two lines, padded or cut, as a needs-you title.
+  if (saga) fixedLines(wrap(saga.title, width - 2), 2, width - 2).forEach((line) => out.push(selected([text('  ' + line)])))
   if (parts.ratio) out.push([text('  '), text(parts.filled, 'green'), text(parts.empty, 'faint'), text(' ' + parts.ratio + ' epics done', 'dim')])
   out.push([text('  ' + orchText, 'dim')])
   out.push([text(' ')])
@@ -362,7 +397,7 @@ function projectCard(s, width) {
   out.push([text(' ')])
   out.push([text('  ' + pad('tasks', 10), 'dim'), text(countText.join(DOT) || 'none open')])
   return out.map((line) => {
-    const fitted = fit(line, width)
+    const fitted = fitEllipsis(line, width)
     if (line.selected) fitted.selected = true
     return fitted
   })
@@ -370,5 +405,17 @@ function projectCard(s, width) {
 
 /** The help view, as lines. */
 export function helpPreview(lines, width) {
-  return lines.map((line) => fitEllipsis([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], Math.max(24, width)))
+  const w = Math.max(24, width)
+  const out = []
+  for (const line of lines) {
+    if (!line.startsWith('  ') || cellsOf(line) <= w) {
+      out.push(fitEllipsis([text(line, line.startsWith('  ') ? 'plain' : 'dimBold')], w))
+      continue
+    }
+    // A key row: its words wrap under the words, after the key column.
+    const keyCells = 18
+    const words = wrap(line.slice(keyCells), w - keyCells)
+    words.forEach((part, i) => out.push(fit([text((i ? ' '.repeat(keyCells) : line.slice(0, keyCells)) + part)], w)))
+  }
+  return out
 }
