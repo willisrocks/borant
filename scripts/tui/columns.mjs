@@ -47,7 +47,12 @@ let moved = 0
 let same = 0
 for (const [name, cols] of before) {
   if (!after.has(name)) continue
-  if (after.get(name) === cols) same++
+  // A column that comes or goes (a press status in the tail) is no move: a
+  // move is a column at a new place, so neither row holds the other's.
+  const holds = (x, y) => x.every((c) => y.includes(c))
+  const parse = (v) => ({ line: (v.match(/line (\d+)/) || [])[1], cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean) })
+  const [x, y] = [parse(cols), parse(after.get(name))]
+  if (after.get(name) === cols || (x.line === y.line && (holds(x.cells, y.cells) || holds(y.cells, x.cells)))) same++
   else {
     moved++
     console.log('moved: ' + name + ' [' + cols + '] -> [' + after.get(name) + ']')

@@ -369,6 +369,9 @@ STEP_WAIT=2 step resized
 tmux -L "$TUI_NAME" resize-window -t tui -x "$width" -y "$height"
 TUI_W="$width" TUI_H="$height"
 STEP_WAIT=2 step resized-back
+if [ "$width" -ge 186 ]; then
+  check "after a resize and back the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+fi
 
 # Empty: nothing needs the person and no project has work.
 node "$root/scripts/tui/board-variants.mjs" empty "$stub" >>"$log"

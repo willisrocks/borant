@@ -119,6 +119,8 @@ let helpShown = false
 let taskCache = new Map()
 /** The preview pane: open, where it sits, whether it holds the keys, its width. */
 let paneOpen = false
+/** The pane closed (esc, ctrl+x x, its close mark) and no open came since. */
+let paneClosed = false
 let placement = null
 let paneFocused = false
 let paneWidth = 60
@@ -210,8 +212,9 @@ export function register(on) {
       measure(e)
       clockNow = await nowMs($)
       const props = e.props || {}
-      // A drawing of the pane means it is open, also after the module reloads.
-      paneOpen = true
+      // A drawing of the pane means it is open, also after the module reloads,
+      // but not the one it draws as it closes.
+      if (!paneClosed) paneOpen = true
       if (board && !helpShown && !current().item) closeSoon($, () => !current().item && !helpShown)
       const focused = Boolean(props.isFocused)
       const place = props.placement || null
@@ -249,6 +252,7 @@ export function register(on) {
       if (e.id === PANE) {
         boardGen += 1
         paneOpen = false
+        paneClosed = true
         setFocused(false)
         placement = null
         more = false
@@ -899,6 +903,7 @@ async function openPane($, focus) {
     const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: paneColumns(), ...(focus ? { focus: true, closeOnEscape: true } : {}) })
     if (opened && opened.isPlaced === false) return false
     paneOpen = true
+    paneClosed = false
     return true
   } catch {
     return false
