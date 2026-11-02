@@ -380,13 +380,30 @@ scenario_liveness() {
   pid=$(harness_pid_of host-b lworker)
   [ -n "$pid" ] || { echo "  no harness process for lworker" >&2; return 1; }
   on host-b kill -9 "$pid" || return 1
-  # The host checks liveness every 5 s and keeps the end in its outbox.
+  # The host checks liveness every 5 s and keeps the end in its outbox. Stop
+  # that host too, so the hub hears the end only after the other hosts have
+  # heartbeated and can take the relaunch: a restart grace leaves the
+  # in-memory host view empty, and an end that arrives first would find no
+  # host to place the worker on.
   sleep 8
+  dc stop host-b >/dev/null || return 1
   # With git down, the relaunch cannot restore, so the spawn stays `ended`
   # until the restart brings git back.
   dc stop git >/dev/null || return 1
   dc start hub >/dev/null || return 1
-  wait_for "the hub back" hub_answers || return 1
+  if ! wait_for "the hub back" hub_answers; then
+    dc start host-b git >/dev/null 2>&1
+    return 1
+  fi
+  other_hosts_online() {
+    borant_on host-a hosts 2>/dev/null |
+      jq -e '[.[] | select(.host.name != "host-b") | .online] | all'
+  }
+  if ! wait_for "host-a and host-c online" other_hosts_online; then
+    dc start host-b git >/dev/null 2>&1
+    return 1
+  fi
+  dc start host-b >/dev/null || return 1
 
   if ! wait_for "the spawn is ended, not running" spawn_ended lworker; then
     dc start git >/dev/null 2>&1
