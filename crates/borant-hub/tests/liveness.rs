@@ -450,6 +450,91 @@ async fn silence_is_reported_once_per_quiet_spell() {
 }
 
 #[tokio::test]
+async fn a_silent_host_is_not_swept_before_the_claim_timeout() {
+    let fx = Fx::new();
+    let (boss, w) = setup(&fx).await;
+    let mut to_boss = fx
+        .bus
+        .subscribe(&subjects::agent(&boss.agent))
+        .await
+        .unwrap();
+
+    // The host goes quiet: no heartbeat at all, so the sweep has no evidence
+    // that the session is gone. A laptop sleep must not end every helper.
+    fx.advance(31);
+    fx.hub.tick().await.unwrap();
+    fx.advance(200);
+    fx.hub.tick().await.unwrap();
+
+    let record = spawn_record(&fx, &w.agent).await.expect("the record");
+    assert_eq!(
+        record.state,
+        SpawnState::Running,
+        "a silent host is not a death"
+    );
+    assert!(session(&fx, &w).await.ended.is_none());
+    no_message(&mut to_boss, "no death message for a silent host").await;
+
+    // The host beats again and leaves the session out: now the sweep ends it.
+    fx.heartbeat("h1", &[]).await;
+    fx.advance(60);
+    fx.heartbeat("h1", &[]).await;
+    fx.hub.tick().await.unwrap();
+    let record = spawn_record(&fx, &w.agent).await.expect("the record");
+    assert_eq!(record.state, SpawnState::Ended);
+    assert!(session(&fx, &w).await.ended.is_some());
+    let message = next_message(&mut to_boss).await.expect("a death message");
+    assert!(message.text.contains("died"), "{}", message.text);
+}
+
+#[tokio::test]
+async fn a_reclaimed_session_restores_the_running_spawn() {
+    let fx = Fx::new();
+    let (boss, w) = setup(&fx).await;
+    claim(&fx, &boss, &w).await;
+    // h1 failed a launch, so the recovery has no host and its pending move
+    // stays behind.
+    fx.req(CtlRequest::LaunchFailed {
+        agent: w.agent.clone(),
+        host: h1(),
+        error: "clone failed".into(),
+        timeout_secs: None,
+    })
+    .await
+    .unwrap();
+
+    fx.advance(31);
+    fx.hub.tick().await.unwrap();
+    fx.advance(1);
+    fx.heartbeat("h1", &[]).await;
+    fx.advance(60);
+    fx.heartbeat("h1", &[]).await;
+    fx.hub.tick().await.unwrap();
+    assert_eq!(
+        spawn_record(&fx, &w.agent).await.unwrap().state,
+        SpawnState::Ended,
+        "the sweep ended the session"
+    );
+
+    // The session was only asleep and reclaims its expired lease.
+    fx.heartbeat("h1", &[&w]).await;
+    assert_eq!(
+        spawn_record(&fx, &w.agent).await.unwrap().state,
+        SpawnState::Running,
+        "a reclaimed session runs again"
+    );
+    assert!(
+        session(&fx, &w).await.ended.is_none(),
+        "a reclaimed session is not ended"
+    );
+    let mut launches = fx.commands("h1").await;
+    fx.advance(200);
+    fx.heartbeat("h1", &[&w]).await;
+    fx.hub.tick().await.unwrap();
+    no_launch(&mut launches, &w.agent, "the pending recovery is gone").await;
+}
+
+#[tokio::test]
 async fn a_recent_failure_sends_the_recovery_to_another_host() {
     let fx = Fx::new();
     let (_boss, w) = setup(&fx).await;

@@ -190,6 +190,27 @@ impl Hub {
             mem.claims_released.remove(&s.agent);
             mem.idle_checked.remove(&s.agent);
             mem.wake_checked.remove(&s.agent);
+            // A sweep may have ended this session while the host was asleep;
+            // the reclaim says it still runs, so the spawn is running again,
+            // the session is not ended, and a recovery that waited for the
+            // session is unnecessary.
+            self.mark_spawn_running(&s.agent).await?;
+            if let Ok(Some(mut session)) =
+                self.store.get::<Session>(&keys::session(&s.session)).await
+                && session.value.ended.is_some()
+            {
+                session.value.ended = None;
+                self.store
+                    .put(&session.key, &session.value, Some(session.revision))
+                    .await?;
+            }
+            if mem
+                .pending_moves
+                .get(&s.agent)
+                .is_some_and(|p| p.reason == MoveReason::Recover)
+            {
+                mem.pending_moves.remove(&s.agent);
+            }
             tracing::info!(agent = %s.agent, session = %s.session, token = l.token.0, "lease reclaimed after expiry");
             let event = self.lease_event(
                 now,
@@ -739,6 +760,30 @@ impl Hub {
             }
         }
         Ok(())
+    }
+
+    /// Moves a spawn record that the sweep ended back to `Running`, because
+    /// its session reclaimed the expired lease and still holds it. A failed
+    /// or cancelled spawn keeps the state that waits for a person.
+    async fn mark_spawn_running(&self, agent: &AgentId) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        if !matches!(
+            doc.value.state,
+            SpawnState::Ended | SpawnState::Launching | SpawnState::Queued
+        ) {
+            return Ok(());
+        }
+        let mut record = doc.value;
+        record.state = SpawnState::Running;
+        record.last_reject.clear();
+        match self.store.put(&key, &record, Some(doc.revision)).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Moves a running or launching spawn record to `Ended`, so `ps` and

@@ -146,11 +146,12 @@ impl Hub {
         };
         // The heartbeat test reads the session of the last lease: a beat that
         // is newer than the expiry and leaves it out says the session is
-        // gone. Every agent gets it, pinned or not. A lease that outlives the
-        // grace is dead even without a heartbeat, so a host that never sends
-        // one cannot keep a ghost running.
+        // gone. Every agent gets it, pinned or not. Without a host there is
+        // no heartbeat to read, so the claim timeout is the evidence; the
+        // grace alone is not, because a laptop that sleeps sends no beat and
+        // its sessions reclaim their leases when it wakes.
         let dead = pinned_session_dead(mem, &agent, &lease.value, now, &self.cfg.lease)
-            || now.since(*since) > self.cfg.lease.grace;
+            || (agent.host.is_none() && now.since(*since) >= self.cfg.lease.claim_timeout);
         if !dead {
             return Ok(());
         }
