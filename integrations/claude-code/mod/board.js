@@ -225,6 +225,27 @@ export function allQuestions(board) {
   })
 }
 
+/** Every blocked spawn, the oldest first. The board lists only the spawns
+ * that bind no task, so each one is a row of its own. */
+export function allBlocked(board) {
+  const out = []
+  for (const collection of board?.collections || []) {
+    for (const b of collection.blocked || []) out.push(b)
+  }
+  return out.sort((a, b) => {
+    const since = (stamp(a.since) ?? 0) - (stamp(b.since) ?? 0)
+    if (since !== 0) return since
+    return String(a.agent || '').localeCompare(String(b.agent || ''))
+  })
+}
+
+/** The command an unblock action quotes, or '': a person can copy it.
+ * `` `borant resume w-x` after fixing the launch error `` → `borant resume w-x`. */
+export function unblockCommand(action) {
+  const found = /`([^`]+)`/.exec(String(action || ''))
+  return found ? found[1] : ''
+}
+
 /** A project's active saga, the first in the board's order that is not closed. */
 export function activeSaga(project) {
   const sagas = project?.sagas || []
@@ -330,13 +351,15 @@ export function helpLines(options = {}) {
   ]
 }
 
-// The band: a title row, then one row per needs-you item and one per active
-// project. Every row sits on one grid of columns that depends on the band's
-// width alone, never on the data, so a live update never moves a column:
+// The band: a title row, then one row per needs-you question, one per blocked
+// spawn, and one per active project. Every row sits on one grid of columns
+// that depends on the band's width alone, never on the data, so a live update
+// never moves a column:
 //
 //   chip  glyph  main ......................  meta ....................  tail ..........
 //   1:    ▲      the needs-you title          project · age              a press status
-//   7:    ●      project name  its epic       ██░░░ 2/5   ●2  ■1  ▲1     orchestrator
+//   7:    ■      the spawn and its refusal    project · age              the command
+//   9:    ●      project name  its epic       ██░░░ 2/5   ●2  ■1  ▲1     orchestrator
 //
 // Every text is cut to its column with an ellipsis. A row is a list of cells:
 // `{ text, style }`, or a cell with a `button` the renderer draws as a plain
@@ -345,9 +368,15 @@ export function helpLines(options = {}) {
 const cells = cellsOf
 const span = (segments) => segments.reduce((n, s) => n + cells(s.text), 0)
 
-/** The band's rows, in order: each needs-you item, then each active project. */
-export function bandItems(board, questions = allQuestions(board)) {
+/**
+ * The band's rows, in order: each needs-you question, each blocked spawn,
+ * then each active project. The two first groups are what needs the person;
+ * a blocked spawn stays separate from a question because it has no Done or
+ * Ask: only fixing its cause clears it.
+ */
+export function bandItems(board, questions = allQuestions(board), blocked = allBlocked(board)) {
   const out = questions.map((q) => ({ kind: 'needs', key: 'q:' + String(q.channel) + '/' + String(q.task), q }))
+  for (const b of blocked) out.push({ kind: 'blocked', key: 'b:' + String(b.agent), b })
   for (const project of activeProjects(board)) out.push({ kind: 'project', key: 'p:' + project.project, project })
   return out
 }
@@ -360,7 +389,7 @@ export function bandItems(board, questions = allQuestions(board)) {
  */
 export function chip(item, index, digitKeys = true) {
   const digit = index < 9 ? String(index + 1) : ''
-  const title = item.kind === 'needs' ? item.q.title : item.project.project
+  const title = item.kind === 'needs' ? item.q.title : item.kind === 'blocked' ? item.b.agent : item.project.project
   const button = { key: item.key, label: digit ? '' : '   ', title: String(title || item.key), kind: 'select', arg: item.key, plain: true }
   if (digit && digitKeys) button.hotkey = digit
   else if (digit) button.digit = digit
@@ -384,6 +413,27 @@ export function ageText(ms) {
   const h = Math.floor(m / 60)
   if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '')
   return Math.floor(h / 24) + 'd'
+}
+
+/** A wait as `borant board` and the hub's alarm print it: `45s`, `42m`,
+ * `1h`, `3d`. A minute or an hour is not split, so the three texts agree. */
+export function waitedLabel(q, board) {
+  const at = stamp(board?.at)
+  const since = stamp(q?.since)
+  if (at === null || since === null) return '?'
+  const s = Math.max(0, Math.floor((at - since) / 1000))
+  if (s < 60) return s + 's'
+  if (s < 3600) return Math.floor(s / 60) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  return Math.floor(s / 86400) + 'd'
+}
+
+/** The alarm line of one blocked spawn, as the hub sends it and `borant
+ * board` prints it: `spawn <agent> blocked <wait>: <reason>. Unblock: <action>`. */
+export function alarmLine(b, board) {
+  return (
+    'spawn ' + (b?.agent || '?') + ' blocked ' + waitedLabel(b, board) + ': ' + (b?.reason || '?') + '. Unblock: ' + (b?.action || '?')
+  )
 }
 
 /** The short status a needs row shows in its tail: `◷ closing`, `✓ asked`. */
@@ -464,6 +514,26 @@ function needsRow(item, index, g, o) {
   return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
 }
 
+/**
+ * A blocked spawn's row: digit, `■`, the agent and the refusal, `project ·
+ * age`, and the command that unblocks it. It has no Done or Ask: a person
+ * clears it by fixing the cause, and Done would hide the alarm.
+ */
+function blockedRow(item, index, g, o) {
+  const { b } = item
+  const age = waited(b, o.board)
+  const ageCells = age ? 3 + cells(age) : 0
+  const where = [text(truncate(b.project || b.channel || '?', Math.max(4, g.meta - ageCells)), 'bold'), ...(age ? [text(' · ' + age, 'dim')] : [])]
+  const row = [
+    chip(item, index, o.digitKeys !== false),
+    b.gone ? text(GONE + ' ', 'dim') : text(GLYPH.blocked + ' ', 'red'),
+    ...cell([text(String(b.agent || ''), b.gone ? 'dim' : 'bold'), text(' \u00b7 ', 'dim'), text(b.reason || '', b.gone ? 'dim' : 'plain')], g.main),
+  ]
+  if (g.meta) row.push(text('  '), ...cell(where, g.meta))
+  if (g.tail) row.push(text('  '), ...cell([text('\u2192 ' + (unblockCommand(b.action) || b.action || ''), 'dim')], g.tail))
+  return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
+}
+
 /** The orchestrator column of a project row: `orch-borant · busy · hetzner-1`.
  * The state comes before the host, so a long host is what gets cut. */
 function orchText(project) {
@@ -534,10 +604,12 @@ export function modeCells(active) {
 export function titleRow(board, o) {
   const width = Math.min(o.width, Math.max(o.rowWidth || 0, 48))
   const questions = (o.questions || []).filter((q) => !q.closed && !q.gone)
+  const spawns = (o.blocked || allBlocked(board)).filter((b) => !b.gone)
   const all = allProjects(board).length
   const active = activeProjects(board).length
-  const summary = questions.length
-    ? [text(questions.length + ' need you', 'yellowBold')]
+  const needYou = questions.length + spawns.length
+  const summary = needYou
+    ? [text(needYou + ' need you', 'yellowBold')]
     : [text(GLYPH.done + ' nothing needs you', 'green')]
   // Board mode holds its rows still: what arrived meanwhile shows after esc.
   // Like the counts, the note goes when the row has no room for it.
@@ -572,8 +644,10 @@ export function titleRow(board, o) {
 export function condensedRow(board, o) {
   const width = Math.max(20, o.width || 100)
   const questions = (o.questions || allQuestions(board)).filter((q) => !q.closed)
+  const spawns = (o.blocked || allBlocked(board)).filter((b) => !b.gone)
+  const needYou = questions.length + spawns.length
   const parts = [text('cos  ', 'dimBold')]
-  parts.push(questions.length ? text(GLYPH.needs + ' ' + questions.length + ' need you', 'yellowBold') : text(GLYPH.done + ' nothing needs you', 'green'))
+  parts.push(needYou ? text(GLYPH.needs + ' ' + needYou + ' need you', 'yellowBold') : text(GLYPH.done + ' nothing needs you', 'green'))
   for (const project of activeProjects(board)) {
     const p = projectParts(project)
     parts.push(text('  ' + BRANCH + '  ', 'faint'), text(project.project, 'bold'), text(' ' + (p.ratio || openTasksLabel(project))))
@@ -586,15 +660,15 @@ export function condensedRow(board, o) {
 }
 
 /**
- * The band: the title row, then one row per needs-you item and per active
- * project. `o` is `{ width, gridWidth, maxRows, questions, items, waiting,
- * selected, active, statusFor, stale, digitKeys }`: `statusFor(item)` gives a
- * needs row's short press status (mod/status.js), `active` says the board has
- * the keys (board mode), which fills the selected row. `items` replaces the
- * rows bandItems gives (board mode holds them still), `waiting` counts the
- * rows held back, and `gridWidth` lays the columns out narrower than the band
- * (as wide as it is with the preview docked). Each row is `{ key, cells,
- * selected }`.
+ * The band: the title row, then one row per needs-you question, one per
+ * blocked spawn, and one per active project. `o` is `{ width, gridWidth,
+ * maxRows, questions, blocked, items, waiting, selected, active, statusFor,
+ * stale, digitKeys }`: `statusFor(item)` gives a needs row's short press
+ * status (mod/status.js), `active` says the board has the keys (board mode),
+ * which fills the selected row. `items` replaces the rows bandItems gives
+ * (board mode holds them still), `waiting` counts the rows held back, and
+ * `gridWidth` lays the columns out narrower than the band (as wide as it is
+ * with the preview docked). Each row is `{ key, cells, selected }`.
  */
 export function bandRows(board, o = {}) {
   const width = Math.max(20, o.width || 100)
@@ -606,9 +680,14 @@ export function bandRows(board, o = {}) {
   const g = bandGrid(Math.min(width, o.gridWidth || width))
   const opts = { ...o, width, board, statusFor: o.statusFor || (() => []) }
   const needs = items.filter((i) => i.kind === 'needs')
+  const spawns = items.filter((i) => i.kind === 'blocked')
   const projects = items.filter((i) => i.kind === 'project')
-  const body = [...needs.map((item, i) => needsRow(item, i, g, opts)), ...projects.map((item, i) => projectRow(item, needs.length + i, g, opts))]
-  const rows = [{ key: 'band-title', cells: titleRow(board, { ...opts, rowWidth: g.row, questions }) }, ...body]
+  const body = [
+    ...needs.map((item, i) => needsRow(item, i, g, opts)),
+    ...spawns.map((item, i) => blockedRow(item, needs.length + i, g, opts)),
+    ...projects.map((item, i) => projectRow(item, needs.length + spawns.length + i, g, opts)),
+  ]
+  const rows = [{ key: 'band-title', cells: titleRow(board, { ...opts, rowWidth: g.row, questions, blocked: o.blocked || allBlocked(board) }) }, ...body]
   for (const row of rows) row.selected = Boolean(o.active && row.key === selected)
   // At rest the window starts at the top, so the digits a person reads from
   // the prompt are the ones drawn, and armed; in board mode it follows the
@@ -664,15 +743,33 @@ export function digestColumns(projects, width) {
   return { project: projectWidth, saga: Math.max(17, budget - projectWidth) }
 }
 
+/** The alarm line cut to `room` cells so it still names the cause and the
+ * action: each block whole when it fits, a share each only when neither does. */
+function alarmCut(b, board, room) {
+  const line = alarmLine(b, board)
+  if (cellsOf(line) <= room) return line
+  const lead = 'spawn ' + (b.agent || '?') + ' blocked ' + waitedLabel(b, board) + ': '
+  const tail = '. Unblock: '
+  const reason = b.reason || '?'
+  const action = b.action || '?'
+  const rest = room - cellsOf(lead) - cellsOf(tail)
+  if (rest - cellsOf(reason) >= 8) return lead + reason + tail + truncate(action, rest - cellsOf(reason))
+  if (rest - cellsOf(action) >= 8) return lead + truncate(reason, rest - cellsOf(action)) + tail + action
+  const share = Math.max(8, Math.floor(rest / 2))
+  return lead + truncate(reason, share) + tail + truncate(action, Math.max(8, rest - share))
+}
+
 /** The `/cos` digest: the board in text, as artboard 5 draws it. */
 export function digest(board, options = {}) {
   const width = Math.max(48, options.width || 96)
   const only = options.project || null
   const questions = allQuestions(board)
+  const spawns = allBlocked(board)
   // One named project shows even when it is idle; the whole board lists only the active ones.
   const projects = only ? allProjects(board).filter((p) => p.project === only) : activeProjects(board)
   const lines = []
-  const head = only ? 'cos \u00b7 ' + only : 'cos \u00b7 ' + questions.length + ' need you \u00b7 ' + projectCount(board)
+  const needYou = questions.length + spawns.length
+  const head = only ? 'cos \u00b7 ' + only : 'cos \u00b7 ' + needYou + ' need you \u00b7 ' + projectCount(board)
   lines.push('\u256d\u2500 ' + head + ' ' + RULE.repeat(Math.max(0, width - head.length - 5)))
   lines.push(BRANCH)
   if (!only && questions.length) {
@@ -680,6 +777,19 @@ export function digest(board, options = {}) {
     questions.forEach((q, i) => {
       const context = [q.project || '', q.attention_msg || (q.gate ? 'gate' : ''), 'since ' + hhmm(q.since, '?')].filter(Boolean)
       lines.push(BRANCH + '   ' + (i + 1) + '  ' + truncate(q.title || '', Math.max(20, width - 28)) + '  ' + context.join(' \u00b7 '))
+    })
+    lines.push(BRANCH)
+  }
+  // A blocked spawn is the same line the hub's alarm sends and that
+  // `borant board` prints, so all three name one cause and one action. The
+  // line keeps both blocks: the refusal whole when it fits, and the action
+  // whole when that fits, and a share each only when neither does.
+  if (!only && spawns.length) {
+    lines.push(BRANCH + ' ' + GLYPH.blocked + ' Blocked (' + spawns.length + ')')
+    spawns.forEach((b, i) => {
+      const left = BRANCH + '   ' + (i + 1) + '  '
+      const room = Math.max(20, width - cellsOf(left))
+      lines.push(left + truncate(alarmCut(b, board, room), room))
     })
     lines.push(BRANCH)
   }

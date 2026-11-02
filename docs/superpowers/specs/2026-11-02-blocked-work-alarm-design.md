@@ -77,8 +77,17 @@ spawns that are bound to a task already appear through their stuck task, so
 `blocked` lists only the unbound ones, to avoid listing a spawn twice.
 
 The following count blocked entries as items for the person:
-- the CLI's `borant board` need-you section;
-- the chief mod's need-you rows (after the current mod polish lands).
+- the CLI's `borant board` need-you section, which prints the alarm's line;
+- the chief mod's band and `/cos` digest.
+
+The chief mod gives each blocked spawn a row of its own, after the questions
+and before the projects: the `■` glyph, the agent and its refusal, `project ·
+age`, and the unblock command in the tail. A row has no Done or Ask: a person
+clears it by fixing the cause, and a Done that only closed the spawn would
+hide the alarm. Enter opens a card with the reason, the one action, and the
+command the action quotes, on a line of its own to copy. A spawn that arrives
+while board mode holds the rows still waits for esc, as a question does, and
+neither arrival moves a column.
 
 ### 4. The chief-of-staff skill
 

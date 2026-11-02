@@ -1,0 +1,40 @@
+  because only the channel owner or a person can close it. I sent a direct message t╭──────────────────────────────────╮
+  orch-roger-emr-observability-dashboards asking it to close the task as done with "│ borant                           │
+  The task is still open until the owner acts.                                      │ the selected item left the board │
+                                                                                    ╰──────────────────────────────────╯
+  I still have no replies to the two "Ask orchestrator" questions: the Grafana edito╭──────────────────────────────────╮
+  (personal-borant/01M5ZG00000000000000000015). I'll relay them when they arrive.   │ borant                           │
+                                                                                    │ the selected item left the board │
+  Your interruption cut the tea essay off after its opening sections. Do you want me╰──────────────────────────────────╯
+
+✻ Sautéed for 7s · done 11:42 PM · 1 shell still running
+
+❯ /cos help
+  ⎿  borant: board mode: every key goes to the board until esc
+       0               enter board mode, from an empty prompt
+       1-9             select a row; from the prompt it enters too
+       j k             move the selection; the preview follows
+       enter           details; enter again goes back
+       d               Done on the selected needs-you item
+       a               Ask its orchestrator
+       ?               this help; ? or enter goes back
+       esc             leave: the keys go back to the prompt
+       vim normal      press i, then 0
+       click           a row selects it
+
+     commands
+       /cos            the board as text
+       /cos <project>  one project
+       /cos pane       open the preview
+       /cos help       this help
+
+     done and ask
+       d               the chief closes the item; the row shows
+                       sending, closing, closed, or still open
+       a               asks the owner; the chief relays the reply
+── chief of staff ─ ✓ nothing needs you · 0 active · 3 idle ──────────────────────────── 0: board mode (vim: i 0) ─ [-]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

@@ -1,0 +1,82 @@
+PASS columns.mjs: 'status' : no move
+PASS columns.mjs: 'cut' : a move
+PASS columns.mjs: 'gate-cut' : a move
+PASS columns.mjs: 'down' : a move
+PASS columns.mjs: 'gone' : a move
+PASS columns.mjs: 'gone' --cells: no move
+big: 12 projects, 6 need you
+footer:   ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage
+PASS the event stream started (calls.log has events --follow)
+PASS at rest the band shows '0: board mode'
+PASS 0 entered board mode (band shows 'board mode · esc exit')
+rows compared: 17, moved: 0
+PASS entering board mode moved no band row or column
+PASS 0 did not land in the prompt
+PASS digit 1 selected its row (needs you · 1)
+PASS digit 2 selected its row (needs you · 2)
+PASS digit 3 selected its row (needs you · 3)
+PASS digit 4 selected its row (needs you · 4)
+PASS digit 5 selected its row (needs you · 5)
+PASS digit 6 selected its row (needs you · 6)
+PASS digit 7 selected its row (blocked · 1)
+PASS digit 8 selected its row (project · 1)
+PASS digit 9 selected its row (project · 2)
+PASS 1-9 in board mode never reached the prompt
+PASS row 7 is the blocked spawn, with its card, reason, and command
+PASS a blocked spawn offers no Done or Ask
+PASS j moved to row 2
+PASS j then k moved back to row 2
+PASS a burst of j j j moves three rows (row 5), and none reaches the prompt
+PASS a burst of k k k moves back three rows (row 2)
+rows compared: 17, moved: 0
+PASS no band row or column moved across a live update
+PASS board mode held across the live update
+PASS the new item waits for esc, and the band says so
+rows compared: 17, moved: 0
+PASS a blocked spawn arriving mid-board-mode moved no band row or column
+PASS the blocked spawn waits for esc, with the other new row
+PASS Enter opened the details
+PASS a live update with the details open moved no field of the preview
+PASS j in details moves on and keeps the details open
+PASS k in details moves back with the details open
+PASS Enter again closed the details
+PASS ? showed the help
+PASS a letter the board does not use stays out of the prompt
+PASS d showed feedback at once
+PASS the chief asked the owner to close it (send); the owner closes it
+Done shows closed 606 ms after the task closed
+PASS the closed item shows ✓ closed
+PASS Ask sent one message (borant send as the person)
+PASS the asked item shows ✓ asked
+FAIL j moved while a slow Ask was still sending
+PASS esc left board mode (band shows '0: board mode')
+rows compared: 15, moved: 0
+PASS after esc the band keeps the columns it had at rest
+PASS after esc the held-back items show
+PASS after esc, typed keys reach the prompt
+PASS 0 and a digit in a non-empty prompt stay text
+PASS after Tab board mode holds, and a letter stays out of the prompt
+PASS after Shift+Tab board mode holds, and a letter stays out of the prompt
+PASS esc after Tab left board mode
+PASS a click on row 3's title entered board mode on it
+PASS a click on a row past nine entered board mode on it
+PASS 0 after ctrl+x tab says how to enter board mode
+PASS esc, then 0 entered board mode
+rows compared: 15, moved: 0
+PASS board mode after ctrl+x tab has the columns of the band at rest
+rows compared: 15, moved: 0
+PASS after ctrl+x tab and board mode the band has the columns it had at rest
+SKIP vim mode: this Claude Code is not in vim mode
+PASS 0 entered board mode while a turn ran
+FAIL j moved while a turn ran, and stayed out of the prompt
+a change with an event showed after 477 ms
+PASS an event-driven refresh landed in under 1 s (477 ms)
+PASS an unclosed Done shows ! still open
+rows compared: 15, moved: 0
+PASS after a resize and back the band has the columns it had at rest
+rows compared: 15, moved: 0
+PASS after a resize with board mode on, and back, the band has the columns it had at rest
+rows compared: 15, moved: 0
+PASS and board mode then moves no column
+empty: 3 projects, 0 need you
+event streams started: 1

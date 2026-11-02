@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import board from '../fixtures/board.js'
 import {
   activeProjects,
+  allBlocked,
   allProjects,
   allQuestions,
   bandGrid,
@@ -19,6 +20,7 @@ import {
   projectCount,
   projectSummary,
   rowText,
+  unblockCommand,
 } from '../board.js'
 
 type Cell = { text: string; button?: { key: string; kind: string; hotkey?: string } }
@@ -362,4 +364,79 @@ test('from 140 columns a project row has its orchestrator in the tail', () => {
   expect(line).toContain('orchestrator · online · macbook')
   expect(texts(bandRows(board, { width: 120 }) as Row[])[3]).toContain('orchestrator · o…')
   expect(texts(bandRows(board, { width: 80 }) as Row[])[3]).not.toContain('orchestrator')
+})
+
+/** The fixture with one blocked spawn on its collection: the hub lists only
+ * the spawns that bind no task, so each is a row of its own. */
+function withBlocked(spawn: Record<string, unknown>, base: typeof board = board) {
+  const next = structuredClone(base) as typeof board & { collections: { blocked?: unknown[] }[] }
+  next.collections[0].blocked = [spawn]
+  return next
+}
+
+const SPAWN = {
+  agent: 'w-rs-closeout',
+  channel: 'personal-borant',
+  project: 'borant',
+  reason: 'missing bundle github-work',
+  action: 'add bundle github-work to a host that the spawn may use, or spawn without github-work',
+  since: 1793022000000,
+  spawner: 'orchestrator',
+}
+
+test('a blocked spawn is a row of its own: the refusal, and the command, with no Done or Ask', () => {
+  const spawn = { ...SPAWN, action: '`borant resume w-rs-closeout` after fixing the launch error' }
+  const b = withBlocked(spawn)
+  expect(allBlocked(b).map((s: { agent: string }) => s.agent)).toEqual(['w-rs-closeout'])
+  // Questions first, then the spawn, then the projects: one group per kind.
+  expect(bandItems(b).map((i: { kind: string }) => i.kind)).toEqual(['needs', 'needs', 'blocked', 'project', 'project'])
+
+  const rows = bandRows(b, { width: 160 }) as Row[]
+  const lines = texts(rows)
+  expect(lines).toHaveLength(6)
+  expect(lines[0]).toContain('3 need you')
+  expect(lines[3]).toMatch(/^3: ■ w-rs-closeout · missing bundle github-work +borant · 52m/)
+  // The unblock action's command is the tail of the row.
+  expect(lines[3]).toContain('→ borant resume w-rs-closeout')
+  expect(lines[4]).toMatch(/^4: ▲ borant /)
+  // One digit per row, blocked spawns included.
+  expect(hotkeys(rows[3])).toEqual(['3'])
+  expect(rows[3].cells.some((c) => c.button?.kind === 'done' || c.button?.kind === 'ask')).toBe(false)
+  // The meta begins where a needs row's does, so the two groups line up.
+  const g = bandGrid(160)
+  expect(lines[3].indexOf('borant · 52m')).toBe(5 + g.main + 2)
+})
+
+test('the board lists blocked spawns, oldest first, and the digest names the cause and the action', () => {
+  const b = withBlocked(SPAWN)
+  const older = { ...SPAWN, agent: 'w-queue', since: 1793020000000, reason: 'no host is online', action: 'bring a host online' }
+  ;(b.collections[0] as { blocked?: unknown[] }).blocked = [SPAWN, older]
+  expect(allBlocked(b).map((s: { agent: string }) => s.agent)).toEqual(['w-queue', 'w-rs-closeout'])
+
+  const text = digest(b, { width: 96 })
+  expect(text.split('\n')[0]).toContain('4 need you')
+  expect(text).toContain('■ Blocked (2)')
+  // The digest prints the line the hub's alarm sends, with the same coarse
+  // wait (`1h`, not `1h 25m`), so all three name one cause and one action.
+  expect(text).toContain('spawn w-queue blocked 1h: no host is online. Unblock: bring a host online')
+  expect(text).toContain('spawn w-rs-closeout blocked 52m: missing bundle github-work. Unblock: add bundle')
+  // A named project's digest lists no spawn, as it lists no question.
+  expect(digest(b, { project: 'borant', width: 96 })).not.toContain('Blocked (')
+})
+
+test('a digest blocked line keeps the cause and the action as narrow as 65 cells', () => {
+  const b = withBlocked(SPAWN)
+  for (const width of [131, 96, 80, 65]) {
+    const lines = digest(b, { width }).split('\n').filter((l) => l.includes('spawn w-rs-closeout'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('missing')
+    expect(lines[0]).toContain('Unblock:')
+    expect(Array.from(lines[0]).length).toBeLessThanOrEqual(width)
+  }
+})
+
+test('the unblock action quotes the command a person can copy, when it has one', () => {
+  expect(unblockCommand('`borant resume w-x` after fixing the launch error')).toBe('borant resume w-x')
+  expect(unblockCommand('bring a host online')).toBe('')
+  expect(unblockCommand(undefined)).toBe('')
 })

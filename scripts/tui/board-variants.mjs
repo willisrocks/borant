@@ -133,6 +133,19 @@ function big() {
     need('xplainer', 'Voice sample sounds wrong on long words; listen and say keep or redo', 12, 'stuck'),
     need('roger-emr-observability-dashboards', 'Grant the Grafana editor service account to the alerts folder', 180, 'access'),
   )
+  // One blocked spawn, so the scenario checks the row and its card: a cell of
+  // the board's `blocked` list, which the hub sends only for an unbound spawn.
+  c.blocked = [
+    {
+      agent: 'w-rs-closeout',
+      channel: 'personal-roger-docs-api',
+      project: 'roger-docs-api',
+      reason: 'missing bundle github-work',
+      action: '`borant resume w-rs-closeout` after fixing the launch error',
+      since: AT - 140 * MIN,
+      spawner: 'orch-roger-docs',
+    },
+  ]
   return b
 }
 
@@ -140,6 +153,7 @@ function empty() {
   const b = clone(fixtureBoard)
   for (const c of b.collections) {
     c.needs_you = []
+    c.blocked = []
     for (const p of c.projects) {
       for (const s of p.sagas) {
         s.state = 'closed'

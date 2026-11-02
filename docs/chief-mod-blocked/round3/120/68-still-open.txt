@@ -1,0 +1,40 @@
+                      [2m╭──────────────────────────────────────────╮[0m[38;5;153m[48;5;235m│[39m                                                   [38;5;246m✕[39m
+[49m                      [2m│[0m [38;5;246mborant[39m                                   [2m│[0m[38;5;153m[48;5;235m│[1m[39mboard mode: [0;2m[48;5;235m1-9 j k d ? · esc exit[0m[38;5;246m[48;5;235m ⏎ details[39m
+[49m  [38;5;246mCalled plugin:borant[2m[39m│[0m still open: Grant the Grafana editor     [2m│[0m[38;5;153m[48;5;235m│[39m
+[49m                      [2m│[0m service account to the alerts folder     [2m│[0m[38;5;153m[48;5;235m│[38;5;246mneeds you · 1 of 6[39m
+[38;5;231m[49m●[39m I couldn't close [38;5;153mper[2m[39m│[0m (and now a much longer title that the  … [2m│[0m[38;5;153m[48;5;235m│[39m
+[49m  [38;5;153m5ZG00000000000000000[2m[39m╰──────────────────────────────────────────╯[0m[38;5;153m[48;5;235m│[38;5;220m[48;5;237m▲ [1mGrant the Grafana editor service account to the[0m[38;5;231m[48;5;237m
+[39m[49m  only the channel owner or a person can close it. I sent a direct[38;5;153m[48;5;235m│[38;5;231m[48;5;237m  [1m[38;5;220malerts folder (and now a much longer title that th…
+[0m  message to [38;5;153morch-roger-emr-observability-dashboards[39m asking it to [38;5;153m[48;5;235m│[39m
+[49m  close the task as done with "Chris marked it done in the        [38;5;153m[48;5;235m│[39m  [38;5;168m! still open after 20s[39m
+[49m  board". The task is still open until the owner acts.            [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[38;5;246m  project   [1m[39mroger-emr-observability-dashboards[0m[38;5;246m[48;5;235m · Tem…
+[39m[49m  I still have no replies to the two "Ask orchestrator" questions:[38;5;153m[48;5;235m│[38;5;246m  says      [39maccess
+[49m  the Grafana editor grant and the Hetzner bucket                 [38;5;153m[48;5;235m│[38;5;246m  waiting   [39m3h[38;5;246m · since 11:32[39m
+[49m  ([38;5;153mpersonal-borant/01M5ZG00000000000000000015[39m). I'll relay them   [38;5;153m[48;5;235m│[38;5;246m  owner     [1m[39morch-roger-emr-observability-dashboards[0m[48;5;235m
+[49m  when they arrive.                                               [38;5;153m[48;5;235m│[38;5;246m  task      personal-roger-emr-observability-dashboa…
+[39m[49m                                                                  [38;5;153m[48;5;235m│[39m
+[49m  Your interruption cut the tea essay off after its opening       [38;5;153m[48;5;235m│[1m[38;5;246mthe saga now  [0m[48;5;235mTemporal queue health in Grafana  [38;5;246m░░░░…
+[39m[49m  sections. Do you want me to write it out in full?               [38;5;153m[48;5;235m│[39m  [38;5;68m● [39mQueue depth panels             [38;5;68m  running[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m  [38;5;246m○ [39mAlert rules for stuck workflows[38;5;246m  waiting[39m
+[38;5;246m[49m✻[39m [38;5;246mSautéed for 7s · done 11:42 PM · 1 shell still running[39m          [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m── [1m[39mcos[0m[38;5;246m ─ [1m[38;5;220m8 need you[0m[38;5;246m · 9 active ──────[39m [1;7m[38;5;153mboard mode[0m[38;5;246m · [38;5;153mesc[38;5;246m exit ─[39m [38;5;246m[-][39m [38;5;153m[48;5;235m│[39m
+[38;5;153m[48;5;237m1[39m: [38;5;220m▲ [1mGrant the Grafana editor service acco…[0m[38;5;231m[48;5;237m  [38;5;168m! still open[38;5;231m    [39m[49m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m2[39m: [38;5;220m▲ [1mCreate Hetzner bucket borant-hub-back…[0m  [38;5;72m✓ asked[39m              [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m3[39m: [38;5;220m▲ [1mPick the GPU type for nightly evals: …[0m  [1msteve-age…[0m[38;5;246m · 25m[39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m4[39m: [38;5;220m▲ [1mRevoke old willisrocks gh token? (and…[0m  [1mborant[0m[38;5;246m · 12m[39m         [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m5[39m: [38;5;220m▲ [1mVoice sample sounds wrong on long wor…[0m  [1mxplainer[0m[38;5;246m · 12m[39m       [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m6[39m: [38;5;220m▲ [1mEvented: A new question arrived durin…[0m  [1mkata[0m[38;5;246m · 1m[39m            [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m7[39m: [38;5;168m■ [1m[39mw-rs-closeout[0m[38;5;246m · [39mmissing bundle github…  [1mroger-…[0m[38;5;246m · 2h 20m[39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m8[39m: [38;5;168m■ [1m[39mw-queue-late[0m[38;5;246m · [39mno host is online        [1mkata[0m[38;5;246m · 30s[39m           [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m9[39m: [38;5;220m▲ [1m[39mborant[0m        Hub backup to object st…  [38;5;72m██[38;5;246m░░░[39m 2/5   [38;5;168m■2  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;68m● [1m[39mnotes[0m         10 open tasks             [38;5;246m     [39m       [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;168m■ [1m[39mroger-docs-a…[0m Prod cutover              [38;5;72m█[38;5;246m░░░░[39m 1/4   [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;220m▲ [1m[39msteve-agents[0m  Eval harness on Modal G…  [38;5;72m██[38;5;246m░░░[39m 1/3   [38;5;220m▲1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;246m○ [1m[39mwellsky-know…[0m 2 open tasks              [38;5;246m     [39m                [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m   ↓ 4 more · j k[39m                                                 [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;244m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ [2mwrite the full 3000 word tea essay[0m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on · [38;5;44m1 shell[38;5;246m · ↓ to manage[39m

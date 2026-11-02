@@ -1,0 +1,60 @@
+  The documentary evidence is more modest and more interesting. Archaeologists have found tea remains in the tomb of Emperor Jing of Han, who died in 141 BCE, near Xi'an. Chemical analysis in 2016 identified tea leaves among the grave
+  goods, which suggests that by the second century BCE tea was valued enough to accompany an emperor into the afterlife. Earlier references are harder to pin down. The word often translated as "tea" in early texts, tu, seems to have covered
+  several bitter herbs, and scholars still argue over which passages truly mean Camellia. Writers from the Han period mention tea drinking in the southwestern region of Sichuan, which probably was the center of early cultivation. A text
+  from around 59 BCE, Wang Bao's "Contract for a Youth," lists the purchase of tea and the preparation of tea among a servant's duties. That is some of the earliest reliable evidence of tea as a commodity.
+
+  Tang Dynasty: Tea Becomes a Culture
+
+  Tea moved from regional curiosity to national habit in the Tang dynasty (618–907). Several forces drove this. The Grand Canal and improved roads linked the tea-growing south to the northern capitals. Buddhism spread widely, and monks
+  prized tea for staying alert through long meditation. A prosperous, cosmopolitan society had the leisure and the money to turn a drink into a pastime.
+
+  The key figure of the age is Lu Yu (c. 733–804), an orphan raised in a Buddhist monastery who became a scholar and recluse. His Cha Jing, the Classic of Tea, written around 760–780, is the world's first major treatise on the subject. In
+  ten chapters it covers the plant's origins, the tools for making and drinking tea, the manufacturing process, the proper utensils, the boiling of water, the drinking of tea, its history, its regional varieties, and what could be omitted
+  in a simple setting. Lu Yu insisted that tea be treated with care and attention, and he held opinions on everything from the best water (mountain spring water, then river water, then well water) to the shape of the kettle. In doing so he
+  elevated tea preparation into something close to an art.
+
+  Tang tea was quite unlike what we drink now. Leaves were steamed, pounded, molded into cakes, and dried. To serve, the cake was toasted, ground to powder, and boiled in a pot, often with salt, and sometimes with ginger, orange peel, or
+  other flavorings. Lu Yu grumbled about additives, but they remained popular. The liquid was a thick, savory broth rather than a delicate infusion.
+
+  The Tang state noticed the tea tr
+  ⎿  Interrupted · What should Claude do instead?
+
+› Prompt from the borant plugin
+❯ The borant plugin sent a message:
+  Chris marked done: Grant the Grafana editor service account to the alerts folder (and now a much longer title that the band must cut) and then a great deal more words that would need two more lines of the card to show
+  (personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921). Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; otherwise send the owner of
+  personal-roger-emr-observability-dashboards a direct message to close it as done, with "Chris marked it done in the board".
+
+  This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.
+
+  Called plugin:borant:borant
+
+● I sent orch-roger-emr-observability-dashboards a direct message asking it to close personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921 as done. The message quotes "Chris marked it done in the board". I'm not the channel
+  owner and the task isn't a saga gate, so I couldn't close it myself. The task is still open until the owner acts.
+
+  Two things are still pending:
+  - Ask orchestrator replies: the questions on that same task and on personal-borant/01M5ZG00000000000000000015 have gone to their owners. I'll relay the replies when they arrive.
+  - Tea essay: it was cut off mid-way, in the Tang dynasty section, when you interrupted. I can restart it and deliver all 3,000 words in one go if you still want it.
+
+✻ Worked for 7s · done 11:50 PM · 1 shell still running
+── chief of staff ─ 6 need you · 9 active · 3 idle ──────────────────────────────────────────────────────────────────────────── 0: board mode (vim: i 0) ─                                                                                  [-]
+1: ▲ Grant the Grafana editor service account to the alerts folder (and now a much longer tit…  roger-emr-observab… · 3h  ! still open
+2: ▲ Create Hetzner bucket borant-hub-backup + 1Password item (and now a much longer title th…  borant · 42m              ✓ asked
+3: ▲ Pick the GPU type for nightly evals: A10G is cheaper, H100 halves the run (and now a muc…  steve-agents · 25m
+4: ▲ Revoke old willisrocks gh token? (and now a much longer title that the band must cut)      borant · 12m
+5: ▲ Voice sample sounds wrong on long words; listen and say keep or redo (and now a much lon…  xplainer · 12m
+6: ▲ Evented: A new question arrived during navigation                                          kata · 1m
+7: ▲ borant                          Hub backup to object storage                               ██░░░ 2/5       ■2        orchestrator · online · a-much-…
+8: ● notes                           10 open tasks                                                          ●8  ■1        orch-notes · online · a-much-lo…
+9: ■ roger-docs-api                  Prod cutover                                               █░░░░ 1/4   ●9  ■1        orch-roger-docs · busy · a-much…
+   ▲ steve-agents                    Eval harness on Modal GPUs                                 ██░░░ 1/3   ●8      ▲1    orch-steve · online · a-much-lo…
+   ○ wellsky-knowledge-base          2 open tasks                                                                         orch-wellsky · online · a-much-…
+   ● agentbox                        Sandboxed browser profiles per agent                       ░░░░░ 0/1   ●8            no orchestrator
+   ■ rich-brainstorm                 Session links that survive a restart                       ░░░░░ 0/2       ■2        orch-rb · online · a-much-longe…
+   ▲ xplainer                        Narration voices per project                               ░░░░░ 0/1   ●8      ▲1    orch-xplainer · online · a-much…
+   ● roger-emr-observability-dashbo… Queue depth panels                                         ░░░░░ 0/2   ●8            orch-obs · busy · a-much-longer…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ finish the tea essay
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

@@ -1,0 +1,40 @@
+  The earliest history of tea is wrapped in legend. The best-known│                                                   ✕
+  story credits the mythical Chinese emperor Shennong, the        │board mode: 1-9 j k ? · esc exit ⏎ details
+  "Divine Farmer," who supposedly lived around 2737 BCE. According│
+  to the tale, Shennong was boiling water beneath a wild tree     │project · 6 of 9
+  when a few leaves drifted into his pot. He tasted the resulting │
+  infusion, found it refreshing and invigorating, and so          │agentbox
+  discovered tea. Shennong is also said to have tested hundreds of│  ░░░░░░░░░░ 0/1 epics done
+  herbs on himself, using tea as an antidote to poisons. The      │  no orchestrator online
+  story is charming but cannot be verified. It reflects how later │
+  Chinese writers linked tea to medicine and to a golden age of   │  ● Sandboxed browser profiles per age…  running
+  culture.                                                        │
+                                                                  │  tasks     8 running
+  Botanical evidence points to a more specific birthplace.        │
+  Camellia sinensis is native to the region where southwestern    │
+  China, northern Myanmar, and northeastern India meet, especially│
+  the forested uplands of Yunnan. Two main varieties developed    │
+  there. C. sinensis var. sinensis is a small-leaved shrub suited │
+  to cooler climates, and it became the foundation for most       │
+  Chinese and Japanese teas. C. sinensis var. assamica is a       │
+  larger-leaved tree suited to tropical lowlands, and it became   │
+── cos ─ 6 need you · 9 active ────── board mode · esc exit ─ [-] │
+3: ▲ Pick the GPU type for nightly evals: …  steve-age… · 25m     │
+4: ▲ Revoke old willisrocks gh token? (and…  borant · 12m         │
+5: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │
+6: ▲ A new question arrived during navigat…  kata · 1m            │
+7: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │
+8: ● notes         10 open tasks                         ■1       │
+9: ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ■ rich-brainst… Session links that surv…  ░░░░░ 0/2   ■2       │
+   ▲ xplainer      Narration voices per pr…  ░░░░░ 0/1   ▲1       │
+   ● roger-emr-ob… Queue depth panels        ░░░░░ 0/2   ●8       │
+   ↑ 2 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · esc to interrupt · ↓ to manage

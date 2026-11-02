@@ -1,0 +1,40 @@
+  because only the channel owner or a person can close it. I sent a direct message t[2m╭──────────────────────────────────╮
+[0m  [38;5;153morch-roger-emr-observability-dashboards[39m asking it to close the task as done with "[2m│[0m [38;5;246mborant[39m                           [2m│
+[0m  The task is still open until the owner acts.                                      [2m│[0m the selected item left the board [2m│
+[0m                                                                                    [2m╰──────────────────────────────────╯
+[0m  I still have no replies to the two "Ask orchestrator" questions: the Grafana edito[2m╭──────────────────────────────────╮
+[0m  ([38;5;153mpersonal-borant/01M5ZG00000000000000000015[39m). I'll relay them when they arrive.   [2m│[0m [38;5;246mborant[39m                           [2m│
+[0m                                                                                    [2m│[0m the selected item left the board [2m│
+[0m  Your interruption cut the tea essay off after its opening sections. Do you want me[2m╰──────────────────────────────────╯
+
+[0m[38;5;246m✻[39m [38;5;246mSautéed for 7s · done 11:42 PM · 1 shell still running[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/cos help[39m [49m
+[38;5;246m  ⎿  [39mborant: board mode: every key goes to the board until esc
+       0               enter board mode, from an empty prompt
+       1-9             select a row; from the prompt it enters too
+       j k             move the selection; the preview follows
+       enter           details; enter again goes back
+       d               Done on the selected needs-you item
+       a               Ask its orchestrator
+       ?               this help; ? or enter goes back
+       esc             leave: the keys go back to the prompt
+       vim normal      press i, then 0
+       click           a row selects it
+
+     commands
+       /cos            the board as text
+       /cos <project>  one project
+       /cos pane       open the preview
+       /cos help       this help
+
+     done and ask
+       d               the chief closes the item; the row shows
+                       sending, closing, closed, or still open
+       a               asks the owner; the chief relays the reply
+[38;5;246m── [1m[39mchief of staff[0m[38;5;246m ─ [38;5;72m✓ nothing needs you[38;5;246m · 0 active · 3 idle ────────────────────────────[39m [38;5;153m0[39m: board mode[38;5;246m (vim: i 0) ─[39m [38;5;246m[-][39m
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on · [38;5;44m1 shell[38;5;246m · ↓ to manage[39m

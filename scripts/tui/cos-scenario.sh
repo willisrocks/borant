@@ -82,9 +82,23 @@ step() {
   tui_shot "$last"
 }
 shown() { cat "$TUI_OUT/$last.plain.txt"; }
-# The selected item's title as the preview shows it: the first title line
-# under the preview's header, right of the pane's border.
-pane_title() { perl -CSD -ne 'my @p = split /\x{2502}/; my $r = $p[-1] // ""; if ($r =~ /(needs you|project) \x{b7} \d+ of/) { $h = 1; next } if ($h && $r =~ /^\s*[\x{25b2}\x{2713}\x{2013}]\s+(\S.{0,40})/) { print "$1\n"; exit }' "$TUI_OUT/$1.plain.txt"; }
+# The preview header of one capture: "needs you · 3 of 6", "blocked · 1 of 1",
+# "project · 2 of 9". It names the row the preview followed, whatever kind it
+# is, while a card's title carries a glyph only for some kinds.
+pane_where() { perl -CSD -ne 'my @p = split /\x{2502}/; my $r = $p[-1] // ""; print "$1\n" and exit if $r =~ /((?:needs you|blocked|project) \x{b7} \d+ of \d+)/' "$TUI_OUT/$1.plain.txt"; }
+# The header from a fresh capture of the live screen. Claude Code 2.1.310
+# sometimes redraws the pane between a step's ANSI and plain captures, so the
+# step's own plain file can hold an empty pane; a check that compares headers
+# takes its own capture, and waits while the pane is still blank.
+pane_where_live() {
+  local name="$1" i t
+  for i in 1 2 3 4 5 6; do
+    tmux -L "$TUI_NAME" capture-pane -p -t tui >"$TUI_OUT/$name.plain.txt"
+    t="$(pane_where "$name")"
+    [ -n "$t" ] && { echo "$t"; return; }
+    sleep 0.25
+  done
+}
 # The prompt's line: what the composer holds. Claude Code draws a hint or a
 # dim suggestion in an empty one, so a check looks for the keys it typed.
 prompt_text() { shown | grep '^❯' | tail -1 | perl -CS -pe 's/^\x{276f}[\s\x{a0}]*//; s/^Try ".*"$//; s/[\s\x{a0}]+$//'; }
@@ -92,10 +106,14 @@ prompt_text() { shown | grep '^❯' | tail -1 | perl -CS -pe 's/^\x{276f}[\s\x{a
 # pane's border: it must not move when the selected title changes.
 pane_field_line() { perl -CSD -ne 'my @p = split /\x{2502}/; if (@p > 1 && $p[-1] =~ /^\s+project\s/) { print "$.\n"; exit }' "$TUI_OUT/$1.plain.txt"; }
 in_board() { shown | grep -q 'board mode · esc exit'; }
-# The preview header of the selected row: "needs you · 3 of 6", "project · 2 of 9".
+# The preview header of the selected row: "needs you · 3 of 6", "blocked · 1 of 1",
+# "project · 2 of 9".
 selected_is() { shown | grep -q "$1 of "; }
-# The header a row's digit selects: the needs-you items come first.
-header_for() { local n; n="$(needs_titles | grep -c .)"; if [ "$1" -le "$n" ]; then echo "needs you · $1"; else echo "project · $(($1 - n))"; fi; }
+# The blocked spawns on the board, as the band lists them after the questions.
+spawn_count() { node -e "const b=require('$stub/board.json');console.log(b.collections.flatMap(c=>c.blocked||[]).filter(x=>!x.gone).length)"; }
+# The header a row's digit selects: the needs-you items first, then the
+# blocked spawns, then the projects.
+header_for() { local n b; n="$(needs_titles | grep -c .)"; b="$(spawn_count)"; if [ "$1" -le "$n" ]; then echo "needs you · $1"; elif [ "$1" -le "$((n + b))" ]; then echo "blocked · $(($1 - n))"; else echo "project · $(($1 - n - b))"; fi; }
 at_rest() { shown | grep -q '0: board mode'; }
 # The mod refuses any tool call that would ask the person in a Done's turn,
 # so a permission dialog is a defect: log it, and refuse it to go on.
@@ -160,6 +178,16 @@ for d in 1 2 3 4 5 6 7 8 9; do
 done
 check "1-9 in board mode never reached the prompt" "! prompt_text | grep -q '[1-9]' && in_board"
 step digit1-again lit:1
+# The blocked spawn has a row of its own after the questions: its glyph, the
+# refusal, the unblock command to copy, and no Done or Ask to hide the alarm.
+step blocked lit:7
+check "row 7 is the blocked spawn, with its card, reason, and command" "selected_is 'blocked · 1' && shown | grep -q '■ w-rs-closeout' && shown | grep -q 'missing bundle github-work' && shown | grep -q 'borant resume w-rs-closeout'"
+check "a blocked spawn offers no Done or Ask" "! shown | grep -q 'd done' && ! shown | grep -q 'a ask'"
+# Enter shows the alarm line as the hub sends it, and Enter goes back.
+step blocked-enter Enter
+check "Enter shows the spawn's alarm line in the card" "shown | grep -q 'the alarm' && shown | grep -q 'Unblock:'"
+step blocked-enter-back Enter
+step blocked-back lit:1
 
 # j and k move; the preview follows.
 step j lit:j
@@ -190,6 +218,15 @@ check "board mode held across the live update" "in_board"
 check "the new item waits for esc, and the band says so" "! shown | grep -q '▲ A new question arrived' && shown | grep -q '+1 after esc\|+1 new'"
 step live-j lit:j
 step live-k lit:k
+
+# A blocked spawn that arrives in board mode is held back too: the rows stay
+# still, and it shows once the person leaves board mode.
+cp "$TUI_OUT/$last.plain.txt" "$TUI_OUT/before-blocked-live.plain.txt"
+board_edit "b.collections[0].blocked = (b.collections[0].blocked || []).concat([{ agent: 'w-queue-late', channel: 'personal-kata', project: 'kata', reason: 'no host is online', action: 'bring a host online', since: b.at - 30000, spawner: null }])"
+event
+STEP_WAIT=1.5 step blocked-live
+check "a blocked spawn arriving mid-board-mode moved no band row or column" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/before-blocked-live.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+check "the blocked spawn waits for esc, with the other new row" "! shown | grep -q '■ w-queue-late' && shown | grep -q '+2 after esc\|+2 new'"
 
 # Enter shows details; j and k move with the details open; Enter goes back.
 step enter Enter
@@ -250,9 +287,11 @@ check "the asked item shows ✓ asked" "shown | grep -q '✓ asked'"
 touch "$stub/send.slow"
 step slow-select lit:3
 STEP_WAIT=0.3 step slow-ask lit:a
-before_j="$last"
+ask_shot="$last"
+before_j="$(pane_where_live before-slow-j)"
 STEP_WAIT=0.3 step slow-ask-j lit:j
-check "j moved while a slow Ask was still sending" "[ -n \"\$(pane_title $last)\" ] && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && shown | grep -q '◷ asking'"
+after_j="$(pane_where_live after-slow-j)"
+check "j moved while a slow Ask was still sending" "[ -n \"$before_j\" ] && [ -n \"$after_j\" ] && [ \"$before_j\" != \"$after_j\" ] && grep -q '◷ asking' \"$TUI_OUT/$ask_shot.plain.txt\""
 rm -f "$stub/send.slow"
 sleep 3
 
@@ -263,7 +302,7 @@ check "esc left board mode (band shows '0: board mode')" "at_rest"
 if [ "$width" -ge 186 ]; then
   check "after esc the band keeps the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 fi
-check "after esc the held-back item shows" "tui_text | grep -q '▲ A new question arrived'"
+check "after esc the held-back items show" "tui_text | grep -q '▲ A new question arrived' && tui_text | grep -q '■ w-queue-late'"
 step type-hello lit:hello
 check "after esc, typed keys reach the prompt" "prompt_text | grep -q hello"
 # A 0 or a digit after text is text.
@@ -348,9 +387,10 @@ tui_keys Enter
 for _ in $(seq 1 20); do turn_runs && break; sleep 0.5; done
 step turn-zero lit:0
 check "0 entered board mode while a turn ran" "in_board && shown | grep -q '… ([0-9]*s'"
-before_j="$last"
+before_j="$(pane_where_live before-turn-j)"
 step turn-j lit:j
-check "j moved while a turn ran, and stayed out of the prompt" "in_board && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && ! prompt_text | grep -q j"
+after_j="$(pane_where_live after-turn-j)"
+check "j moved while a turn ran, and stayed out of the prompt" "[ -n \"$before_j\" ] && [ -n \"$after_j\" ] && [ \"$before_j\" != \"$after_j\" ] && in_board && ! prompt_text | grep -q j"
 step turn-exit Escape
 # Stop the long turn, so a Done's prompt later does not wait behind it.
 tui_keys C-c

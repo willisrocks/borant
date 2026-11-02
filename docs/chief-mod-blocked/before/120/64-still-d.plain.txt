@@ -1,0 +1,40 @@
+› Prompt from the borant plugin                                   │                                                   ✕
+❯ The borant plugin sent a message:                               │board mode: 1-9 j k ? · esc exit ⏎ details
+  Chris marked done: Grant the Grafana editor service account to  │
+  the alerts folder (and now a much longer title that the band    │needs you · 1 of 6
+  must cut) and then a great deal more words that would need two  │
+  more lines of the card to show (personal-roger-emr-observabilit │▲ Grant the Grafana editor service account to the
+  y-dashboards/01M5ZG00000000000000000921). Close it as done now, │  alerts folder (and now a much longer title that th…
+  with the borant MCP tools, not the shell: task_close it         │
+  yourself if it is a saga gate or you own its channel; otherwise │  ◷ the chief is closing it, since 23:57
+  send the owner of personal-roger-emr-observability-dashboards   │
+  a direct message to close it as done, with "Chris marked it     │  project   roger-emr-observability-dashboards · Tem…
+  done in the board".                                             │  says      access
+                                                                  │  waiting   3h · since 11:32
+  This is how Claude Code surfaces a prompt a plugin submits      │  owner     orch-roger-emr-observability-dashboards
+  between turns — it starts this turn in the user's place.        │  task      personal-roger-emr-observability-dashboa…
+  Address the message above.                                      │
+                                                                  │the saga now  Temporal queue health in Grafana  ░░░░…
+✽ Recombobulating…                                                │  ● Queue depth panels               running
+  ⎿  Tip: Run /web-setup to use cloud sessions with the GitHub    │  ○ Alert rules for stuck workflows  waiting
+     account gh is signed in to                                   │
+── cos ─ 6 need you · 9 active ────── board mode · esc exit ─ [-] │
+1: ▲ Grant the Grafana editor service acco…  ◷ closing            │
+2: ▲ Create Hetzner bucket borant-hub-back…  ✓ asked              │
+3: ▲ Pick the GPU type for nightly evals: …  steve-age… · 25m     │
+4: ▲ Revoke old willisrocks gh token? (and…  borant · 12m         │
+5: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │
+6: ▲ Evented: A new question arrived durin…  kata · 1m            │
+7: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │
+8: ● notes         10 open tasks                         ■1       │
+9: ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ■ rich-brainst… Session links that surv…  ░░░░░ 0/2   ■2       │
+   ↓ 2 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · esc to interrupt · ↓ to manage

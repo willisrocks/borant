@@ -1,0 +1,40 @@
+                                                                  │                                                   ✕
+ ▐▛███▛█   Claude Code v2.1.310                                   │board mode: 1-9 j k d a ? · esc exit ⏎ back
+▝▜██████▀  Sonnet 5.5 · Claude Ultra                              │
+ ▝▝   ▝▝   /tmp/tmp.51j3jQ2pZq                                    │board mode: every key goes to the board until esc
+                                                                  │  0               enter board mode, from an empty
+                                                                  │                  prompt
+!  sleep 900                                                      │  1-9             select a row; from the prompt it
+  ⎿  Command was manually backgrounded by user with ID: b8fx9q6zw.│                  enters too
+     Output is being written to:                                  │  j k             move the selection; the preview
+     /tmp/claude-1000/-tmp-tmp-51j3jQ2pZq/7f22fb82-2538-4026-ba63-│                  follows
+     26a25d70a588/tasks/b8fx9q6zw.output.                         │  enter           details; enter again goes back
+                                                                  │  d               Done on the selected needs-you item
+                                                                  │  a               Ask its orchestrator
+                                                                  │  ?               this help; ? or enter goes back
+                                                                  │  esc             leave: the keys go back to the
+                                                                  │                  prompt
+                                                                  │  vim normal      press i, then 0
+                                                                  │  click           a row selects it
+                                                                  │
+                                                                  │commands
+── cos ─ 9 need you · +2 new ──────── board mode · esc exit ─ [-] │  /cos            the board as text
+1: ▲ Approve the prod cutover window for t…  roger-… · 1h 35m     │  /cos <project>  one project
+2: ▲ Grant the Grafana editor service acco…  roger-emr-… · 3h     │  /cos pane       open the preview
+3: ▲ Create Hetzner bucket borant-hub-back…  borant · 42m         │  /cos help       this help
+4: ▲ Pick the GPU type for nightly evals: …  steve-age… · 25m     │
+5: ▲ Revoke old willisrocks gh token? (and…  borant · 12m         │done and ask
+6: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │  d               the chief closes the item; the row
+7: ■ w-rs-closeout · missing bundle github…  roger-… · 2h 20m     │                  shows
+8: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │                  sending, closing, closed, or still
+9: ● notes         10 open tasks                         ■1       │                  open
+   ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │  a               asks the owner; the chief relays
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │                  the reply
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ↓ 3 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

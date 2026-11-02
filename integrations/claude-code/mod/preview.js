@@ -10,6 +10,7 @@
 import {
   GLYPH,
   GONE,
+  alarmLine,
   cellsOf,
   activeSaga,
   allProjects,
@@ -24,6 +25,7 @@ import {
   projectParts,
   text,
   truncate,
+  unblockCommand,
   waited,
 } from './board.js'
 
@@ -52,6 +54,8 @@ export function channelsOf(project) {
 export function channelsFor(board, item) {
   if (!item) return []
   if (item.kind === 'needs') return item.q.channel ? [item.q.channel] : []
+  // A blocked spawn binds no task, so there is nothing to read for it.
+  if (item.kind === 'blocked') return []
   return channelsOf(item.project)
 }
 
@@ -238,7 +242,7 @@ export function previewLines(s) {
   const width = Math.max(24, s.width || 60)
   const item = s.item
   if (!item) return [[text('nothing selected', 'dim')]]
-  const lines = item.kind === 'needs' ? needsCard(s, width) : projectCard(s, width)
+  const lines = item.kind === 'needs' ? needsCard(s, width) : item.kind === 'blocked' ? blockedCard(s, width) : projectCard(s, width)
   return lines.map((line) => {
     const out = line.some((c) => c.button) ? line : fitEllipsis(line, width)
     if (line.selected) out.selected = true
@@ -309,6 +313,55 @@ function needsCard(s, width) {
       ...(saga ? [text(saga.title + '  '), text(bar.filled, 'green'), text(bar.empty, 'faint'), text(' ' + bar.label)] : [text('epics', 'dim')]),
     ])
     out.push(...epicLines(epics, width))
+  }
+  return out
+}
+
+/**
+ * The card for a blocked spawn: the agent, the refusal that a person must
+ * fix, and the one action, whose quoted command is shown to copy. It has no
+ * Done or Ask: only fixing the cause clears it, and Done would hide the
+ * alarm. The title line carries `selected`, as a needs-you card's does.
+ */
+function blockedCard(s, width) {
+  const b = s.item.b
+  const board = s.board
+  const command = unblockCommand(b.action)
+  const glyph = b.gone ? text(GONE + ' ', 'dim') : text(GLYPH.blocked + ' ', 'red')
+  const titleStyle = b.gone ? 'dim' : 'bold'
+  const place = b.project || b.channel || '?'
+  if (s.compact) {
+    const out = [
+      selected([glyph, text(truncate(b.agent || '', width - 2), titleStyle)]),
+      [text('  ' + [b.reason, place, waited(b, board)].filter(Boolean).join(DOT), 'dim')],
+    ]
+    if (s.more) {
+      for (const line of wrap('unblock: ' + (b.action || '?'), width - 2)) out.push([text('  ' + line, 'dim')])
+      if (command) out.push([text('  command: ', 'dim'), text(command, 'cyan')])
+    }
+    return out
+  }
+  const out = [header('blocked' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
+  out.push(selected([glyph, text(b.agent || '', titleStyle)]))
+  out.push([text(' ')])
+  const reason = wrap(b.reason || '?', width - 12)
+  out.push([text('  ' + pad('reason', 10), 'dim'), text(reason[0] || '', 'red')])
+  for (const line of reason.slice(1)) out.push([text(' '.repeat(12) + line, 'red')])
+  out.push(field('project', [text(place, 'bold')]))
+  out.push(field('channel', [text(b.channel || '?', 'dim')]))
+  out.push(field('spawner', b.spawner ? [text(b.spawner, 'dim')] : [text('a person', 'dim')]))
+  out.push(field('waiting', [text(waited(b, board) || '?'), text(DOT + 'since ' + hhmm(b.since, '?'), 'dim')]))
+  out.push([text(' ')])
+  const action = wrap(b.action || '?', width - 12)
+  out.push([text('  ' + pad('unblock', 10), 'dim'), text(action[0] || '')])
+  for (const line of action.slice(1)) out.push([text(' '.repeat(12) + line)])
+  if (command) out.push([text('  ' + pad('command', 10), 'dim'), text(command, 'cyan')])
+  // Enter shows the alarm as the hub sends it, one line to copy: the fields
+  // above split it, this keeps it whole.
+  if (s.more) {
+    out.push([text(' ')])
+    out.push([text('the alarm', 'dimBold')])
+    for (const line of wrap(alarmLine(b, board), width - 2)) out.push([text('  ' + line)])
   }
   return out
 }

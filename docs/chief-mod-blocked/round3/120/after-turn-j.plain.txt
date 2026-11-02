@@ -1,0 +1,40 @@
+  fragrant liquid, drank it and found it invigorating. The tale is│                                                   ✕
+  almost certainly apocryphal, but it captures something true:    │board mode: 1-9 j k ? · esc exit ⏎ details
+  tea entered human life first as a medicine, and only later as a │
+  pleasure.                                                       │project · 6 of 9
+                                                                  │
+  The plant itself, Camellia sinensis, is native to the           │agentbox
+  borderlands of southwest China, northern Myanmar, and           │  ░░░░░░░░░░ 0/1 epics done
+  northeastern India. Wild tea trees grew in the forested uplands │  no orchestrator online
+  of what is now Yunnan, and the peoples of the region likely     │
+  chewed the leaves, cooked them into soups, or pickled them long │  ● Sandboxed browser profiles per age…  running
+  before anyone steeped them in water. Some ethnic groups in the  │
+  region, such as the Bulang and Dai, still eat fermented tea     │  tasks     8 running
+  leaves. The earliest archaeological evidence of tea consumption │
+  is more concrete than the legend: tea residue has been          │
+  identified in the tomb of Emperor Jing of Han, who died in 141  │
+  BCE, near Xi'an. That the emperor was buried with tea suggests  │
+  that by the second century BCE it was valued enough to accompany│
+  a ruler into the afterlife.                                     │
+                                                                  │
+  In these early centuries tea was a regional curiosity. Texts    │
+── cos ─ 8 need you · 9 active ────── board mode · esc exit ─ [-] │
+5: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │
+6: ▲ A new question arrived during navigat…  kata · 1m            │
+7: ■ w-rs-closeout · missing bundle github…  roger-… · 2h 20m     │
+8: ■ w-queue-late · no host is online        kata · 30s           │
+9: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │
+   ● notes         10 open tasks                         ■1       │
+   ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ■ rich-brainst… Session links that surv…  ░░░░░ 0/2   ■2       │
+   ▲ xplainer      Narration voices per pr…  ░░░░░ 0/1   ▲1       │
+   ● roger-emr-ob… Queue depth panels        ░░░░░ 0/2   ●8       │
+   ↑ 4 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · esc to interrupt · ↓ to manage

@@ -1,0 +1,40 @@
+  The earliest history of tea is wrapped in legend. The best-known[38;5;153m[48;5;235m│[39m                                                   [38;5;246m✕[39m
+[49m  story credits the mythical Chinese emperor Shennong, the        [38;5;153m[48;5;235m│[1m[39mboard mode: [0;2m[48;5;235m1-9 j k ? · esc exit[0m[38;5;246m[48;5;235m ⏎ details[39m
+[49m  "Divine Farmer," who supposedly lived around 2737 BCE. According[38;5;153m[48;5;235m│[39m
+[49m  to the tale, Shennong was boiling water beneath a wild tree     [38;5;153m[48;5;235m│[38;5;246mproject · 6 of 9[39m
+[49m  when a few leaves drifted into his pot. He tasted the resulting [38;5;153m[48;5;235m│[39m
+[49m  infusion, found it refreshing and invigorating, and so          [38;5;153m[48;5;235m│[1m[38;5;231m[48;5;237magentbox[0m[38;5;231m[48;5;237m
+[39m[49m  discovered tea. Shennong is also said to have tested hundreds of[38;5;153m[48;5;235m│[39m  [38;5;246m░░░░░░░░░░ 0/1 epics done[39m
+[49m  herbs on himself, using tea as an antidote to poisons. The      [38;5;153m[48;5;235m│[38;5;246m  no orchestrator online[39m
+[49m  story is charming but cannot be verified. It reflects how later [38;5;153m[48;5;235m│[39m
+[49m  Chinese writers linked tea to medicine and to a golden age of   [38;5;153m[48;5;235m│[39m  [38;5;68m● [39mSandboxed browser profiles per age…[38;5;68m  running[39m
+[49m  culture.                                                        [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[38;5;246m  tasks     [39m8 running
+[49m  Botanical evidence points to a more specific birthplace.        [38;5;153m[48;5;235m│[39m
+[49m  [3mCamellia sinensis[0m is native to the region where southwestern    [38;5;153m[48;5;235m│[39m
+[49m  China, northern Myanmar, and northeastern India meet, especially[38;5;153m[48;5;235m│[39m
+[49m  the forested uplands of Yunnan. Two main varieties developed    [38;5;153m[48;5;235m│[39m
+[49m  there. [3mC. sinensis var. sinensis[0m is a small-leaved shrub suited [38;5;153m[48;5;235m│[39m
+[49m  to cooler climates, and it became the foundation for most       [38;5;153m[48;5;235m│[39m
+[49m  Chinese and Japanese teas. [3mC. sinensis var. assamica[0m is a       [38;5;153m[48;5;235m│[39m
+[49m  larger-leaved tree suited to tropical lowlands, and it became   [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m── [1m[39mcos[0m[38;5;246m ─ [1m[38;5;220m6 need you[0m[38;5;246m · 9 active ──────[39m [1;7m[38;5;153mboard mode[0m[38;5;246m · [38;5;153mesc[38;5;246m exit ─[39m [38;5;246m[-][39m [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m3[39m: [38;5;220m▲ [1mPick the GPU type for nightly evals: …[0m  [1msteve-age…[0m[38;5;246m · 25m[39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m4[39m: [38;5;220m▲ [1mRevoke old willisrocks gh token? (and…[0m  [1mborant[0m[38;5;246m · 12m[39m         [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m5[39m: [38;5;220m▲ [1mVoice sample sounds wrong on long wor…[0m  [1mxplainer[0m[38;5;246m · 12m[39m       [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m6[39m: [38;5;220m▲ [1mA new question arrived during navigat…[0m  [1mkata[0m[38;5;246m · 1m[39m            [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m7[39m: [38;5;220m▲ [1m[39mborant[0m        Hub backup to object st…  [38;5;72m██[38;5;246m░░░[39m 2/5   [38;5;168m■2  [39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m8[39m: [38;5;68m● [1m[39mnotes[0m         10 open tasks             [38;5;246m     [39m       [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m9[39m: [38;5;168m■ [1m[39mroger-docs-a…[0m Prod cutover              [38;5;72m█[38;5;246m░░░░[39m 1/4   [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;220m▲ [1m[39msteve-agents[0m  Eval harness on Modal G…  [38;5;72m██[38;5;246m░░░[39m 1/3   [38;5;220m▲1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;246m○ [1m[39mwellsky-know…[0m 2 open tasks              [38;5;246m     [39m                [38;5;153m[48;5;235m│[39m
+[48;5;237m   [38;5;68m● [1m[38;5;231magentbox[0m[38;5;231m[48;5;237m      Sandboxed browser profi…  ░░░░░ 0/1   [38;5;68m●8  [39m[49m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;168m■ [1m[39mrich-brainst…[0m Session links that surv…  [38;5;246m░░░░░[39m 0/2   [38;5;168m■2  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;220m▲ [1m[39mxplainer[0m      Narration voices per pr…  [38;5;246m░░░░░[39m 0/1   [38;5;220m▲1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;68m● [1m[39mroger-emr-ob…[0m Queue depth panels        [38;5;246m░░░░░[39m 0/2   [38;5;68m●8  [39m     [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m   ↑ 2 more · j k[39m                                                 [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;244m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;246m❯ [39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on · [38;5;44m1 shell[38;5;246m · esc to interrupt · ↓ to manage[39m

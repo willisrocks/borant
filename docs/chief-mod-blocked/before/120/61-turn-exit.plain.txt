@@ -1,0 +1,40 @@
+  during long sessions, and tea's caffeine served them well. Monasteries became centers of tea growing and tea
+  knowledge, an association that persisted for more than a thousand years.
+
+  Early tea was often prepared by pressing leaves into cakes, which could be transported and traded easily. These cakes
+  were roasted, ground, and boiled, sometimes with onion, ginger, orange peel, or salt. The result was closer to a soup
+  than to the delicate infusion we know today.
+
+  The Tang Dynasty: Tea Becomes a Culture
+
+  Tea became a national drink during the Tang dynasty (618–907). Peace, prosperity, a vibrant urban culture, and the
+  Grand Canal, which allowed cheap long-distance transport, created a mass market. Poets praised tea, and drinking it
+  became a mark of refinement.
+
+  The pivotal figure of this era is Lu Yu (c. 733–804), an orphan raised by Buddhist monks who became known as the "Sage
+  of Tea." His Cha Jing, or Classic of Tea, written around 760–780, is the first comprehensive monograph on tea. It
+  describes how to grow tea, how to process leaves into cakes, which utensils to use, which waters make the best
+  infusion, and how tea relates to the spirit of the drinker. Lu Yu insisted on careful preparation and argued against
+  adding too many flavorings. His work gave tea a philosophy, in which attention to detail, harmony with nature, and
+  moderation were bound together.
+
+── chief of staff ─ 6 need you · 9 active · 3 idle ───────────────────────────────────── 0: board mode (vim: i 0) ─ [-]
+1: ▲ Grant the Grafana editor service account to the alerts folder (a…  roger-emr-observab… · 3h  ✓ asked
+2: ▲ Create Hetzner bucket borant-hub-backup + 1Password item (and no…  borant · 42m              ✓ asked
+3: ▲ Pick the GPU type for nightly evals: A10G is cheaper, H100 halve…  steve-agents · 25m
+4: ▲ Revoke old willisrocks gh token? (and now a much longer title th…  borant · 12m
+5: ▲ Voice sample sounds wrong on long words; listen and say keep or …  xplainer · 12m
+6: ▲ A new question arrived during navigation                           kata · 1m
+7: ▲ borant                 Hub backup to object storage                ██░░░ 2/5       ■2        orchestrator · o…
+8: ● notes                  10 open tasks                                           ●8  ■1        orch-notes · onl…
+9: ■ roger-docs-api         Prod cutover                                █░░░░ 1/4   ●9  ■1        orch-roger-docs …
+   ▲ steve-agents           Eval harness on Modal GPUs                  ██░░░ 1/3   ●8      ▲1    orch-steve · onl…
+   ○ wellsky-knowledge-base 2 open tasks                                                          orch-wellsky · o…
+   ● agentbox               Sandboxed browser profiles per agent        ░░░░░ 0/1   ●8            no orchestrator
+   ■ rich-brainstorm        Session links that survive a restart        ░░░░░ 0/2       ■2        orch-rb · online…
+   ↓ 2 more · 0 then j k
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · esc to interrupt · ↓ to manage

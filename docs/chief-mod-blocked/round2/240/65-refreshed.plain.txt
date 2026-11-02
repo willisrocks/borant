@@ -1,0 +1,60 @@
+  tea and preparing it, among the earliest reasonably secure references.
+
+  Early tea was nothing like the drink we know. It was often boiled with onion, ginger, orange peel, or salt, producing something closer to a soup or a medicinal decoction. The leaves were frequently pressed into cakes for storage and
+  transport, a form that would remain central to Chinese and Central Asian tea culture for more than a thousand years.
+
+  The Tang Dynasty: Tea Becomes a Culture
+
+  Tea's transformation from regional remedy to national beverage occurred during the Tang dynasty (618–907). Several forces converged. Buddhism, which flourished under the Tang, valued tea as an aid to meditation, since monks could stay
+  alert through long hours of sitting without breaking their prohibition on intoxicants. Monasteries cultivated tea on their hillsides and spread the habit along pilgrimage routes. At the same time, the dynasty's peace, its canal networks,
+  and its cosmopolitan cities created the commercial conditions for a mass market.
+
+  The decisive figure of this era is Lu Yu (c. 733–804), an orphan raised in a monastery who became a scholar and connoisseur. His Cha Jing, or Classic of Tea, written around 760, is the world's first treatise on the subject. In three
+  volumes and ten sections, Lu Yu described the plant, the tools for harvesting and processing it, the equipment for brewing, the best water to use, the methods of preparation, the history of tea, and the famous growing regions. He turned a
+  commodity into an art and a discipline. His insistence that tea be prepared with care, that the water be neither too young nor too old, and that the vessels be harmonious with the drink established the idea that tea was not merely
+  consumed but contemplated. Later generations would honor him as the "Sage of Tea."
+
+  Tang tea was still prepared from compressed cakes. The cake was toasted, ground into powder, and simmered in a kettle with water, sometimes with a pinch of salt. The state recognized the commercial importance of the leaf: in 780, the
+  government imposed the first tea tax, a harbinger of the fiscal importance tea would hold for governments all over the world.
+
+  The Song Dynasty: Whisked Tea and Imperial Refinement
+
+  Under the Song dynasty (960–1279), tea culture reached a remarkable level of sophistication. Powdered tea, whisked in a bowl until frothy, became the fashionable form. The finest tea cakes, stamped with dragons and phoenixes, were
+  produced for the imperial court in the Beiyuan gardens of Fujian, and the competition to produce the most exquisite tribute tea became fierce. Aristocrats and literati held tea-tasting contests, called doucha, in which competitors judged
+  the whiteness and persistence of the foam and the quality of the flavor. Black-glazed bowls from Fujian, with their lustrous streaks and spots, were prized because they showed off the white froth to best advantage.
+
+  Emperor Huizong (r. 1100–1126), a gifted painter and calligrapher who proved a disastrous ruler, wrote a treatise on tea, the Daguan Chalun, in which he praised its power to bring tranquility and refinement. The cultural prestige of tea
+  had by then reached the highest level of society, yet it also spread far down the social ladder. Teahouses proliferated in cities such as Kaifeng and Hangzhou, serving as places of conversation, business, entertainment, and sometimes less
+  respectable pleasures.
+
+  Tea also became a vital strategic commodity. The Song state, hard pressed by nomadic powers to the north and west, needed horses for its cavalry, and the steppe peoples and Tibetans wanted tea, which supplied vitamins and digestive relief
+  to people subsisting on meat and dairy. The result was the Tea-Horse trade, a network of mountain trails through Sichuan and Yunnan into Tibet that would continue for centuries. Government monopolies regulated this exchange, and tea
+  became, in effect, a form of currency in the frontier economy.
+
+  Spread to Japan and Korea
+
+  Tea traveled east along with Buddhism. Japanese monks who
+  ⎿  Interrupted · What should Claude do instead?
+── chief of staff ─ 8 need you · 9 active · 3 idle ──────────────────────────────────────────────────────────────────────────── 0: board mode (vim: i 0) ─                                                                                  [-]
+1: ▲ Grant the Grafana editor service account to the alerts folder (and now a much longer tit…  roger-emr-observab… · 3h  ✓ asked
+2: ▲ Create Hetzner bucket borant-hub-backup + 1Password item (and now a much longer title th…  borant · 42m              ✓ asked
+3: ▲ Pick the GPU type for nightly evals: A10G is cheaper, H100 halves the run (and now a muc…  steve-agents · 25m
+4: ▲ Revoke old willisrocks gh token? (and now a much longer title that the band must cut)      borant · 12m
+5: ▲ Voice sample sounds wrong on long words; listen and say keep or redo (and now a much lon…  xplainer · 12m
+6: ▲ Evented: A new question arrived during navigation                                          kata · 1m
+7: ■ w-rs-closeout · missing bundle github-work                                                 roger-docs-api · 2h 20m   → borant resume w-rs-closeout
+8: ■ w-queue-late · no host is online                                                           kata · 30s                → bring a host online
+9: ▲ borant                          Hub backup to object storage                               ██░░░ 2/5       ■2        orchestrator · online · a-much-…
+   ● notes                           10 open tasks                                                          ●8  ■1        orch-notes · online · a-much-lo…
+   ■ roger-docs-api                  Prod cutover                                               █░░░░ 1/4   ●9  ■1        orch-roger-docs · busy · a-much…
+   ▲ steve-agents                    Eval harness on Modal GPUs                                 ██░░░ 1/3   ●8      ▲1    orch-steve · online · a-much-lo…
+   ○ wellsky-knowledge-base          2 open tasks                                                                         orch-wellsky · online · a-much-…
+   ● agentbox                        Sandboxed browser profiles per agent                       ░░░░░ 0/1   ●8            no orchestrator
+   ■ rich-brainstorm                 Session links that survive a restart                       ░░░░░ 0/2       ■2        orch-rb · online · a-much-longe…
+   ▲ xplainer                        Narration voices per project                               ░░░░░ 0/1   ●8      ▲1    orch-xplainer · online · a-much…
+   ● roger-emr-observability-dashbo… Queue depth panels                                         ░░░░░ 0/2   ●8            orch-obs · busy · a-much-longer…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

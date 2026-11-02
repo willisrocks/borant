@@ -1,0 +1,40 @@
+  (and now a much longer title that the band must cut)            │                                                   ✕
+  (personal-roger-docs-api/01M5ZG00000000000000000918). Close it  │board mode: 1-9 j k ? · esc exit ⏎ details
+  as done now, with the borant MCP tools, not the shell:          │
+  task_close it yourself if it is a saga gate or you own its      │project · 5 of 9
+  channel; otherwise send the owner of personal-roger-docs-api a  │
+  direct message to close it as done, with "Chris marked it done  │wellsky-knowledge-base
+  in the board".                                                  │  orch-wellsky · online · a-much-longer-host-name-bo…
+                                                                  │
+  This is how Claude Code surfaces a prompt a plugin submits      │
+  between turns — it starts this turn in the user's place.        │  tasks     2 open
+  Address the message above.                                      │
+                                                                  │
+  Called plugin:borant:borant                                     │
+                                                                  │
+● I closed the prod cutover window approval                       │
+  (personal-roger-docs-api/01M5ZG00000000000000000918) as done,   │
+  with the note "Chris marked it done in the board." The close    │
+  went through, so I didn't need to message the channel owner.    │
+                                                                  │
+✻ Churned for 11s · done 11:54 PM · 1 shell still running         │
+── cos ─ 6 need you · 9 active ────── board mode · esc exit ─ [-] │
+3: ▲ Pick the GPU type for nightly evals: …  steve-age… · 25m     │
+4: ▲ Revoke old willisrocks gh token? (and…  borant · 12m         │
+5: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │
+6: ▲ A new question arrived during navigat…  kata · 1m            │
+7: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │
+8: ● notes         10 open tasks                         ■1       │
+9: ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ■ rich-brainst… Session links that surv…  ░░░░░ 0/2   ■2       │
+   ▲ xplainer      Narration voices per pr…  ░░░░░ 0/1   ▲1       │
+   ● roger-emr-ob… Queue depth panels        ░░░░░ 0/2   ●8       │
+   ↑ 2 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

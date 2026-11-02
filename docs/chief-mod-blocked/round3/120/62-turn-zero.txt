@@ -1,0 +1,40 @@
+                                                                  [38;5;153m[48;5;235m│[39m                                                   [38;5;246m✕[39m
+[49m                                                                  [38;5;153m[48;5;235m│[1m[39mboard mode: [0;2m[48;5;235m1-9 j k ? · esc exit[0m[38;5;246m[48;5;235m ⏎ details[39m
+[38;5;231m[49m●[39m I closed the prod cutover approval task                         [38;5;153m[48;5;235m│[39m
+[49m  ([38;5;153mpersonal-roger-docs-api/01M5ZG00000000000000000918[39m) as done    [38;5;153m[48;5;235m│[38;5;246mproject · 5 of 9[39m
+[49m  with [38;5;153mtask_close[39m. The close message is "Chris marked it done in  [38;5;153m[48;5;235m│[39m
+[49m  the board". The tool confirmed the close.                       [38;5;153m[48;5;235m│[1m[38;5;231m[48;5;237mwellsky-knowledge-base[0m[38;5;231m[48;5;237m
+[39m[49m                                                                  [38;5;153m[48;5;235m│[38;5;246m  orch-wellsky · online · a-much-longer-host-name-bo…
+[39m[49m  I didn't check whether it's a saga gate or whether I own that   [38;5;153m[48;5;235m│[39m
+[49m  channel, so I tried the close directly and it went through. I   [38;5;153m[48;5;235m│[39m
+[49m  sent no direct message to the channel owner.                    [38;5;153m[48;5;235m│[38;5;246m  tasks     [39m2 open
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m✻[39m [38;5;246mBrewed for 10s · done 11:40 PM · 1 shell still running[39m          [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;246m[48;5;237m❯ [38;5;231mwrite a 3000 word essay on the history of tea, in one answer, [39m  [38;5;153m[48;5;235m│[39m
+[48;5;237m  [38;5;231mno tools[39m                                                        [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;174m[49m✽[39m [38;5;174mTransmogrifying… [38;5;246m(2s · [38;5;247mthinking[38;5;246m)[39m                                [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m  ⎿  Tip: Want a side agent watching your back while Claude works?[38;5;153m[48;5;235m│[39m
+[49m     [38;5;246mTurn on You should know:[39m                                     [38;5;153m[48;5;235m│[39m
+[49m     [38;5;153m/plugin enable cc-plugin-you-should-know@builtin[39m             [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m── [1m[39mcos[0m[38;5;246m ─ [1m[38;5;220m8 need you[0m[38;5;246m · 9 active ──────[39m [1;7m[38;5;153mboard mode[0m[38;5;246m · [38;5;153mesc[38;5;246m exit ─[39m [38;5;246m[-][39m [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m5[39m: [38;5;220m▲ [1mVoice sample sounds wrong on long wor…[0m  [1mxplainer[0m[38;5;246m · 12m[39m       [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m6[39m: [38;5;220m▲ [1mA new question arrived during navigat…[0m  [1mkata[0m[38;5;246m · 1m[39m            [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m7[39m: [38;5;168m■ [1m[39mw-rs-closeout[0m[38;5;246m · [39mmissing bundle github…  [1mroger-…[0m[38;5;246m · 2h 20m[39m     [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m8[39m: [38;5;168m■ [1m[39mw-queue-late[0m[38;5;246m · [39mno host is online        [1mkata[0m[38;5;246m · 30s[39m           [38;5;153m[48;5;235m│[39m
+[38;5;153m[49m9[39m: [38;5;220m▲ [1m[39mborant[0m        Hub backup to object st…  [38;5;72m██[38;5;246m░░░[39m 2/5   [38;5;168m■2  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;68m● [1m[39mnotes[0m         10 open tasks             [38;5;246m     [39m       [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;168m■ [1m[39mroger-docs-a…[0m Prod cutover              [38;5;72m█[38;5;246m░░░░[39m 1/4   [38;5;168m■1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;220m▲ [1m[39msteve-agents[0m  Eval harness on Modal G…  [38;5;72m██[38;5;246m░░░[39m 1/3   [38;5;220m▲1  [39m     [38;5;153m[48;5;235m│[39m
+[48;5;237m   [38;5;231m○ [1mwellsky-know…[0m[38;5;231m[48;5;237m 2 open tasks                              [39m[49m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;68m● [1m[39magentbox[0m      Sandboxed browser profi…  [38;5;246m░░░░░[39m 0/1   [38;5;68m●8  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;168m■ [1m[39mrich-brainst…[0m Session links that surv…  [38;5;246m░░░░░[39m 0/2   [38;5;168m■2  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;220m▲ [1m[39mxplainer[0m      Narration voices per pr…  [38;5;246m░░░░░[39m 0/1   [38;5;220m▲1  [39m     [38;5;153m[48;5;235m│[39m
+[49m   [38;5;68m● [1m[39mroger-emr-ob…[0m Queue depth panels        [38;5;246m░░░░░[39m 0/2   [38;5;68m●8  [39m     [38;5;153m[48;5;235m│[39m
+[38;5;246m[49m   ↑ 4 more · j k[39m                                                 [38;5;153m[48;5;235m│[39m
+[49m                                                                  [38;5;153m[48;5;235m│[39m
+[38;5;244m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;246m❯ [39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on · [38;5;44m1 shell[38;5;246m · esc to interrupt · ↓ to manage[39m

@@ -1,0 +1,40 @@
+                                                                  │                                                   ✕
+  The Song Dynasty: Whisked Tea and Refinement                    │board mode: 1-9 j k d ? · esc exit ⏎ details
+                                                                  │
+  Under the Song dynasty (960–1279), tea culture reached a new    │needs you · 1 of 6
+  level of sophistication. Tea was now prepared by grinding the   │
+  leaves into a fine powder and whisking it with hot water in a   │▲ Grant the Grafana editor service account to the
+  bowl, producing a frothy green drink. Competitions, known as    │  alerts folder (and now a much longer title that th…
+  doucha, or "tea battles," tested the quality of the froth and   │
+  the color of the liquid. Dark-glazed bowls, such as the famous  │  ✓ asked orch-roger-emr-observability-dashboards at…
+  tenmoku ware from Fujian, were prized because they showed off   │
+  the white foam.                                                 │  project   roger-emr-observability-dashboards · Tem…
+                                                                  │  says      access
+  The Emperor Huizong (r. 1100–1126), an accomplished painter and │  waiting   3h · since 11:32
+  calligrapher, wrote a treatise on tea called Daguan Chalun,     │  owner     orch-roger-emr-observability-dashboards
+  praising the drink's qualities. Court-sponsored tea gardens     │  task      personal-roger-emr-observability-dashboa…
+  produced elaborate patterned cakes for tribute, while teahouses │
+  spread across cities and offered entertainment, conversation,   │the saga now  Temporal queue health in Grafana  ░░░░…
+  and business. Tea moved between the palace and the street, a    │  ● Queue depth panels               running
+  pattern that would recur wherever tea went                      │  ○ Alert rules for stuck workflows  waiting
+  ⎿  Interrupted · What should Claude do instead?                 │
+── cos ─ 6 need you · 9 active ────── board mode · esc exit ─ [-] │
+1: ▲ Grant the Grafana editor service acco…  ✓ asked              │
+2: ▲ Create Hetzner bucket borant-hub-back…  ✓ asked              │
+3: ▲ Pick the GPU type for nightly evals: …  steve-age… · 25m     │
+4: ▲ Revoke old willisrocks gh token? (and…  borant · 12m         │
+5: ▲ Voice sample sounds wrong on long wor…  xplainer · 12m       │
+6: ▲ Evented: A new question arrived durin…  kata · 1m            │
+7: ▲ borant        Hub backup to object st…  ██░░░ 2/5   ■2       │
+8: ● notes         10 open tasks                         ■1       │
+9: ■ roger-docs-a… Prod cutover              █░░░░ 1/4   ■1       │
+   ▲ steve-agents  Eval harness on Modal G…  ██░░░ 1/3   ▲1       │
+   ○ wellsky-know… 2 open tasks                                   │
+   ● agentbox      Sandboxed browser profi…  ░░░░░ 0/1   ●8       │
+   ■ rich-brainst… Session links that surv…  ░░░░░ 0/2   ■2       │
+   ↓ 2 more · j k                                                 │
+                                                                  │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

@@ -24,7 +24,7 @@
 // inline (a narrow one) it is a compact block over the band, open only while
 // it has the keys.
 
-import { allQuestions, bandItems, bandRows, digest, helpLines, text as seg, truncate, hhmm } from '../mod/board.js'
+import { allBlocked, allQuestions, bandItems, bandRows, digest, helpLines, text as seg, truncate, hhmm } from '../mod/board.js'
 import { channelsFor, helpPreview, previewLines, questionKey, findProject, titleLineCount } from '../mod/preview.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
@@ -642,19 +642,20 @@ function toast($, text) {
   }
 }
 
-/** A toast when the board shows a needs-you item that was not there before. */
+/** A toast when the board shows a needs-you item or a blocked spawn that was
+ * not there before. */
 function announceNew($) {
-  const questions = allQuestions(board)
-  const keys = new Set(questions.map((q) => String(q.channel) + '/' + String(q.task)))
+  const items = bandItems(board)
+  const keys = new Set(items.map((i) => i.key))
   if (seenNeeds) {
-    const fresh = questions.find((q) => !seenNeeds.has(String(q.channel) + '/' + String(q.task)))
-    if (fresh) {
-      try {
-        $.ui.toast('needs you: ' + fresh.title)
-      } catch {
-        // A toast is never worth an error.
-      }
-    }
+    const fresh = items.find((i) => {
+      if (seenNeeds.has(i.key)) return false
+      if (i.kind === 'needs') return !i.q.closed && !i.q.gone
+      if (i.kind === 'blocked') return !i.b.gone
+      return false
+    })
+    if (fresh?.kind === 'needs') toast($, 'needs you: ' + fresh.q.title)
+    if (fresh?.kind === 'blocked') toast($, 'blocked: ' + fresh.b.agent + ' \u00b7 ' + fresh.b.reason)
   }
   seenNeeds = keys
 }
@@ -666,7 +667,7 @@ function drawnQuestions() {
 }
 
 function liveItems() {
-  return board ? bandItems(board, drawnQuestions()) : []
+  return board ? bandItems(board, drawnQuestions(), allBlocked(board)) : []
 }
 
 /** The band's rows: the board's, or in board mode the rows it began with. */
@@ -679,6 +680,7 @@ function items() {
     if (fresh) return fresh
     // It left the board: it keeps its place, marked, until esc.
     if (old.kind === 'needs' && !old.q.closed && !old.q.gone) return { ...old, q: { ...old.q, gone: true } }
+    if (old.kind === 'blocked' && !old.b.gone) return { ...old, b: { ...old.b, gone: true } }
     return old
   })
   return frozen
@@ -688,7 +690,12 @@ function items() {
 function waitingRows() {
   if (!frozen || !board) return 0
   const held = new Set(frozen.map((i) => i.key))
-  return liveItems().filter((i) => !held.has(i.key) && !(i.kind === 'needs' && (i.q.closed || i.q.gone))).length
+  return liveItems().filter((i) => {
+    if (held.has(i.key)) return false
+    if (i.kind === 'needs') return !i.q.closed && !i.q.gone
+    if (i.kind === 'blocked') return !i.b.gone
+    return true
+  }).length
 }
 
 /** Where the keys are: board mode holds the rows still while it lasts. */

@@ -174,6 +174,26 @@ test('a new needs-you item raises one toast, and no more', async ($, on) => {
   expect(toasts).toEqual(['needs you: Give boopmark a goal'])
   await clock.advance(15000)
   expect(toasts).toEqual(['needs you: Give boopmark a goal'])
+
+  // A blocked spawn that arrives after the first drawing is news too, and its
+  // reason is in the toast.
+  const blocked = JSON.parse(JSON.stringify(next)) as typeof board & { collections: { blocked?: unknown[] }[] }
+  blocked.collections[0].blocked = [
+    {
+      agent: 'w-rs-closeout',
+      channel: 'personal-borant',
+      project: 'borant',
+      reason: 'missing bundle github-work',
+      action: 'add bundle github-work to a host',
+      since: 1793025600000,
+      spawner: 'orchestrator',
+    },
+  ]
+  payload = blocked
+  await clock.advance(15000)
+  expect(toasts).toEqual(['needs you: Give boopmark a goal', 'blocked: w-rs-closeout \u00b7 missing bundle github-work'])
+  await clock.advance(15000)
+  expect(toasts).toHaveLength(2)
 })
 
 test('a board source that fails draws "board unavailable", and nothing else', async ($, on) => {
@@ -339,6 +359,62 @@ test('a digit selects its row and enters board mode: the key field is the pane\'
   expect(await band.find({ type: 'Text', text: /^board mode$/ })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /^ exit$/ })).toBeDefined()
   expect(await band.find({ type: 'Button', key: 'board' })).toBeUndefined()
+  await pane.unmount()
+  await band.unmount()
+})
+
+/** A board with one blocked spawn on its collection. */
+function withBlockedSpawn(base: typeof board, spawn: Record<string, unknown>) {
+  const next = JSON.parse(JSON.stringify(base)) as typeof board & { collections: { blocked?: unknown[] }[] }
+  next.collections[0].blocked = [spawn]
+  return next
+}
+
+test('a blocked spawn draws its own row and card: the refusal, the action, and the command to copy', async ($, on) => {
+  const live = withBlockedSpawn(board, {
+    agent: 'w-rs-closeout',
+    channel: 'personal-borant',
+    project: 'borant',
+    reason: 'missing bundle github-work',
+    action: '`borant resume w-rs-closeout` after fixing the launch error',
+    since: 1793022000000,
+    spawner: 'orchestrator',
+  })
+  const toasts: string[] = []
+  chiefStubs(on, [], [], [], toasts, 'cli')
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    return { value: { exitCode: 0, stdout: argv.includes('tasks') ? '[]' : JSON.stringify(live), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const wide = { ...BAND, viewport: { ...BAND.viewport, columns: 140 }, props: { ...BAND.props, bodyColumns: 140 } }
+  const band = await $.ui.mount({ ...wide, surface: 'terminal' })
+  // The header counts the spawn with the questions, and the row draws its own
+  // glyph, the refusal, and the command that unblocks it.
+  expect(await band.find({ type: 'Text', text: /3 need you/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /w-rs-closeout/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /missing bundle github-work/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /→ borant resume w-rs-closeout/ })).toBeDefined()
+  // Its chip is the third row, a plain select Button like every row's.
+  expect((await band.find({ type: 'Button', key: 'b:w-rs-closeout' }))?.props.hotkey).toBe('3')
+  await band.press({ key: 'b:w-rs-closeout' })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /blocked · 1 of 1/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /missing bundle github-work/ })).toBeDefined()
+  // The action, and its quoted command on a line of its own to copy.
+  expect(await pane.find({ type: 'Text', text: /after fixing the/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /launch error/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'borant resume w-rs-closeout' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /orchestrator/ })).toBeDefined()
+  // Enter shows the alarm as the hub sends it, one line to copy.
+  await enter($, pane)
+  expect(await pane.find({ type: 'Text', text: /^the alarm$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Unblock: / })).toBeDefined()
+  // d does nothing on a blocked spawn: only fixing the cause clears it, so
+  // there is no Done or Ask to hide the alarm.
+  await typeKey($, pane, 'd')
+  expect(toasts.some((t) => t.startsWith('d: Done needs a needs-you item'))).toBe(true)
+  expect(toasts.some((t) => t.startsWith('closed:') || t.startsWith('shown:'))).toBe(false)
   await pane.unmount()
   await band.unmount()
 })

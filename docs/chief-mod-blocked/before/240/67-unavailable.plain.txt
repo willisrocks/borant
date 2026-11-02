@@ -1,0 +1,60 @@
+  Here is the essay.
+
+  The History of Tea
+
+  Origins in the Mists
+
+  Tea begins as a plant before it becomes a drink, and the plant begins in the uplands where southwest China, northern Myanmar, and northeastern India meet. Camellia sinensis, an evergreen shrub of the camellia family, grew wild in these
+  humid, forested hills long before anyone steeped its leaves. Botanists recognize two main varieties. C. sinensis var. sinensis is a small-leaved, cold-tolerant bush that became the basis of Chinese tea. C. sinensis var. assamica is a
+  large-leaved tree that thrives in tropical warmth and later became the foundation of Indian Assam tea.
+
+  The legends that surround tea's discovery are charming, and almost certainly not history. The most famous credits the mythical emperor Shennong, the "Divine Farmer," who is said to have tested hundreds of herbs on his own body. According
+  to the tale, he was boiling water around 2737 BCE when leaves from a nearby tree drifted into his pot. He drank the infusion and found it refreshing, and it neutralized the poisons he had absorbed that day. A second legend, from Buddhist
+  tradition, tells of Bodhidharma, who cut off his own eyelids in frustration after falling asleep during meditation. Where the eyelids fell, tea plants sprouted. These stories tell us less about the first drinkers than about how the
+  Chinese and Buddhist traditions came to see tea: as medicine, and as an aid to wakefulness and discipline.
+
+  The documentary evidence is more modest and more interesting. Archaeologists have found tea remains in the tomb of Emperor Jing of Han, who died in 141 BCE, near Xi'an. Chemical analysis in 2016 identified tea leaves among the grave
+  goods, which suggests that by the second century BCE tea was valued enough to accompany an emperor into the afterlife. Earlier references are harder to pin down. The word often translated as "tea" in early texts, tu, seems to have covered
+  several bitter herbs, and scholars still argue over which passages truly mean Camellia. Writers from the Han period mention tea drinking in the southwestern region of Sichuan, which probably was the center of early cultivation. A text
+  from around 59 BCE, Wang Bao's "Contract for a Youth," lists the purchase of tea and the preparation of tea among a servant's duties. That is some of the earliest reliable evidence of tea as a commodity.
+
+  Tang Dynasty: Tea Becomes a Culture
+
+  Tea moved from regional curiosity to national habit in the Tang dynasty (618–907). Several forces drove this. The Grand Canal and improved roads linked the tea-growing south to the northern capitals. Buddhism spread widely, and monks
+  prized tea for staying alert through long meditation. A prosperous, cosmopolitan society had the leisure and the money to turn a drink into a pastime.
+
+  The key figure of the age is Lu Yu (c. 733–804), an orphan raised in a Buddhist monastery who became a scholar and recluse. His Cha Jing, the Classic of Tea, written around 760–780, is the world's first major treatise on the subject. In
+  ten chapters it covers the plant's origins, the tools for making and drinking tea, the manufacturing process, the proper utensils, the boiling of water, the drinking of tea, its history, its regional varieties, and what could be omitted
+  in a simple setting. Lu Yu insisted that tea be treated with care and attention, and he held opinions on everything from the best water (mountain spring water, then river water, then well water) to the shape of the kettle. In doing so he
+  elevated tea preparation into something close to an art.
+
+  Tang tea was quite unlike what we drink now. Leaves were steamed, pounded, molded into cakes, and dried. To serve, the cake was toasted, ground to powder, and boiled in a pot, often with salt, and sometimes with ginger, orange peel, or
+  other flavorings. Lu Yu grumbled about additives, but they remained popular. The liquid was a thick, savory broth rather than a delicate infusion.
+
+  The Tang state noticed the tea tr
+  ⎿  Interrupted · What should Claude do instead?
+
+› Prompt from the borant plugin
+❯ The borant plugin sent a message:
+  Chris marked done: Grant the Grafana editor service account to the alerts folder (and now a much longer title that the band must cut) and then a great deal more words that would need two more lines of the card to show
+  (personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921). Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; otherwise send the owner of
+  personal-roger-emr-observability-dashboards a direct message to close it as done, with "Chris marked it done in the board".
+
+  This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.
+
+  Called plugin:borant:borant
+
+● I sent orch-roger-emr-observability-dashboards a direct message asking it to close personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921 as done. The message quotes "Chris marked it done in the board". I'm not the channel
+  owner and the task isn't a saga gate, so I couldn't close it myself. The task is still open until the owner acts.
+
+  Two things are still pending:
+  - Ask orchestrator replies: the questions on that same task and on personal-borant/01M5ZG00000000000000000015 have gone to their owners. I'll relay the replies when they arrive.
+  - Tea essay: it was cut off mid-way, in the Tang dynasty section, when you interrupted. I can restart it and deliver all 3,000 words in one go if you still want it.
+
+✻ Worked for 7s · done 11:50 PM · 1 shell still running
+── chief of staff ─ ✕ board unavailable · borant board exited 1: hub unreachable                                                                                                                                                            [-]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ finish the tea essay
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

@@ -1,0 +1,60 @@
+  Early tea was nothing like the drink we know. It was often boiled with onion, ginger, orange peel, or salt, producing something closer to a soup or a medicinal decoction. The leaves were frequently pressed into cakes for storage and
+  transport, a form that would remain central to Chinese and Central Asian tea culture for more than a thousand years.
+
+  [1mThe Tang Dynasty: Tea Becomes a Culture[0m
+
+  Tea's transformation from regional remedy to national beverage occurred during the Tang dynasty (618–907). Several forces converged. Buddhism, which flourished under the Tang, valued tea as an aid to meditation, since monks could stay
+  alert through long hours of sitting without breaking their prohibition on intoxicants. Monasteries cultivated tea on their hillsides and spread the habit along pilgrimage routes. At the same time, the dynasty's peace, its canal networks,
+  and its cosmopolitan cities created the commercial conditions for a mass market.
+
+  The decisive figure of this era is Lu Yu (c. 733–804), an orphan raised in a monastery who became a scholar and connoisseur. His [3mCha Jing[0m, or [3mClassic of Tea[0m, written around 760, is the world's first treatise on the subject. In three
+  volumes and ten sections, Lu Yu described the plant, the tools for harvesting and processing it, the equipment for brewing, the best water to use, the methods of preparation, the history of tea, and the famous growing regions. He turned a
+  commodity into an art and a discipline. His insistence that tea be prepared with care, that the water be neither too young nor too old, and that the vessels be harmonious with the drink established the idea that tea was not merely
+  consumed but contemplated. Later generations would honor him as the "Sage of Tea."
+
+  Tang tea was still prepared from compressed cakes. The cake was toasted, ground into powder, and simmered in a kettle with water, sometimes with a pinch of salt. The state recognized the commercial importance of the leaf: in 780, the
+  government imposed the first tea tax, a harbinger of the fiscal importance tea would hold for governments all over the world.
+
+  [1mThe Song Dynasty: Whisked Tea and Imperial Refinement[0m
+
+  Under the Song dynasty (960–1279), tea culture reached a remarkable level of sophistication. Powdered tea, whisked in a bowl until frothy, became the fashionable form. The finest tea cakes, stamped with dragons and phoenixes, were
+  produced for the imperial court in the Beiyuan gardens of Fujian, and the competition to produce the most exquisite tribute tea became fierce. Aristocrats and literati held tea-tasting contests, called [3mdoucha[0m, in which competitors judged
+  the whiteness and persistence of the foam and the quality of the flavor. Black-glazed bowls from Fujian, with their lustrous streaks and spots, were prized because they showed off the white froth to best advantage.
+
+  Emperor Huizong (r. 1100–1126), a gifted painter and calligrapher who proved a disastrous ruler, wrote a treatise on tea, the [3mDaguan Chalun[0m, in which he praised its power to bring tranquility and refinement. The cultural prestige of tea
+  had by then reached the highest level of society, yet it also spread far down the social ladder. Teahouses proliferated in cities such as Kaifeng and Hangzhou, serving as places of conversation, business, entertainment, and sometimes less
+  respectable pleasures.
+
+  Tea also became a vital strategic commodity. The Song state, hard pressed by nomadic powers to the north and west, needed horses for its cavalry, and the steppe peoples and Tibetans wanted tea, which supplied vitamins and digestive relief
+  to people subsisting on meat and dairy. The result was the Tea-Horse trade, a network of mountain trails through Sichuan and Yunnan into Tibet that would continue for centuries. Government monopolies regulated this exchange, and tea
+  became, in effect, a form of currency in the frontier economy.
+
+  [1mSpread to Japan and Korea[0m
+
+  Tea traveled east along with Buddhism. Japanese monks who
+[38;5;246m  ⎿  Interrupted · What should Claude do instead?[39m
+
+[38;5;246m› Prompt from the borant plugin[39m
+[38;5;246m[48;5;237m❯ [38;5;231mThe borant plugin sent a message:[39m
+  [38;5;231mChris marked done: Grant the Grafana editor service account to the alerts folder (and now a much longer title that the band must cut) and then a great deal more words that would need two more lines of the card to show [39m
+  [38;5;231m(personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921). Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; otherwise send the owner of [39m
+  [38;5;231mpersonal-roger-emr-observability-dashboards a direct message to close it as done, with "Chris marked it done in the board".[39m
+
+  [38;5;231mThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.[39m
+
+[49m  [38;5;246mCalled plugin:borant:borant [39m
+
+[38;5;231m●[39m I sent orch-roger-emr-observability-dashboards a direct message asking it to close personal-roger-emr-observability-dashboards/01M5ZG00000000000000000921 as done, with "Chris marked it done in the board". It owns that channel and I have
+  no sign this task is a saga gate, so I didn't close it myself. The task is still open until the orchestrator acts on the message.
+
+  I stopped the tea essay partway, at the section on tea reaching Japan and Korea. Tell me if you want it restarted in full. The two earlier "Ask orchestrator" questions (the Hetzner bucket and the Grafana service account) also have no
+  replies yet.
+
+[38;5;246m✻[39m [38;5;246mCogitated for 5s · done 11:26 PM · 1 shell still running[39m
+[38;5;246m── [1m[39mchief of staff[0m[38;5;246m ─ [38;5;72m✓ nothing needs you[38;5;246m · 0 active · 3 idle ───────────────────────────────────────────────────────────────────[39m [38;5;153m0[39m: board mode[38;5;246m (vim: i 0) ─[39m                                                                                  [38;5;246m[-][39m
+[38;5;153m1:[39m [38;5;246m– Grant the Grafana editor service account to the alerts folder (and now a much longer tit…[39m  [1mroger-emr-observab…[0m[38;5;246m · 3h[39m  [38;5;220m→ not closed[39m
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ [2mfinish the tea essay[0m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246m⏸ manual mode on · [38;5;44m1 shell[38;5;246m · ↓ to manage[39m
