@@ -349,7 +349,7 @@ scenario_liveness() {
     *) echo "  lworker: $out" >&2; return 1 ;;
   esac
   wait_for "lworker on host-b" is_at lworker host-b || return 1
-  wait_for "the claim" log_has host-b lworker "CLAIM live $task ok" || return 1
+  wait_for "the claim" log_has host-b lworker "CLAIM $task ok" || return 1
   wait_for "the first wip file" log_has host-b lworker "WROTE live-wip.txt" || return 1
   wait_for "the checkpoint" ref_exists refs/borant/lworker/wip || return 1
 
