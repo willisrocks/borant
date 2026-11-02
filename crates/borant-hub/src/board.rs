@@ -4,7 +4,7 @@
 //! the hub request mutex (review focus 7).
 
 use borant_core::board::{BoardInput, BoardView, build};
-use borant_core::model::{Channel, Project};
+use borant_core::model::{Channel, Project, SpawnRecord};
 use borant_core::proto::ApiError;
 use borant_core::{CollectionName, keys};
 use serde_json::Value;
@@ -46,6 +46,13 @@ impl Hub {
             .filter_map(|doc| serde_json::from_value::<Channel>(doc.value).ok())
             .collect();
         let tasks = self.all_tasks().await?;
+        let spawns: Vec<SpawnRecord> = self
+            .store
+            .list::<SpawnRecord>(keys::SPAWN_PREFIX)
+            .await?
+            .into_iter()
+            .map(|doc| doc.value)
+            .collect();
         let agents = self.view().await?.agents;
 
         let wanted = match caller {
@@ -70,6 +77,7 @@ impl Hub {
                 projects: &projects,
                 channels: &channels,
                 tasks: &tasks,
+                spawns: &spawns,
                 agents: &agents,
                 collections: &self.cfg.collections,
             },

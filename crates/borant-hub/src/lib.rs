@@ -6,6 +6,7 @@
 //! restart on a large store still answers requests.
 
 mod alerts;
+mod blocked_alarm;
 mod board;
 mod calls;
 pub mod changes;
@@ -58,7 +59,7 @@ use borant_core::rules::roles::{CollectionConfig, RoleConfig};
 use borant_core::rules::schedules::Schedule;
 use borant_core::{
     AgentId, BundleName, ChannelName, Clock, CollectionName, FencingToken, HostName, MemberName,
-    PoolName, RoleName, SessionId, Timestamp, keys, subjects,
+    PoolName, RoleName, SessionId, TaskId, Timestamp, keys, subjects,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -221,6 +222,17 @@ pub(crate) struct Memory {
     pub recovery_stopped: HashSet<AgentId>,
     /// When the alert pass last ran.
     pub last_alerts: Option<Timestamp>,
+    /// When the blocked-work pass last ran.
+    pub last_blocked: Option<Timestamp>,
+    /// When the hub last told about each blocked spawn, so the alarm repeats
+    /// at most every four hours while the spawn stays blocked.
+    pub blocked_told: HashMap<AgentId, Timestamp>,
+    /// The bound task that the alarm set to `stuck` for each blocked spawn,
+    /// with what it hid, so that it gives them back when the spawn leaves the
+    /// queue.
+    pub blocked_tasks: HashMap<AgentId, crate::blocked_alarm::StuckTask>,
+    /// The stalled tasks that the hub already told about.
+    pub stalled_told: HashSet<TaskId>,
     /// When the schedule pass last ran.
     pub last_schedules: Option<Timestamp>,
     /// When the deadline pass last ran.
@@ -473,7 +485,11 @@ impl Hub {
         if let Err(e) = self.tick_schedules().await {
             tracing::warn!("the schedule pass failed: {e}");
         }
-        self.tick_alerts().await
+        self.tick_alerts().await?;
+        // Work that waits on a person, after every other step has had its
+        // say: a spawn that a wait cannot place, and a claim whose claimer
+        // can no longer work it.
+        self.tick_blocked().await
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then
