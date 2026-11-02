@@ -35,10 +35,14 @@ const PANE = 'cos'
 const PANE_TITLE = 'chief of staff'
 /** The docked preview's width, as asked: wide enough for a card's title and
  * fields. Claude Code caps it at 45% of the terminal, and a width the person
- * dragged or keyed wins over it. A narrower terminal asks less, so the band
- * keeps BAND_KEEP columns beside it where it can. */
+ * dragged or keyed wins over it. */
 const PANE_COLUMNS = 80
-const BAND_KEEP = 80
+/** Where the band keeps this many columns beside the docked preview (a
+ * terminal of about 186 columns and up), it lays its columns out that wide
+ * at rest too, so entering board mode moves no column. Narrower, a band that
+ * wide would waste half the terminal at rest, so board mode lays it out
+ * again. */
+const DOCKED_GRID = 100
 /** From this width a fullscreen terminal docks the preview beside the transcript. */
 const DOCK_COLUMNS = 110
 /** A docked preview narrower than this draws the compact block, as inline. */
@@ -174,7 +178,7 @@ export function register(on) {
       const docks = e.viewport?.isFullscreen === true && columns >= DOCK_COLUMNS
       const rows = bandRows(board, {
         width,
-        gridWidth: docks ? dockedBandWidth() : width,
+        gridWidth: docks && dockedBandWidth(width) >= DOCKED_GRID ? dockedBandWidth(width) : width,
         maxRows: e.props?.maxRows,
         questions: drawnQuestions(),
         items: frozen ? items() : undefined,
@@ -663,15 +667,17 @@ function setFocused(focused) {
   paneFocused = focused
 }
 
-/** The band's width with the preview docked: as seen, or as asked. */
-function dockedBandWidth() {
+/** The band's width with the preview docked: as seen, or the band's width
+ * now less the preview and its border. */
+function dockedBandWidth(width) {
   if (dockSeen && dockSeen.columns === columns) return dockSeen.width
-  return columns - paneColumns() - 1
+  if (paneOpen && placement === 'dock') return width
+  return width - paneColumns() - 1
 }
 
 /** The docked preview's width to ask for. */
 function paneColumns() {
-  return Math.max(24, Math.min(PANE_COLUMNS, columns - BAND_KEEP, Math.floor(columns * 0.45)))
+  return Math.max(24, Math.min(PANE_COLUMNS, Math.floor(columns * 0.45)))
 }
 
 /** The selected row: the one recorded, or the row now at its place when it

@@ -824,9 +824,9 @@ test('a narrow docked preview draws the compact block and names its keys by lett
   await $.session.start({ ...SESSION })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await band.press({ key: GATE })
-  // The preview asks for a width that fits a card, less on a narrow terminal
-  // so the band keeps 80 columns beside it (here 120); a width the person kept wins.
-  expect(opens[0].columns).toBe(40)
+  // The preview asks for a width that fits a card, at most 45% of the
+  // terminal (here 120 columns); a width the person kept wins.
+  expect(opens[0].columns).toBe(54)
   const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 26 }, surface: 'terminal' })
   expect((await field(pane)).props.placeholder).toBe('1-9 j k d a ? · esc exit')
   // The compact block: no field labels, the title first.

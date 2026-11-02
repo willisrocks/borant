@@ -203,14 +203,22 @@ tall card. On a narrower terminal it is a compact block above the band.
 Tab and Shift+Tab do not leave board mode. In vim normal mode, Claude Code
 gives a bare digit to vim and tells the mod nothing, so press `i` first and
 then `0`: the band says `(vim: i 0)`. A `0` or a digit in a prompt that holds
-text stays text. A click on a row enters board mode on that row. Claude Code
+text stays text. A click anywhere on a row enters board mode on that row. Claude Code
 gives board mode the keys only from an empty prompt that holds them. After
 Ctrl+X Tab the band holds them, so `0` there says to press Esc and then `0`.
 
 The band is a grid of columns that depends on its width alone: the title, the
 project and age of a needs-you item or the bar and counts of a project, then
 a press status or the orchestrator. Every text is cut to its column with an
-ellipsis, so a refresh never moves a column. The band says nothing about a
+ellipsis, so a refresh never moves a column. From about 186 columns the band
+lays its columns out at rest as wide as it is beside the docked preview, so
+entering board mode moves no column either. Narrower, board mode lays the
+band out again in the room the preview leaves.
+
+Board mode holds its rows still. A new item waits until Esc, and the title
+row says so (`1 new after esc`). A row that leaves the board keeps its place
+until Esc: `✓ closed` when its task closed, `left the board` otherwise. The
+band says nothing about a
 healthy board. It shows `stale · 2m` when no read succeeded for 90 s, and
 `✕ board unavailable` with the reason when the read fails. `/cos help` prints
 the keys without a turn.

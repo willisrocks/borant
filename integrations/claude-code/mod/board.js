@@ -540,7 +540,8 @@ export function titleRow(board, o) {
     ? [text(questions.length + ' need you', 'yellowBold')]
     : [text(GLYPH.done + ' nothing needs you', 'green')]
   // Board mode holds its rows still: what arrived meanwhile shows after esc.
-  if (o.waiting) summary.push(text(' · ' + o.waiting + ' new after esc', 'dim'))
+  // Like the counts, the note goes when the row has no room for it.
+  const waiting = o.waiting ? [text(' · ' + o.waiting + ' new after esc', 'dim')] : []
   const label = width >= 110 ? 'chief of staff' : 'cos'
   const mode = modeCells(o.active)
   const stale = o.stale ? [o.stale, text(' ' + RULE + ' ', 'faint')] : []
@@ -552,8 +553,9 @@ export function titleRow(board, o) {
   }
   const idle = all - active
   const forms = [
-    [text(' · ' + active + ' active' + (idle ? ' · ' + idle + ' idle' : ''), 'dim')],
-    [text(' · ' + active + ' active', 'dim')],
+    [...waiting, text(' · ' + active + ' active' + (idle ? ' · ' + idle + ' idle' : ''), 'dim')],
+    [...waiting, text(' · ' + active + ' active', 'dim')],
+    waiting,
     [],
   ]
   for (const counts of forms) {
