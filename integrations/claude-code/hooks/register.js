@@ -35,8 +35,12 @@ const PANE = 'cos'
 const PANE_TITLE = 'chief of staff'
 /** The docked preview's width, as asked: wide enough for a card's title and
  * fields. Claude Code caps it at 45% of the terminal, and a width the person
- * dragged or keyed wins over it. */
+ * dragged or keyed wins over it. A narrower terminal asks less, so the band
+ * keeps BAND_KEEP columns beside it where it can. */
 const PANE_COLUMNS = 80
+const BAND_KEEP = 80
+/** From this width a fullscreen terminal docks the preview beside the transcript. */
+const DOCK_COLUMNS = 110
 /** A docked preview narrower than this draws the compact block, as inline. */
 const NARROW_PANE = 52
 /** From this width the board-mode field names its keys in words. */
@@ -122,6 +126,18 @@ const fieldSeen = new Map()
  * mode has its own number: a key still queued when board mode ends is dropped. */
 let keyChain = Promise.resolve()
 let boardGen = 0
+/** Board mode's rows, held still while it lasts: each band row as last seen,
+ * in the order it had when board mode began. A row that leaves the board
+ * stays, marked; a new one waits until esc. Null at rest. */
+let frozen = null
+/** The band's width while the preview was docked beside it, at a terminal
+ * width: at rest the band lays its columns out that wide, so entering board
+ * mode moves no column. */
+let dockSeen = null
+/** Board reads in the order they started: a slow one that ends after a newer
+ * one is dropped. */
+let readSeq = 0
+let appliedSeq = 0
 /** The terminal, as last measured while drawing the band. */
 let columns = 0
 /** The session clock as of the last draw, for the drawing's ages. */
@@ -154,17 +170,22 @@ export function register(on) {
       }
       const cur = current()
       if (!cur.item && paneOpen && !helpShown) closeSoon($, () => !current().item && !helpShown)
+      if (paneOpen && placement === 'dock') dockSeen = { columns, width }
+      const docks = e.viewport?.isFullscreen === true && columns >= DOCK_COLUMNS
       const rows = bandRows(board, {
         width,
+        gridWidth: docks ? dockedBandWidth() : width,
         maxRows: e.props?.maxRows,
         questions: drawnQuestions(),
+        items: frozen ? items() : undefined,
+        waiting: waitingRows(),
         selected: cur.item ? cur.item.key : null,
         active: active(),
         statusFor: (item) => shortStatus(item),
         stale: await stale($),
         digitKeys: !promptDigits(),
       })
-      return tree($, e, rows)
+      return tree($, e, rows, cur.item ? cur.item.key : null)
     } catch {
       return next(e)
     }
@@ -182,7 +203,7 @@ export function register(on) {
       const focused = Boolean(props.isFocused)
       const place = props.placement || null
       if (focused !== paneFocused || place !== placement) {
-        paneFocused = focused
+        setFocused(focused)
         placement = place
         // The band's selection and hint follow where the keys are.
         redrawSoon($)
@@ -215,7 +236,7 @@ export function register(on) {
       if (e.id === PANE) {
         boardGen += 1
         paneOpen = false
-        paneFocused = false
+        setFocused(false)
         placement = null
         more = false
         helpShown = false
@@ -268,7 +289,7 @@ export function register(on) {
         }
       }
       if (isChief && paneFocused) {
-        paneFocused = false
+        setFocused(false)
         redraw($)
       }
     } catch {
@@ -508,7 +529,11 @@ async function refresh($, force = false) {
   }
   if (!force && now - lastReadAt < DEBOUNCE_MS) return
   lastReadAt = now
+  const seq = ++readSeq
   const result = await readBoard($, config)
+  // A read that started before one already applied is older news.
+  if (seq < appliedSeq) return
+  appliedSeq = seq
   if (!result.board) {
     // A failed read draws an empty board with the reason, never the stale one:
     // a session that refuses to read as the person must say so.
@@ -523,12 +548,15 @@ async function refresh($, force = false) {
   reason = ''
   announceNew($)
   // A row a Done closed stays CLOSED_SHOW_MS and then goes: that is no news.
-  const closedRow = Object.values(pending).some((m) => (m.state === 'closed' || m.state === 'moved') && 'q:' + questionKey(m.question) === selKey)
-  await settlePending($, now)
-  if (selKey && !items().some((i) => i.key === selKey)) {
-    selMoved = true
+  // The check runs before any await, so no drawing can move the selection
+  // onto the row now in its place first (current() also marks that move).
+  const closedRow = Object.values(pending).some((m) => ['closed', 'moved', 'unknown'].includes(m.state) && 'q:' + questionKey(m.question) === selKey)
+  if (selKey && !liveItems().some((i) => i.key === selKey)) {
+    // Board mode keeps the row, marked; at rest the next row takes its place.
+    if (!items().some((i) => i.key === selKey)) selMoved = true
     if (!closedRow) toast($, 'the selected item left the board')
   }
+  await settlePending($, now)
 }
 
 /**
@@ -542,8 +570,9 @@ async function settlePending($, now) {
   // An Ask's mark goes with its item.
   for (const key of Object.keys(asked)) if (!open.has(key)) delete asked[key]
   for (const [key, mark] of Object.entries(pending)) {
-    if (mark.state === 'closed' || mark.state === 'moved') {
-      if (now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
+    if (mark.state === 'closed' || mark.state === 'moved' || mark.state === 'unknown') {
+      // Back on the board: it needs the person again, with its keys.
+      if (open.has(key) || now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
     } else if (!open.has(key)) {
       if (mark.state === 'unsent') {
         delete pending[key]
@@ -551,8 +580,9 @@ async function settlePending($, now) {
         // The item left needs-you. That is closed only when the task is: a
         // task that went back to work leaves the list too.
         const status = await taskStatus($, mark.question)
-        pending[key] = { ...mark, state: status === 'closed' ? 'closed' : 'moved', status, closedAt: now }
-        toast($, (status === 'closed' ? 'closed: ' : 'no longer needs you: ') + mark.title)
+        const state = status === 'closed' ? 'closed' : status ? 'moved' : 'unknown'
+        pending[key] = { ...mark, state, status, closedAt: now }
+        toast($, { closed: 'closed: ', moved: 'no longer needs you: ', unknown: 'left the board, status unknown: ' }[state] + mark.title)
       }
     } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
       pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
@@ -600,17 +630,59 @@ function drawnQuestions() {
   return withClosed(allQuestions(board), pending, clockNow)
 }
 
-function items() {
+function liveItems() {
   return board ? bandItems(board, drawnQuestions()) : []
 }
 
-/** The selected row: the one recorded, or the row now at its place when it went. */
+/** The band's rows: the board's, or in board mode the rows it began with. */
+function items() {
+  const live = liveItems()
+  if (!frozen || !board) return live
+  const now = new Map(live.map((i) => [i.key, i]))
+  frozen = frozen.map((old) => {
+    const fresh = now.get(old.key)
+    if (fresh) return fresh
+    // It left the board: it keeps its place, marked, until esc.
+    if (old.kind === 'needs' && !old.q.closed && !old.q.gone) return { ...old, q: { ...old.q, gone: true } }
+    return old
+  })
+  return frozen
+}
+
+/** How many rows board mode holds back: new on the board since it began. */
+function waitingRows() {
+  if (!frozen || !board) return 0
+  const held = new Set(frozen.map((i) => i.key))
+  return liveItems().filter((i) => !held.has(i.key) && !(i.kind === 'needs' && (i.q.closed || i.q.gone))).length
+}
+
+/** Where the keys are: board mode holds the rows still while it lasts. */
+function setFocused(focused) {
+  if (focused && !paneFocused) frozen = liveItems()
+  if (!focused) frozen = null
+  paneFocused = focused
+}
+
+/** The band's width with the preview docked: as seen, or as asked. */
+function dockedBandWidth() {
+  if (dockSeen && dockSeen.columns === columns) return dockSeen.width
+  return columns - paneColumns() - 1
+}
+
+/** The docked preview's width to ask for. */
+function paneColumns() {
+  return Math.max(24, Math.min(PANE_COLUMNS, columns - BAND_KEEP, Math.floor(columns * 0.45)))
+}
+
+/** The selected row: the one recorded, or the row now at its place when it
+ * went, which takes no Done or Ask until the person selects again. */
 function current() {
   const list = items()
   if (!list.length) return { item: null, index: -1, count: 0 }
   let index = list.findIndex((i) => i.key === selKey)
   if (index < 0) {
     index = Math.max(0, Math.min(selIndex, list.length - 1))
+    if (selKey) selMoved = true
     selKey = list[index].key
   }
   selIndex = index
@@ -635,21 +707,21 @@ function promptDigits() {
 /** The marks of a needs-you item: its Done, its Ask, and whether it is open. */
 function marks(item) {
   const key = questionKey(item.q)
-  return { mark: pending[key], ask: asked[key], open: !item.q.closed }
+  return { mark: pending[key], ask: asked[key], open: !item.q.closed && !item.q.gone }
 }
 
 /** A band row's short status, in its fixed tail. */
 function shortStatus(item) {
   if (!item || item.kind !== 'needs') return []
   const { mark, ask } = marks(item)
-  return pressStatusShort(mark, ask, clockNow) || []
+  return pressStatusShort(mark, ask, clockNow) || (item.q.closed ? [seg('✓ closed', 'green')] : item.q.gone ? [seg('left the board', 'dim')] : [])
 }
 
 /** The preview's full status of the item: `◷ the chief is closing it, since 14:32`. */
 function fullStatus(item) {
   if (!item || item.kind !== 'needs') return []
   const { mark, ask } = marks(item)
-  return pressStatus(mark, ask, clockNow) || []
+  return pressStatus(mark, ask, clockNow) || (item.q.closed ? [seg('✓ closed', 'green')] : item.q.gone ? [seg('left the board; the row goes after esc', 'dim')] : [])
 }
 
 /**
@@ -680,7 +752,7 @@ async function chipPress($, key) {
   select(key)
   redraw($)
   await enterBoard($)
-  if (more) await ensureTasks($)
+  if (more) detailsSoon($)
 }
 
 /**
@@ -744,7 +816,7 @@ async function boardKey($, key) {
     if (!item) return
     select(item.key)
     redraw($)
-    if (more) await ensureTasks($)
+    if (more) detailsSoon($)
     return
   }
   if (key === 'j') return move($, 1)
@@ -762,10 +834,20 @@ async function boardKey($, key) {
   toast($, (key === 'd' ? 'd: Done' : 'a: Ask') + ' needs a needs-you item, selected, with no Done under way')
 }
 
-/** Enter in board mode: details, or back from details or the help. */
+/** Enter in board mode: details, or back from details or the help. Like a
+ * key, an Enter still queued when board mode ends is dropped. */
 function fieldSubmit($) {
-  keyChain = keyChain.then(() => (helpShown ? backFromHelp($) : toggleMore($))).catch(() => {})
+  const mode = boardGen
+  keyChain = keyChain.then(() => (mode !== boardGen ? undefined : helpShown ? backFromHelp($) : toggleMore($))).catch(() => {})
   return keyChain
+}
+
+/** Read the details' task lists beside the keys: a slow read never holds up
+ * the next key, and draws when it lands. */
+function detailsSoon($) {
+  ensureTasks($)
+    .then(() => redraw($))
+    .catch(() => {})
 }
 
 /** j and k: the next or the previous row, wrapping at the ends. Details stay open. */
@@ -775,7 +857,7 @@ async function move($, delta) {
   const { index } = current()
   select(list[(index + delta + list.length) % list.length].key)
   redraw($)
-  if (more) await ensureTasks($)
+  if (more) detailsSoon($)
 }
 
 /** Enter: the preview's details, read on first use. */
@@ -783,10 +865,7 @@ async function toggleMore($) {
   helpShown = false
   more = !more
   redraw($)
-  if (more) {
-    await ensureTasks($)
-    redraw($)
-  }
+  if (more) detailsSoon($)
 }
 
 /**
@@ -797,7 +876,7 @@ async function toggleMore($) {
 async function openPane($, focus) {
   try {
     const rows = Math.max(3, paneLinesCount())
-    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: PANE_COLUMNS, ...(focus ? { focus: true, closeOnEscape: true } : {}) })
+    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: paneColumns(), ...(focus ? { focus: true, closeOnEscape: true } : {}) })
     if (opened && opened.isPlaced === false) return false
     paneOpen = true
     return true
@@ -819,7 +898,7 @@ function closeSoon($, still) {
       if (!paneOpen || !closeWhen()) return
       paneOpen = false
       placement = null
-      paneFocused = false
+      setFocused(false)
       more = false
       $.ui.close({ id: PANE }).catch(() => {})
       redraw($)
@@ -968,25 +1047,41 @@ function element($, e, s, key, selected = false, extra = {}) {
   return Text(props)
 }
 
-/** The band: its rows, the selected one on the selection background. */
-function tree($, e, rows) {
+/** The band: its rows, the selected one on the selection background. A
+ * row's chip and its text are one Button, so a click anywhere on the row
+ * selects it. */
+function tree($, e, rows, selectedKey) {
   const { Box } = $.ui.resolve(e)
-  const selected = rows.find((r) => r.selected)
-  // ctrl+x tab lands the ring on the selected row's digit, so Enter acts on it.
-  const ring = selected ? selected.key : rows[1] ? rows[1].key : null
+  // ctrl+x tab lands the ring on the selected row, so Enter acts on it.
+  const ring = rows.some((r) => r.key === selectedKey) ? selectedKey : rows[1] ? rows[1].key : null
   return Box({
     flexDirection: 'column',
-    children: rows.map((row, i) =>
-      Box({
+    children: rows.map((row, i) => {
+      const [first, ...rest] = row.cells
+      const focus = row.key === ring ? { autoFocus: true } : {}
+      const children =
+        first && first.button && first.button.kind === 'select'
+          ? [rowButton($, e, row, first.button, rest.map((s, j) => element($, e, s, 'band-' + i + '-' + (j + 1), row.selected)), focus)]
+          : row.cells.map((s, j) => element($, e, s, 'band-' + i + '-' + j, row.selected, s.button && s.button.key === ring ? focus : {}))
+      return Box({
         key: 'band-row-' + i,
         flexDirection: 'row',
         ...(row.selected ? { backgroundColor: SELECTED_BG } : {}),
-        children: row.cells.map((s, j) =>
-          element($, e, s, 'band-' + i + '-' + j, row.selected, s.button && s.button.key === ring ? { autoFocus: true } : {}),
-        ),
-      }),
-    ),
+        children,
+      })
+    }),
   })
+}
+
+/** A band row as one plain Button: its digit (a hotkey, or drawn as one),
+ * then the row's cells as its children. */
+function rowButton($, e, row, b, cells, extra) {
+  const { Text, Button } = $.ui.resolve(e)
+  const props = { key: b.key, label: b.title || b.key, plain: true, onPress: () => press($, b), ...extra }
+  if (b.hotkey) props.hotkey = b.hotkey
+  const lead = b.digit ? [Text({ key: 'digit', children: [b.digit + ':'], ...styleProps('key') }), ' '] : b.hotkey ? [] : ['   ']
+  props.children = [...lead, ...cells]
+  return Button(props)
 }
 
 /**

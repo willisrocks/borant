@@ -6,6 +6,7 @@
 // Usage: node scripts/tui/ansi-html.mjs <capture.txt> <out.html> <columns>
 
 import fs from 'fs'
+import { cellsOf } from '../../integrations/claude-code/mod/board.js'
 
 const [src, dst, cols = '200'] = process.argv.slice(2)
 const BASE = ['#1e1e1e', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5']
@@ -26,6 +27,12 @@ function color256(n) {
 }
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// A character outside ASCII can come from a fallback font of another width,
+// which would move the rest of its line: each one gets the cells it takes.
+const cellsHtml = (s) =>
+  Array.from(s)
+    .map((ch) => (ch.codePointAt(0) < 0x7f ? esc(ch) : `<i class="c${cellsOf(ch)}">${esc(ch)}</i>`))
+    .join('')
 
 function apply(st, params) {
   const p = params.length ? params : [0]
@@ -80,7 +87,7 @@ const html = lines.map((line) => {
   let out = ''
   let run = ''
   const flush = () => {
-    if (run) out += `<span style="${style(st)}">${esc(run)}</span>`
+    if (run) out += `<span style="${style(st)}">${cellsHtml(run)}</span>`
     run = ''
   }
   const re = /\x1b\[([0-9;:]*)([A-Za-z])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|([^\x1b]+)/g
@@ -102,5 +109,7 @@ fs.writeFileSync(
 html,body{margin:0;background:${BG}}
 body{padding:12px;font:14px/17px Menlo,"SF Mono",monospace;color:${FG}}
 .l{white-space:pre;height:17px;width:${Number(cols)}ch;overflow:hidden}
+i{font-style:inherit;display:inline-block;overflow:hidden;vertical-align:top}
+.c0{width:0}.c1{width:1ch}.c2{width:2ch}
 </style>${html.join('\n')}`,
 )

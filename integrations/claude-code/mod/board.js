@@ -19,6 +19,9 @@ export const GLYPH = {
   scheduled: '\u25c7',
 }
 
+/** The glyph of a needs-you item that left the board without a close. */
+export const GONE = '\u2013'
+
 const BRANCH = '\u2502'
 const RULE = '\u2500'
 
@@ -357,7 +360,8 @@ export function bandItems(board, questions = allQuestions(board)) {
  */
 export function chip(item, index, digitKeys = true) {
   const digit = index < 9 ? String(index + 1) : ''
-  const button = { key: item.key, label: digit ? '' : '   ', kind: 'select', arg: item.key, plain: true }
+  const title = item.kind === 'needs' ? item.q.title : item.project.project
+  const button = { key: item.key, label: digit ? '' : '   ', title: String(title || item.key), kind: 'select', arg: item.key, plain: true }
   if (digit && digitKeys) button.hotkey = digit
   else if (digit) button.digit = digit
   return { text: digit ? digit + ': ' : '   ', style: 'hotkey', button }
@@ -452,8 +456,8 @@ function needsRow(item, index, g, o) {
   const where = [text(truncate(q.project || '?', Math.max(4, g.meta - ageCells)), 'bold'), ...(age ? [text(' · ' + age, 'dim')] : [])]
   const row = [
     chip(item, index, o.digitKeys !== false),
-    q.closed ? text(GLYPH.done + ' ', 'green') : text(GLYPH.needs + ' ', 'yellow'),
-    ...cell([text(q.title || '', q.closed ? 'dim' : 'yellowBold')], g.main),
+    q.closed ? text(GLYPH.done + ' ', 'green') : q.gone ? text(GONE + ' ', 'dim') : text(GLYPH.needs + ' ', 'yellow'),
+    ...cell([text(q.title || '', q.closed || q.gone ? 'dim' : 'yellowBold')], g.main),
   ]
   if (g.meta) row.push(text('  '), ...cell(!g.tail && status.length ? status : where, g.meta))
   if (g.tail) row.push(text('  '), ...cell(status, g.tail))
@@ -529,12 +533,14 @@ export function modeCells(active) {
  */
 export function titleRow(board, o) {
   const width = Math.min(o.width, Math.max(o.rowWidth || 0, 48))
-  const questions = (o.questions || []).filter((q) => !q.closed)
+  const questions = (o.questions || []).filter((q) => !q.closed && !q.gone)
   const all = allProjects(board).length
   const active = activeProjects(board).length
   const summary = questions.length
     ? [text(questions.length + ' need you', 'yellowBold')]
     : [text(GLYPH.done + ' nothing needs you', 'green')]
+  // Board mode holds its rows still: what arrived meanwhile shows after esc.
+  if (o.waiting) summary.push(text(' · ' + o.waiting + ' new after esc', 'dim'))
   const label = width >= 110 ? 'chief of staff' : 'cos'
   const mode = modeCells(o.active)
   const stale = o.stale ? [o.stale, text(' ' + RULE + ' ', 'faint')] : []
@@ -577,19 +583,23 @@ export function condensedRow(board, o) {
 
 /**
  * The band: the title row, then one row per needs-you item and per active
- * project. `o` is `{ width, maxRows, questions, selected, active, statusFor,
- * stale, digitKeys }`: `statusFor(item)` gives a needs row's short press
- * status (mod/status.js), `active` says the board has the keys (board mode),
- * which fills the selected row. Each row is `{ key, cells, selected }`.
+ * project. `o` is `{ width, gridWidth, maxRows, questions, items, waiting,
+ * selected, active, statusFor, stale, digitKeys }`: `statusFor(item)` gives a
+ * needs row's short press status (mod/status.js), `active` says the board has
+ * the keys (board mode), which fills the selected row. `items` replaces the
+ * rows bandItems gives (board mode holds them still), `waiting` counts the
+ * rows held back, and `gridWidth` lays the columns out narrower than the band
+ * (as wide as it is with the preview docked). Each row is `{ key, cells,
+ * selected }`.
  */
 export function bandRows(board, o = {}) {
   const width = Math.max(20, o.width || 100)
   const maxRows = o.maxRows === undefined || o.maxRows === null ? Infinity : o.maxRows
   const questions = o.questions || allQuestions(board)
-  const items = bandItems(board, questions)
+  const items = o.items || bandItems(board, questions)
   if (maxRows <= 1) return [{ key: 'band-condensed', cells: condensedRow(board, { ...o, width, questions }) }]
   const selected = o.selected || null
-  const g = bandGrid(width)
+  const g = bandGrid(Math.min(width, o.gridWidth || width))
   const opts = { ...o, width, board, statusFor: o.statusFor || (() => []) }
   const needs = items.filter((i) => i.kind === 'needs')
   const projects = items.filter((i) => i.kind === 'project')

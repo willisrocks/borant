@@ -6,7 +6,9 @@
 # Usage: scripts/tui/cos-scenario.sh [plugin-dir] [out] [width] [height] [board]
 #
 # board is `big` (12 projects, 6 need you; the default) or `fixture`, from
-# scripts/tui/board-variants.mjs. Writes <out>/<width>/NN-<state>.png (and
+# scripts/tui/board-variants.mjs. The plugin's MCP server is
+# scripts/tui/stub-mcp.mjs: a Done's turn closes the task with task_close, or
+# asks its owner with send, and the scenario plays that owner. Writes <out>/<width>/NN-<state>.png (and
 # .txt, .plain.txt) after every key, and log.txt with the checks: a line that
 # starts with FAIL is a defect. The session runs `claude --model haiku` with
 # TUI_CLAUDE_FLAGS (lib.sh): the Done step submits a prompt, and the model
@@ -80,6 +82,9 @@ step() {
   tui_shot "$last"
 }
 shown() { cat "$TUI_OUT/$last.plain.txt"; }
+# The selected item's title as the preview shows it: the first title line
+# under the preview's header, right of the pane's border.
+pane_title() { perl -CSD -ne 'my @p = split /\x{2502}/; my $r = $p[-1] // ""; if ($r =~ /(needs you|project) \x{b7} \d+ of/) { $h = 1; next } if ($h && $r =~ /^\s*[\x{25b2}\x{2713}\x{2013}]\s+(\S.{0,40})/) { print "$1\n"; exit }' "$TUI_OUT/$1.plain.txt"; }
 # The prompt's line: what the composer holds. Claude Code draws a hint or a
 # dim suggestion in an empty one, so a check looks for the keys it typed.
 prompt_text() { shown | grep '^❯' | tail -1 | perl -CS -pe 's/^\x{276f}[\s\x{a0}]*//; s/^Try ".*"$//; s/[\s\x{a0}]+$//'; }
@@ -100,7 +105,7 @@ node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
 trap 'tui_stop; rm -rf "$stub"' EXIT
 tui_start "cos-scenario-$$" "$width" "$height" env PATH="$root/scripts/tui/stub-bin:$PATH" \
   BORANT_STUB_DIR="$stub" BORANT_ROLE=chief BORANT_COS_BOARD=cli BORANT_COS_DONE_WAIT_S=20 \
-  claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --plugin-dir "$plugin"
+  claude --model haiku "${TUI_CLAUDE_FLAGS[@]}" --allowedTools mcp__plugin_borant_borant__task_close mcp__plugin_borant_borant__send --plugin-dir "$plugin"
 # The trust dialog defaults to "No, exit": Down, and Enter only once "Yes" is chosen.
 for _ in $(seq 1 80); do
   if tui_text | grep -q 'Yes, I trust this folder'; then
@@ -132,6 +137,7 @@ check "at rest the band shows '0: board mode'" "at_rest"
 # 0 enters board mode: the band says how to leave, the pane holds the keys.
 step zero lit:0
 check "0 entered board mode (band shows 'board mode · esc exit')" "in_board"
+check "entering board mode moved no band row or column" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 check "0 did not land in the prompt" "! prompt_text | grep -q 0"
 
 # Every digit selects its row and stays out of the prompt.
@@ -164,8 +170,9 @@ c.needs_you.push({ project: 'kata', channel: 'personal-kata', task: '01M5ZG00000
 "
 event
 STEP_WAIT=1.5 step live-update
-check "no column moved across a live update" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/before-live.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+check "no band row or column moved across a live update" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/before-live.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 check "board mode held across the live update" "in_board"
+check "the new item waits for esc, and the band says so" "! shown | grep -q 'A new question arrived' && shown | grep -q '1 new after esc'"
 step live-j lit:j
 step live-k lit:k
 
@@ -191,11 +198,21 @@ check "d showed feedback at once" "shown | grep -q '◷ sending\|◷ closing'"
 STEP_WAIT=3 step done-landed
 nodialog
 first="$(needs_titles | head -1)"
+# The chief's turn must act: task_close (the stub MCP closes it) or a send to
+# the owner (the scenario, as the owner, closes it then).
+for _ in $(seq 1 120); do nodialog; grep -q ' mcp task_close \| mcp send ' "$stub/calls.log" && break; sleep 0.5; done
 start="$(now_ms)"
-close_task "$first"
-event
+if grep -q ' mcp task_close ' "$stub/calls.log"; then
+  note "PASS the chief closed the task with task_close"
+elif grep -q ' mcp send ' "$stub/calls.log"; then
+  note "PASS the chief asked the owner to close it (send); the owner closes it"
+  close_task "$first"
+  event
+else
+  note "FAIL the chief neither closed the task nor asked its owner within 60 s"
+fi
 for _ in $(seq 1 80); do tui_text | grep -q '✓ closed' && break; sleep 0.25; done
-note "Done shows closed $(since "$start") ms after the hub closed it (with an event)"
+note "Done shows closed $(since "$start") ms after the task closed"
 STEP_WAIT=0.2 step done-closed
 check "the closed item shows ✓ closed" "shown | grep -q '✓ closed'"
 
@@ -204,15 +221,16 @@ nodialog
 step ask-j lit:j
 step ask lit:a
 STEP_WAIT=1.5 step ask-sent
-check "Ask sent one message (stub send)" "[ \"\$(grep -c ' send ' '$stub/calls.log')\" = 1 ]"
+check "Ask sent one message (borant send as the person)" "[ \"\$(grep -c '^[0-9.N]* send ' '$stub/calls.log')\" = 1 ]"
 check "the asked item shows ✓ asked" "shown | grep -q '✓ asked'"
 
 # A slow Ask never holds up the keys after it.
 touch "$stub/send.slow"
 step slow-select lit:3
 STEP_WAIT=0.3 step slow-ask lit:a
+before_j="$last"
 STEP_WAIT=0.3 step slow-ask-j lit:j
-check "j moved while a slow Ask was still sending" "selected_is 'needs you · 4'"
+check "j moved while a slow Ask was still sending" "[ -n \"\$(pane_title $last)\" ] && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && shown | grep -q '◷ asking'"
 rm -f "$stub/send.slow"
 sleep 3
 
@@ -220,6 +238,7 @@ sleep 3
 nodialog
 step esc Escape
 check "esc left board mode (band shows '0: board mode')" "at_rest"
+check "after esc the held-back item shows" "tui_text | grep -q 'A new question arrived'"
 step type-hello lit:hello
 check "after esc, typed keys reach the prompt" "prompt_text | grep -q hello"
 # A 0 or a digit after text is text.
@@ -287,13 +306,14 @@ else
 fi
 
 # Board mode during a running turn: the model works, the keys stay on the board.
-tui_type 'count from 1 to 40, one number per line'
+tui_type 'count from 1 to 300, one number per line, no other text'
 tui_keys Enter
-sleep 1.5
+for _ in $(seq 1 20); do tui_text | grep -q 'esc to interrupt' && break; sleep 0.5; done
 step turn-zero lit:0
-check "0 entered board mode while a turn ran" "in_board"
+check "0 entered board mode while a turn ran" "in_board && tui_text | grep -q 'esc to interrupt'"
+before_j="$last"
 step turn-j lit:j
-check "j worked while a turn ran, and stayed out of the prompt" "in_board && ! prompt_text | grep -q j"
+check "j moved while a turn ran, and stayed out of the prompt" "in_board && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && ! prompt_text | grep -q j"
 step turn-exit Escape
 for _ in $(seq 1 40); do tui_text | grep -q 'esc to interrupt' || break; sleep 0.5; done
 

@@ -617,11 +617,16 @@ test('Done shows each step: the chief is closing it, closed, then the row goes',
   await clock.advance(5000)
   expect(await ui.find({ type: 'Text', text: /closed/ })).toBeDefined()
   expect(toasts).toContain('closed: Create Hetzner bucket borant-hub-backup + 1Password item')
-  // Then it goes.
+  // Board mode holds its rows still: the closed row keeps its place, closed.
   await clock.advance(15000)
-  expect(await ui.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /closing it|closed/ })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^✓ closed *$/ })).toBeDefined()
+  // Once board mode ends it goes.
   await ui.unmount()
+  const off = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
+  await clock.advance(1)
+  expect(await band.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeUndefined()
+  await off.unmount()
   await band.unmount()
 })
 
@@ -780,19 +785,26 @@ test('when the selected item leaves the board, the row in its place takes no Don
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(String((await field(pane)).props.placeholder)).toMatch(/(^| )d( |$)/)
 
-  // Someone else closes it: the next row slides into its place, and d does nothing there.
+  // Someone else closes it. Board mode holds the row in place, marked, and d
+  // does nothing on it; no other row moves into its place.
   live = JSON.parse(JSON.stringify(live))
   for (const c of live.collections) c.needs_you = (c.needs_you || []).filter((q: { task: string }) => q.task !== '01M5ZG00000000000000000015')
   await clock.advance(5000)
   expect(toasts).toContain('the selected item left the board')
+  expect(await band.find({ type: 'Text', text: /^left the board *$/ })).toBeDefined()
   expect(String((await field(pane)).props.placeholder)).not.toMatch(/(^| )d( |$)/)
   await typeKey($, pane, 'd')
   expect(prompts).toHaveLength(0)
-  // Selecting it again brings them back.
+  // The next row still takes d.
   await typeKey($, pane, 'j')
-  await typeKey($, pane, 'k')
   expect(String((await field(pane)).props.placeholder)).toMatch(/(^| )d( |$)/)
+  // At rest the row has gone, and a row that slides into the selection's
+  // place takes no Done until the person selects it.
   await pane.unmount()
+  const off = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
+  await clock.advance(1)
+  expect(await band.find({ type: 'Text', text: /^left the board *$/ })).toBeUndefined()
+  await off.unmount()
   await band.unmount()
 })
 
@@ -812,8 +824,9 @@ test('a narrow docked preview draws the compact block and names its keys by lett
   await $.session.start({ ...SESSION })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await band.press({ key: GATE })
-  // The preview asks for a width that fits a card; a width the person kept wins.
-  expect(opens[0].columns).toBe(80)
+  // The preview asks for a width that fits a card, less on a narrow terminal
+  // so the band keeps 80 columns beside it (here 120); a width the person kept wins.
+  expect(opens[0].columns).toBe(40)
   const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 26 }, surface: 'terminal' })
   expect((await field(pane)).props.placeholder).toBe('1-9 j k d a ? · esc exit')
   // The compact block: no field labels, the title first.
@@ -874,3 +887,84 @@ test('a slow Ask never holds up the keys after it', async ($, on) => {
   await pane.unmount()
   await band.unmount()
 })
+
+/** A board, as `borant board --json` prints it, with one more needs-you item. */
+function withQuestion(base: typeof board, title: string) {
+  const next = JSON.parse(JSON.stringify(base))
+  const c = next.collections[0]
+  c.needs_you.push({ ...c.needs_you[0], task: '01M5ZG00000000000000099999', title })
+  return next
+}
+
+test('a slow details read never holds up the keys', async ($, on) => {
+  let release: () => void = () => {}
+  chiefStubs(on, [], [], [], [], 'cli')
+  on('process.run', async ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) await new Promise<void>((done) => (release = done))
+    return { value: { exitCode: 0, stdout: argv.includes('tasks') ? '[]' : JSON.stringify(board), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // Enter starts a details read that waits; j moves at once.
+  await enter($, pane)
+  await typeKey($, pane, 'j')
+  expect(await pane.find({ type: 'Text', text: /needs you · 2 of 2/ })).toBeDefined()
+  release()
+  await pane.unmount()
+  await band.unmount()
+})
+
+test('board mode holds its rows still: a new item waits until esc', async ($, on) => {
+  let live = JSON.parse(JSON.stringify(board))
+  const clock = chiefStubs(on, [], [], [], [], 'cli')
+  on('process.run', ($, e) => {
+    const argv = (e.argv || []) as string[]
+    return { value: { exitCode: 0, stdout: argv.includes('tasks') ? '[]' : JSON.stringify(live), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  live = withQuestion(live, 'Arrived during board mode')
+  await clock.advance(5000)
+  expect(await band.find({ type: 'Text', text: /Arrived during board mode/ })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /1 new after esc/ })).toBeDefined()
+  await pane.unmount()
+  const off = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
+  await clock.advance(1)
+  expect(await band.find({ type: 'Text', text: /Arrived during board mode/ })).toBeDefined()
+  await off.unmount()
+  await band.unmount()
+})
+
+test('a slow board read that ends after a newer one is dropped', async ($, on) => {
+  let release: () => void = () => {}
+  let reads = 0
+  const clock = chiefStubs(on, [], [], [], [], 'cli')
+  const newer = withQuestion(board, 'Only in the newer read')
+  on('process.run', async ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) return { value: { exitCode: 0, stdout: '[]', stderr: '' } }
+    reads += 1
+    // The second read is slow and old; the third is new.
+    if (reads === 2) {
+      await new Promise<void>((done) => (release = done))
+      return { value: { exitCode: 0, stdout: JSON.stringify(board), stderr: '' } }
+    }
+    return { value: { exitCode: 0, stdout: JSON.stringify(reads === 1 ? board : newer), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await clock.advance(5000)
+  await clock.advance(1100)
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  expect(await band.find({ type: 'Text', text: /Only in the newer read/ })).toBeDefined()
+  release()
+  await clock.advance(1)
+  expect(await band.find({ type: 'Text', text: /Only in the newer read/ })).toBeDefined()
+  await band.unmount()
+})
+

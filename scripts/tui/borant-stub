@@ -11,6 +11,8 @@ case "$1" in
   tasks) cat "$dir/tasks-$2.json" 2>/dev/null || echo '[]' ;;
   events) [ -e "$dir/events.off" ] && exit 1; exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
   hook) exit 0 ;;
+  # The plugin's MCP server: task_close and send, for a Done's turn.
+  mcp) exec node "$(dirname "$(realpath "$0")")/stub-mcp.mjs" ;;
   # The Ask button sends as the person; a test only records it.
   # send.slow makes a send take 3 s, as a slow hub does.
   send) [ -e "$dir/send.slow" ] && sleep 3; exit 0 ;;

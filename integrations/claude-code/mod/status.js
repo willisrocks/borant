@@ -7,6 +7,7 @@
 //   closing   the prompt landed at `at`; the hub has not closed the task
 //   closed    the task left the board at `closedAt`, closed; the row stays CLOSED_SHOW_MS
 //   moved     it left needs-you at `closedAt` but is not closed (`status`)
+//   unknown   it left needs-you at `closedAt`, and its status read failed
 //   failed    the hub did not close it within the wait (`reason`)
 //   unsent    the prompt did not land (`reason`)
 // An Ask mark is `{ state: 'sending' | 'sent' | 'failed', owner, at, reason }`.
@@ -44,6 +45,7 @@ export function pressStatus(done, ask, now = 0) {
     if (done.state === 'closing') return [text('◷ the chief is closing it, since ' + hhmm(done.at), 'cyan')]
     if (done.state === 'closed') return [text('✓ closed', 'green')]
     if (done.state === 'moved') return [text('→ no longer needs you, but not closed' + (done.status ? ': ' + String(done.status).replace('_', ' ') : ''), 'yellow')]
+    if (done.state === 'unknown') return [text('? left the board; its status could not be read', 'yellow')]
     if (done.state === 'failed') return [text('! still open after ' + ageText(done.waitMs || now - done.at), 'red')]
     if (done.state === 'unsent') return [text('! not sent' + (done.reason ? ': ' + done.reason : ''), 'red')]
   }
@@ -65,6 +67,7 @@ export function pressStatusShort(done, ask, now = 0) {
     if (done.state === 'closing') return [text('◷ closing', 'cyan')]
     if (done.state === 'closed') return [text('✓ closed', 'green')]
     if (done.state === 'moved') return [text('→ not closed', 'yellow')]
+    if (done.state === 'unknown') return [text('? status', 'yellow')]
     if (done.state === 'failed') return [text('! still open', 'red')]
     if (done.state === 'unsent') return [text('! not sent', 'red')]
   }
@@ -82,16 +85,21 @@ export function canDone(done) {
 }
 
 /**
- * The needs-you items to draw: the board's, and each item a Done closed in
- * the last CLOSED_SHOW_MS, at the place it had, marked `closed: true`.
+ * The needs-you items to draw: the board's, and each item a Done took off
+ * it in the last CLOSED_SHOW_MS, at the place it had: `closed: true` when
+ * the hub closed it, `gone: true` when it left needs-you otherwise. An item
+ * that is back on the board is drawn once, as the board has it.
  */
 export function withClosed(questions, pending, now = 0) {
   const out = [...questions]
+  const open = new Set(questions.map((q) => String(q.channel) + '/' + String(q.task)))
   const ghosts = Object.values(pending || {})
-    .filter((m) => (m.state === 'closed' || m.state === 'moved') && m.question && now - m.closedAt < CLOSED_SHOW_MS)
+    .filter((m) => ['closed', 'moved', 'unknown'].includes(m.state) && m.question && now - m.closedAt < CLOSED_SHOW_MS)
+    .filter((m) => !open.has(String(m.question.channel) + '/' + String(m.question.task)))
     .sort((a, b) => (a.index || 0) - (b.index || 0))
   for (const mark of ghosts) {
-    out.splice(Math.min(mark.index || 0, out.length), 0, { ...mark.question, closed: true })
+    const ghost = mark.state === 'closed' ? { ...mark.question, closed: true } : { ...mark.question, gone: true }
+    out.splice(Math.min(mark.index || 0, out.length), 0, ghost)
   }
   return out
 }

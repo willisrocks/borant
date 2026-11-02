@@ -30,4 +30,9 @@ test('a press says where it is, and a closed item keeps its place for a while', 
   const pending = { 'c/a': { state: 'closed', closedAt: 1000, question: a, index: 0 } }
   expect(withClosed([b], pending, 5000).map((q) => [q.title, Boolean(q.closed)])).toEqual([['A', true], ['B', false]])
   expect(withClosed([b], pending, 12000).map((q) => q.title)).toEqual(['B'])
+  // Back on the board: drawn once, open. Moved, it is not drawn as done.
+  expect(withClosed([a, b], pending, 5000).map((q) => [q.title, Boolean(q.closed)])).toEqual([['A', false], ['B', false]])
+  const moved = { 'c/a': { state: 'moved', closedAt: 1000, question: a, index: 0 } }
+  expect(withClosed([b], moved, 5000).map((q) => [q.title, Boolean(q.closed), Boolean(q.gone)])).toEqual([['A', false, true], ['B', false, false]])
+  expect(pressStatusShort({ state: 'unknown' }, null)?.[0].text).toBe('? status')
 })

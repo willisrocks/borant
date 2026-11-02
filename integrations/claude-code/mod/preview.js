@@ -9,6 +9,7 @@
 
 import {
   GLYPH,
+  GONE,
   cellsOf,
   activeSaga,
   allProjects,
@@ -126,9 +127,10 @@ function ownerParts(board, q) {
   const orch = orchs.find((o) => o.agent === q.owner) || (q.owner ? null : orchs[0])
   const agent = q.owner || orch?.agent
   if (!agent) return [text('no orchestrator', 'dim')]
+  // The state comes before the host, so a long host is what gets cut.
   const out = [text(agent, 'bold')]
-  if (orch?.host) out.push(text(DOT + orch.host, 'dim'))
   if (orch) out.push(text(DOT + (orch.online === false ? 'offline' : orch.busy ? 'busy' : 'online'), orch.online === false ? 'red' : 'dim'))
+  if (orch?.host) out.push(text(DOT + orch.host, 'dim'))
   return out
 }
 
@@ -231,8 +233,8 @@ function needsCard(s, width) {
   const saga = activeSaga(project)
   const tasks = s.tasks || {}
   const says = q.attention_msg || (q.gate ? 'the saga gate: approve to start' : 'waits on you')
-  const glyph = q.closed ? text(GLYPH.done + ' ', 'green') : text(GLYPH.needs + ' ', 'yellow')
-  const titleStyle = q.closed ? 'dim' : 'yellowBold'
+  const glyph = q.closed ? text(GLYPH.done + ' ', 'green') : q.gone ? text(GONE + ' ', 'dim') : text(GLYPH.needs + ' ', 'yellow')
+  const titleStyle = q.closed || q.gone ? 'dim' : 'yellowBold'
   if (s.compact) {
     const where = [q.project, saga?.title, says, waited(q, board), ...ownerParts(board, q).map((p) => p.text.replace(/^ · /, ''))].filter(Boolean)
     const out = [
@@ -252,14 +254,15 @@ function needsCard(s, width) {
     }
     // The buttons and keys sit in the block's key line (the renderer's); more
     // takes the place of the saga, as the block has four rows at most.
-    if (s.more) return [out[0], ...compactDetail(tasks[q.channel], q.task)]
+    // Details show the whole title, wrapped, in place of the one cut line.
+    if (s.more) return [...wrap(q.title || '', width - 2).map((line, i) => selected([i ? text('  ') : glyph, text(line, titleStyle)])), ...compactDetail(tasks[q.channel], q.task)]
     return out
   }
   const out = [header('needs you' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
   // The title takes two lines, padded or cut, so a title that changes on a
-  // refresh never moves the fields under it.
+  // refresh never moves the fields under it. Details show all of it.
   const lines = wrap(q.title, width - 2)
-  const two = lines.length > 2 ? [lines[0], truncate(lines.slice(1).join(' '), width - 2)] : [...lines, ''].slice(0, 2)
+  const two = s.more ? lines : lines.length > 2 ? [lines[0], truncate(lines.slice(1).join(' '), width - 2)] : [...lines, ''].slice(0, 2)
   two.forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
   if (s.actions && s.actions.length) out.push([text(' ')], [text('  '), ...s.actions])
   out.push([text(' ')])

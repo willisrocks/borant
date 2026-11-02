@@ -1,21 +1,25 @@
-// Compare the band's columns in two plain-text captures (tui_shot's
-// .plain.txt), for the scenario's "no column moves across a live update"
-// check. A band row is a line that starts with a chip (`1: ` or three
-// spaces) and a state glyph. Its columns are the cells where text starts
-// after two or more spaces, and where its glyph is. A row is known by its
-// first 16 cells after the glyph, so a row that moved down (a new row above
-// it) or whose title grew at its end is still the same row.
+// Compare the band in two plain-text captures (tui_shot's .plain.txt), for
+// the scenario's "nothing moves across a live update" checks. A band row is a
+// line that starts with a chip (`1: ` or three spaces) and a state glyph. Its
+// place is its screen line, and its columns are the cells where text starts
+// after two or more spaces. A row is known by its first 16 cells after the
+// glyph, so a row whose title grew at its end is still the same row. A row
+// that moved up or down, or a column that moved, is a move; so is a band
+// title row that moved up or down.
 //
 // Usage: node scripts/tui/columns.mjs <before.plain.txt> <after.plain.txt>
 // Prints one line per row that moved and exits 1, or exits 0.
 
 import fs from 'fs'
 
-const ROW = /^(\d: |   )([▲●■○◇✓]) (.*)$/u
+const ROW = /^(\d: |   )([▲●■○◇✓–]) (.*)$/u
 
 function rows(file) {
   const out = new Map()
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n')
+  const title = lines.findIndex((l) => /^── (chief of staff|cos) /.test(l))
+  if (title >= 0) out.set('(title row)', 'line ' + title)
+  for (const [at, line] of lines.entries()) {
     // The band is left of a docked pane's border.
     const band = line.split('│')[0]
     const m = band.match(ROW)
@@ -28,7 +32,7 @@ function rows(file) {
       if (cells[i] !== ' ' && cells[i - 1] === ' ' && cells[i - 2] === ' ') starts.push(i)
     }
     const name = Array.from(m[3]).slice(0, 16).join('')
-    out.set(name, starts.join(','))
+    out.set(name, 'line ' + at + ' cells ' + starts.join(','))
   }
   return out
 }
