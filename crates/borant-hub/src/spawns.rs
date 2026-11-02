@@ -316,6 +316,7 @@ impl Hub {
             last_reject: Vec::new(),
             queue_reason: None,
             launch_failures: Vec::new(),
+            recoveries: 0,
         };
         self.store.upsert(&keys::spawn(&id), &record).await?;
         let spawned = self
@@ -570,11 +571,11 @@ impl Hub {
             harness: record.spec.harness,
         };
         // A forced host that failed this agent must not block the retry; the
-        // set clears when a session of the agent registers.
+        // set clears when a session of the agent registers, and an old
+        // failure no longer counts.
+        let now = self.now();
         if target.host.as_ref().is_some_and(|host| {
-            mem.failed_hosts
-                .get(&record.agent)
-                .is_some_and(|hosts| hosts.contains(host))
+            crate::liveness::failed_recently(mem, &record.agent, host, now, &self.cfg.lease)
         }) {
             target.host = None;
         }

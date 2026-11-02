@@ -195,6 +195,7 @@ impl Fx {
             last_reject: Vec::new(),
             queue_reason: None,
             launch_failures: Vec::new(),
+            recoveries: 0,
         };
         let value = serde_json::to_vec(&record).unwrap();
         match self.state.get(&keys::spawn(agent)).await.unwrap() {

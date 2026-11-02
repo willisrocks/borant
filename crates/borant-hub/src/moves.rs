@@ -166,7 +166,6 @@ impl Hub {
                 _ => {}
             }
         }
-        let failed = agent.and_then(|a| mem.failed_hosts.get(a));
         Ok(self
             .store
             .list::<HostInfo>(keys::HOST_PREFIX)
@@ -182,9 +181,12 @@ impl Hub {
                     active_agents: active.get(&name).copied().unwrap_or(0),
                     // A failed launch is a recent failure of the host, not a
                     // repository that the hub cannot reach: `RecentlyFailed`
-                    // says the first, and `NoRepo` would blame the clone.
+                    // says the first, and `NoRepo` would blame the clone. An
+                    // old failure no longer blocks the host.
                     has_repo_access: true,
-                    recently_failed: failed.is_some_and(|f| f.contains(&name)),
+                    recently_failed: agent.is_some_and(|a| {
+                        crate::liveness::failed_recently(mem, a, &name, now, &self.cfg.lease)
+                    }),
                     mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
                     disk_used_pct: mem.host_stats.get(&name).and_then(|s| s.disk_used_pct),
                     pool: d.value.pool.clone(),
@@ -221,6 +223,12 @@ impl Hub {
         // places it again.
         if agent.retired || agent.paused.is_some() {
             tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
+            return Ok(false);
+        }
+        // The sweep gave up on this claim after its recovery limit: it waits
+        // for a person, and no lease tick places the agent again.
+        if mem.recovery_stopped.contains(&agent.id) {
+            tracing::debug!(agent = %agent.id, "placement skipped: the recovery limit");
             return Ok(false);
         }
         // A spawn that failed its launches, or that a person cancelled, waits
@@ -584,6 +592,11 @@ impl Hub {
                 tracing::info!(agent = %id, "move skipped: the agent is retired or paused");
                 continue;
             }
+            // An explicit move is a fresh placement: the hosts that failed a
+            // launch for this agent get another try.
+            mem.failed_hosts.remove(&id);
+            mem.recovery_stopped.remove(&id);
+            self.reset_recoveries(&id).await?;
             let lease = self.store.get::<Lease>(&keys::lease_agent(&id)).await?;
             // A move would start a second session. A pinned agent moves only
             // after a clean end, like a placement.
@@ -879,7 +892,7 @@ impl Hub {
         mem.failed_hosts
             .entry(agent.clone())
             .or_default()
-            .insert(host.clone());
+            .insert(host.clone(), self.now());
         // A forced host that failed must not block the next placement.
         if let Some(p) = mem.pending_moves.get_mut(agent)
             && p.target.host.as_ref() == Some(host)
@@ -911,12 +924,34 @@ impl Hub {
         } else {
             Severity::Warn
         };
+        let resume_line =
+            launch_error_text(&screen).unwrap_or_else(|| "the launch failed".to_owned());
         let event = self.event(
             self.now(),
             severity,
             SwarmEventBody::LaunchStuck { screen, attempts },
         );
         Self::queue(mem, event);
+        // A resume that fails tells the person or the agent who asked for it,
+        // and never counts against the spawn.
+        if let Some(by) = mem.resumed_by.remove(agent) {
+            let text = format!("the resume of agent {agent} failed on {host}: {resume_line}");
+            match by {
+                Sender::Agent(who) => {
+                    if let Err(e) = self.tell(&who, &text).await {
+                        tracing::warn!(%agent, %who, "the resume message failed: {e}");
+                    }
+                }
+                Sender::Human => {
+                    if let Ok(doc) = self.agent(agent).await
+                        && let Some(owner) = self.owner_of(&doc.value).await?
+                        && let Err(e) = self.tell(&owner, &text).await
+                    {
+                        tracing::warn!(%agent, %owner, "the resume message failed: {e}");
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -925,7 +960,9 @@ impl Hub {
     /// a person, not for another try. The record keeps the host, the timeout,
     /// and the capped error of each try, so `borant ps` and the spawner read
     /// why it failed. Returns the count and whether the record is `Failed`
-    /// now. An agent without a spawn record is not counted.
+    /// now. An agent without a spawn record is not counted, and neither is a
+    /// launch of a spawn that is no longer `Queued` or `Launching`: a failed
+    /// resume of a running agent is not a spawn try.
     ///
     /// The record that fails also retires its agent, by the path of a normal
     /// retire, so no takeover places it again; the record stays for `ps`.
@@ -950,6 +987,11 @@ impl Hub {
         // the hosts of the tries that failed it.
         if record.state == SpawnState::Failed {
             return Ok((record.attempts, true));
+        }
+        // Only a queued or launching spawn counts its launches: a failed
+        // resume of a running agent must not retire it.
+        if !matches!(record.state, SpawnState::Queued | SpawnState::Launching) {
+            return Ok((record.attempts, false));
         }
         record.attempts = record.attempts.saturating_add(1);
         record.launch_failures.push(LaunchFailure {

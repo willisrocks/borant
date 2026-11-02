@@ -17,6 +17,7 @@ pub mod http;
 mod inbox;
 mod join;
 mod leases;
+mod liveness;
 mod members;
 pub mod mirror;
 mod moves;
@@ -47,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::config::{AlertsConfig, ChannelConfig};
-use borant_core::model::{HostStats, HubLease, Lease, MoveReason};
+use borant_core::model::{HostStats, HubLease, Lease, MoveReason, Sender};
 use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
@@ -178,8 +179,9 @@ pub(crate) struct Memory {
     /// with the host that keeps it.
     pub delete_pending: BTreeMap<AgentId, HostName>,
     pub pending_moves: HashMap<AgentId, PendingMove>,
-    /// Hosts where a launch failed, for each agent, until the agent registers.
-    pub failed_hosts: HashMap<AgentId, HashSet<HostName>>,
+    /// Hosts where a launch failed, per agent, with the time of the failure.
+    /// An entry older than the lease grace no longer blocks the host.
+    pub failed_hosts: HashMap<AgentId, HashMap<HostName, Timestamp>>,
     /// Idle expired agents whose session log was already checked.
     pub idle_checked: HashSet<AgentId>,
     /// When the hub last read the pending messages of an idle agent.
@@ -206,6 +208,17 @@ pub(crate) struct Memory {
     pub host_stats: HashMap<HostName, HostStats>,
     /// When the elastic rules last ran.
     pub last_elastic: Option<Timestamp>,
+    /// When the liveness sweep last ran.
+    pub last_sweep: Option<Timestamp>,
+    /// The last event time of each agent that already got the silence DM, so
+    /// one silence sends one message.
+    pub silence_dmed: HashMap<AgentId, Timestamp>,
+    /// Who asked for the resume of an agent, for the message that a failed
+    /// resume sends back.
+    pub resumed_by: HashMap<AgentId, Sender>,
+    /// Agents whose claim waited for a person after the recovery limit, so no
+    /// lease tick places them again.
+    pub recovery_stopped: HashSet<AgentId>,
     /// When the alert pass last ran.
     pub last_alerts: Option<Timestamp>,
     /// When the schedule pass last ran.
@@ -423,6 +436,12 @@ impl Hub {
             return Ok(());
         }
         let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
+        // The liveness sweep runs before the lease pass, so a dead session is
+        // ended and recovered here instead of being replaced silently by a
+        // takeover that leaves the spawn record running.
+        if let Err(e) = self.tick_liveness().await {
+            tracing::warn!("the liveness sweep failed: {e}");
+        }
         self.tick_leases(leases).await?;
         // The agents that wait for a member of their bundle to reset.
         self.wake_limited_members().await?;
