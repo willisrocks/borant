@@ -180,7 +180,7 @@ event
 STEP_WAIT=1.5 step live-update
 check "no band row or column moved across a live update" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/before-live.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 check "board mode held across the live update" "in_board"
-check "the new item waits for esc, and the band says so" "! shown | grep -q '▲ A new question arrived' && shown | grep -q '+1 after esc'"
+check "the new item waits for esc, and the band says so" "! shown | grep -q '▲ A new question arrived' && shown | grep -q '+1 after esc\|+1 new'"
 step live-j lit:j
 step live-k lit:k
 
@@ -323,7 +323,11 @@ before_j="$last"
 step turn-j lit:j
 check "j moved while a turn ran, and stayed out of the prompt" "in_board && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && ! prompt_text | grep -q j"
 step turn-exit Escape
+# Stop the long turn, so a Done's prompt later does not wait behind it.
+tui_keys C-c
 for _ in $(seq 1 60); do turn_runs || break; sleep 0.5; done
+tui_text | tail -3 | grep -q -- '-- NORMAL --' && tui_keys i
+sleep 0.5
 
 # Refresh: a change with an event shows within a second, at rest.
 title="$(needs_titles | tail -1)"

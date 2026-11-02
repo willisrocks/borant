@@ -542,6 +542,7 @@ export function titleRow(board, o) {
   // Board mode holds its rows still: what arrived meanwhile shows after esc.
   // Like the counts, the note goes when the row has no room for it.
   const waiting = o.waiting ? [text(' · +' + o.waiting + ' after esc', 'dim')] : []
+  const waitingShort = o.waiting ? [text(' · +' + o.waiting + ' new', 'dim')] : []
   const label = width >= 110 ? 'chief of staff' : 'cos'
   const mode = modeCells(o.active)
   const stale = o.stale ? [o.stale, text(' ' + RULE + ' ', 'faint')] : []
@@ -556,6 +557,7 @@ export function titleRow(board, o) {
     [...waiting, text(' · ' + active + ' active' + (idle ? ' · ' + idle + ' idle' : ''), 'dim')],
     [...waiting, text(' · ' + active + ' active', 'dim')],
     waiting,
+    waitingShort,
     [],
   ]
   for (const counts of forms) {
