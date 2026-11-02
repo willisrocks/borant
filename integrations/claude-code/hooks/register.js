@@ -144,6 +144,9 @@ let frozen = null
  * band's viewport (the terminal's width) and width at rest. */
 let dockPane = null
 let restSeen = null
+/** The last docked drawing of the pane: the terminal's width then, and the
+ * dock's. A band as wide as the rest of that terminal is a docked band. */
+let lastDock = null
 /** Board reads in the order they started: a slow one that ends after a newer
  * one is dropped. */
 let readSeq = 0
@@ -183,7 +186,9 @@ export function register(on) {
       // The band's viewport is the conversation's: narrower while the preview
       // is docked, so only a band at rest says how wide the terminal is. The
       // pane's drawing as it closes does not count (paneClosed).
-      const dockedNow = paneOpen && !paneClosed && placement === 'dock'
+      // A band exactly as wide as the conversation beside the last drawn dock
+      // is docked too, whatever the pane's state says by then.
+      const dockedNow = (paneOpen && !paneClosed && placement === 'dock') || (lastDock !== null && columns === lastDock.terminal - lastDock.pane - 1)
       if (!dockedNow) restSeen = { columns, width }
       const docks = e.viewport?.isFullscreen === true && terminalColumns() >= DOCK_COLUMNS
       const docked = dockedNow ? width : dockedBandWidth(width)
@@ -227,9 +232,10 @@ export function register(on) {
       paneWidth = typeof props.bodyColumns === 'number' && props.bodyColumns > 0 ? props.bodyColumns : 60
       // Docked, the terminal is the conversation, the dock, and its border.
       // A dock at the 45% cap is the terminal's width, not the person's.
-      if (place === 'dock' && !paneClosed && typeof e.viewport?.columns === 'number') {
+      if (place === 'dock' && typeof e.viewport?.columns === 'number') {
         const terminal = e.viewport.columns + paneWidth + 1
-        if (paneWidth + 2 < Math.floor(terminal * 0.45)) dockPane = paneWidth
+        lastDock = { terminal, pane: paneWidth }
+        if (!paneClosed && paneWidth + 2 < Math.floor(terminal * 0.45)) dockPane = paneWidth
       }
       if (place === 'inline' && !focused) {
         // Inline, the preview is there only in board mode.
@@ -619,7 +625,11 @@ async function settlePending($, now) {
 
 /** A task's status as the hub has it now, or null when the read fails. */
 async function taskStatus($, q) {
-  const result = await readTasksOrdered($, q.channel)
+  let result = await readTasksOrdered($, q.channel)
+  // A newer read of the channel landed first: its answer is the one to use.
+  // One that has not landed yet is waited for by reading again.
+  if (result.stale) result = taskCacheSeq.get(q.channel) > result.seq ? { tasks: taskCache.get(q.channel) } : await readTasksOrdered($, q.channel)
+  if (result.stale) return null
   const task = (result.tasks || []).find((t) => t.id === q.task)
   return task ? task.status : null
 }
@@ -955,12 +965,17 @@ async function refreshTasks($) {
 /** One channel's tasks, read and cached; a read that ends after a newer one
  * of the same channel leaves the cache to it. */
 const taskSeq = new Map()
+const taskCacheSeq = new Map()
 async function readTasksOrdered($, channel) {
   const seq = (taskSeq.get(channel) || 0) + 1
   taskSeq.set(channel, seq)
   const result = await readTasks($, config, channel)
-  if (taskSeq.get(channel) === seq) taskCache.set(channel, result.tasks)
-  return result
+  const stale = taskSeq.get(channel) !== seq
+  if (!stale) {
+    taskCache.set(channel, result.tasks)
+    taskCacheSeq.set(channel, seq)
+  }
+  return { ...result, seq, stale }
 }
 
 function taskLists() {
