@@ -420,6 +420,7 @@ fn render() -> String {
             projects: &records.projects,
             channels: &records.channels,
             tasks: &records.tasks,
+            spawns: &[],
             agents: &records.agents,
             collections: &collections,
         },

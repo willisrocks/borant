@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borant_core::model::{Harness, HostInfo, RepoInfo};
-use borant_core::ports::{Incoming, MessageBus};
+use borant_core::ports::{Incoming, MessageBus, Notice, Notifier, PortResult};
 use borant_core::proto::{
     Actor, ApiError, CtlRequest, HeartbeatReply, HostCommand, RegisterSession, Registered,
     SessionLeaseRef, ToolCall,
@@ -16,6 +16,26 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
 
+/// The notices of the hub notifier, so a test reads what the person heard.
+#[derive(Debug, Default)]
+pub struct Recorder {
+    notices: Mutex<Vec<Notice>>,
+}
+
+impl Recorder {
+    pub fn notices(&self) -> Vec<Notice> {
+        self.notices.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl Notifier for Recorder {
+    async fn notify(&self, notice: &Notice) -> PortResult<()> {
+        self.notices.lock().unwrap().push(notice.clone());
+        Ok(())
+    }
+}
+
 pub struct Fx {
     pub hub: Arc<Hub>,
     pub state: MemoryState,
@@ -23,6 +43,7 @@ pub struct Fx {
     pub sessions: MemorySession,
     pub events: MemoryEventLog,
     pub clock: Arc<ManualClock>,
+    pub recorder: Arc<Recorder>,
 }
 
 pub fn name(s: &str) -> HostName {
@@ -59,6 +80,7 @@ impl Fx {
         let sessions = MemorySession::new();
         let events = MemoryEventLog::new();
         let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
+        let recorder = Arc::new(Recorder::default());
         let hub = Arc::new(
             Hub::new(
                 Arc::new(state.clone()),
@@ -67,6 +89,7 @@ impl Fx {
                 clock.clone(),
                 cfg,
             )
+            .with_notifier(recorder.clone())
             .with_events(Arc::new(events.clone())),
         );
         Self {
@@ -76,6 +99,7 @@ impl Fx {
             sessions,
             events,
             clock,
+            recorder,
         }
     }
 

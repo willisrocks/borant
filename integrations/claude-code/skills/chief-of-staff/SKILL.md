@@ -33,6 +33,8 @@ them differently.
 | A role with `approves = true` in `hub.toml` approves saga gates. When a saga gate goes `needs_human`, the hub sends a direct message to every agent of the collection whose role approves. | The gate is yours to approve only on the person's word. Close it as `done` with their words, or as `wontfix` when they say no. |
 | The gate is a task of the saga channel, owned by its orchestrator, and the orchestrator cannot close it as `done` unless its role has `approves = true`. | Never let an orchestrator approve its own scope. You bring the gate to the person. |
 | `board` reads the board of the collection: projects, sagas, epics, and the questions that wait for a person. It is computed and stores nothing. | Answer status questions from `board`, not from repos, CI, logs, or `borant status`. |
+| `board` also carries `blocked`: the queued spawns that capacity does not explain (a missing bundle, tag, harness, sandbox, repo access, a failed launch, or no host online), each with its reason and the one action that unblocks it. A queued spawn that is bound to a task shows through that task instead. | Read `blocked` at every check, and count each entry as an item for the person. |
+| `borant ps --queued` shows the queue with each spawn's refusal. Only `full`, `channel full`, `low memory`, and `disk full` clear with a wait or a drain. | A refusal that is not one of those four is a blocker; a wait will not clear it. |
 | An 'Issue team needed' question means the mirror lacks a Linear team. | Ask the person for the team key, then `task_update(issue_target: <key>)` on that task, or tell the orchestrator. |
 
 ## Delegate
@@ -101,6 +103,40 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
    `channel_close`; do not close the saga channel yourself.
 6. Answer status questions from `board`.
 
+## Sweep every check
+
+Never wait for the hub to hand you a blocker. At every check (a wake, a question, a
+status request, a quiet spell you are about to end), sweep the collection:
+
+1. `board`. The `needs_you` questions and the `blocked` spawns are the work that
+   waits on the person.
+2. `borant ps --queued`. For each queued spawn, read the refusal. Only `full`,
+   `channel full`, `low memory`, and `disk full` clear with a wait.
+3. The agents: `members` on each project channel, and the agents that the hub
+   reports dead or silent.
+
+## Report a blocker within one turn
+
+Within one turn of seeing a blocker that you cannot clear, tell the person one line:
+what is blocked, why, and the one action that unblocks it. The hub sends you the same
+line for a blocked spawn. Do not fold it into a later report and do not wait for the
+next digest: a helper that sat in the queue for a day held a release, and nobody told
+the person.
+
+- A refusal about a host or a role that this collection controls is yours: fix it, or
+  hand it to the orchestrator that runs it, in this turn.
+- A refusal about something this collection does not control goes to the person at
+  once, with the action.
+- After you report, the hub repeats it at most every four hours while the spawn stays
+  blocked. Report it again only when the reason or the action changes.
+
+## Cross-collection requests
+
+When another chief asks you for something that you control (a host bundle, a tag, a
+host, a project), you either fix it at once or escalate it to the person at once. You
+never park it, and you never treat it as the other chief's to fix. A request that only
+the person can answer is escalated in the same turn, in one line, with the action.
+
 ## Orchestrator brief
 
 Fill every slot. An orchestrator reads only this prompt and its task list.
@@ -128,6 +164,13 @@ change to CI, secrets, releases, or infrastructure.
   the options, and your suggested default, then relay the answer as a direct message.
 - **A task is stuck:** read `attention_msg`. Suggest a rewrite, a split, or a stronger
   role, and tell the orchestrator. After two failed tries, bring it to the person.
+- **A spawn is blocked** (a direct message from the hub, or a `blocked` row on the
+  board): read the reason and the action. Fix what this collection controls, and tell
+  the person the one line in this turn for the rest. Never spawn again for the same
+  goal, and never wait for the reason to clear on its own unless it is `full`, `channel
+  full`, `low memory`, or `disk full`.
+- **Another chief asks for something you control:** fix it at once or escalate it to
+  the person at once. Never park it, and never answer that it is theirs to fix.
 - **A task needs a human - your main duty:** read its `attention_msg`. A saga gate is
   the main case: the hub messages you when a gate goes `needs_human`, and you approve
   it with the person here (see "Size the goal and approve sagas"). If the person's
@@ -195,3 +238,6 @@ change to CI, secrets, releases, or infrastructure.
 | "Chris pressed Ask orchestrator, I know the answer" | The board sent it to the owner. Relay the owner's reply; add your view only if he asks. |
 | "The guard refused; I will reword the command" | The guard is the rule. Send the step to the orchestrator. |
 | "Pick a team for the orchestrator" | Ask the person. |
+| "A helper is queued; it will start later" | Read the refusal. Only `full`, `channel full`, `low memory`, and `disk full` clear with a wait. |
+| "I will report that blocker in my next digest" | One line in this turn: what is blocked, why, the one action. |
+| "chief-work asked for the bundle; that is chief-work's to fix" | You control it: fix it now, or escalate it to the person now. Never park it. |

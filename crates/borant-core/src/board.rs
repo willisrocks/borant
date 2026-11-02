@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AgentId, ChannelName, CollectionName, HostName, ProjectName, TaskId};
 use crate::model::{
-    AgentStatus, Channel, ChannelKind, CloseReason, LeaseState, Project, Task, TaskKind, TaskStatus,
+    AgentStatus, Channel, ChannelKind, CloseReason, LeaseState, Project, SpawnRecord, Task,
+    TaskKind, TaskStatus,
 };
+use crate::rules::blocked;
 use crate::rules::roles::{self, CollectionConfig};
 use crate::rules::saga;
 use crate::time::Timestamp;
@@ -29,6 +31,29 @@ pub struct CollectionBoard {
     pub projects: Vec<ProjectBoard>,
     /// The tasks in `needs_human` or `stuck`, oldest first.
     pub needs_you: Vec<Question>,
+    /// Queued spawns that capacity does not explain and that bind no task,
+    /// oldest first. A bound spawn already appears through its stuck task, so
+    /// it is not listed here twice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<BlockedSpawn>,
+}
+
+/// One spawn that waits on something a person must fix (blocked-work alarm
+/// spec, "The board's need-you").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedSpawn {
+    pub agent: AgentId,
+    pub channel: ChannelName,
+    pub project: Option<ProjectName>,
+    /// The refusal, as `borant ps --queued` prints it.
+    pub reason: String,
+    /// The one action that unblocks the spawn.
+    pub action: String,
+    /// When the spawn entered the queue.
+    pub since: Timestamp,
+    /// The agent that spawned it, when an agent did.
+    #[serde(default)]
+    pub spawner: Option<AgentId>,
 }
 
 /// One project, with its sagas, its standalone epics, and its plain tasks.
@@ -140,6 +165,8 @@ pub struct BoardInput<'a> {
     pub channels: &'a [Channel],
     /// Every task of every channel.
     pub tasks: &'a [(ChannelName, Task)],
+    /// Every spawn record, for the spawns that wait in the queue.
+    pub spawns: &'a [SpawnRecord],
     /// The live view of the agents.
     pub agents: &'a [AgentStatus],
     /// The `[collections.<name>]` of `hub.toml`.
@@ -257,7 +284,37 @@ fn collection_board(
         collection: collection.cloned(),
         projects,
         needs_you,
+        blocked: blocked_spawns(input, &channels),
     }
+}
+
+/// The queued spawns of `channels` that capacity does not explain. A spawn
+/// with a bound task appears through its stuck task instead, so it is left
+/// out here.
+fn blocked_spawns(input: &BoardInput, channels: &[&Channel]) -> Vec<BlockedSpawn> {
+    let mut out: Vec<BlockedSpawn> = input
+        .spawns
+        .iter()
+        .filter(|record| record.spec.task.is_none())
+        .filter_map(|record| {
+            let blocked = blocked::blocked(record, input.at)?;
+            let channel = channels
+                .iter()
+                .find(|channel| channel.name == record.spec.channel)?;
+            Some(BlockedSpawn {
+                agent: record.agent.clone(),
+                channel: channel.name.clone(),
+                project: channel.project.clone(),
+                reason: blocked.reason.clone(),
+                action: blocked.action(&record.agent),
+                since: record.queued_at,
+                spawner: blocked::spawner(&record.by),
+            })
+        })
+        .collect();
+    // The spawn that has waited longest first, as the questions are.
+    out.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.agent.cmp(&b.agent)));
+    out
 }
 
 /// One project board, from its channels of `channels`.
@@ -470,6 +527,7 @@ fn property(task: &Task, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Sender, SpawnSpec, SpawnState, TaskRef};
     use serde_json::json;
 
     fn ts(n: i64) -> Timestamp {
@@ -497,8 +555,11 @@ mod tests {
         projects: Vec<Project>,
         channels: Vec<Channel>,
         tasks: Vec<(ChannelName, Task)>,
+        spawns: Vec<SpawnRecord>,
         agents: Vec<AgentStatus>,
         collections: BTreeMap<CollectionName, CollectionConfig>,
+        /// The board's clock, in milliseconds.
+        now: i64,
     }
 
     impl Fixture {
@@ -507,9 +568,55 @@ mod tests {
                 projects: Vec::new(),
                 channels: Vec::new(),
                 tasks: Vec::new(),
+                spawns: Vec::new(),
                 agents: Vec::new(),
                 collections: BTreeMap::new(),
+                now: 9_000,
             }
+        }
+
+        /// A queued spawn of `channel` since `since` that `reason` blocks, or
+        /// that binds `task`.
+        fn spawn(
+            &mut self,
+            agent: &str,
+            channel: &str,
+            since: i64,
+            reason: &str,
+            task: Option<TaskId>,
+        ) -> &mut Self {
+            let record = SpawnRecord {
+                agent: agent.parse().unwrap(),
+                spec: SpawnSpec {
+                    channel: chan(channel),
+                    prompt: String::new(),
+                    harness: None,
+                    host: None,
+                    name: None,
+                    model: None,
+                    role: None,
+                    task: task.map(|id| TaskRef {
+                        channel: chan(channel),
+                        id,
+                    }),
+                    stop_on_close: None,
+                    continues: None,
+                    priority: None,
+                    bundles: Vec::new(),
+                },
+                resolved: roles::Resolved::default(),
+                by: Sender::Human,
+                queued_at: ts(since),
+                priority: 0,
+                state: SpawnState::Queued,
+                attempts: 0,
+                last_reject: vec![("h1".parse().unwrap(), reason.to_owned())],
+                queue_reason: None,
+                launch_failures: Vec::new(),
+                recoveries: 0,
+            };
+            self.spawns.push(record);
+            self
         }
 
         fn project(&mut self, name: &str) -> &mut Self {
@@ -564,10 +671,11 @@ mod tests {
         fn build(&self, wanted: &[Option<CollectionName>]) -> BoardView {
             build(
                 &BoardInput {
-                    at: ts(9_000),
+                    at: ts(self.now),
                     projects: &self.projects,
                     channels: &self.channels,
                     tasks: &self.tasks,
+                    spawns: &self.spawns,
                     agents: &self.agents,
                     collections: &self.collections,
                 },
@@ -874,6 +982,36 @@ mod tests {
         assert!(questions[1].gate);
         assert_eq!(questions[1].attention_msg.as_deref(), Some("scope?"));
         assert_eq!(questions[1].project.as_ref(), Some(&proj("mirror")));
+    }
+
+    #[test]
+    fn board_lists_the_blocked_spawns_that_bind_no_task() {
+        let mut fx = Fixture::new();
+        fx.now = 10_000_000;
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        // The oldest wait first. A spawn that only capacity holds back, and a
+        // spawn that binds a task, are not in the list.
+        fx.spawn("w1", "api", 2_000_000, "draining", None);
+        fx.spawn("w2", "api", 5_000_000, "missing bundle github-work", None);
+        fx.spawn("w3", "api", 0, "full (4/4)", None);
+        fx.spawn("w4", "api", 100_000, "offline", Some(id(1)));
+
+        let board = fx.build(&[None]);
+        let blocked = &board.collections[0].blocked;
+        assert_eq!(
+            blocked.iter().map(|b| b.agent.as_str()).collect::<Vec<_>>(),
+            vec!["w1", "w2"]
+        );
+        assert_eq!(blocked[1].reason, "missing bundle github-work");
+        assert_eq!(
+            blocked[1].action,
+            "add bundle github-work to a host that the spawn may use, or spawn without github-work"
+        );
+        assert_eq!(blocked[1].channel, chan("api"));
+        assert_eq!(blocked[1].project.as_ref(), Some(&proj("mirror")));
+        assert_eq!(blocked[1].since, ts(5_000_000));
+        assert_eq!(blocked[1].spawner, None);
     }
 
     #[test]

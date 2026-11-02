@@ -10,6 +10,7 @@ use borant_core::model::{
     UsageWindow,
 };
 use borant_core::proto::{LocalSession, MoveSelector, MoveTarget, PauseSelector, ToolCall};
+use borant_core::rules::blocked;
 use borant_core::{
     AgentId, BundleName, ChannelName, CollectionName, HostName, MemberName, ProjectName, RoleName,
     SessionId, TaskId, Timestamp,
@@ -1198,7 +1199,7 @@ fn render_board(v: &BoardView) -> String {
                 counts.done,
             );
         }
-        if board.needs_you.is_empty() {
+        if board.needs_you.is_empty() && board.blocked.is_empty() {
             out.push_str("  Needs you: nothing\n");
         } else {
             out.push_str("  Needs you:\n");
@@ -1215,6 +1216,19 @@ fn render_board(v: &BoardView) -> String {
                     let _ = write!(line, ": {msg}");
                 }
                 let _ = writeln!(out, "{line} ({age})");
+            }
+            // A spawn that waits on something that a person must fix: the
+            // same line that the alarm sends.
+            for spawn in &board.blocked {
+                let _ = writeln!(
+                    out,
+                    "    spawn {} #{}  blocked {}: {}. Unblock: {}",
+                    spawn.agent,
+                    spawn.channel,
+                    blocked::waited_label(v.at.since(spawn.since)),
+                    spawn.reason,
+                    spawn.action,
+                );
             }
         }
     }
@@ -2712,7 +2726,7 @@ mod tests {
     /// One board of every part that the text shows.
     fn board_view() -> BoardView {
         use borant_core::board::{
-            AgentLine, CollectionBoard, Counts, ProjectBoard, Question, SagaLine,
+            AgentLine, BlockedSpawn, CollectionBoard, Counts, ProjectBoard, Question, SagaLine,
         };
 
         let at = Timestamp(1_000_000);
@@ -2820,6 +2834,17 @@ mod tests {
                         owner: None,
                     },
                 ],
+                blocked: vec![BlockedSpawn {
+                    agent: "helper".parse().unwrap(),
+                    channel: "elastic".parse().unwrap(),
+                    project: Some("borant".parse().unwrap()),
+                    reason: "missing bundle github-work".into(),
+                    action: "add bundle github-work to a host that the spawn may use, \
+                             or spawn without github-work"
+                        .into(),
+                    since: Timestamp(at.0 - 7_200_000),
+                    spawner: Some("chief".parse().unwrap()),
+                }],
             }],
         }
     }
@@ -2841,7 +2866,10 @@ mod tests {
                  \x20 tasks: 2 open, 1 ready, 1 running, 1 blocked, 1 stuck, 0 needs_human, 4 done\n\
                  \x20 Needs you:\n\
                  \x20   [gate] elastic/{gate}  Approve the scope and the epics: waiting on Chris (3m)\n\
-                 \x20   roadmap/{stuck}  the migration (1m)\n"
+                 \x20   roadmap/{stuck}  the migration (1m)\n\
+                 \x20   spawn helper #elastic  blocked 2h: missing bundle github-work. \
+                 Unblock: add bundle github-work to a host that the spawn may use, \
+                 or spawn without github-work\n"
             )
         );
     }
