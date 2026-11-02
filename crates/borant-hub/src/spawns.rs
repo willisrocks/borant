@@ -494,6 +494,13 @@ impl Hub {
                 self.store
                     .upsert(&keys::spawn(&record.agent), &record)
                     .await?;
+                // The spawn left the queue: the task it binds is not blocked
+                // by it any more, and the worker that the placement starts
+                // must be able to claim it.
+                let mut mem = self.mem.lock().await;
+                self.release_blocked_task(&mut mem, &record.agent).await;
+                drop(mem);
+                self.flush().await;
             }
         }
         Ok(())
@@ -762,6 +769,9 @@ impl Hub {
             Self::queue(mem, event);
         }
         self.store.delete(&key).await?;
+        // The spawn is gone, so the task that it bound is not blocked by it
+        // any more.
+        self.release_blocked_task(mem, agent).await;
         // `stopped` is true only when a stop order went out; a session that
         // still has to end its turn says when its stop comes.
         let mut reply = json!({ "agent": agent, "cancelled": true, "stopped": stopped });

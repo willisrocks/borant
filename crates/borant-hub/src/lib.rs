@@ -227,6 +227,10 @@ pub(crate) struct Memory {
     /// When the hub last told about each blocked spawn, so the alarm repeats
     /// at most every four hours while the spawn stays blocked.
     pub blocked_told: HashMap<AgentId, Timestamp>,
+    /// The bound task that the alarm set to `stuck` for each blocked spawn,
+    /// with what it hid, so that it gives them back when the spawn leaves the
+    /// queue.
+    pub blocked_tasks: HashMap<AgentId, crate::blocked_alarm::StuckTask>,
     /// The stalled tasks that the hub already told about.
     pub stalled_told: HashSet<TaskId>,
     /// When the schedule pass last ran.

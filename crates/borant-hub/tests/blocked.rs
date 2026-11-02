@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use borant_core::model::{
     Agent, ChannelKind, Envelope, Harness, HostInfo, Lease, LeaseState, NewTask, SpawnRecord,
-    SpawnState, Task, TaskBinding, TaskRef, TaskStatus,
+    SpawnState, Task, TaskBinding, TaskPatch, TaskRef, TaskStatus,
 };
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{CtlRequest, PauseSelector, RegisterSession, Registered, ToolCall};
@@ -477,6 +477,33 @@ async fn a_stalled_card_names_what_it_holds_and_tells_the_owner_and_the_chief() 
     assert!(messages(&mut to_boss).await.is_empty());
     assert!(messages(&mut to_chief).await.is_empty());
     assert_eq!(task_of(&fx, task.id).await.attention_msg, Some(attention));
+
+    // The claimer already holds the task, so its own claim still works: a
+    // stalled card does not lock its worker out of the work. A person
+    // resumes the stopped worker, which registers again and takes its task.
+    fx.call(
+        None,
+        ToolCall::Resume {
+            selector: PauseSelector::Agent(agent("w")),
+        },
+    )
+    .await
+    .expect("a person resumes the stopped worker");
+    let w = fx.register("h1", Some("w"), None).await;
+    let reclaimed: Task = serde_json::from_value(
+        fx.call(
+            Some(&w),
+            ToolCall::TaskClaim {
+                channel: api(),
+                id: task.id,
+            },
+        )
+        .await
+        .expect("the claimer claims over its own stall"),
+    )
+    .unwrap();
+    assert_eq!(reclaimed.status, TaskStatus::InProgress);
+    assert_eq!(reclaimed.claimed_by.as_ref(), Some(&w.agent));
 }
 
 /// A dead claimer is not a stalled card: the hub ends its session through the
@@ -589,4 +616,124 @@ async fn a_live_claimer_leaves_its_claim_alone() {
     for env in messages(&mut to_boss).await {
         assert!(!env.text.contains("is stalled and stuck"), "{}", env.text);
     }
+}
+
+/// Registers h1 again with `bundles`, as a person adds a bundle to a host.
+async fn add_bundles(fx: &Fx, bundles: &[&str]) {
+    fx.req(CtlRequest::RegisterHost {
+        info: HostInfo {
+            name: name("h1"),
+            harnesses: vec![Harness::Fake],
+            launcher: "process".into(),
+            max_agents: 4,
+            bundles: bundles.iter().map(|b| b.parse().unwrap()).collect(),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+}
+
+/// An owner with `work-api`, an `Open` task, and the helper that it spawned
+/// for that task, with the bundle that no host has.
+async fn blocked_helper(fx: &Fx) -> (Registered, Task) {
+    fx.host("h1", &[Harness::Fake]).await;
+    let chief = register_role(fx, "chief", "chief", Some("work")).await;
+    create_channel(fx, &chief, "work-api").await;
+    let task = create_task(fx, &chief, "the work", Vec::new()).await;
+    let bound = TaskRef {
+        channel: api(),
+        id: task.id,
+    };
+    spawn(fx, &chief, "helper", Some(bound)).await.unwrap();
+    // The alarm sticks the unclaimed task when the spawn stays blocked. The
+    // beat keeps the chief's session valid for the call that follows.
+    fx.advance(16 * 60);
+    fx.heartbeat("h1", &[&chief]).await;
+    fx.hub.tick().await.unwrap();
+    assert_eq!(task_of(fx, task.id).await.status, TaskStatus::Stuck);
+    (chief, task)
+}
+
+#[tokio::test]
+async fn a_placed_spawn_gives_its_bound_task_back() {
+    let fx = hub();
+    let (_chief, task) = blocked_helper(&fx).await;
+
+    // The person adds the bundle to the host, and the queue places the spawn.
+    add_bundles(&fx, &["github-work"]).await;
+    fx.hub.tick().await.unwrap();
+    assert_eq!(record(&fx, "helper").await.state, SpawnState::Launching);
+    let back = task_of(&fx, task.id).await;
+    assert_eq!(back.status, TaskStatus::Open, "the alarm gives it back");
+    assert_eq!(back.attention_msg, None);
+
+    // The worker of the placement claims the task that it is bound to.
+    let helper = register_role(&fx, "helper", "worker", None).await;
+    let claimed: Task = serde_json::from_value(
+        fx.call(
+            Some(&helper),
+            ToolCall::TaskClaim {
+                channel: api(),
+                id: task.id,
+            },
+        )
+        .await
+        .expect("the worker claims its own task"),
+    )
+    .unwrap();
+    assert_eq!(claimed.status, TaskStatus::InProgress);
+    assert_eq!(claimed.claimed_by.as_ref(), Some(&helper.agent));
+}
+
+#[tokio::test]
+async fn a_cancelled_spawn_gives_its_bound_task_back() {
+    let fx = hub();
+    let (chief, task) = blocked_helper(&fx).await;
+
+    fx.call(
+        Some(&chief),
+        ToolCall::Cancel {
+            agent: agent("helper"),
+            close_task: None,
+        },
+    )
+    .await
+    .unwrap();
+    fx.hub.tick().await.unwrap();
+    let back = task_of(&fx, task.id).await;
+    assert_eq!(back.status, TaskStatus::Open);
+    assert_eq!(back.attention_msg, None);
+}
+
+#[tokio::test]
+async fn a_person_reopens_the_task_of_a_blocked_spawn() {
+    let fx = hub();
+    let (_chief, task) = blocked_helper(&fx).await;
+
+    let reopened: Task = serde_json::from_value(
+        fx.call(
+            None,
+            ToolCall::TaskUpdate {
+                channel: api(),
+                id: task.id,
+                patch: TaskPatch {
+                    status: Some(TaskStatus::Open),
+                    ..TaskPatch::default()
+                },
+            },
+        )
+        .await
+        .expect("a person reopens the task"),
+    )
+    .unwrap();
+    assert_eq!(reopened.status, TaskStatus::Open);
+    assert_eq!(reopened.attention_msg, None);
+
+    // The alarm told about this spawn already, so it does not stick the task
+    // again inside the four hours.
+    fx.advance(60);
+    fx.heartbeat("h1", &[]).await;
+    fx.hub.tick().await.unwrap();
+    assert_eq!(task_of(&fx, task.id).await.status, TaskStatus::Open);
 }

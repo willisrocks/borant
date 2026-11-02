@@ -22,10 +22,26 @@ use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::{blocked, roles};
 use borant_core::{AgentId, ChannelName, CollectionName, TaskId, Timestamp, keys};
 
-use crate::Hub;
+use crate::{Hub, Memory};
 
 /// How often the blocked-work pass runs.
 pub(crate) const BLOCKED_EVERY: Duration = Duration::from_secs(60);
+
+/// The task that the alarm set to `stuck` for one blocked spawn, with the
+/// status and the attention text that it hid, so that it gives them back when
+/// the spawn leaves the queue. The alarm undoes only its own write: the text
+/// it wrote must still be the attention text.
+#[derive(Debug, Clone)]
+pub(crate) struct StuckTask {
+    pub channel: ChannelName,
+    pub id: TaskId,
+    /// `Open` for an unclaimed task, `InProgress` for a claimed one.
+    pub before: TaskStatus,
+    /// The attention text that the alarm replaced.
+    pub attention: Option<String>,
+    /// The alarm's own text, which the task must still carry.
+    pub text: String,
+}
 
 impl Hub {
     /// Runs the blocked-work pass when its time has come, at most once a
@@ -57,15 +73,34 @@ impl Hub {
     /// The queued spawns that wait on a person: one alert, the spawner and
     /// the chief, and the bound task in `stuck`, at most every
     /// [`blocked::REPEAT_EVERY`] while it stays blocked.
+    ///
+    /// A spawn that leaves the queue gives its bound task back first: an
+    /// `Open` task that the alarm stuck is one that the new worker must
+    /// claim, and `task_claim` refuses a stalled task that nobody claims.
     async fn report_blocked_spawns(&self, now: Timestamp) -> Result<(), ApiError> {
         let records = self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await?;
-        // A spawn that leaves the queue is forgotten, so a later block tells
-        // at once again.
         let queued: HashSet<&AgentId> = records
             .iter()
             .filter(|doc| doc.value.state == SpawnState::Queued)
             .map(|doc| &doc.value.agent)
             .collect();
+        // A spawn that is placed, cancels, or ends is no longer blocked.
+        let left: Vec<AgentId> = {
+            let mem = self.mem.lock().await;
+            mem.blocked_tasks
+                .keys()
+                .filter(|agent| !queued.contains(agent))
+                .cloned()
+                .collect()
+        };
+        for agent in left {
+            let mut mem = self.mem.lock().await;
+            self.release_blocked_task(&mut mem, &agent).await;
+            drop(mem);
+            self.flush().await;
+        }
+        // A spawn that leaves the queue is forgotten, so a later block tells
+        // at once again.
         {
             let mut mem = self.mem.lock().await;
             mem.blocked_told.retain(|agent, _| queued.contains(agent));
@@ -171,7 +206,8 @@ impl Hub {
 
     /// Sets the task that the spawn binds to `stuck`, with the alarm text, so
     /// it shows in `needs_you` and in `borant inbox`. A task that a person
-    /// already holds keeps its status.
+    /// already holds keeps its status. The status and the text that the
+    /// alarm hides are kept for [`Self::release_bound_task`].
     async fn stick_bound_task(&self, record: &SpawnRecord, text: &str) -> Result<(), ApiError> {
         let Some(bound) = &record.spec.task else {
             return Ok(());
@@ -182,6 +218,34 @@ impl Hub {
         };
         let before = doc.value;
         if !matches!(before.status, TaskStatus::Open | TaskStatus::InProgress) {
+            // A task that this hub instance already stuck keeps its record.
+            // One that a restarted hub stuck keeps the alarm's own text, so
+            // the release still knows what to give back.
+            if before.status == TaskStatus::Stuck
+                && before.attention_msg.as_deref() == Some(text)
+                && !self
+                    .mem
+                    .lock()
+                    .await
+                    .blocked_tasks
+                    .contains_key(&record.agent)
+            {
+                let previous = if before.claimed_by.is_some() {
+                    TaskStatus::InProgress
+                } else {
+                    TaskStatus::Open
+                };
+                self.mem.lock().await.blocked_tasks.insert(
+                    record.agent.clone(),
+                    StuckTask {
+                        channel: bound.channel.clone(),
+                        id: bound.id,
+                        before: previous,
+                        attention: None,
+                        text: text.to_owned(),
+                    },
+                );
+            }
             return Ok(());
         }
         let mut next = before.clone();
@@ -194,6 +258,16 @@ impl Hub {
             Err(e) if e.code == ApiErrorCode::Conflict => return Ok(()),
             Err(e) => return Err(e),
         }
+        self.mem.lock().await.blocked_tasks.insert(
+            record.agent.clone(),
+            StuckTask {
+                channel: bound.channel.clone(),
+                id: bound.id,
+                before: before.status,
+                attention: before.attention_msg.clone(),
+                text: text.to_owned(),
+            },
+        );
         tracing::warn!(agent = %record.agent, task = %next.id, "the spawn of a task is blocked");
         let owner = match self.channel(&bound.channel).await {
             Ok(doc) => doc.value.owner,
@@ -220,6 +294,71 @@ impl Hub {
         }
         self.flush().await;
         Ok(())
+    }
+
+    /// Gives the task of a spawn that left the queue back the status and the
+    /// attention text that the alarm hid, when they are still the alarm's
+    /// own: an `Open` task waits for the worker that the placement starts,
+    /// and `task_claim` refuses a stalled task that nobody holds. The record
+    /// comes out of `mem`, so a caller that holds the request's memory (a
+    /// cancel) calls this without a second lock.
+    pub(crate) async fn release_blocked_task(&self, mem: &mut Memory, agent: &AgentId) {
+        let Some(stuck) = mem.blocked_tasks.remove(agent) else {
+            return;
+        };
+        if let Some((before, next)) = self.restore_task(agent, &stuck).await {
+            self.task_status_event(mem, &stuck.channel, &before, &next);
+        }
+    }
+
+    /// Puts the task of `stuck` back, when the alarm still owns the change.
+    /// Returns the status change for its event.
+    async fn restore_task(&self, agent: &AgentId, stuck: &StuckTask) -> Option<(Task, Task)> {
+        let key = keys::task(&stuck.channel, &stuck.id);
+        let Ok(Some(doc)) = self.store.get::<Task>(&key).await else {
+            return None;
+        };
+        let before = doc.value;
+        // A person, the claimer, or another rule changed the task since: only
+        // the alarm's own change is undone.
+        if before.status != TaskStatus::Stuck
+            || before.attention_msg.as_deref() != Some(stuck.text.as_str())
+        {
+            return None;
+        }
+        let mut next = before.clone();
+        next.status = stuck.before;
+        next.attention_msg = stuck.attention.clone();
+        next.updated = self.now();
+        match self.store.put(&key, &next, Some(doc.revision)).await {
+            Ok(_) => {}
+            Err(e) if e.code == ApiErrorCode::Conflict => return None,
+            Err(e) => {
+                tracing::warn!(%agent, task = %stuck.id, "the blocked-spawn release failed: {e}");
+                return None;
+            }
+        }
+        tracing::info!(%agent, task = %next.id, "the spawn left the queue: the task is back");
+        let owner = match self.channel(&stuck.channel).await {
+            Ok(doc) => doc.value.owner,
+            Err(e) => {
+                tracing::warn!(channel = %stuck.channel, "the channel of a bound task is gone: {e}");
+                None
+            }
+        };
+        if let Err(e) = self
+            .task_event(
+                &stuck.channel,
+                &owner,
+                &next,
+                TaskEventKind::Updated,
+                "its spawn left the queue",
+            )
+            .await
+        {
+            tracing::warn!(task = %next.id, "task event lost: {e}");
+        }
+        Some((before, next))
     }
 
     /// The claimed tasks whose claimer can no longer work them: it is queued
