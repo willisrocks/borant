@@ -80,7 +80,6 @@ impl Hub {
         self.prune_failed_hosts(now).await;
         self.sweep_dead(now).await?;
         self.report_silence(now).await?;
-        self.report_stuck_queue(now).await?;
         Ok(())
     }
 
@@ -445,54 +444,6 @@ impl Hub {
             );
             if let Err(e) = self.tell(&owner, &text).await {
                 tracing::warn!(agent = %agent.id, %owner, "the silence message failed: {e}");
-            }
-        }
-        Ok(())
-    }
-
-    /// One message to the spawner of a spawn that has been queued longer than
-    /// the lease reserve, with the reason that the queue shows.
-    async fn report_stuck_queue(&self, now: Timestamp) -> Result<(), ApiError> {
-        for doc in self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await? {
-            let record = doc.value;
-            if record.state != SpawnState::Queued
-                || now.since(record.queued_at) <= self.cfg.lease.reserve
-            {
-                continue;
-            }
-            let Sender::Agent(spawner) = &record.by else {
-                continue;
-            };
-            {
-                let mut mem = self.mem.lock().await;
-                if mem.queued_dmed.get(&record.agent) == Some(&record.queued_at) {
-                    continue;
-                }
-                mem.queued_dmed
-                    .insert(record.agent.clone(), record.queued_at);
-            }
-            let why = record
-                .queue_reason
-                .clone()
-                .or_else(|| {
-                    (!record.last_reject.is_empty()).then(|| {
-                        record
-                            .last_reject
-                            .iter()
-                            .map(|(host, why)| format!("{host}: {why}"))
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    })
-                })
-                .unwrap_or_else(|| "no host fits".to_owned());
-            let text = format!(
-                "the spawn of agent {} has been queued on #{} for {}s: {why}",
-                record.agent,
-                record.spec.channel,
-                now.since(record.queued_at).as_secs()
-            );
-            if let Err(e) = self.tell(spawner, &text).await {
-                tracing::warn!(agent = %record.agent, "the queue message failed: {e}");
             }
         }
         Ok(())

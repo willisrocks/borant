@@ -213,8 +213,6 @@ pub(crate) struct Memory {
     /// The last event time of each agent that already got the silence DM, so
     /// one silence sends one message.
     pub silence_dmed: HashMap<AgentId, Timestamp>,
-    /// The `queued_at` of each spawn that already got the stuck-queue DM.
-    pub queued_dmed: HashMap<AgentId, Timestamp>,
     /// Who asked for the resume of an agent, for the message that a failed
     /// resume sends back.
     pub resumed_by: HashMap<AgentId, Sender>,

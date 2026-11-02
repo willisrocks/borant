@@ -450,38 +450,6 @@ async fn silence_is_reported_once_per_quiet_spell() {
 }
 
 #[tokio::test]
-async fn a_stuck_queue_tells_the_spawner_once() {
-    let fx = Fx::new();
-    fx.host("h1", &[Harness::Fake]).await;
-    let boss = fx.register("h1", Some("boss"), None).await;
-    channel(&fx, &boss).await;
-    let mut to_boss = fx
-        .bus
-        .subscribe(&subjects::agent(&boss.agent))
-        .await
-        .unwrap();
-
-    // No host named h2 exists, so the spawn stays queued.
-    fx.call(Some(&boss), spawn_call("wait", "q", Some("h2")))
-        .await
-        .unwrap();
-    fx.advance(301);
-    fx.hub.tick().await.unwrap();
-    let message = next_message(&mut to_boss).await.expect("a queue message");
-    assert!(message.text.contains("queued"), "{}", message.text);
-    assert!(message.text.contains('q'), "{}", message.text);
-    assert!(
-        message.text.contains("queued on #api for"),
-        "the message names the channel and the wait: {}",
-        message.text
-    );
-
-    fx.advance(60);
-    fx.hub.tick().await.unwrap();
-    no_message(&mut to_boss, "a second message for the same queue").await;
-}
-
-#[tokio::test]
 async fn a_recent_failure_sends_the_recovery_to_another_host() {
     let fx = Fx::new();
     let (_boss, w) = setup(&fx).await;

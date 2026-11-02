@@ -339,7 +339,8 @@ scenario_liveness() {
   [ -n "$task" ] || { echo "  no task id" >&2; return 1; }
 
   # The worker claims the task and writes a wip file in its first turn.
-  printf 'CLAIM live %s\nWRITE live-wip.txt liveness-work\n' "$task" > /tmp/live-prompt.md || return 1
+  on host-a sh -c "printf 'CLAIM live %s\nWRITE live-wip.txt liveness-work\n' '$task' \
+    > /tmp/live-prompt.md" || return 1
   local out
   out=$(borant_on host-a spawn --channel live --prompt-file /tmp/live-prompt.md \
     --harness fake --host host-b --task "live/$task" --name lworker --key live-1) || return 1
