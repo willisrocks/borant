@@ -311,6 +311,58 @@ async fn sweep_ends_a_dead_session_and_relaunches_its_claim() {
 }
 
 #[tokio::test]
+async fn a_late_end_after_expiry_ends_the_spawn_and_relaunches() {
+    let fx = Fx::new();
+    let (boss, w) = setup(&fx).await;
+    let task = claim(&fx, &boss, &w).await;
+    let mut launches = fx.commands("h1").await;
+    let mut to_boss = fx
+        .bus
+        .subscribe(&subjects::agent(&boss.agent))
+        .await
+        .unwrap();
+
+    // The hub was down when the host saw the process end, so the end reaches
+    // it after the lease expired and the token was raised.
+    fx.advance(31);
+    fx.hub.tick().await.unwrap();
+    // The host is back, so the relaunch has a place to go.
+    fx.heartbeat("h1", &[]).await;
+    let end = CtlRequest::EndSession {
+        session: w.session,
+        agent: w.agent.clone(),
+        token: w.token,
+        reason: "the harness process ended while the host was down".into(),
+    };
+    fx.req(end.clone()).await.unwrap();
+
+    let record = spawn_record(&fx, &w.agent).await.expect("the record");
+    assert_eq!(record.state, SpawnState::Ended);
+    assert!(session(&fx, &w).await.ended.is_some());
+    assert!(
+        matches!(
+            lease(&fx, &w.agent).await.state,
+            LeaseState::Reserved { .. }
+        ),
+        "the late end relaunches the claim"
+    );
+    assert!(
+        next_launch(&mut launches, &w.agent).await.is_some(),
+        "a late end still relaunches"
+    );
+    assert_eq!(task_of(&fx, &task).await.status, TaskStatus::InProgress);
+    let sent = messages(&mut to_boss).await;
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[0].text.contains("died"), "{}", sent[0].text);
+    assert!(sent[1].text.contains("relaunched"), "{}", sent[1].text);
+
+    // A repeat of the same end is a session that already ended.
+    fx.req(end).await.unwrap();
+    no_launch(&mut launches, &w.agent, "a repeat end launches nothing").await;
+    no_message(&mut to_boss, "a repeat end sends no message").await;
+}
+
+#[tokio::test]
 async fn sweep_gives_up_after_three_recoveries() {
     let fx = Fx::new();
     let (boss, w) = setup(&fx).await;

@@ -12,7 +12,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 FAILED=0
 
-ALL="messaging tasks takeover fencing planned_move drain hub_restart nats_restart hub_move queue host_restart cancel continue saga sandbox pause"
+ALL="messaging tasks takeover fencing planned_move drain hub_restart liveness nats_restart hub_move queue host_restart cancel continue saga sandbox pause"
 
 # The paths of the sandbox: its two sources, its own swarm, and the shared
 # image that carries bubblewrap. `docker/compose.yaml` is not here: the queue
@@ -311,6 +311,109 @@ scenario_hub_restart() {
   sleep 25
   after=$(borant_on host-a agents | jq -c '[.[] | {agent, host: .lease.host}] | sort_by(.agent)')
   [ "$before" = "$after" ] || { echo "  agents moved: $before -> $after" >&2; return 1; }
+}
+
+# The liveness scenario of the liveness spec: a bound worker's harness dies
+# while the hub is down. The host notices the dead process and keeps its end in
+# the outbox; the hub never sees a clean end. Once the hub is back the worker
+# must be marked ended (not left running), its owner must hear about the death
+# and the relaunch, and the relaunch must restore the checkpoint on the branch
+# that the worker had checked out, with its wip files.
+#
+# The git server stays down while the hub returns, so the first relaunch cannot
+# restore and the spawn record stays `ended` long enough for `ps --json` to see
+# it. The restart then brings git back and the pending recovery restores the
+# work on its branch. This is the exact shape of the incident that the spec
+# fixes: the tmux session died, the hub was down, and only `ps` still said
+# running.
+scenario_liveness() {
+  start_agent host-a lboss
+  wait_for "lboss registered" is_at lboss host-a || return 1
+  borant_on host-a project add liveproj git://git/demo.git --branch main >/dev/null || return 1
+  borant_on host-c send lboss "CHANNEL live liveproj" >/dev/null
+  wait_for "the channel with its project" log_has host-a lboss "CHANNEL live ok" || return 1
+  borant_on host-c send lboss "CREATE live bound-work" >/dev/null
+  wait_for "the bound task" log_has host-a lboss "CREATED .* bound-work" || return 1
+  local task
+  task=$(task_id host-a lboss bound-work)
+  [ -n "$task" ] || { echo "  no task id" >&2; return 1; }
+
+  # The worker claims the task and writes a wip file in its first turn.
+  printf 'CLAIM live %s\nWRITE live-wip.txt liveness-work\n' "$task" > /tmp/live-prompt.md || return 1
+  local out
+  out=$(borant_on host-a spawn --channel live --prompt-file /tmp/live-prompt.md \
+    --harness fake --host host-b --task "live/$task" --name lworker --key live-1) || return 1
+  case "$out" in
+    "agent lworker placed"*) ;;
+    *) echo "  lworker: $out" >&2; return 1 ;;
+  esac
+  wait_for "lworker on host-b" is_at lworker host-b || return 1
+  wait_for "the claim" log_has host-b lworker "CLAIM live $task ok" || return 1
+  wait_for "the first wip file" log_has host-b lworker "WROTE live-wip.txt" || return 1
+  wait_for "the checkpoint" ref_exists refs/borant/lworker/wip || return 1
+
+  # A branch of its own, then another write, so the newest checkpoint names
+  # that branch: a restore that checked out the spawn branch (main) would lose
+  # the work or land on the wrong branch.
+  local dir=/root/.borant/work/lworker/demo
+  hub_answers() { borant_on host-a hosts >/dev/null 2>&1; }
+  spawn_ended() {
+    borant_on host-a ps --json 2>/dev/null |
+      jq -e --arg a "$1" 'any(.[]; .agent == $a and .state == "ended")'
+  }
+  spawn_recovered() {
+    local h
+    h=$(where "$1")
+    [ -n "$h" ] && log_has "$h" "$1" "PROMPT You continue Borant agent $1"
+  }
+  on host-b git -C "$dir" checkout -q -b liveness-branch || return 1
+  sleep 1
+  borant_on host-c send lworker "WRITE branch-wip.txt branch-work" >/dev/null
+  wait_for "the write on the new branch" log_has host-b lworker "WROTE branch-wip.txt" || return 1
+  sleep 2
+
+  # The outage: the hub goes down, then the worker's process dies, so only the
+  # host knows the session ended.
+  dc stop hub >/dev/null || return 1
+  local pid
+  pid=$(harness_pid_of host-b lworker)
+  [ -n "$pid" ] || { echo "  no harness process for lworker" >&2; return 1; }
+  on host-b kill -9 "$pid" || return 1
+  # The host checks liveness every 5 s and keeps the end in its outbox.
+  sleep 8
+  # With git down, the relaunch cannot restore, so the spawn stays `ended`
+  # until the restart brings git back.
+  dc stop git >/dev/null || return 1
+  dc start hub >/dev/null || return 1
+  wait_for "the hub back" hub_answers || return 1
+
+  wait_for "the spawn is ended, not running" spawn_ended lworker || return 1
+  wait_for "the owner hears the relaunch" log_has host-a lboss "agent lworker was relaunched" || return 1
+  dc start git >/dev/null || return 1
+  wait_for "the recovered session" spawn_recovered lworker || return 1
+
+  local h
+  h=$(where lworker)
+  [ -n "$h" ] || { echo "  lworker has no host" >&2; return 1; }
+  echo "  lworker recovered on $h"
+  [ "$(on "$h" git -C "$dir" rev-parse --abbrev-ref HEAD)" = "liveness-branch" ] || {
+    echo "  the restore is not on liveness-branch" >&2
+    on "$h" git -C "$dir" status --short 2>&1 | tail -5 >&2
+    return 1
+  }
+  [ "$(on "$h" cat "$dir/live-wip.txt")" = "liveness-work" ] || {
+    echo "  live-wip.txt is not restored" >&2
+    return 1
+  }
+  [ "$(on "$h" cat "$dir/branch-wip.txt")" = "branch-work" ] || {
+    echo "  branch-wip.txt is not restored" >&2
+    return 1
+  }
+
+  # Leave no agent of this scenario for a later one.
+  borant_on host-a cancel lworker >/dev/null 2>&1
+  borant_on host-a cancel lboss >/dev/null 2>&1
+  return 0
 }
 
 # The nats_restart scenario of phase 10: the broker goes down under two idle
@@ -861,6 +964,17 @@ daemon_stopped() {
 harness_pids() {
   on host-r ps -eo pid=,args= 2>/dev/null |
     awk '$2 == "borant-fake-harness" {print $1}' | sort | tr '\n' ' '
+}
+
+# The PID of the fake harness of one agent on a host, read from its
+# environment: several workers share a host, and only BORANT_AGENT tells them
+# apart.
+harness_pid_of() {
+  local svc=$1 agent=$2
+  on "$svc" sh -c "for p in \$(pgrep -f borant-fake-harness); do
+      tr '\\0' '\\n' < /proc/\$p/environ 2>/dev/null |
+        grep -qx 'BORANT_AGENT=$agent' && echo \$p
+    done" | head -1
 }
 
 # The moment the container of host-r started, so a container restart shows.
@@ -1779,6 +1893,23 @@ if [ "$FAILED" != "0" ]; then
         borant_on host-r agents 2>/dev/null |
           jq -c '.[] | {agent, host, lease: .lease.state}' | head -10
         harness_pids
+        ;;
+      *" liveness "*)
+        echo "  lworker and the queue:"
+        borant_on host-a ps --json 2>/dev/null |
+          jq -c '.[] | select(.agent == "lworker" or .agent == "lboss") |
+                 {agent, state, attempts, recoveries, last_error, last_reject}' | head -10
+        borant_on host-a agents 2>/dev/null |
+          jq -c '.[] | select(.agent == "lworker" or .agent == "lboss") |
+                 {agent, host, lease: .lease.state}' | head -10
+        echo "  the lboss log:"
+        log_of host-a lboss 2>/dev/null | tail -20
+        echo "  the lworker log:"
+        lh=$(where lworker)
+        [ -n "$lh" ] && log_of "$lh" lworker 2>/dev/null | tail -30
+        echo "  git and hub:"
+        docker inspect --format '{{.State.Running}}' "$(container git)" 2>/dev/null
+        dc logs --no-color hub 2>/dev/null | tail -40
         ;;
     esac
     if [ "$SCENARIOS" = "pause" ]; then

@@ -647,56 +647,83 @@ impl Hub {
         let now = self.now();
         let key = keys::lease_agent(agent);
         let mut released = false;
-        if let Some(doc) = self.store.get::<Lease>(&key).await?
-            && token.is_some_and(|token| doc.value.token == token)
-            && matches!(&doc.value.state, LeaseState::Held { session: s, .. } if *s == session)
-        {
-            released = true;
-            // A park marks the release in the same write, so a message that
-            // waits in the inbox wakes the agent again.
-            let next = if reason == "park" {
-                lease::park(&doc.value, now)
-            } else {
-                lease::release(&doc.value, now)
-            };
-            self.store.put(&key, &next, Some(doc.revision)).await?;
-            mem.idle.remove(agent);
-            let mut a = self.agent(agent).await?;
-            let host = a.value.host.clone();
-            a.value.session = None;
-            self.store.put(&a.key, &a.value, Some(a.revision)).await?;
-            // A park is its own kind: the lease release that a message may
-            // wake. The checkpoint ref stays the host's report.
-            let body = if reason == "park" {
-                SwarmEventBody::AgentParked {
-                    session,
-                    git_ref: None,
-                }
-            } else {
-                SwarmEventBody::LeaseReleased {
-                    session,
-                    token: token.unwrap_or(FencingToken(0)),
-                }
-            };
-            let event = self.lease_event(now, Severity::Info, agent, host.as_ref(), body);
-            Self::queue(mem, event);
+        // An end that the host outbox replayed after an outage reaches the
+        // hub after the lease expired. The expired lease still names that
+        // session, so the end is real and not a stale one for a newer
+        // session; the raised token must not make the hub drop it.
+        let mut late = false;
+        if let Some(doc) = self.store.get::<Lease>(&key).await? {
+            if token.is_some_and(|token| doc.value.token == token)
+                && matches!(&doc.value.state, LeaseState::Held { session: s, .. } if *s == session)
+            {
+                released = true;
+                // A park marks the release in the same write, so a message
+                // that waits in the inbox wakes the agent again.
+                let next = if reason == "park" {
+                    lease::park(&doc.value, now)
+                } else {
+                    lease::release(&doc.value, now)
+                };
+                self.store.put(&key, &next, Some(doc.revision)).await?;
+                mem.idle.remove(agent);
+                let mut a = self.agent(agent).await?;
+                let host = a.value.host.clone();
+                a.value.session = None;
+                self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+                // A park is its own kind: the lease release that a message
+                // may wake. The checkpoint ref stays the host's report.
+                let body = if reason == "park" {
+                    SwarmEventBody::AgentParked {
+                        session,
+                        git_ref: None,
+                    }
+                } else {
+                    SwarmEventBody::LeaseReleased {
+                        session,
+                        token: token.unwrap_or(FencingToken(0)),
+                    }
+                };
+                let event = self.lease_event(now, Severity::Info, agent, host.as_ref(), body);
+                Self::queue(mem, event);
+            } else if !swept
+                && matches!(
+                    &doc.value.state,
+                    LeaseState::Expired { last_session: Some(s), .. } if *s == session
+                )
+            {
+                late = true;
+            }
         }
+        let mut already_ended = false;
         if let Some(mut s) = self.store.get::<Session>(&keys::session(&session)).await? {
+            already_ended = s.value.ended.is_some();
             s.value.ended = Some(now);
             self.store.put(&s.key, &s.value, Some(s.revision)).await?;
         }
-        // A swept session ended with no host call, so its agent row still
-        // names it; a host end cleared the row above.
-        if swept
+        let ended = released || swept || (late && !already_ended);
+        if ended
+            && (swept || late)
             && let Ok(mut a) = self.agent(agent).await
             && a.value.session == Some(session)
         {
             a.value.session = None;
             self.store.put(&a.key, &a.value, Some(a.revision)).await?;
         }
-        tracing::info!(%agent, %session, reason, swept, "session ended");
-        if released || swept {
+        tracing::info!(%agent, %session, reason, swept, late, "session ended");
+        if ended {
             self.mark_spawn_ended(agent).await?;
+            // A late end is a death that the hub learns of after the fact:
+            // the owner hears it before the relaunch message, as with the
+            // sweep. The sweep sends its own message.
+            if late && let Ok(doc) = self.agent(agent).await {
+                let claims = self.in_progress_claims(agent, &doc.value.channels).await?;
+                self.tell_owner_dead(
+                    &doc.value,
+                    &claims,
+                    "the hub learned of its end after the lease expired",
+                )
+                .await?;
+            }
             // A stale end, for example from a host that lost the lease, must
             // not start a move.
             if let Some(p) = mem.pending_moves.get(agent).cloned() {
