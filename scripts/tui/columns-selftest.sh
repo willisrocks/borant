@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The checks of scripts/tui/columns.mjs on known captures: a needs-you row's
-# status that comes is no move; a project row that loses its last column, a
-# row that moves down, and a row that goes are moves. Prints PASS or FAIL.
+# status that comes is no move; a project row that loses its last column
+# (also one with the ▲ glyph), a row that moves down, and a row that goes are
+# moves. Prints PASS or FAIL.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 t="$(mktemp -d)"
@@ -10,11 +11,14 @@ need='1: ▲ Approve the cutover window         borant · 1h'
 needAsked='1: ▲ Approve the cutover window         borant · 1h      ✓ asked'
 proj='7: ● notes          3 open tasks          ●1  ■1      orch-notes · online'
 projCut='7: ● notes          3 open tasks          ●1  ■1'
-printf '%s\n%s\n' "$need" "$proj" >"$t/a"
-printf '%s\n%s\n' "$needAsked" "$proj" >"$t/status"
-printf '%s\n%s\n' "$need" "$projCut" >"$t/cut"
-printf '\n%s\n%s\n' "$need" "$proj" >"$t/down"
-printf '%s\n' "$proj" >"$t/gone"
+gate='8: ▲ borant         Hub backup            ■2      orchestrator · online'
+gateCut='8: ▲ borant         Hub backup            ■2'
+printf '%s\n%s\n%s\n' "$need" "$proj" "$gate" >"$t/a"
+printf '%s\n%s\n%s\n' "$needAsked" "$proj" "$gate" >"$t/status"
+printf '%s\n%s\n%s\n' "$need" "$projCut" "$gate" >"$t/cut"
+printf '%s\n%s\n%s\n' "$need" "$proj" "$gateCut" >"$t/gate-cut"
+printf '\n%s\n%s\n%s\n' "$need" "$proj" "$gate" >"$t/down"
+printf '%s\n%s\n' "$proj" "$gate" >"$t/gone"
 ok=0
 expect() {
   local want="$1" case="$2" got
@@ -25,6 +29,7 @@ expect() {
 }
 expect pass status
 expect fail cut
+expect fail gate-cut
 expect fail down
 expect fail gone
 expect pass gone --cells

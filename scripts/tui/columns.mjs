@@ -21,7 +21,7 @@ function rows(file) {
   const out = new Map()
   const lines = fs.readFileSync(file, 'utf8').split('\n')
   const title = lines.findIndex((l) => /^── (chief of staff|cos) /.test(l))
-  if (title >= 0 && !cellsOnly) out.set('(title row)', 'line ' + title)
+  if (title >= 0 && !cellsOnly) out.set('(title row)', { line: title, cells: [], last: '' })
   for (const [at, line] of lines.entries()) {
     // The band is left of a docked pane's border.
     const band = line.split('│')[0]
@@ -36,7 +36,8 @@ function rows(file) {
     }
     // Its name: the text before its first gap, at most 16 cells.
     const name = Array.from(m[3].split(/  /)[0]).slice(0, 16).join('')
-    out.set(name, 'glyph ' + m[2] + ' ' + (cellsOnly ? '' : 'line ' + at + ' ') + 'cells ' + starts.join(','))
+    const last = starts.length ? cells.slice(starts[starts.length - 1]).join('').trim() : ''
+    out.set(name, { line: cellsOnly ? null : at, cells: starts, last })
   }
   return out
 }
@@ -48,33 +49,30 @@ const before = rows(a)
 const after = rows(b)
 let moved = 0
 let same = 0
-const parse = (v) => ({
-  needs: /^glyph [▲✓–]/u.test(v),
-  line: (v.match(/line (\d+)/) || [])[1],
-  cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean),
-})
-// A needs-you row's press status (`✓ asked`) may come or go: the last column
-// of the longer row, when the rows agree on every column before it. A
-// project row keeps every column. Any other difference is a move.
-const sameColumns = (x, y, needs) => {
-  if (x.join() === y.join()) return true
-  if (!needs) return false
-  const [short, long] = x.length < y.length ? [x, y] : [y, x]
-  return long.length === short.length + 1 && long.slice(0, -1).join() === short.join()
+// A press status (`✓ asked`, `◷ closing`, `left the board`) may come or go in
+// a row's tail: the longer row's last column, when the rows agree on every
+// column before it. Any other difference is a move, so a project row that
+// loses its orchestrator moves, whatever its glyph.
+const STATUS = /^([◷✓→!?] |left the board)/u
+const sameColumns = (x, y) => {
+  if (x.cells.join() === y.cells.join()) return true
+  const [short, long] = x.cells.length < y.cells.length ? [x, y] : [y, x]
+  return long.cells.length === short.cells.length + 1 && long.cells.slice(0, -1).join() === short.cells.join() && STATUS.test(long.last)
 }
-for (const [name, cols] of before) {
-  if (!after.has(name)) {
+const show = (v) => (v.line === null ? '' : 'line ' + v.line + ' ') + 'cells ' + v.cells.join(',')
+for (const [name, x] of before) {
+  const y = after.get(name)
+  if (!y) {
     // Across a live update every row is held; at rest (--cells) a row may go.
     if (cellsOnly) continue
     moved++
-    console.log('gone: ' + name + ' [' + cols + ']')
+    console.log('gone: ' + name + ' [' + show(x) + ']')
     continue
   }
-  const [x, y] = [parse(cols), parse(after.get(name))]
-  if (x.line === y.line && sameColumns(x.cells, y.cells, x.needs && y.needs)) same++
+  if (x.line === y.line && sameColumns(x, y)) same++
   else {
     moved++
-    console.log('moved: ' + name + ' [' + cols + '] -> [' + after.get(name) + ']')
+    console.log('moved: ' + name + ' [' + show(x) + '] -> [' + show(y) + ']')
   }
 }
 console.log('rows compared: ' + (same + moved) + ', moved: ' + moved)
