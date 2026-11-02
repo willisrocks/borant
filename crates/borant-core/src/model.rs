@@ -277,6 +277,9 @@ pub enum MoveReason {
     Limit,
     /// A stopped agent or channel was resumed and is placed again.
     Resume,
+    /// The session died while its agent held an in-progress claim, so the hub
+    /// relaunches it from its newest checkpoint.
+    Recover,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,7 +663,16 @@ pub struct SpawnRecord {
     /// try, so a failed spawn says where it was tried.
     #[serde(default)]
     pub launch_failures: Vec<LaunchFailure>,
+    /// The relaunches of a session that died while its agent held an
+    /// in-progress claim. After [`MAX_SESSION_RECOVERIES`] the claim waits for
+    /// a person instead.
+    #[serde(default)]
+    pub recoveries: u32,
 }
+
+/// The relaunches of a dead session with a claim, before its task waits for a
+/// person.
+pub const MAX_SESSION_RECOVERIES: u32 = 3;
 
 impl SpawnRecord {
     /// Why the spawn failed, for `borant ps` and the message to the spawner:
@@ -794,6 +806,9 @@ pub enum SpawnState {
     Queued,
     Launching,
     Running,
+    /// The session ended, from the host or from the hub's liveness sweep. The
+    /// spawn is not running, but a recovery may launch it again.
+    Ended,
     Failed,
     Cancelled,
 }
@@ -1485,6 +1500,7 @@ mod tests {
             last_reject: Vec::new(),
             queue_reason: None,
             launch_failures: failures,
+            recoveries: 0,
         };
         let try_on = |host: &str| LaunchFailure {
             host: host.parse().unwrap(),

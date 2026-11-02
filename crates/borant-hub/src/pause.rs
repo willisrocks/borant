@@ -105,9 +105,10 @@ impl Hub {
         selector: PauseSelector,
     ) -> Result<Value, ApiError> {
         self.authorize_pause(actor, &selector).await?;
+        let by = actor.map_or(Sender::Human, |a| Sender::Agent(a.agent.clone()));
         match selector {
             PauseSelector::Agent(id) => {
-                let placed = self.resume_agent(mem, &id).await?;
+                let placed = self.resume_agent(mem, &id, by).await?;
                 Ok(json!({ "agent": id, "paused": false, "placed": placed }))
             }
             PauseSelector::Channel(name) => {
@@ -131,7 +132,7 @@ impl Hub {
                     if !by_channel || self.all_channels_paused(&agent).await? {
                         continue;
                     }
-                    self.resume_agent(mem, &agent.id).await?;
+                    self.resume_agent(mem, &agent.id, by.clone()).await?;
                     resumed.push(agent.id);
                 }
                 Ok(json!({ "channel": name, "paused": false, "agents": resumed }))
@@ -322,18 +323,24 @@ impl Hub {
     }
 
     /// Sets the task that the agent holds to `needs_human`, with the reason.
-    async fn mark_claim_needs_human(&self, agent: &AgentId, why: &str) -> Result<(), ApiError> {
+    /// Returns whether it changed a task, so the caller sends its event and
+    /// its message once.
+    pub(crate) async fn mark_claim_needs_human(
+        &self,
+        agent: &AgentId,
+        why: &str,
+    ) -> Result<bool, ApiError> {
         let Ok(tasks) = self.all_tasks().await else {
-            return Ok(());
+            return Ok(false);
         };
         let Some((channel, task)) = tasks.iter().find(|(_, task)| {
             task.claimed_by.as_ref() == Some(agent) && task.status == TaskStatus::InProgress
         }) else {
-            return Ok(());
+            return Ok(false);
         };
         let key = keys::task(channel, &task.id);
         let Some(doc) = self.store.get::<Task>(&key).await? else {
-            return Ok(());
+            return Ok(false);
         };
         let mut next = doc.value;
         next.status = TaskStatus::NeedsHuman;
@@ -341,7 +348,7 @@ impl Hub {
         next.updated = self.now();
         self.store.put(&key, &next, Some(doc.revision)).await?;
         tracing::warn!(%agent, task = %next.id, "the claim of a capped agent needs a person");
-        Ok(())
+        Ok(true)
     }
 
     /// Stops each member of the channel whose channels are all paused now.
@@ -405,11 +412,22 @@ impl Hub {
     /// Clears the pause of one agent and places it again with a planned move.
     /// A person who resumes a capped agent means "let it work today", so the
     /// cap state that stopped it starts over; a stop by a person keeps it.
-    async fn resume_agent(&self, mem: &mut Memory, id: &AgentId) -> Result<bool, ApiError> {
+    async fn resume_agent(
+        &self,
+        mem: &mut Memory,
+        id: &AgentId,
+        by: Sender,
+    ) -> Result<bool, ApiError> {
         let mut agent = self.agent(id).await?.value;
         let cap = agent.paused.as_ref().and_then(Cap::of);
         agent.paused = None;
         self.store.upsert(&keys::agent(id), &agent).await?;
+        // A resume is a person saying "try again": the failed hosts no longer
+        // block the next launch.
+        mem.failed_hosts.remove(id);
+        mem.recovery_stopped.remove(id);
+        self.reset_recoveries(id).await?;
+        mem.resumed_by.insert(id.clone(), by);
         let note = match cap {
             Some(cap) => Some(self.reset_cap(id, cap).await?),
             None => None,

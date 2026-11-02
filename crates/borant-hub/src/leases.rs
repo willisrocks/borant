@@ -2,8 +2,8 @@
 
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Harness, HostInfo, Lease, LeaseState, MoveReason, Session, SpawnRecord, SpawnState,
-    Task, TaskEventKind, TaskStatus,
+    Agent, Harness, HostInfo, Lease, LeaseState, MAX_SESSION_RECOVERIES, MoveReason, Session,
+    SpawnRecord, SpawnState, Task, TaskEventKind, TaskStatus,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, MoveTarget, RegisterSession, Registered, RenewedLease,
@@ -562,6 +562,9 @@ impl Hub {
         self.refresh_inbox(&agent).await?;
 
         mem.failed_hosts.remove(&agent_id);
+        mem.silence_dmed.remove(&agent_id);
+        mem.resumed_by.remove(&agent_id);
+        mem.recovery_stopped.remove(&agent_id);
         mem.expired_at.remove(&agent_id);
         mem.claims_released.remove(&agent_id);
         mem.idle_checked.remove(&agent_id);
@@ -620,12 +623,33 @@ impl Hub {
         token: FencingToken,
         reason: &str,
     ) -> Result<(), ApiError> {
+        self.end_session_inner(mem, session, agent, Some(token), reason, false)
+            .await
+    }
+
+    /// The one session-end path of a host end and of the liveness sweep.
+    ///
+    /// A host end carries the token of the session; a sweep found the session
+    /// dead and passes none. The path sets `Session.ended`, moves the spawn
+    /// record to `Ended` so `ps` and `agents` stop showing it as running, and
+    /// runs the pending move or the relaunch of a claim. A host end with a
+    /// stale token changes only the session record: a host that lost the
+    /// lease must not start a move.
+    pub(crate) async fn end_session_inner(
+        &self,
+        mem: &mut Memory,
+        session: SessionId,
+        agent: &AgentId,
+        token: Option<FencingToken>,
+        reason: &str,
+        swept: bool,
+    ) -> Result<(), ApiError> {
         let now = self.now();
         let key = keys::lease_agent(agent);
         let mut released = false;
         if let Some(doc) = self.store.get::<Lease>(&key).await?
+            && token.is_some_and(|token| doc.value.token == token)
             && matches!(&doc.value.state, LeaseState::Held { session: s, .. } if *s == session)
-            && doc.value.token == token
         {
             released = true;
             // A park marks the release in the same write, so a message that
@@ -649,7 +673,10 @@ impl Hub {
                     git_ref: None,
                 }
             } else {
-                SwarmEventBody::LeaseReleased { session, token }
+                SwarmEventBody::LeaseReleased {
+                    session,
+                    token: token.unwrap_or(FencingToken(0)),
+                }
             };
             let event = self.lease_event(now, Severity::Info, agent, host.as_ref(), body);
             Self::queue(mem, event);
@@ -658,8 +685,18 @@ impl Hub {
             s.value.ended = Some(now);
             self.store.put(&s.key, &s.value, Some(s.revision)).await?;
         }
-        tracing::info!(%agent, %session, reason, "session ended");
-        if released {
+        // A swept session ended with no host call, so its agent row still
+        // names it; a host end cleared the row above.
+        if swept
+            && let Ok(mut a) = self.agent(agent).await
+            && a.value.session == Some(session)
+        {
+            a.value.session = None;
+            self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+        }
+        tracing::info!(%agent, %session, reason, swept, "session ended");
+        if released || swept {
+            self.mark_spawn_ended(agent).await?;
             // A stale end, for example from a host that lost the lease, must
             // not start a move.
             if let Some(p) = mem.pending_moves.get(agent).cloned() {
@@ -670,18 +707,44 @@ impl Hub {
                 // Not a park, so not a deliberate sleep: a claim that the
                 // agent still holds means the end was not its own exit after
                 // the task closed.
-                self.relaunch_after_session_end(mem, agent, session, reason)
+                self.relaunch_after_session_end(mem, agent, session, reason, swept)
                     .await?;
             }
         }
         Ok(())
     }
 
+    /// Moves a running or launching spawn record to `Ended`, so `ps` and
+    /// `agents` stop showing the spawn as running. A failed or cancelled
+    /// spawn keeps the state that waits for a person.
+    async fn mark_spawn_ended(&self, agent: &AgentId) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        if !matches!(doc.value.state, SpawnState::Running | SpawnState::Launching) {
+            return Ok(());
+        }
+        let mut record = doc.value;
+        record.state = SpawnState::Ended;
+        record.last_reject.clear();
+        match self.store.put(&key, &record, Some(doc.revision)).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// A session ended while its agent still claimed an `in_progress` task, so
     /// the end was not the agent's own exit after it closed its work: the hub
-    /// places the agent again through the takeover path, with the prompt
-    /// context of its session, or, when no host takes it, puts the claim in
-    /// front of the channel owner as `stuck`. A retired or paused agent, and a
+    /// places the agent again, with the prompt context of its session and its
+    /// newest checkpoint, or, when no host takes it, puts the claim in front
+    /// of the channel owner as `stuck`.
+    ///
+    /// `recover` marks a death that the liveness sweep found: a movable
+    /// worker is relaunched by a pending move with reason `Recover`, its tries
+    /// count on the spawn record, and after `MAX_SESSION_RECOVERIES` the claim
+    /// waits for a person as `needs_human`. A retired or paused agent, and a
     /// spawn that failed or that a person cancelled, keeps today's behavior:
     /// no placement, and the task keeps its claim.
     async fn relaunch_after_session_end(
@@ -690,15 +753,17 @@ impl Hub {
         agent: &AgentId,
         session: SessionId,
         reason: &str,
+        recover: bool,
     ) -> Result<(), ApiError> {
         let a = self.agent(agent).await?.value;
         if a.retired || a.paused.is_some() {
             tracing::debug!(%agent, "session end: the agent is retired or paused");
             return Ok(());
         }
-        if let Some(rec) = self.store.get::<SpawnRecord>(&keys::spawn(agent)).await?
-            && matches!(rec.value.state, SpawnState::Failed | SpawnState::Cancelled)
-        {
+        let record = self.store.get::<SpawnRecord>(&keys::spawn(agent)).await?;
+        if record.as_ref().is_some_and(|rec| {
+            matches!(rec.value.state, SpawnState::Failed | SpawnState::Cancelled)
+        }) {
             tracing::debug!(%agent, "session end: the spawn is closed");
             return Ok(());
         }
@@ -706,16 +771,76 @@ impl Hub {
         if claims.is_empty() {
             return Ok(());
         }
+        // A sweep recovery of a movable worker counts its tries, and the
+        // fourth death in a row leaves the claim to a person.
+        let recovering = recover && a.movable;
+        if recovering && let Some(doc) = &record {
+            if doc.value.recoveries >= MAX_SESSION_RECOVERIES {
+                let stopped = self
+                    .mark_claim_needs_human(agent, &format!(
+                        "the session of {agent} died {MAX_SESSION_RECOVERIES} times with this claim"
+                    ))
+                    .await?;
+                if stopped {
+                    mem.recovery_stopped.insert(agent.clone());
+                    let event = self.lease_event(
+                        self.now(),
+                        Severity::Warn,
+                        agent,
+                        a.host.as_ref(),
+                        SwarmEventBody::SessionRelaunch {
+                            session,
+                            reason: reason.to_owned(),
+                            failed: Some(format!(
+                                "gave up after {MAX_SESSION_RECOVERIES} recoveries"
+                            )),
+                        },
+                    );
+                    Self::queue(mem, event);
+                    self.tell_owner_relaunch(
+                        &a,
+                        &claims,
+                        false,
+                        Some("the hub gave up after 3 recoveries"),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            let mut next = doc.value.clone();
+            next.recoveries = next.recoveries.saturating_add(1);
+            self.store.put(&doc.key, &next, Some(doc.revision)).await?;
+        }
+        let (target, why) = if recovering {
+            (MoveReason::Recover, "the session died")
+        } else {
+            (MoveReason::Takeover, reason)
+        };
+        if recovering {
+            // The demand stays as a pending move, so the tick places the
+            // worker as soon as a host fits.
+            mem.pending_moves.insert(
+                agent.clone(),
+                PendingMove {
+                    target: Default::default(),
+                    reason: target,
+                    prompt: None,
+                },
+            );
+        }
         let placed = self
-            .place_agent(mem, &a, MoveReason::Takeover, Default::default(), None)
+            .place_agent(mem, &a, target, Default::default(), None)
             .await?;
         let failed = if placed {
             None
         } else {
-            let why = self.relaunch_refusal(mem, &a).await?;
-            let note = format!("the session of {agent} ended ({reason}); relaunch failed: {why}");
-            self.claims_stuck(mem, &claims, &note).await?;
-            Some(why)
+            let refusal = self.relaunch_refusal(mem, &a).await?;
+            if !recovering {
+                let note =
+                    format!("the session of {agent} ended ({why}); relaunch failed: {refusal}");
+                self.claims_stuck(mem, &claims, &note).await?;
+            }
+            Some(refusal)
         };
         let severity = match failed {
             Some(_) => Severity::Warn,
@@ -729,17 +854,20 @@ impl Hub {
             a.host.as_ref(),
             SwarmEventBody::SessionRelaunch {
                 session,
-                reason: reason.to_owned(),
-                failed,
+                reason: why.to_owned(),
+                failed: failed.clone(),
             },
         );
         Self::queue(mem, event);
-        tracing::info!(%agent, %session, reason, relaunched = placed, "the session ended with a claim");
+        // One direct message per relaunch, to the owner of the agent.
+        self.tell_owner_relaunch(&a, &claims, placed, failed.as_deref())
+            .await?;
+        tracing::info!(%agent, %session, reason, relaunched = placed, recover = recovering, "the session ended with a claim");
         Ok(())
     }
 
     /// The `in_progress` tasks that `agent` claims in its channels.
-    async fn in_progress_claims(
+    pub(crate) async fn in_progress_claims(
         &self,
         agent: &AgentId,
         channels: &[ChannelName],
@@ -907,7 +1035,7 @@ impl Hub {
                 mem.failed_hosts
                     .entry(agent_id.clone())
                     .or_default()
-                    .insert(host.clone());
+                    .insert(host.clone(), now);
                 // The tick knows the host but neither the timeout the host
                 // waited nor the error it saw, so the try records neither.
                 let _ = self
@@ -1068,6 +1196,13 @@ impl Hub {
             if needs {
                 mem.idle_checked.remove(&agent_id);
             }
+        }
+        // An ended spawn that already spent its recoveries waits for a
+        // person: a lease tick must not relaunch it after a hub restart
+        // forgot the in-memory stop.
+        if needs && self.recovery_exhausted(&agent_id).await? {
+            tracing::debug!(agent = %agent_id, "no takeover: the recovery limit");
+            return Ok(());
         }
         if needs {
             let placed = self
