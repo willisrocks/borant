@@ -138,6 +138,7 @@ let frozen = null
  * width: at rest the band lays its columns out that wide, so entering board
  * mode moves no column. */
 let dockSeen = null
+let restSeen = null
 /** Board reads in the order they started: a slow one that ends after a newer
  * one is dropped. */
 let readSeq = 0
@@ -174,7 +175,10 @@ export function register(on) {
       }
       const cur = current()
       if (!cur.item && paneOpen && !helpShown) closeSoon($, () => !current().item && !helpShown)
-      if (paneOpen && placement === 'dock') dockSeen = { columns, width }
+      // The docked width is learned only from a band that is narrower than at
+      // rest by a dock at least: a band drawn as the pane closes is not one.
+      if (!paneOpen) restSeen = { columns, width }
+      else if (placement === 'dock' && restSeen && restSeen.columns === columns && width <= restSeen.width - 24) dockSeen = { columns, width }
       const docks = e.viewport?.isFullscreen === true && columns >= DOCK_COLUMNS
       const rows = bandRows(board, {
         width,
@@ -554,7 +558,8 @@ async function refresh($, force = false) {
   // A row a Done closed stays CLOSED_SHOW_MS and then goes: that is no news.
   // The check runs before any await, so no drawing can move the selection
   // onto the row now in its place first (current() also marks that move).
-  const closedRow = Object.values(pending).some((m) => ['closed', 'moved', 'unknown'].includes(m.state) && 'q:' + questionKey(m.question) === selKey)
+  // A row the person's own Done took off is no news either.
+  const closedRow = Boolean(selKey && pending[selKey.replace(/^q:/, '')])
   if (selKey && !liveItems().some((i) => i.key === selKey)) {
     // Board mode keeps the row, marked; at rest the next row takes its place.
     if (!items().some((i) => i.key === selKey)) selMoved = true

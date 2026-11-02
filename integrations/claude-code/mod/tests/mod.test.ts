@@ -617,6 +617,8 @@ test('Done shows each step: the chief is closing it, closed, then the row goes',
   await clock.advance(5000)
   expect(await ui.find({ type: 'Text', text: /closed/ })).toBeDefined()
   expect(toasts).toContain('closed: Create Hetzner bucket borant-hub-backup + 1Password item')
+  // The person's own Done took it off: no "left the board" news.
+  expect(toasts).not.toContain('the selected item left the board')
   // Board mode holds its rows still: the closed row keeps its place, closed.
   await clock.advance(15000)
   expect(await band.find({ type: 'Text', text: /Create Hetzner bucket/ })).toBeDefined()

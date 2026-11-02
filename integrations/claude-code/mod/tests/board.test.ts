@@ -295,7 +295,9 @@ test('a long title or name is cut at its column with an ellipsis', () => {
   long.collections[0].needs_you[0].title = 'A'.repeat(200)
   for (const width of [240, 120, 100, 80, 60]) {
     const lines = texts(bandRows(long, { width }) as Row[])
-    for (const line of lines.slice(1)) expect(Array.from(line).length).toBe(width)
+    // Every row ends at the grid's row end, never past the band.
+    const end = Math.min(width, bandGrid(width).row)
+    for (const line of lines.slice(1)) expect(Array.from(line).length).toBe(end)
     expect(lines.find((l) => l.includes('AAAA'))).toContain('A…')
   }
   // At 240 the name column holds a 34-cell name whole.

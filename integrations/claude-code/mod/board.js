@@ -461,7 +461,7 @@ function needsRow(item, index, g, o) {
   ]
   if (g.meta) row.push(text('  '), ...cell(!g.tail && status.length ? status : where, g.meta))
   if (g.tail) row.push(text('  '), ...cell(status, g.tail))
-  return { key: item.key, cells: fit(row, o.width) }
+  return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
 }
 
 /** The orchestrator column of a project row: `orch-borant · busy · hetzner-1`.
@@ -507,7 +507,7 @@ function projectRow(item, index, g, o) {
   ]
   if (g.meta) row.push(text('  '), ...cell([text(p.filled, 'green'), text(p.empty, 'faint'), text(' ' + pad(p.ratio, 5) + ' '), ...countCells(item.project, g.meta < META)], g.meta))
   if (g.tail) row.push(text('  '), ...cell([text(orchText(item.project), 'dim')], g.tail))
-  return { key: item.key, cells: fit(row, o.width) }
+  return { key: item.key, cells: fit(row, Math.min(o.width, g.row)) }
 }
 
 /**
