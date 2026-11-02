@@ -25,9 +25,10 @@
 // it has the keys.
 
 import { allQuestions, bandItems, bandRows, digest, helpLines, text as seg, truncate, hhmm } from '../mod/board.js'
-import { channelsFor, helpPreview, previewLines, questionKey, findProject } from '../mod/preview.js'
+import { channelsFor, helpPreview, previewLines, questionKey, findProject, titleLineCount } from '../mod/preview.js'
 import { readBoard, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
+import { inserted } from '../mod/keys.js'
 import { CLOSED_SHOW_MS, canDone, freshness, pressStatus, pressStatusShort, withClosed } from '../mod/status.js'
 
 /** The preview pane's id and title. */
@@ -136,10 +137,12 @@ let boardGen = 0
  * in the order it had when board mode began. A row that leaves the board
  * stays, marked; a new one waits until esc. Null at rest. */
 let frozen = null
-/** The band's width while the preview was docked beside it, at a terminal
- * width: at rest the band lays its columns out that wide, so entering board
- * mode moves no column. And the band's viewport and width at rest. */
-let dockSeen = null
+/** The docked preview's width as the person keeps it (dragged or keyed),
+ * seen in its drawing: at rest the band lays its columns out as wide as it
+ * is beside that dock, so entering board mode moves no column. A width the
+ * 45% cap set is not kept: it is the terminal's, not the person's. And the
+ * band's viewport (the terminal's width) and width at rest. */
+let dockPane = null
 let restSeen = null
 /** Board reads in the order they started: a slow one that ends after a newer
  * one is dropped. */
@@ -177,14 +180,11 @@ export function register(on) {
       }
       const cur = current()
       if (!cur.item && paneOpen && !helpShown) closeSoon($, () => !current().item && !helpShown)
-      // The band's viewport is the conversation's: narrower by the dock (24
-      // columns at least) while the preview is docked. A band as wide as at
-      // rest is at rest, whatever the pane's last drawing said: it draws once
-      // more as it closes, and the band can draw before the pane says where
-      // it sits.
-      const dockedNow = paneOpen && restSeen !== null && columns <= restSeen.columns - 24
+      // The band's viewport is the conversation's: narrower while the preview
+      // is docked, so only a band at rest says how wide the terminal is. The
+      // pane's drawing as it closes does not count (paneClosed).
+      const dockedNow = paneOpen && !paneClosed && placement === 'dock'
       if (!dockedNow) restSeen = { columns, width }
-      else dockSeen = { terminal: restSeen.columns, width }
       const docks = e.viewport?.isFullscreen === true && terminalColumns() >= DOCK_COLUMNS
       const docked = dockedNow ? width : dockedBandWidth(width)
       const rows = bandRows(board, {
@@ -225,6 +225,12 @@ export function register(on) {
         redrawSoon($)
       }
       paneWidth = typeof props.bodyColumns === 'number' && props.bodyColumns > 0 ? props.bodyColumns : 60
+      // Docked, the terminal is the conversation, the dock, and its border.
+      // A dock at the 45% cap is the terminal's width, not the person's.
+      if (place === 'dock' && !paneClosed && typeof e.viewport?.columns === 'number') {
+        const terminal = e.viewport.columns + paneWidth + 1
+        if (paneWidth + 2 < Math.floor(terminal * 0.45)) dockPane = paneWidth
+      }
       if (place === 'inline' && !focused) {
         // Inline, the preview is there only in board mode.
         closeSoon($, () => placement === 'inline' && !paneFocused)
@@ -598,6 +604,8 @@ async function settlePending($, now) {
         // The item left needs-you. That is closed only when the task is: a
         // task that went back to work leaves the list too.
         const status = await taskStatus($, mark.question)
+        // A newer read can have settled it, or seen it back, meanwhile.
+        if (pending[key] !== mark || allQuestions(board).some((q) => questionKey(q) === key)) continue
         const state = status === 'closed' ? 'closed' : status ? 'moved' : 'unknown'
         pending[key] = { ...mark, state, status, closedAt: now }
         toast($, { closed: 'closed: ', moved: 'no longer needs you: ', unknown: 'left the board, status unknown: ' }[state] + mark.title)
@@ -611,8 +619,7 @@ async function settlePending($, now) {
 
 /** A task's status as the hub has it now, or null when the read fails. */
 async function taskStatus($, q) {
-  const result = await readTasks($, config, q.channel)
-  taskCache.set(q.channel, result.tasks)
+  const result = await readTasksOrdered($, q.channel)
   const task = (result.tasks || []).find((t) => t.id === q.task)
   return task ? task.status : null
 }
@@ -681,11 +688,10 @@ function setFocused(focused) {
   paneFocused = focused
 }
 
-/** The band's width at rest with the preview docked: as seen at this
- * terminal width, or the band's width less the preview and its border. */
+/** The band's width at rest with the preview docked: the band's width less
+ * the dock (as the person keeps it, under the 45% cap) and its border. */
 function dockedBandWidth(width) {
-  if (dockSeen && dockSeen.terminal === terminalColumns()) return dockSeen.width
-  return width - paneColumns() - 1
+  return width - Math.min(dockPane ?? PANE_COLUMNS, Math.floor(terminalColumns() * 0.45)) - 1
 }
 
 /** The terminal's width: the band's viewport at rest. */
@@ -818,21 +824,6 @@ function fieldInput($, value, e) {
   return keyChain
 }
 
-/**
- * What one edit put into a field: the text between what the old and the new
- * value share at their start and at their end. A key typed after Left lands
- * in the middle, and only that key is new.
- */
-function inserted(before, after) {
-  const a = Array.from(before)
-  const b = Array.from(after)
-  let lead = 0
-  while (lead < a.length && lead < b.length && a[lead] === b[lead]) lead += 1
-  let trail = 0
-  while (trail < a.length - lead && trail < b.length - lead && a[a.length - 1 - trail] === b[b.length - 1 - trail]) trail += 1
-  return b.slice(lead, b.length - trail).join('')
-}
-
 /** One key in board mode. A key the board does not use does nothing. */
 async function boardKey($, key) {
   if (/^[1-9]$/.test(key)) {
@@ -884,9 +875,21 @@ async function move($, delta) {
   if (more) detailsSoon($)
 }
 
+/** The lines the details give the selected title, held while they stay on
+ * one row at one width: a longer title on a refresh is cut, not moved. */
+let titleHold = null
+function heldTitle(item, width) {
+  if (!more || !item || item.kind !== 'needs') return null
+  if (!titleHold || titleHold.key !== item.key || titleHold.width !== width) {
+    titleHold = { key: item.key, width, lines: titleLineCount(item.q.title, width) }
+  }
+  return titleHold.lines
+}
+
 /** Enter: the preview's details, read on first use. */
 async function toggleMore($) {
   helpShown = false
+  titleHold = null
   more = !more
   redraw($)
   if (more) detailsSoon($)
@@ -939,18 +942,25 @@ async function ensureTasks($) {
   const { item } = current()
   for (const channel of channelsFor(board, item)) {
     if (taskCache.has(channel)) continue
-    const result = await readTasks($, config, channel)
-    taskCache.set(channel, result.tasks)
+    await readTasksOrdered($, channel)
   }
 }
 
 /** Read again the channels "more" shows, on the board's tick. */
 async function refreshTasks($) {
   if (!isChief || !config || !paneOpen || !more) return
-  for (const channel of channelsFor(board, current().item)) {
-    const result = await readTasks($, config, channel)
-    taskCache.set(channel, result.tasks)
-  }
+  for (const channel of channelsFor(board, current().item)) await readTasksOrdered($, channel)
+}
+
+/** One channel's tasks, read and cached; a read that ends after a newer one
+ * of the same channel leaves the cache to it. */
+const taskSeq = new Map()
+async function readTasksOrdered($, channel) {
+  const seq = (taskSeq.get(channel) || 0) + 1
+  taskSeq.set(channel, seq)
+  const result = await readTasks($, config, channel)
+  if (taskSeq.get(channel) === seq) taskCache.set(channel, result.tasks)
+  return result
 }
 
 function taskLists() {
@@ -978,6 +988,7 @@ async function paneLines($) {
     width,
     compact,
     more,
+    titleHold: heldTitle(item, width),
     tasks: taskLists(),
     actions: fullStatus(item),
     fresh: [],

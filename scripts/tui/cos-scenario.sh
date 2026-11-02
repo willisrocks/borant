@@ -88,6 +88,9 @@ pane_title() { perl -CSD -ne 'my @p = split /\x{2502}/; my $r = $p[-1] // ""; if
 # The prompt's line: what the composer holds. Claude Code draws a hint or a
 # dim suggestion in an empty one, so a check looks for the keys it typed.
 prompt_text() { shown | grep '^❯' | tail -1 | perl -CS -pe 's/^\x{276f}[\s\x{a0}]*//; s/^Try ".*"$//; s/[\s\x{a0}]+$//'; }
+# The screen line of the preview's first field (`project`), right of the
+# pane's border: it must not move when the selected title changes.
+pane_field_line() { perl -CSD -ne 'my @p = split /\x{2502}/; if (@p > 1 && $p[-1] =~ /^\s+project\s/) { print "$.\n"; exit }' "$TUI_OUT/$1.plain.txt"; }
 in_board() { shown | grep -q 'board mode · esc exit'; }
 # The preview header of the selected row: "needs you · 3 of 6", "project · 2 of 9".
 selected_is() { shown | grep -q "$1 of "; }
@@ -162,10 +165,12 @@ check "j moved to row 2" "selected_is 'needs you · 2'"
 step jj lit:j
 step jjk lit:k
 check "j then k moved back to row 2" "selected_is 'needs you · 2'"
-# Three keys in one burst land in order.
-step burst lit:jjk
-check "a burst of j j k ends on row 3" "selected_is 'needs you · 3'"
-step burst-back lit:k
+# Three keys in one burst each count, faster than the key field is drawn
+# again: j j j from row 2 ends on row 5, then k k k ends back on row 2.
+step burst lit:jjj
+check "a burst of j j j moves three rows (row 5), and none reaches the prompt" "selected_is 'needs you · 5' && ! prompt_text | grep -q j"
+step burst-back lit:kkk
+check "a burst of k k k moves back three rows (row 2)" "selected_is 'needs you · 2' && ! prompt_text | grep -q k"
 
 # A live update in the middle of navigation: titles grow, a count changes, a
 # host moves, a new needs-you item arrives. No column may move.
@@ -187,6 +192,13 @@ step live-k lit:k
 # Enter shows details; j and k move with the details open; Enter goes back.
 step enter Enter
 check "Enter opened the details" "shown | grep -q '⏎ back\|the task\|reading'"
+# A live update with the details open: the selected title grows. The fields
+# under it stay where they are.
+cp "$TUI_OUT/$last.plain.txt" "$TUI_OUT/before-details-live.plain.txt"
+board_edit "for (const c of b.collections) for (const q of c.needs_you) if (q.title === $(json "$(needs_titles | sed -n 2p)")) q.title = q.title + ' and then a great deal more words that would need two more lines of the card to show'"
+event
+STEP_WAIT=1.5 step details-live
+check "a live update with the details open moved no field of the preview" "[ \"\$(pane_field_line before-details-live)\" = \"\$(pane_field_line $last)\" ] && [ -n \"\$(pane_field_line $last)\" ]"
 step details-j lit:j
 check "j in details moves on and keeps the details open" "selected_is 'needs you · 3' && shown | grep -q 'the task'"
 step details-k lit:k
@@ -275,12 +287,18 @@ check "esc after Tab left board mode" "at_rest"
 tui_keys C-u
 sleep 0.3
 step click-rest
-pos="$(tui_find '3: ▲')"
-# shellcheck disable=SC2086 # two numbers
-tui_click $pos
+# A click on the middle of row 3's title, not its digit.
+read -r cx cy <<<"$(tui_find "$(needs_titles | sed -n 3p | cut -c1-24)")"
+tui_click $((cx + 10)) "$cy"
 STEP_WAIT=1.2 step click-row
-check "a click on row 3 entered board mode on it" "in_board && selected_is 'needs you · 3'"
+check "a click on row 3's title entered board mode on it" "in_board && selected_is 'needs you · 3'"
 step click-esc Escape
+# A click on a row past nine, which has no digit.
+read -r cx cy <<<"$(tui_find 'wellsky-know')"
+tui_click $((cx + 4)) "$cy"
+STEP_WAIT=1.2 step click-row-past-nine
+check "a click on a row past nine entered board mode on it" "in_board && shown | grep -q 'project · [0-9]* of' && shown | grep -q '│wellsky-knowledge-base'"
+step click-past-nine-esc Escape
 
 # ctrl+x tab gives the band the keys, and the pane cannot take them from
 # there: 0 then says how to enter board mode instead of failing quietly.
@@ -371,6 +389,19 @@ TUI_W="$width" TUI_H="$height"
 STEP_WAIT=2 step resized-back
 if [ "$width" -ge 186 ]; then
   check "after a resize and back the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+  # The same with board mode on through the resize.
+  step resize-open lit:0
+  tmux -L "$TUI_NAME" resize-window -t tui -x "$other_w" -y "$other_h"
+  TUI_W="$other_w" TUI_H="$other_h"
+  STEP_WAIT=2 step resized-open
+  step resized-open-esc Escape
+  tmux -L "$TUI_NAME" resize-window -t tui -x "$width" -y "$height"
+  TUI_W="$width" TUI_H="$height"
+  STEP_WAIT=2 step resized-open-back
+  check "after a resize with board mode on, and back, the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+  step resized-open-again lit:0
+  check "and board mode then moves no column" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+  step resized-open-again-esc Escape
 fi
 
 # Empty: nothing needs the person and no project has work.

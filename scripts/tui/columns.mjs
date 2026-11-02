@@ -2,10 +2,12 @@
 // the scenario's "nothing moves across a live update" checks. A band row is a
 // line that starts with a chip (`1: ` or three spaces) and a state glyph. Its
 // place is its screen line, and its columns are the cells where text starts
-// after two or more spaces. A row is known by its first 16 cells after the
-// glyph, so a row whose title grew at its end is still the same row. A row
+// after two or more spaces. A row is known by its text before its first gap,
+// 16 cells at most, so a row whose title grew at its end is still the same
+// row. A row
 // that moved up or down, or a column that moved, is a move; so is a band
-// title row that moved up or down.
+// title row that moved up or down. Without --cells a row that is gone is a
+// move too.
 //
 // Usage: node scripts/tui/columns.mjs [--cells] <before.plain.txt> <after.plain.txt>
 // With --cells only the columns count: rows may come and go between them.
@@ -32,7 +34,8 @@ function rows(file) {
     for (let i = 5; i < cells.length; i++) {
       if (cells[i] !== ' ' && cells[i - 1] === ' ' && cells[i - 2] === ' ') starts.push(i)
     }
-    const name = Array.from(m[3]).slice(0, 16).join('')
+    // Its name: the text before its first gap, at most 16 cells.
+    const name = Array.from(m[3].split(/  /)[0]).slice(0, 16).join('')
     out.set(name, (cellsOnly ? '' : 'line ' + at + ' ') + 'cells ' + starts.join(','))
   }
   return out
@@ -45,14 +48,25 @@ const before = rows(a)
 const after = rows(b)
 let moved = 0
 let same = 0
+const parse = (v) => ({ line: (v.match(/line (\d+)/) || [])[1], cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean) })
+// The tail's press status (`✓ asked`) may come or go: the last column of the
+// longer row, when the rows agree on every column before it. Any other
+// difference is a move.
+const sameColumns = (x, y) => {
+  if (x.join() === y.join()) return true
+  const [short, long] = x.length < y.length ? [x, y] : [y, x]
+  return long.length === short.length + 1 && long.slice(0, -1).join() === short.join()
+}
 for (const [name, cols] of before) {
-  if (!after.has(name)) continue
-  // A column that comes or goes (a press status in the tail) is no move: a
-  // move is a column at a new place, so neither row holds the other's.
-  const holds = (x, y) => x.every((c) => y.includes(c))
-  const parse = (v) => ({ line: (v.match(/line (\d+)/) || [])[1], cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean) })
+  if (!after.has(name)) {
+    // Across a live update every row is held; at rest (--cells) a row may go.
+    if (cellsOnly) continue
+    moved++
+    console.log('gone: ' + name + ' [' + cols + ']')
+    continue
+  }
   const [x, y] = [parse(cols), parse(after.get(name))]
-  if (after.get(name) === cols || (x.line === y.line && (holds(x.cells, y.cells) || holds(y.cells, x.cells)))) same++
+  if (x.line === y.line && sameColumns(x.cells, y.cells)) same++
   else {
     moved++
     console.log('moved: ' + name + ' [' + cols + '] -> [' + after.get(name) + ']')

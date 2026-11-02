@@ -970,3 +970,37 @@ test('a slow board read that ends after a newer one is dropped', async ($, on) =
   await band.unmount()
 })
 
+
+test('a slow status read never marks closed an item that came back meanwhile', async ($, on) => {
+  let release: () => void = () => {}
+  let reads = 0
+  const toasts: string[] = []
+  const clock = chiefStubs(on, [], [], [], toasts, 'cli')
+  const gone = JSON.parse(JSON.stringify(board))
+  for (const c of gone.collections) c.needs_you = (c.needs_you || []).filter((q: { task: string }) => q.task !== '01M5ZG00000000000000000015')
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('process.run', async ($, e) => {
+    const argv = (e.argv || []) as string[]
+    if (argv.includes('tasks')) {
+      await new Promise<void>((done) => (release = done))
+      return { value: { exitCode: 0, stdout: JSON.stringify([{ id: '01M5ZG00000000000000000015', status: 'closed' }]), stderr: '' } }
+    }
+    reads += 1
+    // The second read sees the item gone, the third sees it back.
+    return { value: { exitCode: 0, stdout: JSON.stringify(reads === 2 ? gone : board), stderr: '' } }
+  })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: GATE })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await typeKey($, pane, 'd')
+  await clock.advance(5000)
+  await clock.advance(1100)
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  release()
+  await clock.advance(1)
+  expect(toasts.some((t) => t.startsWith('closed:'))).toBe(false)
+  expect(await band.find({ type: 'Text', text: /✓ closed/ })).toBeUndefined()
+  await pane.unmount()
+  await band.unmount()
+})

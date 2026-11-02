@@ -84,8 +84,9 @@ export function localTime(at, fallback = '?') {
   return date.getFullYear() + '-' + two(date.getMonth() + 1) + '-' + two(date.getDate()) + ' ' + two(date.getHours()) + ':' + two(date.getMinutes())
 }
 
-/** Words wrapped to `width` cells; a word longer than a line is cut. */
-export function wrap(value, width) {
+/** Words wrapped to `width` cells. A word longer than a line is cut, or
+ * with `split` it goes on over the next lines, so nothing of it is lost. */
+export function wrap(value, width, split = false) {
   const w = Math.max(4, width)
   const lines = []
   let line = ''
@@ -94,11 +95,30 @@ export function wrap(value, width) {
     if (cellsOf(next) <= w) line = next
     else {
       if (line) lines.push(line)
-      line = truncate(word, w)
+      line = split ? word : truncate(word, w)
+      while (split && cellsOf(line) > w) {
+        const chars = Array.from(line)
+        let take = 0
+        let used = 0
+        while (take < chars.length && used + cellsOf(chars[take]) <= w) used += cellsOf(chars[take++])
+        lines.push(chars.slice(0, take).join(''))
+        line = chars.slice(take).join('')
+      }
     }
   }
   if (line || lines.length === 0) lines.push(line)
   return lines
+}
+
+/** How many lines the details give a title: all of it, wrapped. */
+export function titleLineCount(title, width) {
+  return wrap(title, Math.max(24, width) - 2, true).length
+}
+
+/** A title in exactly `n` lines: padded, or cut with an ellipsis on the last. */
+function fixedLines(lines, n, width) {
+  if (lines.length <= n) return [...lines, ...Array(n - lines.length).fill('')]
+  return [...lines.slice(0, n - 1), truncate(lines.slice(n - 1).join(' '), width)]
 }
 
 /** A line drawn on the selection's background: the selected row's own title. */
@@ -254,15 +274,21 @@ function needsCard(s, width) {
     }
     // The buttons and keys sit in the block's key line (the renderer's); more
     // takes the place of the saga, as the block has four rows at most.
-    // Details show the whole title, wrapped, in place of the one cut line.
-    if (s.more) return [...wrap(q.title || '', width - 2).map((line, i) => selected([i ? text('  ') : glyph, text(line, titleStyle)])), ...compactDetail(tasks[q.channel], q.task)]
+    // Details show the whole title, wrapped, in place of the one cut line,
+    // in the lines it had when they opened: a refresh never moves the rest.
+    if (s.more) {
+      const all = wrap(q.title || '', width - 2, true)
+      const lines = s.titleHold ? fixedLines(all, s.titleHold, width - 2) : all
+      return [...lines.map((line, i) => selected([i ? text('  ') : glyph, text(line, titleStyle)])), ...compactDetail(tasks[q.channel], q.task)]
+    }
     return out
   }
   const out = [header('needs you' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
   // The title takes two lines, padded or cut, so a title that changes on a
-  // refresh never moves the fields under it. Details show all of it.
-  const lines = wrap(q.title, width - 2)
-  const two = s.more ? lines : lines.length > 2 ? [lines[0], truncate(lines.slice(1).join(' '), width - 2)] : [...lines, ''].slice(0, 2)
+  // refresh never moves the fields under it. Details show all of it, in the
+  // lines it had when they opened.
+  const all = wrap(q.title, width - 2, s.more)
+  const two = fixedLines(all, s.more ? s.titleHold || all.length : 2, width - 2)
   two.forEach((line, i) => out.push(selected([i ? text('  ') : glyph, text(line, titleStyle)])))
   if (s.actions && s.actions.length) out.push([text(' ')], [text('  '), ...s.actions])
   out.push([text(' ')])
@@ -361,7 +387,8 @@ function projectCard(s, width) {
   }
   const out = [header('project' + DOT + (s.index + 1) + ' of ' + s.count, s.fresh || [], width), [text(' ')]]
   out.push(selected([text(project.project, 'bold')]))
-  if (saga) wrap(saga.title, width - 2).forEach((line) => out.push(selected([text('  ' + line)])))
+  // The saga's title takes two lines, padded or cut, as a needs-you title.
+  if (saga) fixedLines(wrap(saga.title, width - 2), 2, width - 2).forEach((line) => out.push(selected([text('  ' + line)])))
   if (parts.ratio) out.push([text('  '), text(parts.filled, 'green'), text(parts.empty, 'faint'), text(' ' + parts.ratio + ' epics done', 'dim')])
   out.push([text('  ' + orchText, 'dim')])
   out.push([text(' ')])
