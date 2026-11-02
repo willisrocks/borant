@@ -711,6 +711,10 @@ pub struct LaunchOrder {
     pub repo: Option<RepoInfo>,
     /// The SHA of the WIP commit to restore, if any.
     pub wip: Option<String>,
+    /// The branch of the newest checkpoint, which the restore checks out
+    /// before it applies the WIP commit. `None` keeps the branch of the repo.
+    #[serde(default)]
+    pub wip_branch: Option<String>,
     pub channels: Vec<ChannelName>,
     pub prompt: String,
     pub reason: MoveReason,
@@ -751,6 +755,7 @@ impl Default for LaunchOrder {
             harness: Harness::ClaudeCode,
             repo: None,
             wip: None,
+            wip_branch: None,
             channels: Vec::new(),
             prompt: String::new(),
             reason: MoveReason::Spawn,

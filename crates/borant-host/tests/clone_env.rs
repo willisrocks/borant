@@ -125,6 +125,7 @@ fn order(remote: &Path, setup: Option<&str>) -> LaunchOrder {
             subdir: String::new(),
         }),
         wip: None,
+        wip_branch: None,
         channels: Vec::new(),
         prompt: "go".into(),
         reason: MoveReason::Spawn,

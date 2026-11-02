@@ -1029,6 +1029,10 @@ pub enum SessionEventBody {
     Checkpoint {
         git_ref: String,
         sha: String,
+        /// The branch that was checked out when the snapshot was taken. A
+        /// restore checks it out before it applies the wip tree.
+        #[serde(default)]
+        branch: Option<String>,
     },
     SessionStart {
         cwd: String,

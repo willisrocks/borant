@@ -348,6 +348,7 @@ impl Host {
             &o.agent,
             &remote,
             o.wip.as_deref(),
+            o.wip_branch.as_deref(),
             base,
             mirror,
             vars,

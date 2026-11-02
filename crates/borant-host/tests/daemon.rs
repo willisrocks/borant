@@ -30,7 +30,7 @@ async fn send(fx: &Fx, from: &borant_core::proto::LocalSession, to: Target, text
         .unwrap();
 }
 
-const HUB_BACK: &str = "Borant is back. Your tools work again. Continue your task.";
+const HUB_BACK: &str = "Borant is back. Your tools work again. Continue your task. If the borant MCP tools are missing, use the `borant` CLI from Bash, and ask the person to run /mcp to reconnect.";
 
 /// Counts the hub-is-back messages in the session log of `agent`.
 async fn wake_messages(fx: &Fx, agent: &AgentId) -> usize {

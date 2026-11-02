@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
 use borant_core::model::RepoInfo;
-use borant_core::{AgentId, ProjectName, Timestamp};
+use borant_core::{AgentId, Clock, ProjectName, SystemClock, Timestamp};
 use tokio::process::Command;
 
 /// The limit for one git command, including a push over the network.
@@ -124,6 +124,26 @@ pub async fn detect(cwd: &Path, fallback_remote: Option<&str>) -> Option<RepoFac
     })
 }
 
+/// The branch that is checked out in `cwd`, or `None` on a detached HEAD or
+/// outside a repository. A checkpoint records it, so a restore returns to the
+/// branch that the snapshot came from.
+pub async fn current_branch(cwd: &Path) -> Option<String> {
+    git(cwd, &["symbolic-ref", "--short", "HEAD"], None, &[])
+        .await
+        .ok()
+        .filter(|b| !b.is_empty())
+}
+
+/// The identity of a snapshot commit. A snapshot is the host's commit, not
+/// the agent's, so it must not depend on the git config of the machine: a
+/// fresh host without an identity still checkpoints and restores.
+const SNAPSHOT_IDENT: [(&str, &str); 4] = [
+    ("GIT_AUTHOR_NAME", "Borant"),
+    ("GIT_AUTHOR_EMAIL", "borant@localhost"),
+    ("GIT_COMMITTER_NAME", "Borant"),
+    ("GIT_COMMITTER_EMAIL", "borant@localhost"),
+];
+
 /// Builds a commit of the whole working tree, including untracked files that
 /// git does not ignore, with `HEAD` as the parent. Returns the tree and the
 /// commit SHA.
@@ -158,7 +178,11 @@ async fn snapshot(cwd: &Path, message: &str) -> anyhow::Result<(String, String)>
         args.push("-p");
         args.push(h);
     }
-    let sha = git(cwd, &args, None, &[]).await?;
+    let ident: Vec<(String, String)> = SNAPSHOT_IDENT
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    let sha = git(cwd, &args, None, &ident).await?;
     Ok((tree, sha))
 }
 
@@ -329,6 +353,12 @@ async fn create_mirror(dir: &Path, remote_url: &str, env: &GitEnv) -> anyhow::Re
 /// remote. Every git command of the restore runs with `env`, the resolved
 /// bundles of the launch, so a collection bundle can carry the credential of
 /// the repositories. Returns the working directory.
+///
+/// An existing working directory is never checked out over as it is: git
+/// prunes a stale worktree first, and a dirty tree goes to a stale ref before
+/// any checkout. A save that fails stops the restore with the tree unchanged.
+/// `branch` is the branch of the newest checkpoint, which wins over the
+/// branch of the repository.
 // The parameters are the facts of one launch, and a struct would only move
 // them to the call site.
 #[allow(clippy::too_many_arguments)]
@@ -338,6 +368,7 @@ pub async fn restore(
     agent: &AgentId,
     remote: &str,
     wip: Option<&str>,
+    branch: Option<&str>,
     base: Option<&str>,
     mirror: Option<Mirror<'_>>,
     env: &GitEnv,
@@ -350,7 +381,19 @@ pub async fn restore(
         None => None,
     };
     if dir.join(".git").exists() {
+        // A worktree that a crash left behind still holds its branch, so a
+        // checkout of that branch fails until git prunes it.
+        git(&dir, &["worktree", "prune"], None, env).await?;
         git(&dir, &["fetch", "--quiet", "origin"], None, env).await?;
+        // The checkout below replaces a dirty tree, so the work it holds goes
+        // to a stale ref first. A save that fails stops the restore before
+        // anything changed: the tree stays as it was.
+        if !git(&dir, &["status", "--porcelain"], None, env)
+            .await?
+            .is_empty()
+        {
+            save_stale(&dir, remote, agent, SystemClock.now(), env).await?;
+        }
     } else {
         tokio::fs::create_dir_all(dir.parent().unwrap_or(work_root)).await?;
         let mut cmd = Command::new("git");
@@ -371,7 +414,7 @@ pub async fn restore(
             );
         }
     }
-    let branch = repo.branch.as_str();
+    let branch = branch.unwrap_or(repo.branch.as_str());
     match wip {
         Some(sha) => {
             git(
