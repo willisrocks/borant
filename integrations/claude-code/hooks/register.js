@@ -136,7 +136,7 @@ let boardGen = 0
 let frozen = null
 /** The band's width while the preview was docked beside it, at a terminal
  * width: at rest the band lays its columns out that wide, so entering board
- * mode moves no column. */
+ * mode moves no column. And the band's viewport and width at rest. */
 let dockSeen = null
 let restSeen = null
 /** Board reads in the order they started: a slow one that ends after a newer
@@ -175,14 +175,19 @@ export function register(on) {
       }
       const cur = current()
       if (!cur.item && paneOpen && !helpShown) closeSoon($, () => !current().item && !helpShown)
-      // The docked width is learned only from a band that is narrower than at
-      // rest by a dock at least: a band drawn as the pane closes is not one.
-      if (!paneOpen) restSeen = { columns, width }
-      else if (placement === 'dock' && restSeen && restSeen.columns === columns && width <= restSeen.width - 24) dockSeen = { columns, width }
-      const docks = e.viewport?.isFullscreen === true && columns >= DOCK_COLUMNS
+      // The band's viewport is the conversation's: narrower by the dock (24
+      // columns at least) while the preview is docked. A band as wide as at
+      // rest is at rest, whatever the pane's last drawing said: it draws once
+      // more as it closes, and the band can draw before the pane says where
+      // it sits.
+      const dockedNow = paneOpen && restSeen !== null && columns <= restSeen.columns - 24
+      if (!dockedNow) restSeen = { columns, width }
+      else dockSeen = { terminal: restSeen.columns, width }
+      const docks = e.viewport?.isFullscreen === true && terminalColumns() >= DOCK_COLUMNS
+      const docked = dockedNow ? width : dockedBandWidth(width)
       const rows = bandRows(board, {
         width,
-        gridWidth: docks && dockedBandWidth(width) >= DOCKED_GRID ? dockedBandWidth(width) : width,
+        gridWidth: docks && docked >= DOCKED_GRID ? docked : width,
         maxRows: e.props?.maxRows,
         questions: drawnQuestions(),
         items: frozen ? items() : undefined,
@@ -271,7 +276,7 @@ export function register(on) {
       if (!board) return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
       // A docked pane can take up to 45% of the terminal; keep the digest
       // inside the transcript column it leaves, so it never wraps.
-      const width = Math.max(48, Math.floor((columns || 96) * 0.55) - 1)
+      const width = Math.max(48, Math.floor((terminalColumns() || 96) * 0.55) - 1)
       return { text: digest(board, { project: args || null, width }) }
     } catch {
       return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
@@ -672,17 +677,21 @@ function setFocused(focused) {
   paneFocused = focused
 }
 
-/** The band's width with the preview docked: as seen, or the band's width
- * now less the preview and its border. */
+/** The band's width at rest with the preview docked: as seen at this
+ * terminal width, or the band's width less the preview and its border. */
 function dockedBandWidth(width) {
-  if (dockSeen && dockSeen.columns === columns) return dockSeen.width
-  if (paneOpen && placement === 'dock') return width
+  if (dockSeen && dockSeen.terminal === terminalColumns()) return dockSeen.width
   return width - paneColumns() - 1
+}
+
+/** The terminal's width: the band's viewport at rest. */
+function terminalColumns() {
+  return restSeen ? restSeen.columns : columns
 }
 
 /** The docked preview's width to ask for. */
 function paneColumns() {
-  return Math.max(24, Math.min(PANE_COLUMNS, Math.floor(columns * 0.45)))
+  return Math.max(24, Math.min(PANE_COLUMNS, Math.floor(terminalColumns() * 0.45)))
 }
 
 /** The selected row: the one recorded, or the row now at its place when it
@@ -712,7 +721,7 @@ function compactPane() {
 
 /** Whether a digit at the empty prompt reaches prompt.edit: from 144 columns. */
 function promptDigits() {
-  return columns >= ASKED_COLUMNS
+  return terminalColumns() >= ASKED_COLUMNS
 }
 
 /** The marks of a needs-you item: its Done, its Ask, and whether it is open. */

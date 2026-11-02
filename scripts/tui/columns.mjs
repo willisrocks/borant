@@ -7,7 +7,8 @@
 // that moved up or down, or a column that moved, is a move; so is a band
 // title row that moved up or down.
 //
-// Usage: node scripts/tui/columns.mjs <before.plain.txt> <after.plain.txt>
+// Usage: node scripts/tui/columns.mjs [--cells] <before.plain.txt> <after.plain.txt>
+// With --cells only the columns count: rows may come and go between them.
 // Prints one line per row that moved and exits 1, or exits 0.
 
 import fs from 'fs'
@@ -18,7 +19,7 @@ function rows(file) {
   const out = new Map()
   const lines = fs.readFileSync(file, 'utf8').split('\n')
   const title = lines.findIndex((l) => /^── (chief of staff|cos) /.test(l))
-  if (title >= 0) out.set('(title row)', 'line ' + title)
+  if (title >= 0 && !cellsOnly) out.set('(title row)', 'line ' + title)
   for (const [at, line] of lines.entries()) {
     // The band is left of a docked pane's border.
     const band = line.split('│')[0]
@@ -32,12 +33,14 @@ function rows(file) {
       if (cells[i] !== ' ' && cells[i - 1] === ' ' && cells[i - 2] === ' ') starts.push(i)
     }
     const name = Array.from(m[3]).slice(0, 16).join('')
-    out.set(name, 'line ' + at + ' cells ' + starts.join(','))
+    out.set(name, (cellsOnly ? '' : 'line ' + at + ' ') + 'cells ' + starts.join(','))
   }
   return out
 }
 
-const [a, b] = process.argv.slice(2)
+const args = process.argv.slice(2)
+const cellsOnly = args[0] === '--cells'
+const [a, b] = cellsOnly ? args.slice(1) : args
 const before = rows(a)
 const after = rows(b)
 let moved = 0

@@ -246,6 +246,9 @@ sleep 3
 nodialog
 step esc Escape
 check "esc left board mode (band shows '0: board mode')" "at_rest"
+if [ "$width" -ge 186 ]; then
+  check "after esc the band keeps the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+fi
 check "after esc the held-back item shows" "tui_text | grep -q '▲ A new question arrived'"
 step type-hello lit:hello
 check "after esc, typed keys reach the prompt" "prompt_text | grep -q hello"
