@@ -541,7 +541,7 @@ export function titleRow(board, o) {
     : [text(GLYPH.done + ' nothing needs you', 'green')]
   // Board mode holds its rows still: what arrived meanwhile shows after esc.
   // Like the counts, the note goes when the row has no room for it.
-  const waiting = o.waiting ? [text(' · ' + o.waiting + ' new after esc', 'dim')] : []
+  const waiting = o.waiting ? [text(' · +' + o.waiting + ' after esc', 'dim')] : []
   const label = width >= 110 ? 'chief of staff' : 'cos'
   const mode = modeCells(o.active)
   const stale = o.stale ? [o.stale, text(' ' + RULE + ' ', 'faint')] : []

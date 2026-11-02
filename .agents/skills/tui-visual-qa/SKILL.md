@@ -120,3 +120,15 @@ Code's mod API cannot do something, say which limit, quote the type docs
 - In vim normal mode a bare digit goes to vim, and no event reaches a mod.
 - An empty prompt holds a no-break space or a dim suggestion. A check for
   "nothing typed" looks for the key it typed.
+- A column check must compare screen rows too. A row added above moves
+  every row under it, and a check of cells alone passes.
+- A docked pane narrows the band, so entering board mode moved every
+  column. The band's `bodyColumns` at rest leaves out its `[-]` mark: the
+  docked band is that width less the pane and its border.
+- Done's real path needs the plugin's MCP server: the scenario serves
+  `scripts/tui/stub-mcp.mjs` as `borant mcp`. Haiku did not load the
+  deferred MCP tools in one run of two, so the scenario runs Sonnet.
+- Claude Code 2.1.316 shows a running turn as `Ruminating… (12s · …)`,
+  not "esc to interrupt".
+- The plugin test kit refuses input to a field after its redraw, so a race
+  of two edits to one field is checked only in a real session.

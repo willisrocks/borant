@@ -1,8 +1,8 @@
 // A stand-in for `borant mcp` in the chief mod's visual tests: an MCP server
 // on stdio with the two tools a Done's prompt asks the chief to use. Each
 // call goes to calls.log. task_close closes the task in the stub's files and
-// raises an event, as the hub would; send only records the message, and the
-// scenario plays the owner who closes the task.
+// raises an event, as the hub would, unless close.refuse exists. send only
+// records the message, and the scenario plays the owner who closes the task.
 //
 // borant-stub runs it for `borant mcp`, with BORANT_STUB_DIR set.
 
@@ -54,6 +54,8 @@ function closeTask(channel, id) {
 function call(name, args) {
   if (name === 'task_close') {
     log('task_close ' + args.channel + ' ' + args.id)
+    // A test makes the hub refuse, as it refuses a chief that may not close.
+    if (fs.existsSync(file('close.refuse'))) throw new Error('refused: only the channel owner or a person may close this task')
     closeTask(args.channel, args.id)
     return 'closed ' + args.channel + '/' + args.id
   }

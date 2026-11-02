@@ -180,7 +180,7 @@ event
 STEP_WAIT=1.5 step live-update
 check "no band row or column moved across a live update" "node '$root/scripts/tui/columns.mjs' '$TUI_OUT/before-live.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 check "board mode held across the live update" "in_board"
-check "the new item waits for esc, and the band says so" "! shown | grep -q '▲ A new question arrived' && shown | grep -q '1 new after esc'"
+check "the new item waits for esc, and the band says so" "! shown | grep -q '▲ A new question arrived' && shown | grep -q '+1 after esc'"
 step live-j lit:j
 step live-k lit:k
 
@@ -336,7 +336,9 @@ note "a change with an event showed after $evented ms"
 check "an event-driven refresh landed in under 1 s ($evented ms)" "[ $evented -lt 1000 ]"
 step refreshed
 
-# A Done the hub never closes shows "still open" after BORANT_COS_DONE_WAIT_S.
+# A Done the hub never closes shows "still open" after BORANT_COS_DONE_WAIT_S:
+# the stub MCP refuses task_close, as a hub refuses a chief that may not.
+touch "$stub/close.refuse"
 nodialog
 step still-select lit:1
 step still-d lit:d

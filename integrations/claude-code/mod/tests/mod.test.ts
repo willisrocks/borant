@@ -931,7 +931,7 @@ test('board mode holds its rows still: a new item waits until esc', async ($, on
   live = withQuestion(live, 'Arrived during board mode')
   await clock.advance(5000)
   expect(await band.find({ type: 'Text', text: /Arrived during board mode/ })).toBeUndefined()
-  expect(await band.find({ type: 'Text', text: /1 new after esc/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /\+1 after esc/ })).toBeDefined()
   await pane.unmount()
   const off = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
   await clock.advance(1)

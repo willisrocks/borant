@@ -216,7 +216,7 @@ entering board mode moves no column either. Narrower, board mode lays the
 band out again in the room the preview leaves.
 
 Board mode holds its rows still. A new item waits until Esc, and the title
-row says so (`1 new after esc`). A row that leaves the board keeps its place
+row says so (`+1 after esc`). A row that leaves the board keeps its place
 until Esc: `✓ closed` when its task closed, `left the board` otherwise. The
 band says nothing about a
 healthy board. It shows `stale · 2m` when no read succeeded for 90 s, and
