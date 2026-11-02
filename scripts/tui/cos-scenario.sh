@@ -104,6 +104,8 @@ nodialog() { if tui_text | grep -q 'Do you want to proceed'; then note "FAIL a p
 turn_runs() { tui_text | grep -q '… ([0-9]*s'; }
 vim_mode() { tui_text | tail -3 | grep -q -- '-- INSERT --\|-- NORMAL --'; }
 
+# The column checker itself, on known captures.
+"$root/scripts/tui/columns-selftest.sh" | tee -a "$log"
 node "$root/scripts/tui/board-variants.mjs" "$variant" "$stub" >>"$log"
 : >"$stub/events.jsonl"
 
@@ -310,7 +312,13 @@ check "0 after ctrl+x tab says how to enter board mode" "tui_text | grep -q 'esc
 step ctrlx-esc Escape
 step ctrlx-reenter lit:0
 check "esc, then 0 entered board mode" "in_board"
+if [ "$width" -ge 186 ]; then
+  check "board mode after ctrl+x tab has the columns of the band at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+fi
 step ctrlx-exit Escape
+if [ "$width" -ge 186 ]; then
+  check "after ctrl+x tab and board mode the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
+fi
 
 # Vim mode. In normal mode Claude Code gives a bare digit to vim (a count or
 # a motion) and raises nothing a mod sees, so 0 stays with vim: that is a

@@ -36,7 +36,7 @@ function rows(file) {
     }
     // Its name: the text before its first gap, at most 16 cells.
     const name = Array.from(m[3].split(/  /)[0]).slice(0, 16).join('')
-    out.set(name, (cellsOnly ? '' : 'line ' + at + ' ') + 'cells ' + starts.join(','))
+    out.set(name, 'glyph ' + m[2] + ' ' + (cellsOnly ? '' : 'line ' + at + ' ') + 'cells ' + starts.join(','))
   }
   return out
 }
@@ -48,12 +48,17 @@ const before = rows(a)
 const after = rows(b)
 let moved = 0
 let same = 0
-const parse = (v) => ({ line: (v.match(/line (\d+)/) || [])[1], cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean) })
-// The tail's press status (`✓ asked`) may come or go: the last column of the
-// longer row, when the rows agree on every column before it. Any other
-// difference is a move.
-const sameColumns = (x, y) => {
+const parse = (v) => ({
+  needs: /^glyph [▲✓–]/u.test(v),
+  line: (v.match(/line (\d+)/) || [])[1],
+  cells: ((v.match(/cells ([\d,]*)/) || [])[1] || '').split(',').filter(Boolean),
+})
+// A needs-you row's press status (`✓ asked`) may come or go: the last column
+// of the longer row, when the rows agree on every column before it. A
+// project row keeps every column. Any other difference is a move.
+const sameColumns = (x, y, needs) => {
   if (x.join() === y.join()) return true
+  if (!needs) return false
   const [short, long] = x.length < y.length ? [x, y] : [y, x]
   return long.length === short.length + 1 && long.slice(0, -1).join() === short.join()
 }
@@ -66,7 +71,7 @@ for (const [name, cols] of before) {
     continue
   }
   const [x, y] = [parse(cols), parse(after.get(name))]
-  if (x.line === y.line && sameColumns(x.cells, y.cells)) same++
+  if (x.line === y.line && sameColumns(x.cells, y.cells, x.needs && y.needs)) same++
   else {
     moved++
     console.log('moved: ' + name + ' [' + cols + '] -> [' + after.get(name) + ']')
