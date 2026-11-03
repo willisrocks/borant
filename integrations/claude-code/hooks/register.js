@@ -21,7 +21,7 @@
 // The "seen" snapshot (x) lives in $.store, so it lasts across sessions.
 
 import { buildModel, allChannels, find, listItems, snapshot, RECEIPT_MS } from '../mod/model.js'
-import { ACTIONS, act, readBoard, readChannels, readTasks, sourceMode } from '../mod/source.js'
+import { ACTIONS, act, readActivity, readBoard, readChanges, readChannels, readHistory, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
 import {
   S,
@@ -71,6 +71,12 @@ let downSince = null
 /** The first read of the board and every channel's tasks has landed. */
 let ready = false
 let seen = null
+/** The hub's changes feed (borant changes), and the mark of the last x: { seq, at } or { at }. */
+let feed = null
+let feedSeen = null
+/** Each agent's activity (borant status), and each task's history, read when selected. */
+let activity = {}
+const histories = new Map()
 let used = true
 const marks = { receipts: {}, asked: {}, changes: [] }
 let pushQueued = false
@@ -130,7 +136,7 @@ export function register(on) {
         maxRows,
         tip: !used,
         headerOnly: paneOpen && placement === 'inline',
-        info: { seenAt: seen ? clock(seen.at) : null, downSince: downSince ? clock(downSince) : null, lastOk: lastOkAt ? clock(lastOkAt) : null, reason },
+        info: { seenAt: (feed ? feedSeen?.at : seen?.at) ? clock(feed ? feedSeen.at : seen.at) : null, downSince: downSince ? clock(downSince) : null, lastOk: lastOkAt ? clock(lastOkAt) : null, reason },
       })
       return tree($, e, lines)
     } catch {
@@ -165,7 +171,7 @@ export function register(on) {
       }
       if (typeof props.bodyColumns === 'number' && props.bodyColumns > 0) paneCols = props.bodyColumns
       if (typeof props.scroll?.bodyRows === 'number' && props.scroll.bodyRows > 0) paneRows = props.scroll.bodyRows
-      return tree($, e, panel(), true)
+      return tree($, e, panel($), true)
     } catch {
       return next(e)
     }
@@ -285,6 +291,8 @@ async function start($) {
   try {
     const s = await $.store.get('seen')
     if (s && typeof s === 'object' && typeof s.at === 'number' && s.ids) seen = s
+    const f = await $.store.get('seenFeed')
+    if (f && typeof f === 'object' && typeof f.at === 'number') feedSeen = f
     used = Boolean(await $.store.get('used'))
   } catch {
     // No store: changes start from now.
@@ -410,22 +418,34 @@ async function readAll($, now) {
   downSince = null
   reason = ''
   lastOkAt = now
-  if (!channels.length || now - tasksAt >= TASKS_MS) {
-    const c = await readChannels($, config)
-    if (c.channels) channels = c.channels
-  }
-  const all = allChannels(board, channels)
+  const lines = board.collections.some((c) => (c.projects || []).some((p) => Array.isArray(p.task_lines)))
   const due = now - tasksAt >= TASKS_MS
-  for (const ch of all) {
-    if (!due && ch in tasks && !staleChannels.has(ch)) continue
-    staleChannels.delete(ch)
-    const r = await readTasks($, config, ch)
-    if (r.tasks) tasks[ch] = r.tasks
+  if (!lines) {
+    // An older hub: each channel's tasks are read apart.
+    if (!channels.length || due) {
+      const c = await readChannels($, config)
+      if (c.channels) channels = c.channels
+    }
+    for (const ch of allChannels(board, channels)) {
+      if (!due && ch in tasks && !staleChannels.has(ch)) continue
+      staleChannels.delete(ch)
+      const r = await readTasks($, config, ch)
+      if (r.tasks) tasks[ch] = r.tasks
+    }
   }
   if (due) tasksAt = now
+  const a = await readActivity($, config)
+  if (a.agents) activity = a.agents
+  // The hub's changes feed; the first read marks now, so changes start from now.
+  if (!feedSeen) {
+    feedSeen = { at: now }
+    store($, 'seenFeed', feedSeen)
+  }
+  const f = await readChanges($, config, feedSeen)
+  feed = f.changes
   ready = true
-  // The first read with no snapshot takes one: changes start from now.
-  if (!seen) {
+  // Without a feed, the mod keeps a snapshot of every task: changes start from now.
+  if (!feed && !seen) {
     seen = snapshot(tasks, now)
     store($, 'seen', seen)
   }
@@ -446,7 +466,7 @@ function announceNew($) {
 function model() {
   // A receipt older than RECEIPT_MS is gone for good.
   for (const [id, r] of Object.entries(marks.receipts)) if (clockNow - r.at >= RECEIPT_MS) delete marks.receipts[id]
-  return buildModel({ board, channels, tasks, seen, marks, now: clockNow })
+  return buildModel({ board, channels, tasks, seen: feed ? { at: feedSeen.at, ids: {} } : seen, marks, now: clockNow, feed, activity })
 }
 
 // ------------------------------------------------------------------ the panel
@@ -468,13 +488,13 @@ function projectOf(m, name) {
 }
 
 /** The lines of the panel as it is now. */
-function panel() {
+function panel($) {
   const m = model()
   const w = paneCols
   const h = Math.max(8, paneRows)
   if (!paneFocused) {
     const cur = current(m)
-    return panelLines(w, h, { top: topLine(w, 'nokeys'), entries: (lw) => listEntries(m, lw, null, info()), sel, detail: (dw) => detailOf(m, cur, dw), keys: [] })
+    return panelLines(w, h, { top: topLine(w, 'nokeys'), entries: (lw) => listEntries(m, lw, null, info()), sel, detail: (dw) => detailOf($, m, cur, dw), keys: [] })
   }
   if (view === 'help') return [topLine(w, 'help'), { parts: [{ segs: [] }] }, ...helpLines(w), ...keyBar([['b', 'back', 'back']], w)]
   const cur = current(m)
@@ -482,14 +502,14 @@ function panel() {
     const p = projectOf(m, project)
     if (!p) {
       view = 'list'
-      return panel()
+      return panel($)
     }
     const t = p.tasks.find((x) => 't:' + x.id === taskSel) || p.tasks[0]
     if (t) taskSel = 't:' + t.id
     return panelLines(w, h, { top: topLine(w, 'list', 'all projects › ' + p.name), entries: (lw) => taskEntries(p, lw, taskSel), sel: taskSel, detail: (dw) => (t ? taskDetail(t, p, dw) : []), keys: taskKeys(t, p), listShare: 0.4 })
   }
   if (view === 'detail' && cur) {
-    const d = detailOf(m, cur, w)
+    const d = detailOf($, m, cur, w)
     return [topLine(w, field ? (sendState?.state === 'unconfirmed' ? 'retry' : 'typing') : 'list', crumbOf(cur)), { parts: [{ segs: [] }] }, ...d.slice(0, h - 6), ...keyBar(field ? [] : [...keysFor(cur), ['b', 'back to the list', 'back']], w)]
   }
   const mode = field ? (sendState?.state === 'unconfirmed' ? 'retry' : 'typing') : 'list'
@@ -497,17 +517,25 @@ function panel() {
     top: topLine(w, mode, field ? crumbOf(cur) : ''),
     entries: (lw) => listEntries(m, lw, sel, info()),
     sel,
-    detail: (dw) => detailOf(m, cur, dw),
+    detail: (dw) => detailOf($, m, cur, dw),
     keys: field ? [] : confirm ? [['y', 'yes', 'yes'], ['n', 'no', 'no']] : keysFor(cur),
     listShare: field ? 0.15 : 0.45,
   })
 }
 
 function info() {
-  return { seenAt: seen ? clock(seen.at) : null }
+  const at = feed ? feedSeen?.at : seen?.at
+  return { seenAt: at ? clock(at) : null }
 }
 
 const cellsWide = (t) => String(t || '').length
+
+/** A short stable hash of a text, for an answer's idempotency key. */
+function hash(text) {
+  let h = 2166136261
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0
+  return h.toString(36)
+}
 
 function crumbOf(cur) {
   if (!cur?.item) return ''
@@ -518,8 +546,25 @@ function keyBar(keys, w) {
   return keys.length ? [{ parts: [{ segs: rule(w) }] }, ...keyLines(keys, w)] : []
 }
 
+/** A task's history, read when it is selected and again after 15 s; null until it lands. */
+function historyOf($, channel, task) {
+  if (!channel || !task) return null
+  const key = channel + '/' + task
+  const h = histories.get(key)
+  if (!h || (clockNow - h.at > TASKS_MS && !h.reading)) {
+    histories.set(key, { ...(h || { entries: null }), at: clockNow, reading: true })
+    readHistory($, config, channel, task)
+      .then((r) => {
+        histories.set(key, { entries: r.entries, at: clockNow, reading: false })
+        redraw($)
+      })
+      .catch(() => histories.set(key, { entries: null, at: clockNow, reading: false }))
+  }
+  return histories.get(key)?.entries || null
+}
+
 /** The detail of the selected item, with the field or the confirmation under it. */
-function detailOf(m, cur, w) {
+function detailOf($, m, cur, w) {
   if (!cur || !cur.item) return [{ parts: [{ segs: [S('Nothing selected.', 'dim')] }] }]
   const below = []
   if (confirm && confirm.item === cur.item.id) {
@@ -538,7 +583,7 @@ function detailOf(m, cur, w) {
     if (sendState?.state === 'unconfirmed') below.push({ parts: [{ segs: [S('◷ not confirmed: ' + sendState.reason + '. ', 'o'), S('enter', 'kb'), S(' checks, then sends only if needed', 't')] }] })
     if (sendState?.state === 'refused') below.push({ parts: [{ segs: [S('! refused: ' + sendState.reason, 'r')] }] })
   }
-  if (cur.kind === 'need') return needDetail(cur.item, projectOf(m, cur.item.project), w, { below })
+  if (cur.kind === 'need') return needDetail(cur.item, projectOf(m, cur.item.project), w, { below, history: historyOf($, cur.item.channel, cur.item.task) })
   if (cur.kind === 'quiet') return quietDetail(cur.item, projectOf(m, cur.item.project), w)
   if (cur.kind === 'ship') return shipDetail(cur.item, w)
   if (cur.kind === 'change') return changeDetail(cur.item, w)
@@ -675,6 +720,12 @@ async function dispatch($, actName, arg) {
   if (actName === 'seen') {
     tasksAt = 0
     await refresh($, true)
+    if (feed) {
+      const top = Math.max(0, ...feed.map((c) => c.seq || 0))
+      feedSeen = top ? { seq: top, at: clockNow } : { at: clockNow }
+      store($, 'seenFeed', feedSeen)
+      feed = []
+    }
     seen = snapshot(tasks, clockNow)
     marks.changes = []
     store($, 'seen', seen)
@@ -696,7 +747,7 @@ async function dispatch($, actName, arg) {
   }
   if (actName === 'answer' || actName === 'message') {
     const to = actName === 'answer' ? it.worker || it.owner : it.worker || it.who
-    field = { kind: actName, item: it.id, to, channel: it.channel, task: it.task }
+    field = { kind: actName, item: it.id, to, channel: it.channel, task: it.task, version: it.version || null }
     sendState = null
     // The ring must move onto the field, or the letters typed next go to the prompt.
     redraw($)
@@ -733,7 +784,8 @@ async function dispatch($, actName, arg) {
   }
   if (actName === 'attach') {
     const agent = it.worker || it.who
-    return toast($, 'Borant cannot open a terminal yet. In a terminal, run: borant attach ' + agent)
+    const out = await act($, config, ACTIONS.attach(agent))
+    return toast($, out.ok ? 'opened ' + agent + ' in a new window' : 'could not open a window (' + out.reason + '). In a terminal, run: borant attach ' + agent)
   }
   if (actName === 'retry') {
     const agent = it.agent || it.who
@@ -784,6 +836,7 @@ async function submitField($, value) {
   if (!text) return
   drafts.set(f.item, text)
   // After an unconfirmed send, check first: a task that left needs-you got it.
+  // (With a key the hub would drop a repeat anyway; an older hub has none.)
   if (sendState?.state === 'unconfirmed' && f.kind === 'answer') {
     await refresh($, true)
     const still = model().needs.some((n) => n.id === f.item && !n.receipt)
@@ -791,7 +844,16 @@ async function submitField($, value) {
   }
   sendState = { state: 'sending' }
   redraw($)
-  const out = await act($, config, f.kind === 'answer' ? ACTIONS.answer(f.channel, f.task, text) : ACTIONS.send(f.to, text))
+  let out
+  if (f.kind === 'answer') {
+    // One key per draft: a second send after a timeout sends nothing new.
+    const key = 'mod-' + hash(f.channel + '/' + f.task + '\n' + text)
+    out = await act($, config, ACTIONS.answer(f.channel, f.task, text, key, f.version))
+    if (!out.ok && /unexpected argument/.test(out.reason || '')) out = await act($, config, ACTIONS.answerPlain(f.channel, f.task, text))
+  } else {
+    out = f.task ? await act($, config, ACTIONS.sendTask(f.to, text, f.channel, f.task)) : await act($, config, ACTIONS.send(f.to, text))
+    if (!out.ok && /unexpected argument/.test(out.reason || '')) out = await act($, config, ACTIONS.send(f.to, text))
+  }
   if (out.ok) return sent($, f, text)
   sendState = out.timeout ? { state: 'unconfirmed', reason: 'the hub did not reply in 8 s' } : { state: 'refused', reason: out.reason }
   redraw($)
@@ -817,7 +879,8 @@ async function askOwner($, m, it) {
   if (!owner) return toast($, 'no orchestrator owns this item')
   const what = it.ask || it.title
   const text = 'Chris asks about "' + what + '" (' + it.channel + (it.task ? '/' + it.task : '') + '), from the chief\'s board: what does it need from him, and what do you recommend? Answer the chief, who relays it to Chris.'
-  const out = await act($, config, ACTIONS.send(owner, text))
+  let out = it.task ? await act($, config, ACTIONS.sendTask(owner, text, it.channel, it.task)) : await act($, config, ACTIONS.send(owner, text))
+  if (!out.ok && /unexpected argument/.test(out.reason || '')) out = await act($, config, ACTIONS.send(owner, text))
   if (!out.ok) return toast($, 'ask failed: ' + out.reason)
   marks.asked[it.id] = { owner, time: clock(clockNow) }
   await tell($, 'The person pressed "ask" on "' + what + '" in the board. The board sent the question to ' + owner + ' as a direct message. Do not answer it yourself; relay ' + owner + "'s reply.")

@@ -12,9 +12,9 @@ import { ageText, cellsOf, truncate } from './board.js'
 export const S = (text, style = 't') => ({ text: String(text), style })
 
 export const NEED_MARK = { unblock: ['⊘', 'r'], decide: ['■', 'r'], answer: ['▲', 'y'], approve: ['▲', 'y'] }
-export const TASK_MARK = { wait: ['▲', 'y'], stuck: ['■', 'r'], run: ['●', 'b'], ready: ['○', 't'], blocked: ['⊘', 'r'], later: ['◷', 'dim'], done: ['✓', 'g'] }
+export const TASK_MARK = { wait: ['▲', 'y'], stuck: ['■', 'r'], run: ['●', 'b'], silent: ['◌', 'o'], ready: ['○', 't'], blocked: ['⊘', 'r'], later: ['◷', 'dim'], done: ['✓', 'g'] }
 export const SHIP_WORDS = { run: 'in progress', wait: 'waits on you', stuck: 'stuck', ready: 'open, nobody on it', blocked: 'blocked', later: 'later' }
-export const PROJECT_MARK = { stuck: ['■', 'r'], blocked: ['⊘', 'r'], wait: ['▲', 'y'], offline: ['◌', 'o'], run: ['●', 'b'] }
+export const PROJECT_MARK = { stuck: ['■', 'r'], blocked: ['⊘', 'r'], wait: ['▲', 'y'], offline: ['◌', 'o'], silent: ['◌', 'o'], run: ['●', 'b'] }
 
 export function width(segs) {
   return segs.reduce((n, s) => n + cellsOf(s.text), 0)
@@ -141,12 +141,18 @@ export function hotParts(w) {
   return [open, { segs: tail }]
 }
 
+const quietWords = (m) => {
+  const silent = m.quiet.filter((q) => q.verb === 'silent').length
+  const offline = m.quiet.length - silent
+  return silent ? silent + ' silent, ' + offline + ' offline' : offline + ' offline'
+}
+
 /** The band's first line. state: rest | on | nokeys | down */
 export function header(m, w, state = 'rest', info = {}) {
   const counts = [
     S(m.open + ' need you', 'yb'),
     S('  ·  ', 'faint'),
-    S(m.quiet.length + ' offline', m.quiet.length ? 'o' : 'dim'),
+    S(quietWords(m), m.quiet.length ? 'o' : 'dim'),
     S('  ·  ', 'faint'),
     S(m.changes.length + (w < 90 ? ' new' : ' changed since ' + (info.seenAt || '…')), 'c'),
   ]
@@ -188,7 +194,13 @@ function quietCells(q, w) {
   return cols([[[S('◌ ', 'o'), S(q.verb, 'o')], 10], [[S(q.project, 'bold')], 16], [[S(q.ask, 'dim')], 0], ...(w >= 150 ? [[[], 19]] : []), [[S(q.who, 'dim')], w < 150 ? 13 : 19], [[S(age(q.age).padStart(3), 'dim')], 4]], w)
 }
 
-const changeChip = (c) => [S((c.verb === 'new' ? '+' : '✓') + ' ', c.verb === 'new' ? 'c' : 'g'), S(c.project + ' ', 'bold'), S(c.verb + ' ', c.verb === 'new' ? 'c' : 'g'), S(c.text, 'dim')]
+/** A change's mark and color: + new, ! a failure, ✓ the rest. */
+export function changeMark(verb) {
+  if (verb === 'new') return ['+', 'c']
+  if (/failed|blocked|offline/.test(verb)) return ['!', 'r']
+  return ['✓', 'g']
+}
+const changeChip = (c) => [S(changeMark(c.verb)[0] + ' ', changeMark(c.verb)[1]), S(c.project + ' ', 'bold'), S(c.verb + ' ', changeMark(c.verb)[1]), S(c.text, 'dim')]
 
 function changeLines(m, w, max, info) {
   if (!m.changes.length) return [fit([S('changed  ', 'c'), S(info.seenAt ? 'nothing since ' + info.seenAt : 'nothing yet: x in the panel marks what you saw', 'dim')], w)]
@@ -198,7 +210,7 @@ function changeLines(m, w, max, info) {
 /** A project's line(s): working tasks (who, how long), open tasks by name, its PR. */
 function projectLines(p, w, opts = {}) {
   const narrow = w < 150
-  const active = p.tasks.filter((t) => ['wait', 'stuck', 'run'].includes(t.state))
+  const active = p.tasks.filter((t) => ['wait', 'stuck', 'run', 'silent'].includes(t.state))
   const work = active.map((t) => [S(TASK_MARK[t.state][0] + ' ', TASK_MARK[t.state][1]), S(t.title, 't'), S(' ' + (t.who || 'nobody') + (t.age !== null ? ' ' + age(t.age) : ''), 'dim')])
   const open = [
     ...p.tasks.filter((t) => t.state === 'ready').map((t) => [S('○ ', 't'), S(t.title, t.isNew ? 'c' : 't')]),
@@ -219,9 +231,17 @@ function projectLines(p, w, opts = {}) {
       [wk, workW],
     ]
     if (openW) cells.push([i ? [] : open.length ? fitChips(open, openW - 1, ' ') : [S('nothing unassigned', 'faint')], openW])
-    if (prW) cells.push([i ? [] : pr ? [S('⇡ ' + pr.pr.label + ' ', 'm'), S(pr.title, 'dim')] : [S('no open PR', 'faint')], prW])
+    if (prW) cells.push([i ? [] : pr ? [S('⇡ ' + pr.pr.label + ' ', 'm'), ...(pr.pr.words && pr.pr.words !== 'open' ? [S(pr.pr.words, prStyle(pr.pr.words))] : [S(pr.title, 'dim')])] : [S('no open PR', 'faint')], prW])
     return cols(cells, w)
   })
+}
+
+/** The color of a PR's state. */
+export function prStyle(words) {
+  if (/ready|merged|passed/.test(words)) return 'g'
+  if (/failed|changes/.test(words)) return 'r'
+  if (/review/.test(words)) return 'y'
+  return 'dim'
 }
 
 function projectHead(w) {
@@ -251,7 +271,7 @@ export function bandLines(m, w, opts = {}) {
       ...m.needs.map((n) => ({ id: n.id, segs: needCells(n, lw) })),
       ...m.quiet.map((q) => ({ id: q.id, segs: quietCells(q, lw) })),
       ...changeLines(m, lw, 2, info).map((segs) => ({ segs })),
-      ...m.ships.slice(0, 4).map((s) => ({ id: s.id, segs: cols([[[S('⇡ ', 'm'), S('open PR', 'm')], 10], [[S(s.project, 'bold')], 16], [[S(s.pr.label + ' ', 'm'), S(s.title, 't')], 0], [[S(SHIP_WORDS[s.state] || '', 'dim')], 19], [[S(s.who, 'dim')], 19], [[], 4]], lw) })),
+      ...m.ships.slice(0, 4).map((s) => ({ id: s.id, segs: cols([[[S('⇡ ', 'm'), S('open PR', 'm')], 10], [[S(s.project, 'bold')], 16], [[S(s.pr.label + ' ', 'm'), S(s.title, 't')], 0], [[S(s.pr.words && s.pr.words !== 'open' ? s.pr.words : SHIP_WORDS[s.state] || '', s.pr.words && s.pr.words !== 'open' ? prStyle(s.pr.words) : 'dim')], 19], [[S(s.who, 'dim')], 19], [[], 4]], lw) })),
     ]
     const right = [{ segs: projectHead(rw) }, ...m.projects.flatMap((p) => projectLines(p, rw, { wide: true, ships: m.ships }).map((segs, i) => ({ id: i ? null : 'p:' + p.name, segs }))), { segs: fit([S('  idle: ' + (m.idle.join(', ') || 'none'), 'faint')], rw) }]
     for (let i = 0; i < Math.max(left.length, right.length); i++) {
@@ -311,19 +331,20 @@ export function listEntries(m, w, sel, info = {}) {
     item(n.id, cols([[[S(' ' + g + ' ', st), S(n.verb, n.receipt ? 'dim' : st)], 11], [[S(n.project, n.receipt ? 'dim' : 'bold')], 15], [n.receipt ? [S(n.receipt, 'g')] : [...(n.asked ? [S('asked ' + n.asked.time + ' · ', 'c')] : []), S(n.ask, 't')], 0], [[S(n.receipt ? '' : age(n.age).padStart(3), 'dim')], 4]], w))
   }
   if (!m.needs.length) out.push({ line: text(fit([S('   nothing needs you', 'faint')], w)) })
-  head(2, 'OFFLINE · ' + m.quiet.length, 'o')
+  head(2, 'QUIET · ' + m.quiet.length, 'o')
   for (const q of m.quiet) item(q.id, cols([[[S(' ◌ ', 'o'), S(q.verb, 'o')], 11], [[S(q.project, 'bold')], 15], [[S(q.ask, 'dim')], 0]], w))
   head(3, 'OPEN PRS · ' + m.ships.length, 'm')
-  for (const s of m.ships) item(s.id, cols([[[S(' ⇡ ', 'm'), S(s.pr.label, 'm')], 11], [[S(s.title, 't')], 0], [[S(s.project, 'dim')], 15]], w))
+  for (const s of m.ships) item(s.id, cols([[[S(' ⇡ ', 'm'), S(s.pr.label, 'm')], 11], [[S(s.title, 't')], 0], ...(s.pr.words && s.pr.words !== 'open' ? [[[S(s.pr.words, prStyle(s.pr.words))], 18]] : []), [[S(s.project, 'dim')], 15]], w))
   head(4, 'CHANGED SINCE ' + (info.seenAt || '…') + ' · ' + m.changes.length, 'c', m.changes.length ? [S('x', 'kb'), S(' marks them seen', 'dim')] : [])
-  for (const c of m.changes) item(c.id, cols([[[S(' ' + (c.verb === 'new' ? '+' : '✓') + ' ', c.verb === 'new' ? 'c' : 'g'), S(c.verb, c.verb === 'new' ? 'c' : 'g')], 13], [[S(c.project, 'bold')], 15], [[S(c.text, 'dim')], 0], [[S(age(c.age).padStart(3), 'dim')], 4]], w))
+  for (const c of m.changes) item(c.id, cols([[[S(' ' + changeMark(c.verb)[0] + ' ', changeMark(c.verb)[1]), S(c.verb, changeMark(c.verb)[1])], 13], [[S(c.project, 'bold')], 15], [[S(c.text, 'dim')], 0], [[S(age(c.age).padStart(3), 'dim')], 4]], w))
   if (!m.changes.length) out.push({ line: text(fit([S('   nothing new', 'faint')], w)) })
   head(5, 'PROJECTS · ' + m.projects.length + ' with work' + (m.idle.length ? ' · idle: ' + m.idle.join(', ') : ''), 'dim')
   for (const p of m.projects) {
     const n = (...s) => p.tasks.filter((t) => s.includes(t.state)).length
     const parts = [
       n('wait', 'stuck') ? [n('wait', 'stuck') + ' need you', 'y'] : null,
-      n('run') ? [n('run') + ' working', 'b'] : null,
+      n('run', 'silent') ? [n('run', 'silent') + ' working', 'b'] : null,
+      n('silent') ? [n('silent') + ' silent', 'o'] : null,
       n('ready') ? [n('ready') + ' ready', 't'] : null,
       n('blocked') ? [n('blocked') + ' blocked', 'r'] : null,
       n('later') ? [n('later') + ' later', 'dim'] : null,
@@ -339,11 +360,11 @@ export function taskEntries(p, w, sel) {
   const out = [{ line: text(fit([S(p.name + ': every task', 'head')], w)) }]
   const groups = [
     ['NEEDS YOU', ['wait', 'stuck'], 'yb'],
-    ['WORKING NOW', ['run'], 'b'],
+    ['WORKING NOW', ['run', 'silent'], 'b'],
     ['READY, NOBODY ON IT', ['ready'], 'bold'],
     ['BLOCKED', ['blocked'], 'r'],
     ['LATER: WAITS ON SOMETHING', ['later'], 'dim'],
-    ['DONE SINCE YOUR LAST LOOK', ['done'], 'g'],
+    ['DONE RECENTLY', ['done'], 'g'],
   ]
   for (const [title, states, st] of groups) {
     const list = p.tasks.filter((t) => states.includes(t.state))
@@ -389,12 +410,24 @@ export function needDetail(n, p, w, extra = {}) {
   if (n.detail) out.push(text([]), ...wrap(n.detail, w).map((l) => text([S(l, 't')])))
   out.push(text([]))
   if (n.why && !n.receipt) out.push(fact('why now', n.why))
-  if (n.worker) out.push(fact('worker', n.worker))
+  if (n.worker) out.push(fact('worker', n.worker + activityText(n.activity)))
   if (n.owner && n.owner !== n.worker) out.push(fact(n.verb === 'unblock' ? 'spawner' : 'owner', n.owner + (p && p.orchestrators.some((o) => o.agent === n.owner) ? ' (orchestrator), ' + (p.orchestrators.find((o) => o.agent === n.owner).online ? 'online' : 'offline') : '')))
   if (n.task) out.push(fact('task', n.channel + '/' + n.task, 'dim'))
   if (n.asked) out.push(fact('asked', n.asked.owner + ' at ' + n.asked.time + '; the reply comes to your chief', 'c'))
+  if (extra.history && extra.history.length) {
+    out.push(text([]), text([S('HISTORY', 'dim')]))
+    for (const h of extra.history.slice(-6)) out.push(...wrap(h.text, Math.max(10, w - 7)).map((l, i) => text([S((i ? '' : clock(h.at)).padEnd(7), 'dim'), S(l, 't')])))
+  }
   for (const l of extra.below || []) out.push(l)
   return out
+}
+
+/** A worker's last activity, from the hub (borant status): " · last tool call 40s ago: Bash npm test". */
+export function activityText(a) {
+  if (!a) return ''
+  if (a.tool_running_since) return ' · running a tool for ' + age(Date.now() - a.tool_running_since) + (a.last_tool ? ': ' + a.last_tool : '')
+  if (a.last_tool_at) return ' · last tool call ' + age(Date.now() - a.last_tool_at) + ' ago' + (a.last_tool ? ': ' + a.last_tool : '')
+  return ''
 }
 
 /** "14:35" in the session's local time. */
@@ -404,6 +437,20 @@ export function clock(at) {
 }
 
 export function quietDetail(q, p, w) {
+  if (q.verb === 'silent') {
+    const a = q.activity || {}
+    return [
+      text(spread([S('◌ SILENT WORKER', 'o')], [S(q.project + (p ? ' · ' + p.collection : ''), 'dim')], w)),
+      text([S('claimed, no tool call for ' + age(q.age), 'o')]),
+      text([]),
+      ...wrap(q.ask, w).map((l) => text([S(l, 'head')])),
+      text([]),
+      fact('worker', q.worker),
+      ...(a.last_tool ? facts('last tool', a.last_tool + (a.last_tool_at ? ' (' + clock(a.last_tool_at) + ')' : ''), w) : []),
+      ...(a.last_text ? facts('last text', '"' + a.last_text + '"' + (a.last_text_at ? ' (' + clock(a.last_text_at) + ')' : ''), w) : []),
+      fact('owner', q.owner),
+    ]
+  }
   return [
     text(spread([S('◌ ORCHESTRATOR OFFLINE', 'o')], [S(q.project + (p ? ' · ' + p.collection : ''), 'dim')], w)),
     text([S(q.who + ' has no session', 'o')]),
@@ -417,18 +464,20 @@ export function quietDetail(q, p, w) {
 export function shipDetail(s, w) {
   return [
     text(spread([S('⇡ OPEN PR', 'm')], [S(s.project, 'dim')], w)),
-    text([S('the task: ' + (SHIP_WORDS[s.state] || s.state) + '; checks and review not known yet', s.state === 'run' ? 'b' : 'y')]),
+    text([S(s.pr.words && s.pr.words !== 'open' ? s.pr.words + '; the task: ' + (SHIP_WORDS[s.state] || s.state) : 'the task: ' + (SHIP_WORDS[s.state] || s.state) + '; checks and review not known yet', s.pr.words && s.pr.words !== 'open' ? prStyle(s.pr.words) : 'b')]),
     text([]),
     ...wrap(s.pr.label + ' ' + s.title, w).map((l) => text([S(l, 'head')])),
     text([]),
     fact('worker', s.who || 'nobody'),
+    ...(s.pr.checks ? [fact('checks', s.pr.checks)] : []),
+    ...(s.pr.review ? [fact('review', s.pr.review)] : []),
     fact('link', s.pr.url, 'dim'),
   ]
 }
 
 export function changeDetail(c, w) {
   return [
-    text(spread([S((c.verb === 'new' ? '+ ' : '✓ ') + c.verb.toUpperCase(), c.verb === 'new' ? 'c' : 'g')], [S(c.project, 'dim')], w)),
+    text(spread([S(changeMark(c.verb)[0] + ' ' + c.verb.toUpperCase(), changeMark(c.verb)[1])], [S(c.project, 'dim')], w)),
     text([S(c.at ? clock(c.at) + ', ' + age(c.age) + ' ago' : '', 'dim')]),
     text([]),
     ...wrap(c.text, w).map((l) => text([S(l, 'head')])),
@@ -449,7 +498,7 @@ export function projectDetail(p, w) {
 
 export function taskDetail(t, p, w) {
   const [g, st] = TASK_MARK[t.state]
-  const words = { wait: 'NEEDS YOU', stuck: 'STUCK', run: 'WORKING', ready: 'READY, NOBODY ON IT', blocked: 'BLOCKED', later: 'LATER', done: 'DONE' }
+  const words = { wait: 'NEEDS YOU', stuck: 'STUCK', run: 'WORKING', silent: 'SILENT', ready: 'READY, NOBODY ON IT', blocked: 'BLOCKED', later: 'LATER', done: 'DONE' }
   return [
     text(spread([S(g + ' ' + words[t.state], st)], [S(p.name + ' · ' + p.collection, 'dim')], w)),
     text([S(t.age !== null ? 'last update ' + age(t.age) + ' ago' : '', 'dim')]),
@@ -457,7 +506,7 @@ export function taskDetail(t, p, w) {
     ...wrap(t.title, w).map((l) => text([S(l, 'head')])),
     text([]),
     fact('worker', t.who || 'nobody'),
-    ...(t.pr ? [fact('PR', t.pr.label + ' · ' + t.pr.url)] : []),
+    ...(t.pr ? [fact('PR', t.pr.label + (t.pr.words && t.pr.words !== 'open' ? ' · ' + t.pr.words : '') + ' · ' + t.pr.url)] : []),
     ...(t.note ? facts('note', t.note, w) : []),
     fact('task', t.channel + '/' + t.id, 'dim'),
   ]

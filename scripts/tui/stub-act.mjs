@@ -25,3 +25,18 @@ if (verb === 'resume') {
   for (const c of board.collections) c.needs_you = c.needs_you.filter((q) => q.task !== id)
 }
 fs.writeFileSync(boardFile, JSON.stringify(board, null, 1))
+
+// The hub's feed and the task's history get the change, as the hub's log would.
+const feedFile = path.join(dir, 'changes.jsonl')
+const seq = (fs.existsSync(feedFile) ? fs.readFileSync(feedFile, 'utf8').split('\n').filter(Boolean).length : 0) + 100
+if (verb !== 'resume') {
+  const [channel, id] = ref.split('/')
+  const t = JSON.parse(fs.readFileSync(path.join(dir, 'tasks-' + channel + '.json'), 'utf8')).find((x) => x.id === id)
+  const project = JSON.parse(fs.readFileSync(path.join(dir, 'channels.json'), 'utf8')).find((c) => c.name === channel)?.project
+  const v = verb === 'answer' ? 'answered' : t && /^Approve/.test(t.title) ? 'gate_approved' : 'done'
+  fs.appendFileSync(feedFile, JSON.stringify({ seq, at: Date.now(), project, channel, task: id, verb: v, text: t ? t.title : id, by: 'human' }) + '\n')
+  const hf = path.join(dir, 'history-' + id + '.json')
+  const h = fs.existsSync(hf) ? JSON.parse(fs.readFileSync(hf, 'utf8')) : []
+  h.push({ seq, at: Date.now(), kind: verb === 'answer' ? 'answered' : 'status', status: verb === 'answer' ? 'in_progress' : 'closed', by: 'human', text: verb === 'answer' ? 'a person answered' : 'a person closed it as done' })
+  fs.writeFileSync(hf, JSON.stringify(h))
+}
