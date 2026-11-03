@@ -3,13 +3,18 @@
 //! `borant_core::board::build`. It writes nothing, and it must not run behind
 //! the hub request mutex (review focus 7).
 
-use borant_core::board::{BoardInput, BoardView, build};
+use std::collections::HashMap;
+
+use borant_core::board::{BoardInput, BoardView, DEFAULT_DONE_SINCE, TaskLines, build};
+use borant_core::events::EventFilter;
 use borant_core::model::{Channel, Project, SpawnRecord};
 use borant_core::proto::ApiError;
-use borant_core::{CollectionName, keys};
+use borant_core::{CollectionName, TaskId, Timestamp, keys};
+use futures::StreamExt;
 use serde_json::Value;
 
 use crate::Hub;
+use crate::changes::PR_URL;
 
 /// Who reads the board. Choice C16: an agent sees only its own collection,
 /// which may be none.
@@ -24,10 +29,15 @@ pub(crate) enum Caller<'a> {
 impl Hub {
     /// The board of `collection`, or of every collection that the caller may
     /// see. An agent that names another collection is `denied`.
+    ///
+    /// `with_tasks` adds the lines of `--tasks`: the time of each task's
+    /// last status change, and the PR watch's last read.
     pub(crate) async fn board(
         &self,
         caller: Caller<'_>,
         collection: Option<CollectionName>,
+        with_tasks: bool,
+        done_since: Option<Timestamp>,
     ) -> Result<BoardView, ApiError> {
         let now = self.now();
         let projects: Vec<Project> = self
@@ -45,7 +55,7 @@ impl Hub {
             .filter(|doc| doc.key.matches('.').count() == 1)
             .filter_map(|doc| serde_json::from_value::<Channel>(doc.value).ok())
             .collect();
-        let tasks = self.all_tasks().await?;
+        let all = self.all_tasks().await?;
         let spawns: Vec<SpawnRecord> = self
             .store
             .list::<SpawnRecord>(keys::SPAWN_PREFIX)
@@ -71,18 +81,69 @@ impl Hub {
                 None => every_collection(self, &projects, &channels),
             },
         };
+        // The lines add two reads that the counts do not need: the time of
+        // each task's last status change, and the state of each change
+        // request that the watch holds (spec: board task lines, "Cost").
+        let status_since = if with_tasks {
+            self.status_since().await?
+        } else {
+            Vec::new()
+        };
+        let mut prs = Vec::new();
+        if with_tasks {
+            for (channel, task) in &all {
+                if !task.properties.contains_key(PR_URL) {
+                    continue;
+                }
+                if let Some(status) = self.change_status(channel, &task.id).await? {
+                    prs.push((channel.clone(), task.id, status));
+                }
+            }
+        }
+        let lines = with_tasks.then(|| TaskLines {
+            done_since: done_since.unwrap_or(now.minus(DEFAULT_DONE_SINCE)),
+            status_since: &status_since,
+            prs: &prs,
+        });
+
         Ok(build(
             &BoardInput {
                 at: now,
                 projects: &projects,
                 channels: &channels,
-                tasks: &tasks,
+                tasks: &all,
                 spawns: &spawns,
                 agents: &agents,
                 collections: &self.cfg.collections,
+                lines,
             },
             &wanted,
         ))
+    }
+
+    /// The time of the last `task.status` event of each task, for the task
+    /// lines. A task that the log predates has none, and its line falls back
+    /// to the record's own time.
+    async fn status_since(&self) -> Result<Vec<(TaskId, Timestamp)>, ApiError> {
+        let Some(log) = &self.events else {
+            return Ok(Vec::new());
+        };
+        let filter = EventFilter {
+            kinds: vec!["task.status".to_owned()],
+            ..EventFilter::default()
+        };
+        let mut stream = log.read(&filter, false).await?;
+        let mut since: HashMap<TaskId, Timestamp> = HashMap::new();
+        while let Some(event) = stream.next().await {
+            let Some(task) = event.task else {
+                continue;
+            };
+            since
+                .entry(task)
+                .and_modify(|at| *at = (*at).max(event.at))
+                .or_insert(event.at);
+        }
+        Ok(since.into_iter().collect())
     }
 }
 

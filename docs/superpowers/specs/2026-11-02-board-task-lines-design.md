@@ -70,6 +70,10 @@ tasks of a closed saga or epic are left out.
   `updated`.
 - `recent_done`: the last 10 tasks of the project closed as done, with title,
   closer, time, and PR. The project view lists them by name.
+- The list of lines is `task_lines`, not the spec's `tasks`: `ProjectBoard`
+  already has `tasks` as the counts, and an older reader reads that. The
+  count and the list are left out of the reply, not empty, when the caller
+  does not ask for `--tasks`.
 - The rules reuse the existing claim and readiness rules (`rules/graph.rs`)
   and do not copy them. When both apply, `blocked` wins over `later`.
 - An approval inside a saga, as drawn ("approve epics 3 to 5"), needs no new

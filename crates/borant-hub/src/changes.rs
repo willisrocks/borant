@@ -13,7 +13,7 @@ use borant_core::ports::ChangeRequests;
 use borant_core::ports::PortErrorKind;
 use borant_core::ports::changes::{ChangeState, ChangeStatus, CheckState, ReviewState};
 use borant_core::proto::ApiError;
-use borant_core::{AgentId, TaskId, keys};
+use borant_core::{AgentId, ChannelName, TaskId, keys};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -39,7 +39,7 @@ impl fmt::Debug for ChangeWatch {
 }
 
 /// The key of the last state of a change request, as the spec names it.
-fn key(channel: &borant_core::ChannelName, task: &TaskId) -> String {
+fn key(channel: &ChannelName, task: &TaskId) -> String {
     format!("pr.{channel}.{task}")
 }
 
@@ -207,6 +207,17 @@ impl Hub {
             self.publish(event).await;
         }
         Ok(())
+    }
+
+    /// The last state of a task's change request, as the watch read it.
+    /// `None` when the watch has not read it yet.
+    pub(crate) async fn change_status(
+        &self,
+        channel: &ChannelName,
+        task: &TaskId,
+    ) -> Result<Option<ChangeStatus>, ApiError> {
+        let doc = self.store.get::<Watched>(&key(channel, task)).await?;
+        Ok(doc.and_then(|doc| doc.value.last))
     }
 
     /// One direct message from the hub; a failed one is a warn, not a failed

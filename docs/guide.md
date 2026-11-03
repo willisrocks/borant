@@ -379,9 +379,15 @@ person, and only when every task of it is closed. A closed channel refuses
 `task_create`, `task_claim`, and `spawn`.
 
 The board is a computed read that stores nothing:
-`borant board [--collection C] [--json]`, the MCP tool `board`, and
+`borant board [--collection C] [--json] [--tasks]`, the MCP tool `board`, and
 `GET /api/board?collection=C`. It shows the projects, sagas, epics, and the
 questions that wait for a person, and the mod of a chief session draws it.
+`--tasks` adds one line per task that is not closed: whether it can start
+now, later, or only after a person acts, what it waits on, when it entered
+its status, and its change request. It also adds the count of the tasks that
+each project closed as done since `--done-since` (a duration such as `24h`, or
+an RFC 3339 time; one day by default) and the last ten of them. Without
+`--tasks` the reply is the counts alone, as an older reader knows it.
 
 ### Issue mirror
 
@@ -604,7 +610,7 @@ message.
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |
 | `borant logs <agent> [--follow]` | The session log of an agent |
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
-| `borant board [--collection C] [--json]` | The board: projects, sagas, epics, and waiting questions, computed from the records; stores nothing |
+| `borant board [--collection C] [--json] [--tasks [--done-since T]]` | The board: projects, sagas, epics, and waiting questions, computed from the records; stores nothing. `--tasks` adds a line per unfinished task and the count of the recent done tasks |
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant task close <channel>/<id> --reason R --message M` | Close a task as a person |

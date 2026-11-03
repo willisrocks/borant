@@ -786,7 +786,10 @@ fn start_state(
     if let Some(owner) = &channel.owner
         && !online(owner, agent_of)
     {
-        return (Some(StartState::Blocked), Some(ORCHESTRATOR_OFFLINE.to_owned()));
+        return (
+            Some(StartState::Blocked),
+            Some(ORCHESTRATOR_OFFLINE.to_owned()),
+        );
     }
     if saga::ready_in(channel, tasks).contains(&task.id) {
         return (Some(StartState::Ready), None);
@@ -1474,7 +1477,10 @@ mod tests {
         assert_eq!(lines[1].start, Some(StartState::Later));
         assert_eq!(lines[1].waits_on.as_deref(), Some("the guide"));
         assert_eq!(lines[2].start, Some(StartState::Later));
-        assert_eq!(lines[2].waits_on.as_deref(), Some(id(9).to_string().as_str()));
+        assert_eq!(
+            lines[2].waits_on.as_deref(),
+            Some(id(9).to_string().as_str())
+        );
         // A project that closed nothing yet.
         assert_eq!(project.done_since, Some(0));
         assert!(project.recent_done.is_empty());
@@ -1497,13 +1503,31 @@ mod tests {
                 ..task(2, "the skills", TaskStatus::Open, 1_100)
             },
         );
-        fx.spawn("w1", "api", 2_000_000, "missing bundle github-work", Some(id(2)));
+        fx.spawn(
+            "w1",
+            "api",
+            2_000_000,
+            "missing bundle github-work",
+            Some(id(2)),
+        );
         // A task that the graph lets start is blocked by its spawn too.
         fx.task("api", task(3, "the release notes", TaskStatus::Open, 1_200));
-        fx.spawn("w2", "api", 2_000_000, "missing bundle github-work", Some(id(3)));
+        fx.spawn(
+            "w2",
+            "api",
+            2_000_000,
+            "missing bundle github-work",
+            Some(id(3)),
+        );
         // A spawn inside the wait window explains nothing.
         fx.task("api", task(4, "the smoke test", TaskStatus::Open, 1_300));
-        fx.spawn("w3", "api", 9_940_000, "missing bundle github-work", Some(id(4)));
+        fx.spawn(
+            "w3",
+            "api",
+            9_940_000,
+            "missing bundle github-work",
+            Some(id(4)),
+        );
         fx.with_lines(0);
 
         let board = fx.build(&[None]);
@@ -1562,7 +1586,10 @@ mod tests {
         fx.project("mirror");
         fx.channel("elastic", ChannelKind::Saga, Some("mirror"));
         fx.at("elastic", |c| c.gate = Some(id(1)));
-        fx.task("elastic", task(1, saga::GATE_TITLE, TaskStatus::Open, 1_000));
+        fx.task(
+            "elastic",
+            task(1, saga::GATE_TITLE, TaskStatus::Open, 1_000),
+        );
         fx.task("elastic", epic(2, "the provisioner", 1_100));
         fx.task("elastic", child(3, "the adapter", id(2), TaskStatus::Open));
         fx.with_lines(0);
@@ -1721,10 +1748,7 @@ mod tests {
         );
         assert_eq!(lines[1].since, ts(4_000));
         assert_eq!(lines[1].version, ts(4_000));
-        assert_eq!(
-            lines[1].claimed_by.as_ref().map(|a| a.as_str()),
-            Some("w1")
-        );
+        assert_eq!(lines[1].claimed_by.as_ref().map(|a| a.as_str()), Some("w1"));
     }
 
     #[test]

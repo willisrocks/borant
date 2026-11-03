@@ -391,22 +391,34 @@ impl Hub {
             CtlRequest::Call {
                 actor,
                 key: None,
-                call: ToolCall::Board { collection },
+                call:
+                    ToolCall::Board {
+                        collection,
+                        tasks,
+                        done_since,
+                    },
                 ..
             } => {
                 drop(mem);
                 let result = async {
                     let call = ToolCall::Board {
                         collection: collection.clone(),
+                        tasks,
+                        done_since,
                     };
                     self.authorize(&actor, &call).await?;
                     let view = match &actor {
-                        None => self.board(board::Caller::Person, collection).await?,
+                        None => {
+                            self.board(board::Caller::Person, collection, tasks, done_since)
+                                .await?
+                        }
                         Some(a) => {
                             let agent = self.agent(&a.agent).await?;
                             self.board(
                                 board::Caller::Agent(agent.value.collection.as_ref()),
                                 collection,
+                                tasks,
+                                done_since,
                             )
                             .await?
                         }

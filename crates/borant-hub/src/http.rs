@@ -141,7 +141,11 @@ async fn board(
     State(app): State<App>,
     Query(query): Query<BoardQuery>,
 ) -> Result<Json<BoardView>, Fail> {
-    Ok(Json(app.hub.board(Caller::Person, query.collection).await?))
+    Ok(Json(
+        app.hub
+            .board(Caller::Person, query.collection, false, None)
+            .await?,
+    ))
 }
 
 /// The body of `POST /v1/join`: the host name and its single-use token.

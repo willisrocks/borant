@@ -135,7 +135,10 @@ mod tests {
             r#"{"state":"open","head":"f","checks":{"pending":{}},"review":"none","checks_passed":2,"checks_total":3,"review_requested":true}"#,
         )
         .unwrap();
-        assert_eq!((counted.checks_passed, counted.checks_total), (Some(2), Some(3)));
+        assert_eq!(
+            (counted.checks_passed, counted.checks_total),
+            (Some(2), Some(3))
+        );
         assert!(counted.review_requested);
         let s = serde_json::to_string(&counted).unwrap();
         assert!(s.contains(r#""checks_passed":2"#), "{s}");
