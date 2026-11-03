@@ -208,7 +208,7 @@ shares nothing with it. (Decided, order from Chris through the chief)
 | Keep the Rust hub and adapt it | No rewrite. The hub, tasks, and channels work today. | The failures come from its core idea: interactive sessions on hosts, kept alive by leases, moves, and checkpoints. Adapting it keeps that idea. A durable agent loop in Rust does not exist, and pi-durable is TypeScript. |
 | Control plane on Cloudflare Durable Objects | pi-durable supports Durable Object storage. No machine to run. | pi-claude-code needs a real process to run `claude -p`. Workers cannot run a CLI. Tools still need Fly Machines, so the system spans two clouds for no gain. |
 | NATS JetStream as the queue | Today's bus. Push delivery. | A second store next to the Engine records, with its own state and its own failures. This week's stale state came partly from it. A Postgres outbox puts the queue row and the state change in one transaction. |
-| SQLite only (option A) | Engine state as pi-durable documents commits atomically with the session (spike Q5). One file, one backup. | Durable documents are JSON blobs with no SQL. The Engine needs queries for the board, Threads, Decisions, replay, and the changes feed. Raw Engine SQL in the same file is a separate transaction anyway (spike Q5). Chris chose option B. |
+| SQLite only (option A) | Engine state as pi-durable documents commits atomically with the session (spike Q5). One file, one backup. | Durable documents are JSON blobs with no SQL. The Engine needs queries for the board, Threads, Decisions, replay, and the changes feed. Raw Engine SQL in the same file is a separate transaction anyway (spike Q5). Chris chose option B. Section 20 asks Chris about one variant for cost: raw Engine tables in the same file, with the keyed crossings kept. |
 | Postgres for both, with our own pi-durable `Storage` (option C) | One database, one backup, one restore point. | We write and maintain a storage adapter for an SDK that changes every few days, and pass its conformance suite at each release. It gives no shared transaction for Engine tables, and one process still owns the store. |
 | A local Mac runner | Fast local builds, local browser logins. | Laptop sleep stopped chiefs this week. Secrets on the laptop. Chris decided cloud only. |
 | Attach the new system to current Borant's hub and NATS | One board and one task list across both systems. | It shares state and failures with the running system, and it needs changes to that system. Chris's order rules it out. |
@@ -691,6 +691,81 @@ waits behind the queue. (Decided) The start value of 2 is my call. It is low
 because a Claude subscription's usage limit can be shared with current Borant
 (section 21). The builder tunes it from the first week's data.
 
+### What a worker slot protects
+
+A slot limits how many Tickets run at once. It is not a compute unit, because each
+Ticket has its own Fly Machine (section 15). The answer differs per resource:
+
+| Resource | What a slot does | What limits it better |
+|---|---|---|
+| Sandbox CPU and memory | Nothing. Sandboxes share no Machine. | No limit is needed. |
+| Control-plane memory | Partly. `claude -p` runs here, but a run holds a process only while a model request streams, plus up to 2 retained processes for 5 minutes (spike Q8). A Ticket that waits for a 20-minute test holds a slot and no process. Router and Eval requests take no slot. | A limit on `claude -p` processes. |
+| Control-plane CPU | The same as memory. | The same limit, and a lower CPU weight for `claude`. |
+| Claude usage limit | Partly. Fewer runs use the limit more slowly, but router and Eval requests do not count. | A limit that counts every role. A separate account removes the sharing (section 24). |
+| Fly spend on sandboxes | Yes. 2 slots and the extra slot mean at most 3 running sandboxes. | Only a cap does this directly. An alert is the weaker replacement. |
+| Chris's wait | Harm. The slot creates the queue, and the extra slot repairs that harm. | No queue. |
+
+Current Borant gives the evidence. On 2026-11-03, the orchestrator reported an
+overload on `borant-1`: load 40 to 60 on 4 CPUs, agents at the cgroup memory cap,
+and the hub's board read timing out. CPU weights and fewer agents fixed it. So the
+thing to limit is what shares a host with the hub. On `borant-1`, that is the
+agents and their builds. In this design, builds run in sandboxes, so `claude -p` is
+the only agent load next to the Engine. Fly also holds a shared vCPU to a 6.25%
+baseline after its burst balance ends
+(https://docs.fly.io/machines/cpu-performance).
+
+### Option: one limit on `claude -p` processes, no slots
+
+(Recommendation) Replace slots, the extra slot, and held Inputs with one limit.
+Slots are in the body of this document until Chris picks (section 24). The goal
+that Chris never waits behind a queue stays, because no queue exists.
+
+- Every Input goes to its session at once, and every accepted Ticket runs at once.
+- A wrapper around `createClaudeCodeProvider()` holds a semaphore,
+  `claude.processes`. Every role counts: workers, the router, and the assessor. A
+  request over the limit waits in memory. A request for a person's Input goes first.
+- The limit comes from memory: Node plus the limit times the size of one process. A
+  new request closes an idle retained process when the cache of 2 is full
+  (`src/claude-cli.ts:1120` in pi-claude-code), so retained processes add no memory at
+  a limit of 2 or more. The start value is 2. Stage 1 of section 21 measures the size
+  of one `claude -p` process.
+- `PI_CLAUDE_CODE_COMMAND` names a small script that runs `claude` with `nice` 10
+  and a high `oom_score_adj`. So the Engine wins the CPU, and the kernel kills a
+  `claude` before Node. A killed process is a failed attempt under `settings.retry`.
+  These are the two fixes that worked on `borant-1`.
+- A usage-limit hit uses backoff. Claude Code's `rate_limit_event` carries
+  `resetsAt`. The wrapper starts no Claude request before that time. `run_ended`
+  sets the Ticket to `idle` with the reason "Claude limit until <time>", and
+  writes a `submit_input` effect with `run_after` at that time. pi-durable's own
+  retry is not enough, because a limit resets after hours and pi-ai does not retry
+  quota and billing errors.
+
+What this removes:
+
+| Section | Removed | Stays |
+|---|---|---|
+| 7 | All of "Admission: no run without a slot". The `held` Input state. "Held Inputs stay held" in the startup reconcile. The slot reason in "Run end". | Inputs, `when_busy`, reports, and `run_ended`, which still sets the stage and finds failed runs. |
+| 8 | In `assign`: the slot counter lock and the free-slot test. In `run_ended`: the slot release and the `assign` for the next Ticket. In `ingest`: "or held". In `decide`: the stage `queued`. The router's slot sentence. | All other commands. The `effects` table stays the only durable queue. |
+| 10 | The stage `queued`. "Worker slots". | All other stages and the board query. |
+
+Sections 5, 6, 19, 20, 21, and 23 also name slots. One commit changes those words.
+
+Inputs that wait for the next run in section 7 change like this. Router notes and
+Policy notices wake the Ticket. Each one costs a model turn, and they are rare. Bot
+comments that are not reviews stop at `ingest`: they stay as Triggers on the Thread
+and make no Input. The worker reads the Thread when it needs them.
+
+What this risks:
+
+| Risk | Effect | Handling |
+|---|---|---|
+| A burst of Tickets | No cap on running sandboxes. 20 sandboxes at 8 GB for 8 hours cost $11 a day. | An alert on the count of running sandboxes. In the first Project, Chris starts every Ticket. |
+| Tickets that wait for a process | A waiting Ticket has an active run, so section 15 keeps its sandbox running. | Change the stop rule to 10 minutes with no tool call. The next tool call starts the Machine in about 1 s. |
+| More use of a shared Claude account | With many Tickets, a limit of 2 keeps 2 requests busy for hours. 2 slots have gaps during tool calls, so this can use the account's limit faster. | A separate account (section 24), or a limit of 1. A metric counts limit hits. |
+| A usage-limit hit | All Claude work stops, also Chris's answers, until the reset. Slots do not prevent this, but they reach the limit later. | The backoff above. A Policy commit can move a role to Codex. No test has hit a limit yet, so the builder tests with a faux provider and records the first real error text. |
+| A wait inside a model request | `settings.stream.timeoutMs` can count the wait. A host crash counts as a failed attempt. | Take the semaphore before the timed request starts, and test this. |
+| A wait looks like silent work | A waiting Ticket shows no tool call. | The board shows "waiting for Claude" from the semaphore. |
+
 ### Board query
 
 One query returns the whole board: every open Ticket with its Project,
@@ -1101,7 +1176,7 @@ The cost is one required test: a real Codex turn before the first Project runs,
 which this section already requires. Codex's quality on these Projects is unknown
 until then.
 
-If the subscription terms refuse both Claude and Codex on a server, the build stops.
+If a provider later refuses both Claude and Codex on a server, the build stops.
 An Anthropic API key needs Chris's approval and a monthly cap.
 
 ## 18. Loop engineering and replay
@@ -1170,28 +1245,162 @@ observe mode. (Decided for the mode, my call for the start state.)
 
 ## 20. Estimated cost per month
 
-Nothing here is spent yet. Prices are Fly.io list prices read on 2026-11-02 from
-https://docs.fly.io/about/pricing: shared CPU about $0.69 per vCPU and
-$6.01 per GB RAM per 30 days, volumes and stopped rootfs $0.15 per GB, Managed
-Postgres Basic $38, outbound transfer $0.02 per GB in North America.
+Nothing here is spent yet. The designer read each list price on 2026-11-03. A month
+is 30 days. Hetzner lists euros without VAT. This section converts at 1 EUR = 1.1179
+USD, the rate of that date from https://api.frankfurter.dev.
 
-| Item | First Project: `boopmark`, 2 slots | Six slots, today's load |
+| Item | List price | Source |
 |---|---|---|
-| Control-plane Machine, always on | `shared-cpu-2x`, 4 GB: $25 | `shared-cpu-4x`, 8 GB: $51 |
-| Control-plane volume | 10 GB: $2 | 40 GB: $6 |
-| Litestream object storage, under 10 GB | $1 | $1 |
-| Fly Managed Postgres, Basic plan | $38 | $38 |
-| Sandbox compute, `shared-cpu-4x` 8 GB at $0.071 per hour | 1 running, 6 hours a day: 180 hours, $13 | 4 running, 10 hours a day: 1200 hours, $85 |
-| Sandbox volumes, 20 GB each | 3 alive: $9 | 15 alive: $45 |
-| Browserbase, Developer plan, about 60 hours | $32 | $32 |
-| Outbound transfer | $1 | $2 |
-| Models: subscriptions that Chris already pays | $0 more | $0 more |
-| Total | about $120 | about $260 |
+| Fly `shared-cpu-2x`, 2 GB | $13.39 a month | https://docs.fly.io/about/pricing |
+| Fly extra RAM | $6.00 per GB a month | same |
+| Fly volume, stopped rootfs | $0.15 per GB a month | same |
+| Fly outbound transfer, North America and Europe | $0.02 per GB | same |
+| Fly Managed Postgres Basic, 1 GB RAM | $38 a month, plus $0.28 per GB | https://docs.fly.io/postgres |
+| Neon Launch | $0.106 per CU-hour, $0.35 per GB a month. Smallest compute: 0.25 CU, 1 GB RAM. | https://neon.com/pricing, https://neon.com/docs/manage/computes |
+| Supabase Pro with a Micro compute | $25 a month | https://supabase.com/pricing |
+| Browserbase Developer | $20 a month with 100 hours, then $0.12 per hour | https://www.browserbase.com/pricing |
+| Hetzner CX23, CX33 (2 vCPU 4 GB, 4 vCPU 8 GB), EU only | €5.99, €8.99 a month. CX33: €0.0144 per hour. | https://www.hetzner.com/cloud/cost-optimized/ |
+| Hetzner CPX22, CPX32 (2 vCPU 4 GB, 4 vCPU 8 GB), EU | €19.99, €35.99 a month. CPX32: €0.0577 per hour. | https://www.hetzner.com/cloud/regular-performance/ |
+| Hetzner CPX21 (3 vCPU 4 GB), US | €32.49 a month | same |
+| Hetzner primary IPv4 | €0.50 a month | https://docs.hetzner.com/cloud/servers/overview/ |
+| Object storage for Litestream, under 10 GB | $1 a month, an estimate | https://developers.cloudflare.com/r2/pricing/ |
 
-The sandbox hours are the weakest number. If 10 sandboxes run 12 hours a day,
-sandbox compute is about $255 and the total is about $430. The first two weeks of
-metrics give the real number. The Browserbase line is $0 until stage 5 of section
-21, so the first months can cost about $90. (My call on all assumptions)
+Other Fly sizes come from those prices. `shared-cpu-2x` with 4 GB costs $25.39 a
+month, or $0.035 per hour. `shared-cpu-4x` with 8 GB costs $51 a month, or $0.071
+per hour. Models stay at $0 more, because Chris already pays the subscriptions.
+
+The two loads:
+
+- First Project: `boopmark`, 1 sandbox running 6 hours a day, or 180 hours, and 3
+  sandbox volumes alive.
+- Busy: today's load, 4 sandboxes running 10 hours a day, or 1200 hours, and 15
+  sandbox volumes alive. Browserbase is on, because stage 5 is done.
+
+Why the first number is high: Postgres ($39), control-plane RAM ($25), and
+Browserbase ($20) are 77% of the first-Project total. Sandboxes are not the cost.
+This section also corrects the earlier estimate of about $120, $260, and $430. That
+estimate used $32 for Browserbase and left out Postgres storage.
+
+### The options
+
+| Option | First Project | Busy | Reverses a decision of Chris |
+|---|---|---|---|
+| The design in this document | $110, or $90 before stage 5 | $251 | None |
+| Fly, smaller Machines, Fly Managed Postgres | $66 | $156 | None |
+| Fly, smaller Machines, Neon | $48 | $137 | Fly Managed Postgres |
+| Fly, smaller Machines, SQLite and no Postgres (Recommendation) | $27, or $39 with a 4 GB control plane | $115 | Postgres for the Engine (option B, section 4) |
+| Hetzner control plane, Fly sandboxes, SQLite | $20 with CX23, $36 with CPX22 | $95, $111 | Option B and the control plane on Fly |
+| Hetzner for all, SQLite, one server per Ticket | $11 with CX, $36 with CPX | $48, $121 | Option B, Fly, and the sandbox stop and start |
+
+"Smaller Machines" means the first three savings in the next table. Every option
+below the first row has Browserbase at $0 until stage 5.
+
+The sandbox hours are the weakest number. If 10 sandboxes run 12 hours a day, that
+is 3600 hours. Sandbox compute is then $255 at 8 GB and $127 at 4 GB. The first two
+weeks of metrics give the real number.
+
+### Each saving and what it gives up
+
+First-Project load:
+
+| Change | Saves a month | Gives up |
+|---|---|---|
+| Browserbase out until stage 5 | $20 | Nothing before stage 5. Logged-in browser work waits for it. |
+| Control plane `shared-cpu-2x` 2 GB with a 5 GB volume, not 4 GB with 10 GB | $13 | Room. Node used 172 MB at 500 idle sessions (spike Q4), and real transcripts are larger. Interactive `claude` processes on the Mac used 433 MB to 999 MB on 2026-11-03. `claude -p` is not measured. 2 GB holds 2 processes at 433 MB, but not at 999 MB. Stage 1 measures it. 4 GB adds $12. |
+| Sandbox `shared-cpu-2x` 4 GB with a 10 GB volume, not 8 GB with 20 GB | $11 | Slower builds and a smaller cache. A Project that needs more sets its own size. |
+| Neon Launch for Postgres | $19 | The private network: Postgres traffic goes over the public internet, with TLS and a password. A second vendor and one more credential. The total assumes that the compute stays on, because the effects runner polls every 5 s. |
+| Supabase Pro for Postgres | $14 | The same as Neon, for less saving. |
+| A free Postgres plan | $39 | Not usable. Neon Free has 100 CU-hours, about 17 days of an always-on compute, and a 6-hour restore window. Supabase Free has 500 MB and pauses after 1 week without activity. |
+| Postgres inside the control-plane Machine | about $36 | Rejected. It shares the volume with SQLite, so it fails with it. We run its backups and upgrades, and every bridge failure window stays. SQLite alone is simpler. |
+| SQLite and no Postgres | $39 | The next part of this section. |
+| Hetzner | $7 to $16 more, with CX plans only | The last part of this section. |
+
+### SQLite for the Engine, with no Postgres
+
+The Engine can run with no Postgres. It cannot run with no bridge.
+
+The Engine tables move into pi-durable's SQLite file, next to the `pi_` tables.
+Spike Q5 ran this layout. The board, Threads, Decisions, and replay keep SQL, so the
+objection to option A in section 4 does not apply to this variant.
+
+The bridge gets smaller, but it stays. The `Tx` object has no SQL method, so a raw
+Engine write is a separate transaction (spike Q5). A crash between an Engine commit
+and a `submit` still happens. The `effects` table, `requestId`, the outbox unique
+key, and the startup reconcile stay. Only pi-durable documents commit together with
+a session, and they have no SQL. That is option A, which Chris rejected.
+
+What goes away:
+
+- 4 of the 10 failure windows of section 7: two with Postgres down, and two with one
+  store restored older than the other
+- "Webhooks while Postgres is down" (section 8)
+- The restore of two stores to one time T. One file has one restore point.
+- `SKIP LOCKED` and `LISTEN/NOTIFY`. One process is the only writer, so a plain
+  update and an in-process event do the job.
+- The network path between the Engine and its store, and $39 a month
+
+What breaks or gets worse:
+
+- A lost volume loses more. A Fly volume lives on one host (section 23). Today, Fly
+  Managed Postgres holds Engine records apart from that host, and its plans include
+  high availability. With SQLite, a lost volume loses each record after the last
+  Litestream sync. Recovery polls fetch GitHub Triggers again. A web chat message or
+  an approval in that gap is lost, and Chris must repeat it. Goal 3 then holds for a
+  process crash, not for a lost volume.
+- The audit records depend on Litestream alone, so the restore test of stage 1
+  carries more weight.
+- `node:sqlite` is synchronous. A slow Engine query blocks every session and the
+  HTTP server. Engine commands stay short, and replay reads in small batches.
+- The Engine and pi-durable share one file and one write queue. A pi-durable upgrade
+  migrates the file that holds the Engine's records, so a backup comes first.
+- No second process can open the file (spike Q2). The Engine cannot move to its own
+  Machine without a move to Postgres, and that move rewrites its SQL.
+- It changes sections 4, 5, 7, 8, 9, 19, and 23. One commit does this if Chris picks
+  it.
+
+### Hetzner
+
+Separate hosts stay a hard rule. Any Hetzner option uses new servers in a new Hetzner
+project, with a new token, off the tailnet.
+
+Hetzner is not orderable today, as far as its site shows. On 2026-11-03, each plan
+above showed "This product is currently unavailable. Please check back later." The
+status page lists "Limited availability of cloud instances" from 2026-06-26, with no
+end date (https://status.hetzner.com). Nobody tested an order from Chris's account.
+The CX plans exist in the EU only, and the US prices are higher than Fly: CPX21 with
+4 GB costs €32.49, or $36.
+
+A Hetzner control plane with Fly sandboxes gives 4 GB and a 40 GB disk for $7 with
+CX23, and Hetzner's page states no CPU quota like Fly's. It gives up:
+
+- 6PN. The control plane joins it through `fly wireguard create`
+  (https://docs.fly.io/networking/private-networking). That tunnel is a new failure
+  path between the control plane and every sandbox.
+- Fly's restart, TLS, and secrets store. We run systemd, TLS, and OS patches on one
+  more host.
+- Low latency to the US if the server is in the EU, for the web UI and for sandboxes
+  outside the EU.
+
+Hetzner for all also gives up the sandbox stop and start. A powered-off server bills
+until it is deleted (https://docs.hetzner.com/cloud/billing/faq/). So the 10-minute
+stop of section 15 becomes a delete and a fresh clone, and the build cache goes with
+it. This option needs a new `SandboxPort` adapter, and a Ticket cannot start when
+Hetzner has no capacity. One shared host with containers costs about the same at the
+busy load, but it gives up the decided Machine per Ticket, and builds crowd each
+other as they did on `borant-1`.
+
+### Recommendation
+
+(Recommendation) Use Fly, smaller Machines, Browserbase out until stage 5, and SQLite
+with no Postgres: about $27 a month, or $39 with a 4 GB control plane. Postgres is the
+largest line, and this variant also removes four failure windows. The cost is the gap
+on a lost volume, and one user can repeat that work. It reverses Chris's choice of
+option B, so this document keeps Postgres until Chris picks (section 24).
+
+If Chris keeps Postgres, the smaller Machines with Fly Managed Postgres cost $66 and
+reverse nothing. Hetzner saves $7 to $16 more at the first-Project load, if it can be
+ordered at all, and costs a host to run. `SandboxPort` leaves sandboxes on Hetzner
+open for later, if the busy load is real.
 
 What this estimate leaves out:
 
@@ -1208,8 +1417,9 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
 ### Build stages
 
 1. Prove the unproven points of section 3, in this order: a real `claude` turn from
-   a Fly Machine (section 17), a real Codex turn, the process kills inside each
-   failure window of section 7, and one Litestream restore.
+   a Fly Machine (section 17), with the memory of that `claude -p` process, a real
+   Codex turn, the process kills inside each failure window of section 7, and one
+   Litestream restore.
 2. Build the core: the Engine, the bridge, effects, the Harness, sandboxes, the git
    proxy, the web chat and GitHub Sources, Evals with stored Decisions, the
    chief-of-staff screen, Ticket detail, notifications, and the admin page.
@@ -1330,18 +1540,19 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | One machine owns all sessions | A Fly host failure stops all agents. The volume lives on one host. | Litestream to object storage, a written restore runbook, the dead man's switch. Recovery is a new Machine, a restore, and the reconcile. |
 | Google logins | An agent cannot log in to Google. Logins expire. | Chris logs in through the live view. Login probes raise a "needs you" item early. |
 | Bridge bugs | A lost or doubled Input or report. | Every crossing is keyed. The reconcile is the same code at every startup, so it runs often. Bridge lag is a metric with an alert. Contract tests kill the process inside each failure window of section 7. |
-| Many `claude -p` processes on one machine | Memory pressure, subscription rate limits. | Worker slots cap concurrency. A metric counts the processes. The Machine can grow to more RAM with one command. |
+| Many `claude -p` processes on one machine | Memory pressure, subscription rate limits. | Worker slots cap worker runs, but not router or Eval requests (section 10). A metric counts the processes. The Machine can grow to more RAM with one command. |
 | Litestream and pi-durable's own WAL checkpoints | A broken SQLite replica. | The builder makes sure that pi-durable's `node:sqlite` settings work with Litestream before the first Project runs, with one restore test. |
 | A shared Claude usage limit, or a new login that logs out the others | Current Borant's agents slow down or stop. | 2 slots at the start, a metric for limit hits, and the login test on another account (section 17, section 21). |
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21: one system per piece of work, `cloud/` branches, GitHub Source in observe mode. |
 | Two screens during the parallel run | More attention from Chris, which is an anti-goal. | Accepted while the new system has one Project. The measurements in section 21 feed the later decision. |
-| Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | The terms check below this table sets build constraints. Open question 2 in section 24 stays with Chris. |
+| Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | Chris decided that the terms are fine for this use (section 24). A provider can still change its terms. The terms check below this table sets build constraints. |
 | A hijacked worker | It can leak a value from a secret bundle. | Bundles hold only test and staging values. It cannot push outside its prefix or merge (section 11). |
 
 ### Subscription terms check
 
 This is chief-personal's read of public docs on 2026-11-03. It is not legal advice,
-and it is partly inference. Chris has not decided yet.
+and it is partly inference. Chris read it and decided on 2026-11-03: "terms are fine
+for what I'm doing." (Decided)
 
 Claude:
 
@@ -1367,9 +1578,7 @@ Build constraints that follow from this read:
    concurrent machines.
 3. Pin and test the `claude -p` auth path. The docs say that `--bare` ignores OAuth
    and will become the `-p` default in a future release.
-4. Keep the slot count low and measure usage, because the always-on threshold is
-   unstated.
-5. Test whether a new login or "log out of all" revokes a setup-token on other
+4. Test whether a new login or "log out of all" revokes a setup-token on other
    machines. The docs do not say.
 
 The fallback does not change: all roles move to Codex by a Policy commit (section
@@ -1377,7 +1586,9 @@ The fallback does not change: all roles move to Codex by a Policy commit (sectio
 
 ## 24. Defaults and recommendations for Chris to check
 
-None of these is Chris's decision yet. The document uses each one until he answers.
+None of these is Chris's decision yet. The document uses each of the first four until
+Chris answers. The last two reverse a decision of Chris, so the body keeps that decision
+until Chris picks.
 
 | Topic | Value | Mark | Section |
 |---|---|---|---|
@@ -1385,6 +1596,8 @@ None of these is Chris's decision yet. The document uses each one until he answe
 | Naming | "Profile" applies to the new system only. Current Borant keeps "collection". | Chief default, for Chris to check | 5, 6 |
 | `claude -p` fallback | Every role moves to Codex. No Anthropic API key. | Recommendation | 17 |
 | GitHub identity | A GitHub App that Chris installs on `boopmark`. | Recommendation | 14 |
+| Cost | Fly, smaller Machines, Browserbase out until stage 5, SQLite with no Postgres: about $27 to $39 a month. | Recommendation | 20 |
+| Worker slots | Replace slots, the extra slot, and held Inputs with one limit on `claude -p` processes. | Recommendation | 10 |
 
 ### Open questions for Chris
 
@@ -1399,13 +1612,20 @@ builder read this document, and the designer settled its other points as calls.
    Default: a separate account if Chris has one. Otherwise the current account, 2
    slots, and a first login at a time that Chris picks, so that he can watch current
    Borant.
-2. Do the Claude and ChatGPT subscription terms allow this use on a server? The
-   whole model plan rests on `claude -p` and ChatGPT OAuth running headless.
-   Chief-personal read the public docs, and section 23 holds that read and the build
-   constraints that follow from it. The read is not legal advice and is partly
-   inference, so the decision stays with Chris. If Claude is refused, the build
-   starts on Codex. If both are refused, the build stops until Chris decides on an
-   API key with a cap. Default: the plan assumes yes, under those build constraints.
+2. Which cost option does the build use? The control plane needs a store for its
+   Engine records, and that store is the largest line of the bill. Fly Managed Postgres
+   costs $39 a month and holds the records apart from the control-plane host. SQLite
+   costs $0, removes four failure windows, and loses the last seconds of records if the
+   volume is lost. Section 20 lists every option, with totals. Default: the design as
+   written, with smaller Machines and no Browserbase until stage 5, at $66 a month.
+3. Do worker slots stay? A slot limits how many Tickets run at once, and the extra slot
+   lets a person's answer pass the queue. The real limits are on the control-plane
+   Machine, so one limit on `claude -p` processes can replace them, with no queue. That
+   removes code from sections 7, 8, and 10, and it removes the only cap on running
+   sandboxes (section 10). Default: slots stay as written.
+
+Closed: the subscription terms. Chris decided on 2026-11-03 that the terms are fine for
+this use. Section 23 holds the read and the build constraints that stay.
 
 ## 25. Left to the builder
 
