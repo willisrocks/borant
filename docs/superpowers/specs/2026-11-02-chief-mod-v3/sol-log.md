@@ -139,3 +139,9 @@ First verdict: "No. Not ready for a review PR. It is much more useful than v0.19
 5. "SHIPS NEXT" promised readiness that the mod cannot know, and the project's PR column used another order than the list.
 
 All five were fixed and recorded again, with a new check that enter opens the selected project's tasks. Second verdict (codex-310, a short new conversation, because a reply in the long one timed out): each of the five fixed, quoting the captures, and "Ready to send for review: yes."
+
+## Follow-up review: the mod on the new hub data (codex-311)
+
+The follow-up switches the mod to the four merged specs: the board's task lines with PR state, agent activity, the changes feed, and task history. Sol read the recorded captures at 120, 200, and 320 columns.
+
+First verdict: no, with three defects: in a project's task list `r` and `d` were offered without their field and confirmation; "ready to merge" claimed more than the PR watch knows (no draft or conflict state); and the key list cut what `4` and `5` do at 120. All three were fixed, with a new scenario step that answers from a project's task list. Second verdict: "Ready to send for review: yes."

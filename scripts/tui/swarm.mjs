@@ -93,4 +93,26 @@ for (const c of Object.values(collections)) {
 }
 fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify({ at: NOW, collections: [collections.personal, collections.work] }, null, 1))
 fs.writeFileSync(path.join(dir, 'channels.json'), JSON.stringify(channels, null, 1))
+// Each agent's activity (borant status --json): wkr-boop-2 went silent 31 minutes ago.
+const agents = []
+for (const p of PROJECTS) {
+  agents.push({ agent: p.orch, host: 'macbook', busy: true, last_tool_at: NOW - 40000, last_tool: 'mcp borant task_list', tool_running_since: null })
+  for (const t of p.tasks) {
+    if (!t.who || t.who === p.orch || !['run', 'wait', 'stuck', 'silent'].includes(t.s)) continue
+    agents.push(t.s === 'silent'
+      ? { agent: t.who, host: 'macbook', busy: true, last_tool_at: NOW - 31 * MIN, last_tool: 'Bash npm test -- search', last_text_at: NOW - 31 * MIN, last_text: '3 ranking tests fail; reading the scorer', tool_running_since: null }
+      : { agent: t.who, host: 'macbook', busy: true, last_tool_at: NOW - 20000, last_tool: 'Bash cargo test', tool_running_since: null })
+  }
+}
+fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ hosts: [], agents, inboxes: [], at: NOW }))
+// What the PR watch last read, by PR URL.
+const STATE = {
+  'ready to merge': { state: 'open', checks: { pass: {} }, checks_passed: 7, checks_total: 7, review: 'approved', review_requested: false },
+  'review requested': { state: 'open', checks: { pass: {} }, checks_passed: 7, checks_total: 7, review: 'none', review_requested: true },
+  'CI running': { state: 'open', checks: { pending: {} }, checks_passed: 3, checks_total: 7, review: 'none', review_requested: false },
+}
+const prs = {}
+for (const p of PROJECTS) for (const t of p.tasks) if (t.pr && STATE[t.prState]) prs['https://github.com/willisrocks/' + p.name + '/pull/' + t.pr.slice(1)] = STATE[t.prState]
+fs.writeFileSync(path.join(dir, 'prs.json'), JSON.stringify(prs))
+fs.writeFileSync(path.join(dir, 'changes.jsonl'), '')
 console.log('swarm: ' + PROJECTS.length + ' projects, ' + channels.length + ' channels in ' + dir)

@@ -92,6 +92,12 @@ sleep 2
 
 step rest
 check "at rest the band names the hotkey" "shown | grep -q 'ctrl+x b'"
+check "a worker with no tool call for 30 minutes is silent" "shown | grep -q '1 silent'"
+# A change lands while the person looks: it shows, by name, on the next read.
+echo '{"seq":'"$(date +%s)"',"at":'"$(node -e 'console.log(Date.now())')"',"project":"roger-docs-api","channel":"work-roger-docs-api","task":null,"verb":"pr_merged","text":"PR #612 Retry-After on 429","by":{"type":"agent","id":"wkr-docs-1"}}' >>"$stub/changes.jsonl"
+echo '{"kind":"change.updated"}' >>"$stub/events.jsonl"
+STEP_WAIT=6 step live-change
+check "a change from the hub feed shows by name" "shown | grep -q 'Retry-After on 429'"
 check "the footer names the hotkey" "shown | tail -2 | grep -q 'ctrl+x b'"
 check "the band names projects by their tasks" "shown | grep -q 'Billing export'"
 check "the band stays within its row limit ($(band_rows) <= $limit)" "[ $(band_rows) -le $limit ]"
@@ -111,14 +117,20 @@ check "j j selects the third item: its detail shows" "shown | grep -q 'NEEDS YOU
 
 step ships 3
 check "3 jumps to the open PRs" "shown | grep -q '⇡ OPEN PR'"
+check "the open PRs say how close each is to merge" "shown | grep -q 'approved, checks pass'"
 step projects 5
 # The selected project, as its detail names it: "<name>  <collection> · ".
 picked="$(shown | perl -CS -ne 'if (/(?:\x{2502} ?|^)([a-z][a-z0-9-]+)  (personal|work) \x{b7} /) { print $1; exit }')"
 step tasks Enter
 check "enter opens the selected project's tasks ($picked)" "[ -n \"$picked\" ] && shown | grep -q \"$picked: every task\""
 step task j
-step back b
-check "b goes back to the list" "! shown | grep -q ': every task'"
+step task-back k
+step task-answer r
+check "r in a project's task list opens the answer field there" "shown | grep -q ' ANSWER ' && shown | grep -q 'answer to wkr-emr-7'"
+step task-esc Escape
+check "esc from the field gives the keys back" "! shown | grep -q 'KEYS ON BORANT\\| ANSWER '"
+step reopen chord:b
+check "ctrl+x b opens the list again" "shown | grep -q 'KEYS ON BORANT' && ! shown | grep -q ': every task'"
 
 step needs 1 j j
 step answer r
@@ -146,6 +158,7 @@ check "h lists every key" "shown | grep -q 'ALL KEYS'"
 step help-back h
 step seen x
 check "x marks the changes seen" "shown | grep -q 'CHANGED SINCE [0-9:]* · 0\\|nothing since'"
+check "the answer reached the hub feed and the history" "grep -q answered \"\$stub/changes.jsonl\""
 step esc Escape
 check "esc gives the keys back" "! shown | grep -q 'KEYS ON BORANT'"
 step typed-again lit:'0 tasks'

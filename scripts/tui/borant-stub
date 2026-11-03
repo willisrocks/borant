@@ -7,7 +7,10 @@ dir="${BORANT_STUB_DIR:?set BORANT_STUB_DIR}"
 echo "$(date +%s.%N) $*" >>"$dir/calls.log"
 case "$1" in
   # A test stops the hub with board.fail, and the event stream with events.off.
-  board) [ -e "$dir/board.fail" ] && { echo "hub unreachable" >&2; exit 1; }; cat "$dir/board.json" ;;
+  board) [ -e "$dir/board.fail" ] && { echo "hub unreachable" >&2; exit 1; }; node "$(dirname "$(realpath "$0")")"/stub-read.mjs "$dir" board ;;
+  status) cat "$dir/status.json" 2>/dev/null || echo '{"hosts":[],"agents":[]}' ;;
+  changes) node "$(dirname "$(realpath "$0")")"/stub-read.mjs "$dir" changes "$3" ;;
+  attach) echo "borant attach $2 --window" >>"$dir/calls.log"; exit 0 ;;
   tasks) cat "$dir/tasks-$2.json" 2>/dev/null || echo '[]' ;;
   events) [ -e "$dir/events.off" ] && exit 1; exec tail -n0 -F "$dir/events.jsonl" 2>/dev/null ;;
   hook) exit 0 ;;
@@ -15,7 +18,10 @@ case "$1" in
   # The chief mod v3's actions change the files as the hub would. answer.slow
   # makes an answer outlast the mod's 8 s wait; answer.fail refuses it.
   answer) [ -e "$dir/answer.slow" ] && sleep 12; [ -e "$dir/answer.fail" ] && { echo "task changed since you read it" >&2; exit 1; }; node "$(dirname "$(realpath "$0")")/stub-act.mjs" "$dir" answer "$2" ;;
-  task) [ "$2" = close ] && node "$(dirname "$(realpath "$0")")/stub-act.mjs" "$dir" close "$3" ;;
+  task) case "$2" in
+      close) node "$(dirname "$(realpath "$0")")/stub-act.mjs" "$dir" close "$3" ;;
+      history) node "$(dirname "$(realpath "$0")")/stub-read.mjs" "$dir" history "$3" ;;
+    esac ;;
   resume) node "$(dirname "$(realpath "$0")")/stub-act.mjs" "$dir" resume "$2" ;;
   # The plugin's MCP server: task_close and send, for a Done's turn.
   mcp) exec node "$(dirname "$(realpath "$0")")/stub-mcp.mjs" ;;

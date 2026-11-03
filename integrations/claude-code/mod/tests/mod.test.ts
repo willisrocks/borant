@@ -194,7 +194,11 @@ test('r opens an answer field; enter sends borant answer, and the item leaves th
   expect(await pane.find({ type: 'Input', key: 'field' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /ANSWER/ })).toBeDefined()
   await pane.input({ key: 'field', text: 'Use the 1Password item borant-hub-backup.' })
-  expect(runs).toContainEqual(['borant', 'answer', 'personal-borant/01M5ZG00000000000000000015', 'Use the 1Password item borant-hub-backup.'])
+  const answer = runs.find((r) => r[1] === 'answer') || []
+  expect(answer.slice(0, 3)).toEqual(['borant', 'answer', 'personal-borant/01M5ZG00000000000000000015'])
+  // One idempotency key per draft, so a send after a timeout sends nothing new.
+  expect(answer[3]).toBe('--key')
+  expect(answer.at(-1)).toBe('Use the 1Password item borant-hub-backup.')
   await pane.unmount()
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ type: 'Text', text: /1 need you/ })).toBeDefined()
@@ -227,7 +231,7 @@ test('d asks once more; y closes the task as done with borant task close', async
   pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: /Close this task as done\?/ })).toBeDefined()
   await pane.press({ key: 'key:y' })
-  expect(runs.find((r) => r[1] === 'task')?.slice(0, 6)).toEqual(['borant', 'task', 'close', 'personal-borant/01M5ZG00000000000000000015', '--reason', 'done'])
+  expect(runs.find((r) => r[1] === 'task' && r[2] === 'close')?.slice(0, 6)).toEqual(['borant', 'task', 'close', 'personal-borant/01M5ZG00000000000000000015', '--reason', 'done'])
   await pane.unmount()
 })
 
