@@ -15,7 +15,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 // ---- Wire types (crates/borant-core/src/proto.rs, model.rs) ----
 
 export type Target = { type: "agent"; id: string } | { type: "channel"; id: string };
-export type Sender = { type: "agent"; id: string } | { type: "human" };
+export type Sender =
+  | { type: "agent"; id: string }
+  | { type: "human" }
+  /** The hub relays the person's decision, which a chief confirmed. */
+  | { type: "approval"; id: string };
 
 export interface Envelope {
   id: string;
@@ -64,6 +68,9 @@ const KIND_TEXT: Record<Envelope["kind"], string> = {
 
 /** The text a harness shows for one message. Matches `format_delivery` in Rust. */
 export function formatDelivery(env: Envelope): string {
+  if (env.from.type === "approval") {
+    return `[borant] approval from ${env.from.id} on the person's word: ${env.text}\n(id ${env.id})`;
+  }
   const from = env.from.type === "human" ? "human" : env.from.id;
   const to = env.to.type === "channel" ? `#${env.to.id}` : env.to.id;
   return `[borant] ${KIND_TEXT[env.kind]} from ${from} to ${to} (id ${env.id}):\n${env.text}`;

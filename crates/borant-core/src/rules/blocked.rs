@@ -232,7 +232,7 @@ pub fn stalled_message(channel: &ChannelName, task: &Task, attention: &str) -> S
 pub fn spawner(by: &Sender) -> Option<AgentId> {
     match by {
         Sender::Agent(agent) => Some(agent.clone()),
-        Sender::Human => None,
+        Sender::Human | Sender::Approval(_) => None,
     }
 }
 

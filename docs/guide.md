@@ -34,10 +34,14 @@ instance = "hub-1"
 urls = ["nats://127.0.0.1:4222"]
 
 [roles.chief]
-approves = true            # may approve a saga's gate
+approves = true            # may approve a saga's gate and relay an approval
 
 [collections.work]
 mirror_issues = true       # copy objects out to an issue tracker
+standing_permissions = ["Merge PRs after green CI and deploy."]
+
+[projects.steve-bot]
+standing_permissions = ["Deploy on auto-pilot."]
 
 [mirror]
 adapter = "exec"                    # the exec plugin protocol, kind "issues"
@@ -55,6 +59,50 @@ gate as done. `mirror_issues` on a collection is the default for its
 projects, and the `--mirror-issues` flag of a project overrides it. The
 `[mirror]` table is absent when the mirror is off; `borant-infra` adds it,
 pinned to a release that has the mirror.
+
+### Chief approvals and standing permissions
+
+An agent cannot prove that a person decided anything: every message from an
+agent is agent text. A chief relays a decision with
+`borant approve <channel>/<id> --quote "<the person's words>"`, or the MCP
+tool `approve` with `channel`, `id`, and `quote`. Only a role with
+`approves = true` may: any other role gets `denied`, and a person's shell
+gets `invalid`, because a person answers instead.
+
+The hub redacts the quote, records the event `task.approved` with the task,
+the chief, its session, and the quote, and sends the task's claimer (or the
+channel owner when nobody holds it) a direct message under its own sender
+type, `approval`. A harness shows it as its own kind, not as agent text:
+
+```
+[borant] approval from chief-1 on the person's word: do it for all three
+(id 01J...)
+```
+
+An orchestrator counts that message as the person's decision, within the
+scope of the quote; plain agent text still does not. When the task waits in
+`needs_human`, the approval also answers it, as a board answer does: the
+attention message clears, a claimed task returns to `in_progress`, and the
+hub records `task.answered` with `via: chief`, so the board, the mod, and
+`borant inbox` show it answered.
+
+The person's standing permissions live in `hub.toml`, per collection and per
+project, and the hub stores nothing new:
+
+```toml
+[collections.work]
+standing_permissions = ["Merge PRs after green CI and deploy."]
+
+[projects.steve-bot]
+standing_permissions = ["Deploy on auto-pilot."]
+```
+
+The hub appends the collection's list and then the project's, without
+duplicates, to every spawn brief under "Standing permissions from the person",
+after the prompt and the skill line, so a worker and an orchestrator see them
+at birth. `project_get` returns the merged list in `standing_permissions`, so
+an orchestrator reads it again after a compaction. An older hub refuses a
+`hub.toml` with the key, so the deployment adds it after the hub that has it.
 
 ### Secrets of a host that the hub creates
 
@@ -527,7 +575,9 @@ borant wait --task api/01JABCDEFGHJKMNPQRSTVWXYZ0 --timeout 2h
   or paused agent, a failed or cancelled spawn, or a released lease, so no
   harness loops on a registration that cannot succeed.
 - `borant inbox` lists the tasks that wait for a person, and `borant answer
-  <channel>/<id> <text>` answers one. Only the channel owner closes a task as
+  <channel>/<id> <text>` answers one. A chief relays the person's decision
+  with `borant approve <channel>/<id> --quote "<words>"`; an approval of a
+  waiting task also answers it. Only the channel owner closes a task as
   done; on a channel with no owner, only a person may.
 
 `borant task close <channel>/<id> --reason done --message <text>` closes a
@@ -612,6 +662,7 @@ message.
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
 | `borant board [--collection C] [--json] [--tasks [--done-since T]]` | The board: projects, sagas, epics, and waiting questions, computed from the records; stores nothing. `--tasks` adds a line per unfinished task and the count of the recent done tasks |
 | `borant answer <channel>/<id> <text>` | Answer a task's question; the claimer gets the text, or the channel owner when nobody holds it |
+| `borant approve <channel>/<id> --quote "<words>"` | Relay the person's decision, quoting them; only an agent whose role has `approves = true` may. Records `task.approved` and sends the task's owner the approval |
 | `borant tasks <channel> [--ready]` | List tasks |
 | `borant task close <channel>/<id> --reason R --message M` | Close a task as a person |
 | `borant task update <channel>/<id> [--issue-target T] [--issue I]` | Change the issue link or the issue team of a task; an empty string clears it |

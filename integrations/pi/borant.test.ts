@@ -23,6 +23,19 @@ describe("formatDelivery", () => {
     });
     expect(text).toBe("[borant] direct message from human to w1 (id 01J1):\nhi");
   });
+
+  test("an approval reads as the chief's relay of the person", () => {
+    const text = formatDelivery({
+      id: "01J2",
+      from: { type: "approval", id: "chief-1" },
+      to: { type: "agent", id: "w1" },
+      kind: "direct",
+      text: "do it for all three",
+    });
+    expect(text).toBe(
+      "[borant] approval from chief-1 on the person's word: do it for all three\n(id 01J2)",
+    );
+  });
 });
 
 describe("parseTarget", () => {

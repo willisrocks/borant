@@ -13,8 +13,8 @@ use crate::ids::{
 };
 use crate::model::{
     Activity, ChannelKind, CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo,
-    HostStats, MoveReason, NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch,
-    TaskRef, TaskStatus, UsageWindow,
+    HostStats, MoveReason, NewTask, Project, RepoInfo, SandboxKind, Sender, Target, TaskBinding,
+    TaskPatch, TaskRef, TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -449,6 +449,14 @@ pub enum ToolCall {
         #[serde(default)]
         key: Option<String>,
     },
+    /// Relays the person's decision on a task, quoting their words. Only a
+    /// role with `approves = true` may call it (chief approvals spec).
+    Approve {
+        channel: ChannelName,
+        task: TaskId,
+        /// The person's words, for the task's history and the owner's message.
+        quote: String,
+    },
     SchemaGet {
         channel: ChannelName,
     },
@@ -642,6 +650,7 @@ impl ToolCall {
                 | Self::ChannelLeave { .. }
                 | Self::TaskClaim { .. }
                 | Self::SessionHistory { .. }
+                | Self::Approve { .. }
         )
     }
 }
@@ -927,7 +936,17 @@ pub struct EventReply {
 }
 
 /// The text that a harness adapter shows for one message.
+///
+/// An approval reads as the fact that it is, not as agent text: the hub
+/// attested that the chief relayed the person's decision (chief approvals
+/// spec).
 pub fn format_delivery(env: &Envelope) -> String {
+    if let Sender::Approval(chief) = &env.from {
+        return format!(
+            "[borant] approval from {chief} on the person's word: {}\n(id {})",
+            env.text, env.id
+        );
+    }
     format!(
         "[borant] {} from {} to {} (id {}):\n{}",
         env.kind, env.from, env.to, env.id, env.text
@@ -972,6 +991,52 @@ mod tests {
                 error: "stuck".into(),
                 timeout_secs: None,
             }
+        );
+    }
+
+    /// An approval is its own sender type: the harness shows the hub's
+    /// attestation, and the wire round trips it.
+    #[test]
+    fn an_approval_renders_as_the_chiefs_relay() {
+        let id = crate::TaskId::new();
+        let call = ToolCall::Approve {
+            channel: "api".parse().unwrap(),
+            task: id,
+            quote: "do it for all three".into(),
+        };
+        let wire = serde_json::to_value(&call).unwrap();
+        assert_eq!(wire["tool"], "approve");
+        assert_eq!(wire["task"], serde_json::json!(id));
+        assert_eq!(wire["quote"], "do it for all three");
+        assert_eq!(serde_json::from_value::<ToolCall>(wire).unwrap(), call);
+
+        let env = Envelope {
+            id: MessageId::new(),
+            from: Sender::Approval("chief-1".parse().unwrap()),
+            to: crate::model::Target::Agent("w1".parse().unwrap()),
+            kind: EnvelopeKind::Direct,
+            text: "do it for all three".into(),
+            urgent: false,
+            task: None,
+            event: None,
+            sent: Timestamp(7),
+        };
+        let from = serde_json::to_value(&env.from).unwrap();
+        assert_eq!(
+            from,
+            serde_json::json!({"type": "approval", "id": "chief-1"})
+        );
+        assert_eq!(
+            serde_json::from_value::<Sender>(from).unwrap(),
+            env.from,
+            "an approval parses back"
+        );
+        let text = format_delivery(&env);
+        assert!(
+            text.starts_with(
+                "[borant] approval from chief-1 on the person's word: do it for all three"
+            ),
+            "{text}"
         );
     }
 

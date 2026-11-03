@@ -73,6 +73,23 @@ pub struct CollectionConfig {
     /// overrides it.
     #[serde(default)]
     pub mirror_issues: bool,
+    /// What the person already allowed for this collection, in their words.
+    /// The hub appends them to every spawn brief and `project_get` returns
+    /// them (chief approvals spec). Config only: the hub stores nothing.
+    #[serde(default)]
+    pub standing_permissions: Vec<String>,
+}
+
+/// One `[projects.<name>]` entry of `hub.toml`: what the person already
+/// allowed for one project, in their words. It is config only, unlike the
+/// `Project` record of the state store.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectConfig {
+    /// The permissions that apply to this project, after its collection's
+    /// (chief approvals spec).
+    #[serde(default)]
+    pub standing_permissions: Vec<String>,
 }
 
 /// `one_per` of a role: one agent of the role in each collection or project.
@@ -203,12 +220,51 @@ pub fn may_call(
     !config.tools_deny.iter().any(|denied| denied == tool)
 }
 
-/// The first prompt of a child: the skill to load first, then the prompt.
-pub fn brief(prompt: &str, skill: Option<&str>) -> String {
-    match skill {
+/// The first prompt of a child: the skill to load first, then the prompt,
+/// then the standing permissions that the person granted (chief approvals
+/// spec).
+pub fn brief(prompt: &str, skill: Option<&str>, standing: &[String]) -> String {
+    let mut out = match skill {
         Some(skill) if !skill.is_empty() => format!("First load the {skill} skill.\n\n{prompt}"),
         _ => prompt.to_owned(),
+    };
+    if standing.is_empty() {
+        return out;
     }
+    out.push_str("\n\nStanding permissions from the person:\n");
+    for (i, line) in standing.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("- ");
+        out.push_str(line);
+    }
+    out
+}
+
+/// The standing permissions of a spawn or a project read: the collection's,
+/// then the project's, without duplicates, so the more specific one is last
+/// (chief approvals spec).
+pub fn standing_permissions(
+    collection: Option<&CollectionConfig>,
+    project: Option<&ProjectConfig>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in collection
+        .map(|c| c.standing_permissions.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .chain(
+            project
+                .map(|p| p.standing_permissions.as_slice())
+                .unwrap_or_default(),
+        )
+    {
+        if !out.contains(line) {
+            out.push(line.clone());
+        }
+    }
+    out
 }
 
 /// The bundles of a launch: the collection's first, then the role's, then the
@@ -315,14 +371,59 @@ mod tests {
         assert!(may_call(Some(&"unknown".parse().unwrap()), "spawn", &table));
     }
 
-    /// Rule: the brief adds the skill line only when the role names a skill.
+    /// Rule: the brief adds the skill line only when the role names a skill,
+    /// and the standing permissions after the prompt.
     #[test]
     fn roles_brief_adds_the_skill_line() {
-        assert_eq!(brief("Fix the build.", None), "Fix the build.");
-        assert_eq!(brief("Fix the build.", Some("")), "Fix the build.");
+        assert_eq!(brief("Fix the build.", None, &[]), "Fix the build.");
+        assert_eq!(brief("Fix the build.", Some(""), &[]), "Fix the build.");
         assert_eq!(
-            brief("Fix the build.", Some("borant:orchestrate")),
+            brief("Fix the build.", Some("borant:orchestrate"), &[]),
             "First load the borant:orchestrate skill.\n\nFix the build."
+        );
+    }
+
+    /// Rule: the brief carries the standing permissions of the collection and
+    /// the project as one section, after the prompt.
+    #[test]
+    fn roles_brief_carries_the_standing_permissions() {
+        let one = vec!["Merge PRs after green CI.".to_owned()];
+        let two = vec![
+            "Merge PRs after green CI.".to_owned(),
+            "Deploy on auto-pilot.".to_owned(),
+        ];
+        assert_eq!(
+            brief("Fix the build.", None, &one),
+            "Fix the build.\n\nStanding permissions from the person:\n- Merge PRs after green CI."
+        );
+        assert_eq!(
+            brief("Fix the build.", Some("borant:orchestrate"), &two),
+            "First load the borant:orchestrate skill.\n\nFix the build.\n\n\
+Standing permissions from the person:\n\
+- Merge PRs after green CI.\n\
+- Deploy on auto-pilot."
+        );
+    }
+
+    /// Rule: the collection's standing permissions come first, then the
+    /// project's, without duplicates.
+    #[test]
+    fn roles_standing_permissions_put_the_collection_first() {
+        let collection = CollectionConfig {
+            standing_permissions: vec!["collection one".into(), "shared".into()],
+            ..CollectionConfig::default()
+        };
+        let project = ProjectConfig {
+            standing_permissions: vec!["shared".into(), "project one".into()],
+        };
+        assert_eq!(
+            standing_permissions(Some(&collection), Some(&project)),
+            ["collection one", "shared", "project one"]
+        );
+        assert!(standing_permissions(None, None).is_empty());
+        assert_eq!(
+            standing_permissions(Some(&CollectionConfig::default()), Some(&project)),
+            ["shared", "project one"]
         );
     }
 

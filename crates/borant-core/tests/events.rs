@@ -220,6 +220,12 @@ fn every_kind() -> Vec<SwarmEventBody> {
         SwarmEventBody::TaskAnswered {
             key: Some("q1".into()),
             by: Sender::Human,
+            via: borant_core::events::AnswerVia::Person,
+        },
+        SwarmEventBody::TaskApproved {
+            by: agent.clone(),
+            session: session(),
+            quote: "do it for all three".into(),
         },
         SwarmEventBody::MessageSent {
             from: Sender::Agent(agent.clone()),

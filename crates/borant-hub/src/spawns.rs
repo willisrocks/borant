@@ -78,7 +78,7 @@ impl Hub {
         saga::check_spawn(&ch, &tasks, None)?;
         let parent = match &by {
             Sender::Agent(id) => Some(self.agent(id).await?.value),
-            Sender::Human => None,
+            Sender::Human | Sender::Approval(_) => None,
         };
         let resolved = roles::resolve(
             &SpawnInput {
@@ -131,7 +131,16 @@ impl Hub {
             }
         };
         let model = resolved.model.clone();
-        let prompt = roles::brief(&req.prompt, resolved.skill.as_deref());
+        // What the person already allowed for the collection and the project
+        // goes into every brief, so an orchestrator does not ask again.
+        let standing = roles::standing_permissions(
+            resolved
+                .collection
+                .as_ref()
+                .and_then(|c| self.cfg.collections.get(c)),
+            ch.project.as_ref().and_then(|p| self.cfg.projects.get(p)),
+        );
+        let prompt = roles::brief(&req.prompt, resolved.skill.as_deref(), &standing);
         // A helper role runs on the host of its parent.
         let host = match req.host.clone() {
             Some(host) => Some(host),

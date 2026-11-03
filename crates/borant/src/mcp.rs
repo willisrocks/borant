@@ -170,6 +170,15 @@ pub struct TaskClose {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct Approve {
+    pub channel: String,
+    /// The task ID.
+    pub id: String,
+    /// The person's words, as they said them. The hub redacts them.
+    pub quote: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelRef {
     pub channel: String,
 }
@@ -511,6 +520,16 @@ impl BorantMcp {
     async fn task_close(&self, Parameters(a): Parameters<TaskClose>) -> Result<String, String> {
         self.forward(json!({"tool": "task_close", "channel": a.channel, "id": a.id, "reason": a.reason, "message": a.message}))
             .await
+    }
+
+    #[tool(
+        description = "Relay the person's decision on a task, quoting their words. Only a chief approves: the hub refuses any role without approves = true."
+    )]
+    async fn approve(&self, Parameters(a): Parameters<Approve>) -> Result<String, String> {
+        self.forward(
+            json!({"tool": "approve", "channel": a.channel, "task": a.id, "quote": a.quote}),
+        )
+        .await
     }
 
     #[tool(

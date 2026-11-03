@@ -72,6 +72,16 @@ pub struct SwarmEvent {
     pub body: SwarmEventBody,
 }
 
+/// Who answered a task's question: the person at the board, or the hub
+/// relaying a chief's approval of the person's words (chief approvals spec).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerVia {
+    #[default]
+    Person,
+    Chief,
+}
+
 /// The typed part of an event, tagged by `kind`.
 ///
 /// The kinds are the table of the observability doc, without `nats.*` (the
@@ -260,6 +270,24 @@ pub enum SwarmEventBody {
         key: Option<String>,
         /// Who answered: a person, or an agent on its behalf.
         by: Sender,
+        /// Whether the person answered, or the hub relayed a chief's approval
+        /// of their words (chief approvals spec). An event from before the
+        /// field is a person's answer.
+        #[serde(default)]
+        via: AnswerVia,
+    },
+    /// The hub recorded a chief's relay of the person's decision (chief
+    /// approvals spec). The channel and the task are the fields of the event
+    /// context. Only a role with `approves = true` makes one.
+    #[serde(rename = "task.approved")]
+    TaskApproved {
+        /// The chief that relayed the decision.
+        by: AgentId,
+        /// The session of the chief that made the call.
+        session: SessionId,
+        /// The person's words, redacted. The hub sends them to the task's
+        /// owner too, under the `approval` sender.
+        quote: String,
     },
     /// A direct message that names a task, so `task history` can show it. The
     /// channel and the task are the fields of the event context.
@@ -570,6 +598,7 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::ChangeUpdated { .. } => "change.updated",
         SwarmEventBody::TaskCreated { .. } => "task.created",
         SwarmEventBody::TaskAnswered { .. } => "task.answered",
+        SwarmEventBody::TaskApproved { .. } => "task.approved",
         SwarmEventBody::MessageSent { .. } => "message.sent",
         SwarmEventBody::SpawnBlocked { .. } => "spawn.blocked",
         SwarmEventBody::SpawnUnblocked => "spawn.unblocked",

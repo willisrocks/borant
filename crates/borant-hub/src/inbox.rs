@@ -1,11 +1,13 @@
 //! The human inbox, and answering the question of a task (phase 6 spec,
 //! "Human inbox").
 
+use borant_core::events::AnswerVia;
 use borant_core::model::{
     Agent, Envelope, EnvelopeKind, Sender, Target, TaskEventKind, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
-use borant_core::{AgentId, ChannelName, MessageId, TaskId, Timestamp, keys, subjects};
+use borant_core::rules::redact;
+use borant_core::{AgentId, ChannelName, MessageId, SessionId, TaskId, Timestamp, keys, subjects};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -165,7 +167,13 @@ impl Hub {
                 self.tell(&claimer, &text).await?;
                 Self::queue(
                     mem,
-                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
+                    self.task_answered(
+                        channel,
+                        id,
+                        key.map(str::to_owned),
+                        &Sender::Human,
+                        AnswerVia::Person,
+                    ),
                 );
                 json!({
                     "task": doc.value,
@@ -182,7 +190,13 @@ impl Hub {
                 self.tell(&owner, &text).await?;
                 Self::queue(
                     mem,
-                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
+                    self.task_answered(
+                        channel,
+                        id,
+                        key.map(str::to_owned),
+                        &Sender::Human,
+                        AnswerVia::Person,
+                    ),
                 );
                 json!({
                     "task": doc.value,
@@ -200,6 +214,100 @@ impl Hub {
             self.store.upsert(&keys::answer(key), &record).await?;
         }
         Ok(result)
+    }
+
+    /// Records a chief's relay of the person's decision on a task, and sends
+    /// it to the task's owner as a hub-attested message (chief approvals
+    /// spec).
+    ///
+    /// The call layer checks that the caller's role has `approves = true`;
+    /// this method checks only the task. The hub redacts the quote, records
+    /// `task.approved`, and sends the claimer, or the channel owner when
+    /// nobody holds the task, a direct message under [`Sender::Approval`], so
+    /// the agent can tell it from agent text.
+    ///
+    /// A task that waits in `needs_human` is answered too, as a board answer
+    /// does: the hub clears the question, sets a claimed task back to
+    /// `in_progress`, and records `task.answered` with `via: chief`.
+    pub(crate) async fn approve(
+        &self,
+        mem: &mut Memory,
+        channel: &ChannelName,
+        id: &TaskId,
+        quote: &str,
+        by: &AgentId,
+        session: SessionId,
+    ) -> Result<Value, ApiError> {
+        let quote = redact::redact(quote).into_owned();
+        if quote.trim().is_empty() {
+            return Err(ApiError::invalid("an approval needs the person's words"));
+        }
+        let ch = self.channel(channel).await?;
+        let mut doc = self.task(channel, id).await?;
+        if doc.value.status == TaskStatus::Closed {
+            return Err(ApiError::new(
+                ApiErrorCode::Conflict,
+                format!("task {id} is closed"),
+            ));
+        }
+        let to = doc
+            .value
+            .claimed_by
+            .clone()
+            .or_else(|| ch.value.owner.clone())
+            .ok_or_else(|| {
+                ApiError::invalid(format!("#{channel} has no owner to send the approval to"))
+            })?;
+        // The hub records the approval before it sends the message, so the log
+        // holds the decision even when the delivery is late.
+        Self::queue(mem, self.task_approved(channel, id, by, session, &quote));
+        let answered = doc.value.status == TaskStatus::NeedsHuman;
+        if answered {
+            let before = doc.value.clone();
+            if doc.value.claimed_by.is_some() {
+                doc.value.status = TaskStatus::InProgress;
+            }
+            doc.value.attention_msg = None;
+            doc.value.updated = self.now();
+            self.store
+                .put(&doc.key, &doc.value, Some(doc.revision))
+                .await?;
+            self.task_event(
+                channel,
+                &ch.value.owner,
+                &doc.value,
+                TaskEventKind::Updated,
+                "answered by the chief's approval",
+            )
+            .await?;
+            self.task_status_event(mem, channel, &before, &doc.value);
+        }
+        self.tell_from(Sender::Approval(by.clone()), &to, &quote)
+            .await?;
+        if answered {
+            Self::queue(
+                mem,
+                self.task_answered(
+                    channel,
+                    id,
+                    None,
+                    &Sender::Approval(by.clone()),
+                    AnswerVia::Chief,
+                ),
+            );
+        }
+        // A claimed question goes back to work; a question that nobody holds,
+        // such as a saga gate, keeps its status and only loses its message.
+        let status = if answered && doc.value.claimed_by.is_some() {
+            "in_progress"
+        } else {
+            "unchanged"
+        };
+        Ok(json!({
+            "task": doc.value,
+            "to": to,
+            "status": status,
+        }))
     }
 
     /// The result of the answer that `key` already sent, for a retry of the
@@ -248,9 +356,20 @@ impl Hub {
     /// One direct message from a person to an agent. The agent's delivery
     /// wakes it if it is idle, as `borant send` does.
     pub(crate) async fn tell(&self, to: &AgentId, text: &str) -> Result<(), ApiError> {
+        self.tell_from(Sender::Human, to, text).await
+    }
+
+    /// One direct message from `from` to an agent, for an answer or an
+    /// approval. The agent's delivery wakes it if it is idle.
+    pub(crate) async fn tell_from(
+        &self,
+        from: Sender,
+        to: &AgentId,
+        text: &str,
+    ) -> Result<(), ApiError> {
         let envelope = Envelope {
             id: MessageId::new(),
-            from: Sender::Human,
+            from,
             to: Target::Agent(to.clone()),
             kind: EnvelopeKind::Direct,
             text: text.to_owned(),

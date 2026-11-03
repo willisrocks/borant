@@ -291,6 +291,16 @@ pub enum Command {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Relay the person's decision on a task, quoting their words. Only a
+    /// role with `approves = true` may approve; a person answers instead.
+    Approve {
+        /// The task to approve, as CHANNEL/ID.
+        task: String,
+        /// The person's words. The hub redacts them before it records and
+        /// sends them.
+        #[arg(long)]
+        quote: String,
+    },
     /// Move agents to another host or harness.
     Move {
         /// The agent to move.
@@ -1999,6 +2009,21 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 .await?,
             );
         }
+        Command::Approve { task, quote } => {
+            let (channel, id) = task_ref(&task)?;
+            // The hub checks the role of the session: only a chief approves.
+            pretty(
+                &call_in_session(
+                    &c,
+                    ToolCall::Approve {
+                        channel,
+                        task: id,
+                        quote,
+                    },
+                )
+                .await?,
+            );
+        }
         Command::Attach { agent, window } => attach(&c, &agent, window).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. }
@@ -2356,6 +2381,30 @@ mod tests {
         assert_eq!(key.as_deref(), Some("draft-1"));
         assert_eq!(expect_updated, Some(42));
         assert_eq!(text, ["use", "postgres"]);
+    }
+
+    /// The chief approves with the person's words, so the hub can record the
+    /// decision and attest it to the task's owner.
+    #[test]
+    fn approve_parses_the_quote() {
+        let cmd = Cli::try_parse_from([
+            "borant",
+            "approve",
+            &format!("api/{TASK}"),
+            "--quote",
+            "do it for all three",
+        ])
+        .unwrap()
+        .command;
+        let Command::Approve { task, quote } = cmd else {
+            panic!("not an approve");
+        };
+        assert_eq!(task, format!("api/{TASK}"));
+        assert_eq!(quote, "do it for all three");
+        assert_eq!(
+            task_ref(&task).unwrap().0,
+            "api".parse::<ChannelName>().unwrap()
+        );
     }
 
     #[test]

@@ -2,14 +2,14 @@
 
 use std::time::Duration;
 
-use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
+use borant_core::events::{AnswerVia, Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     ChannelKind, CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent,
     TaskEventKind, TaskPatch, TaskStatus,
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::{saga, schema, tasks as rules};
-use borant_core::{AgentId, ChannelName, CoreError, MessageId, TaskId, keys, subjects};
+use borant_core::{AgentId, ChannelName, CoreError, MessageId, SessionId, TaskId, keys, subjects};
 use serde_json::{Map, Value};
 
 use crate::store::Doc;
@@ -664,6 +664,7 @@ impl Hub {
         id: &TaskId,
         key: Option<String>,
         by: &Sender,
+        via: AnswerVia,
     ) -> SwarmEvent {
         self.event(
             self.now(),
@@ -671,6 +672,30 @@ impl Hub {
             SwarmEventBody::TaskAnswered {
                 key,
                 by: by.clone(),
+                via,
+            },
+        )
+        .about_channel(channel.clone())
+        .about_task(*id)
+    }
+
+    /// The event of a chief's relay of the person's decision, for the log and
+    /// the task history (chief approvals spec).
+    pub(crate) fn task_approved(
+        &self,
+        channel: &ChannelName,
+        id: &TaskId,
+        by: &AgentId,
+        session: SessionId,
+        quote: &str,
+    ) -> SwarmEvent {
+        self.event(
+            self.now(),
+            Severity::Info,
+            SwarmEventBody::TaskApproved {
+                by: by.clone(),
+                session,
+                quote: quote.to_owned(),
             },
         )
         .about_channel(channel.clone())
@@ -729,6 +754,7 @@ pub(crate) fn is_owner_or_person(owner: &Option<AgentId>, by: &Sender) -> bool {
     match by {
         Sender::Human => true,
         Sender::Agent(agent) => owner.as_ref() == Some(agent),
+        Sender::Approval(_) => false,
     }
 }
 

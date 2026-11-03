@@ -1,11 +1,15 @@
 mod common;
 
+use std::collections::BTreeMap;
+
 use borant_core::model::{Agent, ChannelKind, Harness, NewTask, Project, Task};
 use borant_core::ports::StateStore;
 use borant_core::proto::{
     ApiErrorCode, CtlRequest, HostCommand, LaunchOrder, RegisterSession, Registered, ToolCall,
 };
+use borant_core::rules::roles::{CollectionConfig, ProjectConfig};
 use borant_core::{ChannelName, ProjectName, SessionId, keys};
+use borant_hub::HubConfig;
 use common::{Fx, name, next_cmd, repo};
 
 fn api() -> ChannelName {
@@ -82,6 +86,47 @@ async fn launch(s: &mut futures::stream::BoxStream<'static, HostCommand>) -> Lau
         Some(HostCommand::Launch(o)) => o,
         other => panic!("expected a launch, got {other:?}"),
     }
+}
+
+/// The standing permissions are `hub.toml` config, and `project_get` returns
+/// them so an orchestrator reads them again after a compaction.
+#[tokio::test]
+async fn project_get_returns_the_standing_permissions() {
+    let fx = Fx::with(HubConfig {
+        collections: BTreeMap::from([(
+            "work".parse().unwrap(),
+            CollectionConfig {
+                standing_permissions: vec!["Merge PRs after green CI.".into()],
+                ..CollectionConfig::default()
+            },
+        )]),
+        projects: BTreeMap::from([(
+            "web".parse().unwrap(),
+            ProjectConfig {
+                standing_permissions: vec!["Deploy on auto-pilot.".into()],
+            },
+        )]),
+        ..HubConfig::default()
+    });
+    let mut p = project();
+    p.collection = Some("work".parse().unwrap());
+    fx.call(None, ToolCall::ProjectAdd { project: p })
+        .await
+        .unwrap();
+    let v = fx
+        .call(
+            None,
+            ToolCall::ProjectGet {
+                name: "web".parse().unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        v["standing_permissions"],
+        serde_json::json!(["Merge PRs after green CI.", "Deploy on auto-pilot."]),
+        "{v}"
+    );
 }
 
 #[tokio::test]
