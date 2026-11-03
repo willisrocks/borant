@@ -63,9 +63,20 @@ pub fn pause_denial(s: &LocalSession) -> Option<Value> {
     }
 }
 
+/// The tool name and the input text of a `PreToolUse` or `PostToolUse` input.
+pub fn tool_call(input: &Value) -> (String, String) {
+    let name = input["tool_name"].as_str().unwrap_or("unknown").to_owned();
+    let as_text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    (name, as_text(&input["tool_input"]))
+}
+
 /// The `ToolCall` and `ToolResult` events of a `PostToolUse` input.
 pub fn tool_events(input: &Value) -> (LocalEvent, LocalEvent) {
-    let name = input["tool_name"].as_str().unwrap_or("unknown").to_owned();
+    let (name, input_text) = tool_call(input);
     let as_text = |v: &Value| match v {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -80,7 +91,7 @@ pub fn tool_events(input: &Value) -> (LocalEvent, LocalEvent) {
     (
         LocalEvent::ToolCall {
             name: name.clone(),
-            input: as_text(&input["tool_input"]),
+            input: input_text,
         },
         LocalEvent::ToolResult {
             name,
@@ -412,13 +423,21 @@ pub async fn run(event: &str) -> i32 {
             let Some(id) = ctx.session().await else {
                 return 0;
             };
-            if let Outcome::Reply(Ok(s)) = ctx
+            let denial = match ctx
                 .client
                 .get::<LocalSession>(&format!("/v1/sessions/{id}"), CALL)
                 .await
-                && let Some(deny) = pause_denial(&s)
             {
+                Outcome::Reply(Ok(s)) => pause_denial(&s),
+                _ => None,
+            };
+            if let Some(deny) = denial {
                 print(&deny);
+            } else {
+                // The tool runs now: the host reports it with the lease
+                // renewal, so a worker inside a long tool is not silent.
+                let (name, input) = tool_call(&ctx.input);
+                ctx.event(id, &LocalEvent::ToolStart { name, input }).await;
             }
             0
         }

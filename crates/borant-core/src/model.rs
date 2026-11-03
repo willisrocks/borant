@@ -1200,6 +1200,49 @@ pub struct AgentStatus {
     /// The model that the harness runs, when one was chosen.
     #[serde(default)]
     pub model: Option<String>,
+    /// When the session made its last tool call, from its host. `None` means
+    /// the host has no activity data: a session from before the activity
+    /// hooks, or a harness without them. No data is not silence.
+    #[serde(default)]
+    pub last_tool_at: Option<Timestamp>,
+    /// The tool of that call and its first characters, redacted.
+    #[serde(default)]
+    pub last_tool: Option<String>,
+    /// When the session last wrote assistant text.
+    #[serde(default)]
+    pub last_text_at: Option<Timestamp>,
+    /// The first characters of that text, redacted.
+    #[serde(default)]
+    pub last_text: Option<String>,
+    /// When the tool that the session runs now started, or `None` between
+    /// calls. A worker with a tool running is not silent.
+    #[serde(default)]
+    pub tool_running_since: Option<Timestamp>,
+}
+
+/// The last activity of one session, as its host saw it. The host redacts
+/// the text fields before the report leaves it, and keeps each to a few
+/// characters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    #[serde(default)]
+    pub last_tool_at: Option<Timestamp>,
+    #[serde(default)]
+    pub last_tool: Option<String>,
+    #[serde(default)]
+    pub last_text_at: Option<Timestamp>,
+    #[serde(default)]
+    pub last_text: Option<String>,
+    #[serde(default)]
+    pub tool_running_since: Option<Timestamp>,
+}
+
+impl Activity {
+    /// True when the session has reported any activity, so a host sends it.
+    /// A session with no hook, or from before this report, has none.
+    pub fn is_empty(&self) -> bool {
+        self.last_tool_at.is_none() && self.last_text_at.is_none()
+    }
 }
 
 /// The inbox counts of one agent in the live view.

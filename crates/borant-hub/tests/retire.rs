@@ -141,6 +141,7 @@ impl Fx {
                 idle_since: idle,
                 last_event_at: None,
                 pinned: false,
+                activity: None,
             }],
             stats,
             launching: Vec::new(),

@@ -286,6 +286,11 @@ fn metrics_view() -> SwarmView {
             pinned: false,
             retired: false,
             model: None,
+            last_tool_at: None,
+            last_tool: None,
+            last_text_at: None,
+            last_text: None,
+            tool_running_since: None,
         }],
         inboxes: vec![InboxStatus {
             agent: "w1".parse().unwrap(),

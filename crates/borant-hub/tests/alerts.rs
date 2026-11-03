@@ -135,6 +135,7 @@ impl Fx {
                 idle_since: None,
                 last_event_at: Some(last),
                 pinned: false,
+                activity: None,
             }],
             launching: Vec::new(),
             stats: Some(HostStats {

@@ -2,6 +2,7 @@
 //! delivers messages into sessions, writes session logs and checkpoints, and
 //! runs launch orders from the hub.
 
+mod activity;
 pub mod api;
 pub mod checkpoint;
 pub mod client;
@@ -28,7 +29,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use borant_core::model::{Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats};
+use borant_core::model::{
+    Activity, Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats,
+};
 use borant_core::ports::secrets::{Bundle, BundleName, MemberName, SecretStore};
 use borant_core::ports::{
     EventLog, LaunchHandle, Launcher, MessageBus, Notice, Notifier, Priority, SessionStore,
@@ -341,6 +344,11 @@ pub(crate) struct LocalSess {
     pub idle_since: Option<Timestamp>,
     /// When this session wrote its last event, for the stall alert.
     pub last_event_at: Option<Timestamp>,
+    /// The last tool call and assistant text of the session, redacted. It
+    /// goes to the hub with the lease renewal, at most once each 30 s.
+    pub activity: Activity,
+    /// When the host last sent [`LocalSess::activity`], on the host clock.
+    pub activity_sent: Option<Timestamp>,
     /// Set when the session lost its lease. Tools stay blocked.
     pub fenced: Option<String>,
     /// Set while the hub is unreachable for longer than a lease.

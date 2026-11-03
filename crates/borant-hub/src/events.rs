@@ -238,6 +238,7 @@ mod tests {
                     idle_since: idle,
                     last_event_at: None,
                     pinned: false,
+                    activity: None,
                 }],
                 stats: None,
                 launching: Vec::new(),

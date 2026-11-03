@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::config::{AlertsConfig, ChannelConfig};
-use borant_core::model::{HostStats, HubLease, Lease, MoveReason, Sender};
+use borant_core::model::{Activity, HostStats, HubLease, Lease, MoveReason, Sender};
 use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
@@ -151,6 +151,14 @@ pub(crate) struct IdleReport {
     pub at: Timestamp,
 }
 
+/// The last activity of one session, as its host reported it with the lease
+/// renewal.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivityReport {
+    pub session: SessionId,
+    pub activity: Activity,
+}
+
 /// The sessions of one heartbeat of a host. The host reports every session
 /// that is not fenced on each beat, so a session that a later beat leaves out
 /// is gone.
@@ -167,6 +175,9 @@ pub(crate) struct Memory {
     pub hosts_seen: HashMap<HostName, Timestamp>,
     /// The idle signal of each agent, from its host's latest heartbeat.
     pub idle: HashMap<AgentId, IdleReport>,
+    /// The last activity of each agent, from the heartbeat that carried it.
+    /// A beat without a report leaves the last one in place.
+    pub activity: HashMap<AgentId, ActivityReport>,
     /// The sessions of the latest heartbeat of each host.
     pub host_sessions: HashMap<HostName, HostSessions>,
     /// When the hub last sent a park command, per agent.
@@ -366,7 +377,7 @@ impl Hub {
                     if let Some(a) = &actor {
                         self.verify_actor(a).await?;
                     }
-                    serde_json::to_value(self.view().await?)
+                    serde_json::to_value(self.view_for(actor.as_ref().map(|a| &a.agent)).await?)
                         .map_err(|e| ApiError::internal(e.to_string()))
                 }
                 .await;

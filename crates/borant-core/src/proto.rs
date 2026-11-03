@@ -12,8 +12,8 @@ use crate::ids::{
     ProjectName, RoleName, SessionId, TaskId,
 };
 use crate::model::{
-    ChannelKind, CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo, HostStats,
-    MoveReason, NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch,
+    Activity, ChannelKind, CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo,
+    HostStats, MoveReason, NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch,
     TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
@@ -214,6 +214,12 @@ pub struct SessionLeaseRef {
     /// hub sets the flag again when its record lost it.
     #[serde(default)]
     pub pinned: bool,
+    /// The last activity of the session, redacted at the host. `None` when the
+    /// host has no news: no hook ran, or the last report went out under 30 s
+    /// ago. The hub keeps the last report that it got, so an older hub that
+    /// ignores the field and a newer one that reads it both work.
+    #[serde(default)]
+    pub activity: Option<Activity>,
 }
 
 /// A record with placeholder values, for tests that fill the fields they
@@ -228,6 +234,7 @@ impl Default for SessionLeaseRef {
             idle_since: None,
             last_event_at: None,
             pinned: false,
+            activity: None,
         }
     }
 }
@@ -845,6 +852,12 @@ pub enum LocalEvent {
         text: String,
     },
     ToolCall {
+        name: String,
+        input: String,
+    },
+    /// The tool call started, from `PreToolUse`. Tracking only: the call and
+    /// its result arrive from `PostToolUse`, which delivers messages.
+    ToolStart {
         name: String,
         input: String,
     },

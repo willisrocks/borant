@@ -308,6 +308,11 @@ mod tests {
                 pinned: true,
                 retired: false,
                 model: None,
+                last_tool_at: None,
+                last_tool: None,
+                last_text_at: None,
+                last_text: None,
+                tool_running_since: None,
             }],
             inboxes: vec![InboxStatus {
                 agent,

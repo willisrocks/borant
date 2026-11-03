@@ -501,6 +501,11 @@ mod tests {
             pinned: false,
             retired: false,
             model: None,
+            last_tool_at: None,
+            last_tool: None,
+            last_text_at: None,
+            last_text: None,
+            tool_running_since: None,
         });
         assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
     }
