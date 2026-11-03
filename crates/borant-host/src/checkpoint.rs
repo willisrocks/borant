@@ -443,13 +443,17 @@ pub async fn restore(
                     .await?;
                 }
                 None => {
-                    git(
-                        &dir,
-                        &["checkout", "--quiet", "-f", "--orphan", branch],
-                        None,
-                        env,
-                    )
-                    .await?;
+                    // `checkout --orphan` refuses a branch that exists, and a
+                    // fresh clone already has the default branch. Point HEAD
+                    // at an unborn branch instead and keep the index.
+                    let head = format!("refs/heads/{branch}");
+                    if git(&dir, &["rev-parse", "--verify", "-q", &head], None, env)
+                        .await
+                        .is_ok()
+                    {
+                        git(&dir, &["update-ref", "-d", &head], None, env).await?;
+                    }
+                    git(&dir, &["symbolic-ref", "HEAD", &head], None, env).await?;
                 }
             }
             git(&dir, &["read-tree", "-u", "--reset", sha], None, env).await?;

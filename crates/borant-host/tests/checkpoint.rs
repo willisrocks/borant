@@ -317,3 +317,44 @@ async fn create_checkpoints_a_new_commit_with_the_same_tree() {
     let parent = git(&remote, &["rev-parse", &format!("{sha}^")]);
     assert_eq!(parent, git(&work, &["rev-parse", "HEAD"]));
 }
+
+/// A wip commit with no parent (the checkpoint of a tree with no commits)
+/// restores on a branch that the clone already has: `checkout --orphan` would
+/// fail with "a branch named 'main' already exists".
+#[tokio::test]
+async fn restore_of_a_parentless_wip_over_an_existing_branch() {
+    let (d, remote, work) = setup();
+    let r = remote.to_str().unwrap();
+    // A root commit with its own tree, pushed as the wip ref.
+    git(&work, &["checkout", "-q", "--orphan", "tmp"]);
+    git(&work, &["rm", "-rf", "-q", "."]);
+    std::fs::write(work.join("only.txt"), "wip\n").unwrap();
+    git(&work, &["add", "only.txt"]);
+    git(&work, &["commit", "-q", "-m", "wip"]);
+    let sha = git(&work, &["rev-parse", "HEAD"]);
+    git(
+        &work,
+        &["push", "-q", "origin", &format!("{sha}:refs/borant/w1/wip")],
+    );
+    git(&work, &["checkout", "-q", "main"]);
+    let facts = checkpoint::detect(&work, None).await.unwrap();
+    let dir = checkpoint::restore(
+        &d.path().join("other-host"),
+        &facts.info,
+        &agent(),
+        r,
+        Some(&sha),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("only.txt")).unwrap(),
+        "wip\n"
+    );
+    assert!(!dir.join("a.txt").exists());
+    assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), "main");
+}
