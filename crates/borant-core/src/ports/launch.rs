@@ -2,9 +2,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::PortResult;
+use super::{PortError, PortResult};
 use crate::ids::AgentId;
 use crate::model::Harness;
+
+/// What a launcher with no window of its own answers a [`Launcher::focus`]:
+/// the caller prints the attach command to copy instead.
+pub const FOCUS_NOT_SUPPORTED: &str = "not supported";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchSpec {
@@ -35,5 +39,13 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
     /// register. A launcher without a screen returns `None`.
     fn capture(&self, _handle: &LaunchHandle, _lines: usize) -> Option<String> {
         None
+    }
+    /// Opens the agent's session in a new window of the person's launcher:
+    /// a window of their tmux client, a focused Orca terminal, or a zellij
+    /// tab (mod actions spec, "Go to an agent"). A launcher with no window of
+    /// its own returns [`FOCUS_NOT_SUPPORTED`], and the caller prints the
+    /// attach command to copy.
+    async fn focus(&self, _agent: &AgentId) -> PortResult<()> {
+        Err(PortError::invalid(FOCUS_NOT_SUPPORTED))
     }
 }

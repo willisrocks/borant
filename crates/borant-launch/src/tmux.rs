@@ -1,3 +1,4 @@
+use borant_core::AgentId;
 use borant_core::ports::{LaunchHandle, LaunchSpec, Launcher, PortError, PortResult};
 
 use crate::{check_kind, path_str, run, run_ok, session_name};
@@ -87,6 +88,30 @@ fn socket_args(socket: Option<&str>) -> Vec<String> {
         Some(socket) => vec!["-L".to_owned(), socket.to_owned()],
         None => Vec::new(),
     }
+}
+
+/// The `tmux` arguments that open `agent`'s session in a new window of the
+/// person's tmux client: `new-window` on the client's server (`client`),
+/// running the attach command of the server that holds the session
+/// (`socket`). `None` is the default server of the host daemon, which is the
+/// server of the client that the person uses.
+pub fn focus_args(client: Option<&str>, socket: &str, agent: &AgentId) -> Vec<String> {
+    let name = session_name(agent);
+    let mut args = socket_args(client);
+    args.extend([
+        "new-window".to_owned(),
+        "-n".to_owned(),
+        name.clone(),
+        "--".to_owned(),
+        "tmux".to_owned(),
+        "-L".to_owned(),
+        socket.to_owned(),
+        "attach".to_owned(),
+        "-t".to_owned(),
+        // `=` matches the name exactly, so agent `a` never attaches to `a1`.
+        format!("={name}"),
+    ]);
+    args
 }
 
 /// `=name` makes tmux match the session name exactly, not as a prefix. The
@@ -191,6 +216,15 @@ impl Launcher for TmuxLauncher {
             // A launcher of an older version started it on the default server.
             .or_else(|| capture_on(None, &handle.id, lines))
     }
+
+    /// Opens the attach command in a new window of the person's tmux client.
+    /// The window runs on the default server of the host daemon's
+    /// environment, which is the server of the client that the person uses.
+    async fn focus(&self, agent: &AgentId) -> PortResult<()> {
+        run_ok("tmux", &focus_args(None, &self.socket, agent))
+            .await
+            .map(drop)
+    }
 }
 
 impl TmuxLauncher {
@@ -220,6 +254,7 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use borant_core::model::Harness;
+    use borant_core::testing;
 
     use super::*;
 
@@ -482,5 +517,110 @@ mod tests {
 
         launcher.stop(&handle_a).await.unwrap();
         launcher.stop(&handle_b).await.unwrap();
+    }
+
+    /// The window opens on the client's server and runs the attach command of
+    /// the server that holds the session.
+    #[test]
+    fn focus_argv() {
+        let agent: AgentId = "a1".parse().unwrap();
+        assert_eq!(
+            focus_args(Some("client"), "borant", &agent),
+            [
+                "-L",
+                "client",
+                "new-window",
+                "-n",
+                "borant-a1",
+                "--",
+                "tmux",
+                "-L",
+                "borant",
+                "attach",
+                "-t",
+                "=borant-a1"
+            ]
+        );
+        // The person's client is the default server of the host daemon: no
+        // server argument comes before the command.
+        assert_eq!(
+            focus_args(None, "borant", &agent)[0],
+            "new-window".to_owned()
+        );
+    }
+
+    /// A real `new-window` on an isolated server opens the attach command, and
+    /// the session is reachable from the window.
+    #[test]
+    fn focus_opens_a_window_on_a_client_server() {
+        if !tmux_available() {
+            return;
+        }
+        let socket = unique("test-focus");
+        let client = unique("test-client");
+        let agent = unique("f");
+        let name = format!("borant-{agent}");
+        let _session = KillOnDrop {
+            socket: socket.clone(),
+            name: name.clone(),
+        };
+        let _client = KillOnDrop {
+            socket: client.clone(),
+            name: "person".to_owned(),
+        };
+        let new = std::process::Command::new("tmux")
+            .args(["-L", &client, "new-session", "-d", "-s", "person"])
+            .args(["--", "sleep", "60"])
+            .output()
+            .unwrap();
+        assert!(new.status.success(), "tmux new-session failed: {new:?}");
+        let new = std::process::Command::new("tmux")
+            .args(["-L", &socket, "new-session", "-d", "-s", &name])
+            .args(["--", "sleep", "60"])
+            .output()
+            .unwrap();
+        assert!(new.status.success(), "tmux new-session failed: {new:?}");
+
+        let agent: AgentId = agent.parse().unwrap();
+        let out = std::process::Command::new("tmux")
+            .args(focus_args(Some(&client), &socket, &agent))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "tmux new-window failed: {out:?}");
+        let windows = std::process::Command::new("tmux")
+            .args(["-L", &client, "list-windows", "-t", "=person", "-F"])
+            .arg("#{window_name}")
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&windows.stdout)
+                .lines()
+                .any(|w| w == name),
+            "the window is not in the person's client: {windows:?}"
+        );
+    }
+
+    /// The port contract of `focus`: the window is the person's tmux client,
+    /// the server that `$TMUX` names. Without one there is no window to open,
+    /// so the test skips.
+    #[tokio::test]
+    async fn focus_contract_opens_a_window_of_the_persons_client() {
+        if !tmux_available() {
+            return;
+        }
+        if std::env::var_os("TMUX").is_none() {
+            eprintln!("skipping: no tmux client (TMUX is unset)");
+            return;
+        }
+        let socket = unique("test-focus-contract");
+        let agent = unique("fc");
+        let launcher = TmuxLauncher::new(TmuxConfig {
+            socket: socket.clone(),
+        });
+        let handle = launcher.launch(&spec(&agent)).await.unwrap();
+        let agent: AgentId = agent.parse().unwrap();
+        testing::launcher_focus_contract(&launcher, &agent, true).await;
+        // The window is gone with the session that its attach command shows.
+        launcher.stop(&handle).await.unwrap();
     }
 }

@@ -117,7 +117,19 @@ pub fn router(host: Host) -> Router {
         .route("/v1/wait/agent", get(wait_agent))
         .route("/v1/wait/task", get(wait_task))
         .route("/v1/call", post(call))
+        .route("/v1/focus", post(focus))
         .with_state(host)
+}
+
+/// The body of `POST /v1/focus`.
+#[derive(Deserialize)]
+struct FocusBody {
+    agent: AgentId,
+}
+
+async fn focus(State(h): State<Host>, Json(b): Json<FocusBody>) -> Result<Json<Reply>, ApiFail> {
+    h.focus(&b.agent).await?;
+    Ok(Json(Reply::ok(&json!({ "agent": b.agent }))))
 }
 
 async fn health(State(h): State<Host>) -> Json<Reply> {

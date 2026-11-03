@@ -6,9 +6,30 @@ use borant_core::model::{
 };
 use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::{AgentId, ChannelName, MessageId, TaskId, Timestamp, keys, subjects};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{Hub, Memory};
+
+/// How long the hub keeps an answer key with its result (mod actions spec,
+/// "An answer that the mod can confirm").
+const ANSWER_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// How often the hub drops the answer keys that outlived their day.
+const ANSWER_PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// One answer that an idempotency key stands for, with the result that it
+/// returned, so a retried draft sends nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AnswerRecord {
+    /// The text of the first answer. Another text under the same key is an
+    /// edited draft, which needs a new key.
+    text: String,
+    /// The reply that the first answer returned.
+    result: Value,
+    /// When the first answer ran, on the hub clock.
+    at: Timestamp,
+}
 
 impl Hub {
     /// What waits for a person: the tasks in `needs_human` or `stuck` in every
@@ -81,9 +102,12 @@ impl Hub {
     /// goes to the channel owner. An answer never clears a pause or a retry
     /// limit: those are the `resume` and `task_update` paths.
     ///
-    /// `key` is reserved by the protocol for an idempotent answer; it is not
-    /// stored here, so a retry with the `expect_updated` of the first read is
-    /// a Conflict and the caller reads the task again.
+    /// `key` makes the answer idempotent: the hub keeps the key with its
+    /// result for a day, a retry with the same key and text returns that result
+    /// and sends nothing, and the same key with other text is a Conflict, so an
+    /// edited draft takes a new key. The key is checked before
+    /// `expect_updated`, because the retry follows the task change of the
+    /// first call.
     pub(crate) async fn answer(
         &self,
         mem: &mut Memory,
@@ -91,7 +115,14 @@ impl Hub {
         id: &TaskId,
         text: String,
         expect_updated: Timestamp,
+        key: Option<&str>,
     ) -> Result<Value, ApiError> {
+        let key = key.filter(|k| !k.is_empty());
+        if let Some(key) = key
+            && let Some(result) = self.answered_with(key, &text).await?
+        {
+            return Ok(result);
+        }
         let ch = self.channel(channel).await?;
         let mut doc = self.task(channel, id).await?;
         if doc.value.updated != expect_updated {
@@ -113,42 +144,97 @@ impl Hub {
             return Err(ApiError::invalid("an answer needs some text"));
         }
 
-        let Some(claimer) = doc.value.claimed_by.clone() else {
-            let Some(owner) = ch.value.owner.clone() else {
-                return Err(ApiError::invalid(format!(
-                    "#{channel} has no owner to send the answer to"
-                )));
-            };
-            self.tell(&owner, &text).await?;
-            return Ok(json!({
-                "task": doc.value,
-                "to": owner,
-                "status": "unchanged",
-            }));
+        let result = match doc.value.claimed_by.clone() {
+            Some(claimer) => {
+                let before = doc.value.clone();
+                doc.value.status = TaskStatus::InProgress;
+                doc.value.attention_msg = None;
+                doc.value.updated = self.now();
+                self.store
+                    .put(&doc.key, &doc.value, Some(doc.revision))
+                    .await?;
+                self.task_event(
+                    channel,
+                    &ch.value.owner,
+                    &doc.value,
+                    TaskEventKind::Updated,
+                    "answered by a person",
+                )
+                .await?;
+                self.task_status_event(mem, channel, &before, &doc.value);
+                self.tell(&claimer, &text).await?;
+                json!({
+                    "task": doc.value,
+                    "to": claimer,
+                    "status": "in_progress",
+                })
+            }
+            None => {
+                let Some(owner) = ch.value.owner.clone() else {
+                    return Err(ApiError::invalid(format!(
+                        "#{channel} has no owner to send the answer to"
+                    )));
+                };
+                self.tell(&owner, &text).await?;
+                json!({
+                    "task": doc.value,
+                    "to": owner,
+                    "status": "unchanged",
+                })
+            }
         };
+        if let Some(key) = key {
+            let record = AnswerRecord {
+                text,
+                result: result.clone(),
+                at: self.now(),
+            };
+            self.store.upsert(&keys::answer(key), &record).await?;
+        }
+        Ok(result)
+    }
 
-        let before = doc.value.clone();
-        doc.value.status = TaskStatus::InProgress;
-        doc.value.attention_msg = None;
-        doc.value.updated = self.now();
-        self.store
-            .put(&doc.key, &doc.value, Some(doc.revision))
-            .await?;
-        self.task_event(
-            channel,
-            &ch.value.owner,
-            &doc.value,
-            TaskEventKind::Updated,
-            "answered by a person",
-        )
-        .await?;
-        self.task_status_event(mem, channel, &before, &doc.value);
-        self.tell(&claimer, &text).await?;
-        Ok(json!({
-            "task": doc.value,
-            "to": claimer,
-            "status": "in_progress",
-        }))
+    /// The result of the answer that `key` already sent, for a retry of the
+    /// same draft; `None` when the key is new or older than [`ANSWER_TTL`].
+    /// The same key with another text is a Conflict.
+    async fn answered_with(&self, key: &str, text: &str) -> Result<Option<Value>, ApiError> {
+        let Some(doc) = self.store.get::<AnswerRecord>(&keys::answer(key)).await? else {
+            return Ok(None);
+        };
+        if self.now().since(doc.value.at) >= ANSWER_TTL {
+            return Ok(None);
+        }
+        if doc.value.text == text {
+            return Ok(Some(doc.value.result));
+        }
+        Err(ApiError::new(
+            ApiErrorCode::Conflict,
+            format!(
+                "answer key {key} already answered with another text: an edited draft takes a new key"
+            ),
+        ))
+    }
+
+    /// Drops the answer keys that outlived their day, so a key per draft does
+    /// not fill the store. At most once an hour.
+    pub(crate) async fn prune_answer_keys(&self) -> Result<(), ApiError> {
+        let now = self.now();
+        {
+            let mut mem = self.mem.lock().await;
+            if mem
+                .last_answer_prune
+                .is_some_and(|at| now.since(at) < ANSWER_PRUNE_EVERY)
+            {
+                return Ok(());
+            }
+            mem.last_answer_prune = Some(now);
+        }
+        for doc in self.store.list::<AnswerRecord>(keys::ANSWER_PREFIX).await? {
+            if now.since(doc.value.at) >= ANSWER_TTL {
+                self.store.delete(&doc.key).await?;
+            }
+        }
+        Ok(())
     }
 
     /// One direct message from a person to an agent. The agent's delivery

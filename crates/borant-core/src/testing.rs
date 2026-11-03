@@ -18,8 +18,9 @@ use crate::model::{
 use crate::ports::provision::{HostSpec, PoolName, ProviderHostId, Provisioner, StopMode};
 use crate::ports::secrets::{Resolved, Secret, SecretCapabilities, SecretRef, SecretStore};
 use crate::ports::{
-    Change, ChangeRequests, ChangeStatus, EventLog, IssueState, IssueTracker, IssueWrite,
-    MessageBus, PortError, PortErrorKind, PortResult, SessionStore, StateStore,
+    Change, ChangeRequests, ChangeStatus, EventLog, FOCUS_NOT_SUPPORTED, IssueState, IssueTracker,
+    IssueWrite, Launcher, MessageBus, PortError, PortErrorKind, PortResult, SessionStore,
+    StateStore,
 };
 use crate::time::Timestamp;
 
@@ -655,6 +656,29 @@ pub async fn issue_tracker_contract(tracker: &dyn IssueTracker, target: &str) {
         .await
         .expect_err("an unknown issue is NotFound");
     assert_eq!(err.kind, PortErrorKind::NotFound, "{err}");
+}
+
+/// The launcher contract of `focus`: a launcher with no window of the
+/// person's answers the port's "not supported", so the caller prints the
+/// attach command to copy. `window` is the adapter's own claim; one that has
+/// a window opens it and fails no other way (mod actions spec, "Go to an
+/// agent").
+pub async fn launcher_focus_contract(launcher: &dyn Launcher, agent: &AgentId, window: bool) {
+    match (launcher.focus(agent).await, window) {
+        (Ok(()), true) => {}
+        (Err(e), false) => {
+            assert_eq!(e.kind, PortErrorKind::Invalid, "{e:?}");
+            assert_eq!(e.message, FOCUS_NOT_SUPPORTED, "{e:?}");
+        }
+        (Ok(()), false) => panic!(
+            "the {} launcher opened a window it does not have",
+            launcher.kind()
+        ),
+        (Err(e), true) => panic!(
+            "the {} launcher opened no window of the person: {e:?}",
+            launcher.kind()
+        ),
+    }
 }
 
 /// The event log contract: one event per id, oldest first, filters, and follow.

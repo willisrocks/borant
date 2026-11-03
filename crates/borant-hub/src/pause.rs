@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
-    Agent, Channel, HostStats, Lease, LeaseState, Member, MoveReason, PauseReason, Sender, Task,
-    TaskStatus,
+    Agent, Channel, HostStats, Lease, LeaseState, Member, MoveReason, PauseReason, Sender,
+    SpawnRecord, SpawnState, Task, TaskStatus,
 };
 use borant_core::proto::{Actor, ApiError, ApiErrorCode, HostCommand, MoveTarget, PauseSelector};
-use borant_core::{AgentId, ChannelName, HostName, SessionId, Timestamp, keys, subjects};
+use borant_core::{
+    AgentId, BundleName, ChannelName, HostName, SessionId, Timestamp, keys, subjects,
+};
 use serde_json::{Value, json};
 
 use crate::{Hub, Memory, PendingMove};
@@ -98,20 +100,34 @@ impl Hub {
 
     /// Resumes an agent, or each member of a channel that no paused channel
     /// holds any more, and places it again with a planned move.
+    ///
+    /// `without_bundle` drops one spawn-level bundle from a queued spawn
+    /// before the placement, so a host that does not define the bundle can
+    /// take the spawn (mod actions spec, "Spawn without a bundle").
     pub(crate) async fn resume(
         &self,
         mem: &mut Memory,
         actor: Option<&Actor>,
         selector: PauseSelector,
+        without_bundle: Option<BundleName>,
     ) -> Result<Value, ApiError> {
         self.authorize_pause(actor, &selector).await?;
         let by = actor.map_or(Sender::Human, |a| Sender::Agent(a.agent.clone()));
         match selector {
             PauseSelector::Agent(id) => {
-                let placed = self.resume_agent(mem, &id, by).await?;
+                let spawn = match &without_bundle {
+                    Some(bundle) => Some(self.drop_spawn_bundle(&id, bundle).await?),
+                    None => None,
+                };
+                let placed = self.resume_agent(mem, &id, by, spawn.as_ref()).await?;
                 Ok(json!({ "agent": id, "paused": false, "placed": placed }))
             }
             PauseSelector::Channel(name) => {
+                if without_bundle.is_some() {
+                    return Err(ApiError::invalid(
+                        "a channel resume drops no bundle: name one agent",
+                    ));
+                }
                 self.set_channel_paused(&name, false).await?;
                 let mut resumed = Vec::new();
                 for member in self
@@ -132,12 +148,45 @@ impl Hub {
                     if !by_channel || self.all_channels_paused(&agent).await? {
                         continue;
                     }
-                    self.resume_agent(mem, &agent.id, by.clone()).await?;
+                    self.resume_agent(mem, &agent.id, by.clone(), None).await?;
                     resumed.push(agent.id);
                 }
                 Ok(json!({ "channel": name, "paused": false, "agents": resumed }))
             }
         }
+    }
+
+    /// Drops one spawn-level bundle from a queued spawn, so the next
+    /// placement can take a host that does not define it. The spawn record
+    /// and the agent's own bundle list both lose it: the launch merges the
+    /// collection, the role, and the channel first, so a bundle from any of
+    /// those is not the spawn's to drop.
+    async fn drop_spawn_bundle(
+        &self,
+        id: &AgentId,
+        bundle: &BundleName,
+    ) -> Result<SpawnRecord, ApiError> {
+        let key = keys::spawn(id);
+        let Some(mut doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Err(ApiError::invalid(format!("agent {id} has no queued spawn")));
+        };
+        if doc.value.state != SpawnState::Queued {
+            return Err(ApiError::invalid(format!(
+                "the spawn of {id} is no longer queued"
+            )));
+        }
+        if !doc.value.spec.bundles.contains(bundle) {
+            return Err(ApiError::invalid(format!(
+                "the spawn of {id} does not carry bundle {bundle}"
+            )));
+        }
+        doc.value.spec.bundles.retain(|b| b != bundle);
+        self.store.upsert(&key, &doc.value).await?;
+        let mut agent = self.agent(id).await?.value;
+        agent.bundles.retain(|b| b != bundle);
+        self.store.upsert(&keys::agent(id), &agent).await?;
+        tracing::info!(agent = %id, %bundle, "a spawn bundle dropped for the next placement");
+        Ok(doc.value)
     }
 
     /// Stops one agent: `paused` is set, and its session stops at the turn end
@@ -412,11 +461,14 @@ impl Hub {
     /// Clears the pause of one agent and places it again with a planned move.
     /// A person who resumes a capped agent means "let it work today", so the
     /// cap state that stopped it starts over; a stop by a person keeps it.
+    /// `spawn` names the queued spawn of a resume without a bundle, which is
+    /// placed as a spawn with the prompt of its record.
     async fn resume_agent(
         &self,
         mem: &mut Memory,
         id: &AgentId,
         by: Sender,
+        spawn: Option<&SpawnRecord>,
     ) -> Result<bool, ApiError> {
         let mut agent = self.agent(id).await?.value;
         let cap = agent.paused.as_ref().and_then(Cap::of);
@@ -449,8 +501,14 @@ impl Hub {
                 prompt: None,
             },
         );
+        // A queued spawn keeps its own prompt and its spawn reason; a moved
+        // agent continues its work instead.
+        let (reason, prompt) = match spawn {
+            Some(record) => (MoveReason::Spawn, Some(record.spec.prompt.clone())),
+            None => (MoveReason::Resume, None),
+        };
         let placed = self
-            .place_agent(mem, &agent, MoveReason::Resume, MoveTarget::default(), None)
+            .place_agent(mem, &agent, reason, MoveTarget::default(), prompt)
             .await?;
         tracing::info!(agent = %id, placed, "agent resumed");
         Ok(placed)

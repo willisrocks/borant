@@ -254,6 +254,14 @@ pub enum Command {
     Answer {
         /// The task to answer, as CHANNEL/ID.
         task: String,
+        /// An idempotency key: a second answer with the same key and text
+        /// returns the first result and sends nothing.
+        #[arg(long)]
+        key: Option<String>,
+        /// The `updated` of the task that the person saw. Without it, the
+        /// answer reads the task just before the send.
+        #[arg(long)]
+        expect_updated: Option<i64>,
         /// The answer text.
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
@@ -321,9 +329,20 @@ pub enum Command {
     Resume {
         /// An agent name, or `#channel`.
         target: String,
+        /// Drop this bundle from the queued spawn before placing the agent
+        /// again, for a spawn that waits on a bundle no host defines.
+        #[arg(long)]
+        without_bundle: Option<BundleName>,
     },
     /// Attach this terminal to the session of an agent.
-    Attach { agent: AgentId },
+    Attach {
+        agent: AgentId,
+        /// Open the attach command in a new window of the person's tmux
+        /// client instead. When that is not possible, print the command to
+        /// copy.
+        #[arg(long)]
+        window: bool,
+    },
     /// Serve the Borant MCP tools on stdio (Claude Code starts this).
     Mcp,
     /// Handle one Claude Code hook event (Claude Code runs this).
@@ -1668,11 +1687,15 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             )
             .await?,
         ),
-        Command::Resume { target } => pretty(
+        Command::Resume {
+            target,
+            without_bundle,
+        } => pretty(
             &call(
                 &c,
                 ToolCall::Resume {
                     selector: pause_selector(&target)?,
+                    without_bundle,
                 },
             )
             .await?,
@@ -1748,21 +1771,32 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 print!("{}", render_board(&board));
             }
         }
-        Command::Answer { task, text } => {
+        Command::Answer {
+            task,
+            key,
+            expect_updated,
+            text,
+        } => {
             let (channel, id) = task_ref(&task)?;
-            // Read the task first: the answer names the version that the
-            // person saw, so a task that changed meanwhile is a Conflict.
-            let current = call(
-                &c,
-                ToolCall::TaskGet {
-                    channel: channel.clone(),
-                    id,
-                },
-            )
-            .await?;
-            let updated = current["updated"]
-                .as_i64()
-                .context("the task reply has no updated time")?;
+            // Read the task only when the call does not name the version that
+            // the person saw: with `expect_updated`, a task that changed
+            // meanwhile is a Conflict, never an overwrite.
+            let updated = match expect_updated {
+                Some(updated) => updated,
+                None => {
+                    let current = call(
+                        &c,
+                        ToolCall::TaskGet {
+                            channel: channel.clone(),
+                            id,
+                        },
+                    )
+                    .await?;
+                    current["updated"]
+                        .as_i64()
+                        .context("the task reply has no updated time")?
+                }
+            };
             pretty(
                 &call(
                     &c,
@@ -1771,13 +1805,13 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                         task: id,
                         text: text.join(" "),
                         expect_updated: Timestamp(updated),
-                        key: None,
+                        key,
                     },
                 )
                 .await?,
             );
         }
-        Command::Attach { agent } => attach(&c, &agent).await?,
+        Command::Attach { agent, window } => attach(&c, &agent, window).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. }
         | Command::Host { cmd: None }
@@ -1818,7 +1852,7 @@ pub fn attach_command(
     }
 }
 
-async fn attach(c: &LocalClient, agent: &AgentId) -> anyhow::Result<()> {
+async fn attach(c: &LocalClient, agent: &AgentId, window: bool) -> anyhow::Result<()> {
     let agents = call(c, ToolCall::ListAgents).await?;
     let a = agents
         .as_array()
@@ -1851,6 +1885,27 @@ async fn attach(c: &LocalClient, agent: &AgentId) -> anyhow::Result<()> {
         let mut remote = vec!["ssh".to_owned(), "-t".to_owned(), ssh.to_owned()];
         remote.extend(argv);
         argv = remote;
+    }
+    if window {
+        // The window is the local daemon's: a remote agent's command travels
+        // over ssh from this machine, so it is only printed there.
+        if local.as_str() == host {
+            let outcome = c
+                .post::<_, Value>(
+                    "/v1/focus",
+                    &json!({ "agent": agent }),
+                    Duration::from_secs(5),
+                )
+                .await;
+            if let Outcome::Reply(Ok(_)) = outcome {
+                println!("opened {agent} in a new window of your terminal");
+                return Ok(());
+            }
+        }
+        // A launcher without a window, or no daemon to ask: the person copies
+        // the command into a terminal.
+        println!("{}", argv.join(" "));
+        return Ok(());
     }
     let status = std::process::Command::new(&argv[0])
         .args(&argv[1..])
@@ -2090,6 +2145,56 @@ mod tests {
             ["tmux", "-L", "agents", "attach", "-t", "=borant-w1"]
         );
         assert_eq!(attach_command("orca", None, &a), None);
+    }
+
+    /// The chief mod answers with a key for its draft and the version that
+    /// the person saw, so a retry after a timeout sends nothing, and a task
+    /// that changed meanwhile is a conflict.
+    #[test]
+    fn answer_key_and_expect_updated_parse() {
+        let cmd = cli_command(&format!(
+            "borant answer api/{TASK} --key draft-1 --expect-updated 42 use postgres"
+        ));
+        let Command::Answer {
+            task,
+            key,
+            expect_updated,
+            text,
+        } = cmd
+        else {
+            panic!("not an answer");
+        };
+        assert_eq!(task, format!("api/{TASK}"));
+        assert_eq!(key.as_deref(), Some("draft-1"));
+        assert_eq!(expect_updated, Some(42));
+        assert_eq!(text, ["use", "postgres"]);
+    }
+
+    #[test]
+    fn resume_without_bundle_parses() {
+        let cmd = cli_command("borant resume w1 --without-bundle github-work");
+        let Command::Resume {
+            target,
+            without_bundle,
+        } = cmd
+        else {
+            panic!("not a resume");
+        };
+        assert_eq!(target, "w1");
+        assert_eq!(
+            without_bundle,
+            Some("github-work".parse::<BundleName>().unwrap())
+        );
+    }
+
+    #[test]
+    fn attach_window_parses() {
+        let cmd = cli_command("borant attach w1 --window");
+        let Command::Attach { agent, window } = cmd else {
+            panic!("not an attach");
+        };
+        assert_eq!(agent, "w1".parse::<AgentId>().unwrap());
+        assert!(window);
     }
 
     /// The ULID that the spawn and wait tests use.

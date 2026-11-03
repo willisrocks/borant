@@ -485,6 +485,7 @@ async fn a_stalled_card_names_what_it_holds_and_tells_the_owner_and_the_chief() 
         None,
         ToolCall::Resume {
             selector: PauseSelector::Agent(agent("w")),
+            without_bundle: None,
         },
     )
     .await

@@ -553,6 +553,11 @@ pub enum ToolCall {
     /// Resumes a stopped agent or channel and places the agent again.
     Resume {
         selector: PauseSelector,
+        /// Drops this bundle from the queued spawn before the placement, so a
+        /// host that does not define it can take the spawn (mod actions spec,
+        /// "Spawn without a bundle").
+        #[serde(default)]
+        without_bundle: Option<BundleName>,
     },
     /// Lists the agents that a prune would remove. Writes and deletes nothing.
     PruneAgents {
@@ -1051,6 +1056,7 @@ mod tests {
             resume,
             ToolCall::Resume {
                 selector: PauseSelector::Channel("api".parse().unwrap()),
+                without_bundle: None,
             }
         );
         let answer: ToolCall = serde_json::from_str(
@@ -1083,6 +1089,7 @@ mod tests {
             },
             ToolCall::Resume {
                 selector: PauseSelector::Agent("w1".parse().unwrap()),
+                without_bundle: None,
             },
             ToolCall::Inbox,
             ToolCall::Schedules,

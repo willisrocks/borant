@@ -248,6 +248,8 @@ pub(crate) struct Memory {
     pub last_schedules: Option<Timestamp>,
     /// When the deadline pass last ran.
     pub last_deadlines: Option<Timestamp>,
+    /// When the hub last dropped the expired answer keys.
+    pub last_answer_prune: Option<Timestamp>,
     /// The provisioner refusals that the alerts report, per pool.
     pub elastic_refused: BTreeMap<PoolName, borant_core::rules::alerts::Refusal>,
     /// The tracker refusal that paused the issue mirror, until a restart.
@@ -497,6 +499,10 @@ impl Hub {
             tracing::warn!("the schedule pass failed: {e}");
         }
         self.tick_alerts().await?;
+        // Answer keys outlive the retry window of a draft by a day, then go.
+        if let Err(e) = self.prune_answer_keys().await {
+            tracing::warn!("the answer key prune failed: {e}");
+        }
         // Work that waits on a person, after every other step has had its
         // say: a spawn that a wait cannot place, and a claim whose claimer
         // can no longer work it.
