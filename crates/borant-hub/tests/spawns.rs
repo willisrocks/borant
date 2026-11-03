@@ -17,7 +17,7 @@ use borant_core::model::{
 };
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Actor, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
-use borant_core::rules::roles::{OnePer, RoleConfig};
+use borant_core::rules::roles::{CollectionConfig, OnePer, ProjectConfig, RoleConfig};
 use borant_core::{AgentId, ChannelName, Clock, RoleName, keys};
 use borant_hub::{Hub, HubConfig};
 use common::{Fx, name, next_cmd};
@@ -612,6 +612,97 @@ async fn spawns_one_per_counts_a_queued_record() {
     assert!(
         err.message.contains("only one worker per collection"),
         "{err}"
+    );
+}
+
+/// The person's standing permissions reach the brief of every spawn: the
+/// collection's first, then the project's (chief approvals spec).
+#[tokio::test]
+async fn spawns_the_brief_carries_the_standing_permissions() {
+    let fx = Fx::with(HubConfig {
+        collections: BTreeMap::from([(
+            "personal".parse().unwrap(),
+            CollectionConfig {
+                standing_permissions: vec!["Merge PRs after green CI.".into()],
+                ..CollectionConfig::default()
+            },
+        )]),
+        projects: BTreeMap::from([(
+            "api".parse().unwrap(),
+            ProjectConfig {
+                standing_permissions: vec!["Deploy on auto-pilot.".into()],
+            },
+        )]),
+        ..HubConfig::default()
+    });
+    host(&fx, "h1", 2).await;
+    let owner = fx
+        .register_in("h1", Some("boss"), None, Some("personal"))
+        .await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ProjectAdd {
+            project: borant_core::model::Project {
+                name: "api".parse().unwrap(),
+                remote_url: "git://git/demo.git".into(),
+                default_branch: "main".into(),
+                checkpoint_remote: None,
+                setup: None,
+                test: None,
+                collection: Some("personal".parse().unwrap()),
+                mirror_issues: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: "personal-api".parse().unwrap(),
+            schema: None,
+            project: Some("api".parse().unwrap()),
+            branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            issue_target: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let reply = fx
+        .call(
+            Some(&owner),
+            ToolCall::Spawn {
+                channel: "personal-api".parse().unwrap(),
+                prompt: "Fix the build.".into(),
+                harness: None,
+                host: None,
+                name: None,
+                model: None,
+                role: None,
+                key: None,
+                task: None,
+                stop_on_close: None,
+                continues: None,
+                priority: Some(0),
+                bundles: Vec::new(),
+            },
+        )
+        .await
+        .expect("the spawn");
+    let agent: AgentId = reply["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    let spec = record(&fx, &agent).await.expect("the spawn record");
+    assert!(
+        spec.spec.prompt.ends_with(
+            "Fix the build.\n\nStanding permissions from the person:\n\
+- Merge PRs after green CI.\n\
+- Deploy on auto-pilot."
+        ),
+        "{}",
+        spec.spec.prompt
     );
 }
 

@@ -879,6 +879,10 @@ pub struct TaskPatch {
 pub enum Sender {
     Agent(AgentId),
     Human,
+    /// The hub relays the person's decision, which a chief confirmed with
+    /// their words (chief approvals spec). Only the hub writes it, so a
+    /// reader can tell an approval from an agent's claim of one.
+    Approval(AgentId),
 }
 
 /// Events written before phase 3 name the sender as a bare agent id, so both
@@ -890,6 +894,7 @@ impl<'de> Deserialize<'de> for Sender {
         enum Tagged {
             Agent(AgentId),
             Human,
+            Approval(AgentId),
         }
 
         #[derive(Deserialize)]
@@ -902,6 +907,7 @@ impl<'de> Deserialize<'de> for Sender {
         match Repr::deserialize(d)? {
             Repr::Tagged(Tagged::Agent(id)) => Ok(Self::Agent(id)),
             Repr::Tagged(Tagged::Human) => Ok(Self::Human),
+            Repr::Tagged(Tagged::Approval(id)) => Ok(Self::Approval(id)),
             Repr::Name(name) if name == "human" => Ok(Self::Human),
             Repr::Name(name) => name
                 .parse::<AgentId>()
@@ -916,6 +922,7 @@ impl fmt::Display for Sender {
         match self {
             Self::Agent(a) => a.fmt(f),
             Self::Human => f.write_str("human"),
+            Self::Approval(a) => write!(f, "approval from {a}"),
         }
     }
 }

@@ -190,6 +190,7 @@ async fn collections_launch_order_gets_the_bundles_and_git_author() {
             bundles: vec!["github-work".parse().unwrap()],
             git_author: Some(author.clone()),
             mirror_issues: false,
+            ..CollectionConfig::default()
         },
     )]);
     let worker: RoleName = "worker".parse().unwrap();

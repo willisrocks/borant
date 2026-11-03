@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::events::{SwarmEvent, SwarmEventBody};
+use crate::events::{AnswerVia, SwarmEvent, SwarmEventBody};
 use crate::ids::{ChannelName, ProjectName, TaskId};
 use crate::model::{Channel, ChannelKind, CloseReason, Sender, Task, TaskStatus};
 use crate::ports::{CheckState, ReviewState};
@@ -486,15 +486,18 @@ pub fn history(events: &[SwarmEvent], channel: &ChannelName, id: &TaskId) -> Vec
                     text,
                 })
             }
-            SwarmEventBody::TaskAnswered { key, by } => Some(HistoryEntry {
+            SwarmEventBody::TaskAnswered { key, by, via } => Some(HistoryEntry {
                 seq: event.seq,
                 at: event.at,
                 kind: HistoryKind::Answered,
                 status: None,
                 by: Some(by.clone()),
-                text: match key {
-                    Some(key) => format!("answered by a person (key {key})"),
-                    None => "answered by a person".to_owned(),
+                text: match via {
+                    AnswerVia::Chief => "answered by the chief's approval".to_owned(),
+                    AnswerVia::Person => match key {
+                        Some(key) => format!("answered by a person (key {key})"),
+                        None => "answered by a person".to_owned(),
+                    },
                 },
             }),
             SwarmEventBody::MessageSent { from, to, text } => Some(HistoryEntry {

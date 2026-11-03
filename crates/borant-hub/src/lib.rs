@@ -56,11 +56,11 @@ use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStor
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
-use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::rules::roles::{CollectionConfig, ProjectConfig, RoleConfig};
 use borant_core::rules::schedules::Schedule;
 use borant_core::{
     AgentId, BundleName, ChannelName, Clock, CollectionName, FencingToken, HostName, MemberName,
-    PoolName, RoleName, SessionId, TaskId, Timestamp, keys, subjects,
+    PoolName, ProjectName, RoleName, SessionId, TaskId, Timestamp, keys, subjects,
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -92,6 +92,9 @@ pub struct HubConfig {
     pub roles: BTreeMap<RoleName, RoleConfig>,
     /// `[collections.<name>]` from `hub.toml`.
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
+    /// `[projects.<name>]` from `hub.toml`: the standing permissions that the
+    /// person granted for one project (chief approvals spec). Config only.
+    pub projects: BTreeMap<ProjectName, ProjectConfig>,
     /// `[alerts]` of `hub.toml`: which rules run and their timeouts.
     pub alerts: AlertsConfig,
     /// `[changes]` of `hub.toml`: the PR watch. `None` watches nothing.
@@ -122,6 +125,7 @@ impl Default for HubConfig {
             elastic: None,
             roles: BTreeMap::new(),
             collections: BTreeMap::new(),
+            projects: BTreeMap::new(),
             alerts: AlertsConfig::default(),
             changes: None,
             mirror: None,

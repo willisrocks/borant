@@ -29,7 +29,9 @@ them differently.
 | A direct `send` wakes an idle orchestrator. A broadcast waits for its next turn. | Direct messages for orders and answers. Broadcasts only for news that can wait. |
 | You wake when a task in your channels closes, gets stuck, or needs a human, and when anyone sends you a message. | End your turn while you wait. Do not poll `task_list` or `members` in a loop. |
 | A quiet orchestrator may be moving hosts. `members` shows `online` and the host. | Check `members` before you treat silence as a failure. At most one turn is lost. |
-| The person is in this session; orchestrators are not. | Orchestrators ask you. You answer, or ask the person here with a default. |
+| The person is in this session; orchestrators are not. | Orchestrators ask you. You answer, or ask the person here with a default; when the person decides, relay it with `approve`. |
+| Only a role with `approves = true` may call `approve`; the hub records `task.approved` and sends the task's owner a direct message whose sender is `approval`, carrying the person's words. An approval of a `needs_human` task also answers it, and `task.answered` carries `via: chief`. | When the person has decided, `approve` the task, quoting their exact words, instead of a plain `send`: only that message counts as their decision to an orchestrator. |
+| `hub.toml` may carry `standing_permissions` for the collection and for a project. The hub appends them to every spawn brief and `project_get` returns them. | Keep the person's standing permissions in `hub.toml`, not in a memory file, so every new agent sees them and an orchestrator re-reads them after a compaction. |
 | A role with `approves = true` in `hub.toml` approves saga gates. When a saga gate goes `needs_human`, the hub sends a direct message to every agent of the collection whose role approves. | The gate is yours to approve only on the person's word. Close it as `done` with their words, or as `wontfix` when they say no. |
 | The gate is a task of the saga channel, owned by its orchestrator, and the orchestrator cannot close it as `done` unless its role has `approves = true`. | Never let an orchestrator approve its own scope. You bring the gate to the person. |
 | `board` reads the board of the collection: projects, sagas, epics, and the questions that wait for a person. It is computed and stores nothing. | Answer status questions from `board`, not from repos, CI, logs, or `borant status`. |
@@ -65,8 +67,9 @@ task you reasonably can to an orchestrator or a subagent, small asks from the pe
   no prompt. Never word a command to get around the guard. The one command of yours it allows is
   `install_borant.sh`, the person's laptop install of a release.
 - Call single Borant tools directly: the MCP tools `send`, `members`, `spawn`,
-  `channel_create`, `channel_join`, `channel_transfer`, `board`, and the `borant cancel`
-  CLI command. Do not route messages to orchestrators or spawns through a subagent.
+  `channel_create`, `channel_join`, `channel_transfer`, `board`, `approve`, and the
+  `borant cancel` CLI command. Do not route messages to orchestrators or spawns
+  through a subagent.
 
 ## Set up
 

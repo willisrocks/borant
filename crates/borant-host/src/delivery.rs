@@ -174,7 +174,7 @@ impl Host {
         };
         if over_limit {
             let sender = match &env.from {
-                Sender::Agent(a) => Some(a.clone()),
+                Sender::Agent(a) | Sender::Approval(a) => Some(a.clone()),
                 Sender::Human => None,
             };
             self.delivery_event(agent, "delivery.wake_limited", |count| {

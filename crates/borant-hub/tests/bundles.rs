@@ -110,6 +110,7 @@ async fn bundles_merge_collection_role_channel_and_spawn() {
                 bundles: bundles(&["github-work"]),
                 git_author: None,
                 mirror_issues: false,
+                ..CollectionConfig::default()
             },
         )]),
         roles: BTreeMap::from([(
@@ -195,6 +196,7 @@ async fn bundles_a_child_can_give_a_bundle_it_holds() {
                 bundles: bundles(&["github-work"]),
                 git_author: None,
                 mirror_issues: false,
+                ..CollectionConfig::default()
             },
         )]),
         ..Default::default()

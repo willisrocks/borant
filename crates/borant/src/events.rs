@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::events::{Severity, SwarmEvent, SwarmEventBody, kind_of};
+use borant_core::events::{AnswerVia, Severity, SwarmEvent, SwarmEventBody, kind_of};
 use borant_core::{AgentId, ChannelName, Clock, HostName, SystemClock, Timestamp};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -278,10 +278,12 @@ fn detail(event: &SwarmEvent) -> String {
             word(review)
         ),
         B::TaskCreated { title, by } => format!("{title} by {by}"),
-        B::TaskAnswered { key, by } => match key {
-            Some(key) => format!("by {by} (key {key})"),
-            None => format!("by {by}"),
+        B::TaskAnswered { key, by, via } => match (via, key) {
+            (AnswerVia::Chief, _) => format!("by {by} on the person's word"),
+            (AnswerVia::Person, Some(key)) => format!("by {by} (key {key})"),
+            (AnswerVia::Person, None) => format!("by {by}"),
         },
+        B::TaskApproved { by, session, quote } => format!("by {by} (session {session}): {quote}"),
         B::MessageSent { from, to, text } => format!("{from} -> {to}: {text}"),
         B::SpawnBlocked { reason, action } => format!("{reason}; unblock: {action}"),
         B::SpawnUnblocked => String::new(),

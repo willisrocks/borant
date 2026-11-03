@@ -957,7 +957,7 @@ impl Hub {
                         tracing::warn!(%agent, %who, "the resume message failed: {e}");
                     }
                 }
-                Sender::Human => {
+                Sender::Human | Sender::Approval(_) => {
                     if let Ok(doc) = self.agent(agent).await
                         && let Some(owner) = self.owner_of(&doc.value).await?
                         && let Err(e) = self.tell(&owner, &text).await

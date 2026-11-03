@@ -209,6 +209,34 @@ impl Fx {
         self.try_register(host, agent, channel, true).await.unwrap()
     }
 
+    /// Registers a session that reports a role, as a person's session does
+    /// from `BORANT_ROLE`. A chief role with `approves = true` is the one
+    /// that can approve.
+    pub async fn register_roled(
+        &self,
+        host: &str,
+        agent: &str,
+        collection: Option<&str>,
+        role: &str,
+    ) -> Registered {
+        let v = self
+            .req(CtlRequest::RegisterSession(RegisterSession {
+                session: SessionId::new(),
+                host: name(host),
+                harness: Harness::Fake,
+                pid: Some(1),
+                cwd: "/work".into(),
+                repo: Some(repo()),
+                agent: Some(agent.parse().unwrap()),
+                role: Some(role.parse().unwrap()),
+                collection: collection.map(|c| c.parse().unwrap()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        serde_json::from_value(v).unwrap()
+    }
+
     pub async fn call(&self, who: Option<&Registered>, call: ToolCall) -> Result<Value, ApiError> {
         let actor = who.map(|r| Actor {
             agent: r.agent.clone(),

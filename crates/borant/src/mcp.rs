@@ -170,6 +170,15 @@ pub struct TaskClose {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct Approve {
+    pub channel: String,
+    /// The task ID.
+    pub id: String,
+    /// The person's words, as they said them. The hub redacts them.
+    pub quote: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelRef {
     pub channel: String,
 }
@@ -514,6 +523,16 @@ impl BorantMcp {
     }
 
     #[tool(
+        description = "Relay the person's decision on a task, quoting their words. Only a chief approves: the hub refuses any role without approves = true."
+    )]
+    async fn approve(&self, Parameters(a): Parameters<Approve>) -> Result<String, String> {
+        self.forward(
+            json!({"tool": "approve", "channel": a.channel, "task": a.id, "quote": a.quote}),
+        )
+        .await
+    }
+
+    #[tool(
         description = "Wait until a task reaches one of the states you name. The hub wakes you with a direct message when it does, or when the wait times out, also after a hub restart."
     )]
     async fn wait(&self, Parameters(a): Parameters<Wait>) -> Result<String, String> {
@@ -594,6 +613,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "approve",
                 "board",
                 "channel_close",
                 "channel_create",

@@ -18,10 +18,11 @@ use borant_core::ports::secrets::{Bundle, SecretRef};
 use borant_core::rules::lease::LeaseConfig;
 use borant_core::rules::members::MemberRules;
 use borant_core::rules::pool::PoolConfig;
-use borant_core::rules::roles::{CollectionConfig, RoleConfig};
+use borant_core::rules::roles::{CollectionConfig, ProjectConfig, RoleConfig};
 use borant_core::rules::schedules::Schedule;
 use borant_core::{
-    BundleName, ChannelName, CollectionName, HostName, MemberName, PoolName, RoleName, Tag,
+    BundleName, ChannelName, CollectionName, HostName, MemberName, PoolName, ProjectName, RoleName,
+    Tag,
 };
 use borant_exec::ExecConfig;
 use borant_exec::changes::{ExecChangeRequests, STATUS_TIMEOUT};
@@ -262,6 +263,9 @@ pub struct HubFile {
     /// The collections, by name, for example `personal` and `work`.
     #[serde(default)]
     pub collections: BTreeMap<CollectionName, CollectionConfig>,
+    /// `[projects.<name>]`: what the person already allowed for one project.
+    #[serde(default)]
+    pub projects: BTreeMap<ProjectName, ProjectConfig>,
     /// `[channels.<name>]`: the caps of a channel.
     #[serde(default)]
     #[allow(dead_code)] // The stop and spawn-caps task reads it.
@@ -1129,6 +1133,45 @@ mod tests {
             !f.collections[&"personal".parse().unwrap()].mirror_issues,
             "the mirror defaults to off"
         );
+    }
+
+    /// The person's standing permissions are two tables of `hub.toml`, and a
+    /// file from before them still parses with none.
+    #[test]
+    fn hub_file_parses_standing_permissions() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [collections.work]
+            standing_permissions = ["Merge PRs after green CI."]
+
+            [projects.steve-bot]
+            standing_permissions = ["Deploy on auto-pilot."]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            f.collections[&"work".parse().unwrap()].standing_permissions,
+            ["Merge PRs after green CI."]
+        );
+        assert_eq!(
+            f.projects[&"steve-bot".parse().unwrap()].standing_permissions,
+            ["Deploy on auto-pilot."]
+        );
+
+        let older: HubFile = toml::from_str(
+            r#"
+            [collections.work]
+            mirror_issues = true
+            "#,
+        )
+        .unwrap();
+        assert!(
+            older.collections[&"work".parse().unwrap()]
+                .standing_permissions
+                .is_empty(),
+            "a collection without the key has none"
+        );
+        assert!(older.projects.is_empty(), "no [projects] table parses");
     }
 
     #[test]

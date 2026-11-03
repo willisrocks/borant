@@ -66,6 +66,7 @@ async fn hub_parts(
         elastic: file.elastic_config()?,
         roles: file.roles,
         collections: file.collections,
+        projects: file.projects,
         alerts: file.alerts.to_config(),
         changes,
         mirror,

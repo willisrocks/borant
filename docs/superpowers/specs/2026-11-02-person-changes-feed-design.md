@@ -59,7 +59,9 @@ way.
 - A release is a task closed as done with the property `release: true`. The
   title prefix "Release" is only a fallback.
 - An answer becomes a durable event, `task.answered`, with the answer key, so
-  "answered" in the feed and the history comes from the log.
+  "answered" in the feed and the history comes from the log. Its `via` field
+  is `person`, or `chief` when the hub relayed a chief's approval of the
+  person's words (chief approvals spec, 2026-11-03).
 - `task history` returns at most the last 50 entries.
 
 ## Tests

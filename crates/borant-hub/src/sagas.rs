@@ -18,7 +18,7 @@ impl Hub {
     pub(crate) async fn is_approver(&self, by: &Sender) -> Result<bool, ApiError> {
         match by {
             Sender::Human => Ok(true),
-            Sender::Agent(id) => {
+            Sender::Agent(id) | Sender::Approval(id) => {
                 let agent = self.agent(id).await?;
                 Ok(roles::approves(agent.value.role.as_ref(), &self.cfg.roles))
             }

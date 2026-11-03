@@ -421,6 +421,27 @@ impl Hub {
                 self.answer(mem, &channel, &task, text, expect_updated, key.as_deref())
                     .await
             }
+            ToolCall::Approve {
+                channel,
+                task,
+                quote,
+            } => {
+                // Only the chief may relay a decision: an agent with a role
+                // that `hub.toml` marks `approves`. A person answers instead.
+                let actor = actor.ok_or_else(|| {
+                    ApiError::invalid("only an agent relays an approval; a person answers")
+                })?;
+                let agent = self.agent(&actor.agent).await?;
+                if !roles::approves(agent.value.role.as_ref(), &self.cfg.roles) {
+                    return Err(ApiError::denied(format!(
+                        "the role of {} does not approve; only a role with approves = true does",
+                        actor.agent
+                    )));
+                }
+                self.channel_for(mine.as_ref(), &channel).await?;
+                self.approve(mem, &channel, &task, &quote, &actor.agent, actor.session)
+                    .await
+            }
             ToolCall::Stop {
                 selector,
                 grace_secs,
@@ -487,7 +508,21 @@ impl Hub {
                     .await?;
                 to_value(&project)
             }
-            ToolCall::ProjectGet { name } => to_value(&self.project(&name).await?),
+            ToolCall::ProjectGet { name } => {
+                let project = self.project(&name).await?;
+                // The person's standing permissions are config, not a record:
+                // an orchestrator reads them again after a compaction.
+                let standing = roles::standing_permissions(
+                    project
+                        .collection
+                        .as_ref()
+                        .and_then(|c| self.cfg.collections.get(c)),
+                    self.cfg.projects.get(&name),
+                );
+                let mut v = to_value(&project)?;
+                v["standing_permissions"] = json!(standing);
+                Ok(v)
+            }
             ToolCall::ProjectList => {
                 let projects: Vec<Project> = self
                     .store
