@@ -454,6 +454,22 @@ If the assessment fails or times out after 3 attempts, the Decision is
 `unavailable`, and the Triggers go back to pending with a 10 minute delay.
 (My call)
 
+### Why subscribed Triggers skip the Eval
+
+1. A Subscription exists only after an Eval accept on that Thread. Later CI,
+   review, and reply Triggers go to that Ticket as Inputs. They start no new
+   work and add no authority, so an Eval there costs a model call and a
+   delay, and protects nothing. (My call)
+2. The router path goes through the Eval because a proposal asks for a new
+   Ticket, which is new authority and spend, and the router reads untrusted
+   text that can carry a prompt injection. The Eval guards the start of work,
+   not each event inside approved work. (Decided)
+3. Risk: a hostile comment on a subscribed Thread reaches the worker
+   unchecked. The Mandate scope is enforced in code by `authorize` and by
+   secret injection. Gated actions still need a standing permission or
+   Chris's Approval row. The worker prompt marks Input from people other
+   than Chris as untrusted data. (My call)
+
 ### Router and the web chat
 
 Chris's chief chat is a Source. Each message is a Trigger with
