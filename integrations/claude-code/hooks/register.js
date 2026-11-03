@@ -5,9 +5,11 @@
 // crates/borant/src/hook.rs, session_start). Every other session registers no
 // timer, no command, and draws nothing.
 //
-// Board mode holds the keyboard, as a vim mode does. A bare 0 at the empty
-// prompt (the band's `0: board mode` Button) or a row's digit opens the
-// preview pane with the keys, and the pane's only focusable element is an
+// Board mode holds the keyboard, as a vim mode does. Outside it the mod takes
+// no printable key: a prompt starts with any digit or letter. A click on the
+// band's `/cos pane: board mode` Button or on a row, or the command
+// `/cos pane`, opens the preview pane with the keys, and the pane's only focusable
+// element is an
 // Input: while it has the focus, Claude Code gives every printable key to it
 // and none to the prompt. The mod reads each key from the Input's change
 // (1-9 select, j k move, d Done, a Ask, ? help) and Enter from its submit
@@ -15,10 +17,9 @@
 // and Shift+Tab move the focus off the Input, and the band and the pane then
 // say that board mode is off.
 //
-// The digit reaches the mod two ways. From 144 columns the prompt.edit hook
-// takes it and opens the preview. Below 144 the engine places only a pane
-// that a press or a command asked for, so there each band row's chip carries
-// its digit as a hotkey, and the press opens the preview.
+// A row's digit is drawn, never a hotkey: the engine gives a bare digit at an
+// empty prompt to a band Button's hotkey, and that took the first character
+// of prompts like "1. fix the bug". Digits select rows in board mode.
 //
 // Docked (a wide terminal) the preview is a tall card beside the transcript;
 // inline (a narrow one) it is a compact block over the band, open only while
@@ -54,10 +55,6 @@ const WORDY_KEYS = 64
  * user-message grey, darker than promptBorder, so yellow titles, colored
  * glyphs and blue keys keep their colors and stay readable on it. */
 const SELECTED_BG = 'userMessageBackground'
-/** Below this many terminal columns the engine places only an asked pane (a
- * command, a prompt, or a press behind it). A digit taken by prompt.edit is
- * none of those, so there the band's chips keep the digits as hotkeys. */
-const ASKED_COLUMNS = 144
 /** How often the board is read while the session is the chief: the fallback
  * for changes the event stream does not carry, such as a new task. */
 const REFRESH_MS = 5000
@@ -203,7 +200,6 @@ export function register(on) {
         active: active(),
         statusFor: (item) => shortStatus(item),
         stale: await stale($),
-        digitKeys: !promptDigits(),
       })
       return tree($, e, rows, cur.item ? cur.item.key : null)
     } catch {
@@ -299,24 +295,10 @@ export function register(on) {
     }
   })
 
-  // From 144 columns a digit at an empty prompt is the board's: it selects its
-  // row and opens the preview with the keys, and never lands in the prompt. A
-  // paste, a key with a modifier, and a digit with no row go on as typing.
-  // Below 144 the band's chips carry the digits as hotkeys instead.
-  // Typing means the prompt has the keys; the board no longer has them.
+  // Typing means the prompt has the keys; the board no longer has them. The
+  // mod takes no key here: every printable key goes on to the prompt.
   on('prompt.edit', async ($, e, next) => {
     try {
-      if (isChief && promptDigits() && e.text === '' && e.key && !e.key.ctrl && !e.key.meta && /^[1-9]$/.test(e.inputText || '')) {
-        const item = items()[Number(e.inputText) - 1]
-        if (item) {
-          // The open starts inside this hook, while the prompt holds the keys
-          // over an empty composer, so the preview can take them.
-          select(item.key)
-          redraw($)
-          openPane($, true).catch(() => {})
-          return { text: e.text, cursor: e.cursor }
-        }
-      }
       if (isChief && paneFocused) {
         setFocused(false)
         redraw($)
@@ -739,11 +721,6 @@ function compactPane() {
   return placement === 'inline' || paneWidth < NARROW_PANE
 }
 
-/** Whether a digit at the empty prompt reaches prompt.edit: from 144 columns. */
-function promptDigits() {
-  return terminalColumns() >= ASKED_COLUMNS
-}
-
 /** The marks of a needs-you item: its Done, its Ask, and whether it is open. */
 function marks(item) {
   const key = questionKey(item.q)
@@ -787,7 +764,7 @@ function select(key) {
   helpShown = false
 }
 
-/** A row's digit at the prompt or a click on it: select it and enter board mode. */
+/** A click on a row: select it and enter board mode. */
 async function chipPress($, key) {
   select(key)
   redraw($)
@@ -796,10 +773,9 @@ async function chipPress($, key) {
 }
 
 /**
- * 0 at the empty prompt: board mode on the selected row. Claude Code gives
- * the pane the keys only from an empty prompt that holds them: not from text
- * in the prompt, and not while the band holds them (after ctrl+x tab). Then
- * the person is told how, rather than left with a preview that has no keys.
+ * A click: board mode on the selected row. If the pane did not get the keys
+ * (the band holds them), the person is told how, rather than left with a
+ * preview that has no keys.
  */
 async function enterBoard($) {
   helpShown = false
@@ -807,7 +783,7 @@ async function enterBoard($) {
   if (!(await openPane($, true))) return
   try {
     $.clock.after(FOCUS_CHECK_MS, () => {
-      if (paneOpen && !paneFocused) toast($, 'board mode needs the keys at an empty prompt: esc, then 0')
+      if (paneOpen && !paneFocused) toast($, 'board mode did not get the keys: esc, then /cos pane')
     })
   } catch {
     // Without a clock the pane still says board mode is off.
@@ -1172,7 +1148,7 @@ function paneBody($, e, lines, focused) {
   const field = Input({
     key: 'board-keys-' + fieldGen,
     label: focused ? 'board mode' : 'board mode off',
-    placeholder: focused ? keysHint() : '0 at an empty prompt turns it on',
+    placeholder: focused ? keysHint() : '/cos pane or a click turns it on',
     value: '',
     submitLabel: helpShown || more ? 'back' : 'details',
     autoFocus: true,

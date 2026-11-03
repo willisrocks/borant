@@ -96,7 +96,10 @@ in_board() { shown | grep -q 'board mode · esc exit'; }
 selected_is() { shown | grep -q "$1 of "; }
 # The header a row's digit selects: the needs-you items come first.
 header_for() { local n; n="$(needs_titles | grep -c .)"; if [ "$1" -le "$n" ]; then echo "needs you · $1"; else echo "project · $(($1 - n))"; fi; }
-at_rest() { shown | grep -q '0: board mode'; }
+at_rest() { shown | grep -q '/cos pane: board mode'; }
+# Board mode is entered with the command (no printable key is taken at the
+# prompt) or a click: `step name enter-cmd`'s keys.
+ENTER=('lit:/cos pane' Enter)
 # The mod refuses any tool call that would ask the person in a Done's turn,
 # so a permission dialog is a defect: log it, and refuse it to go on.
 nodialog() { if tui_text | grep -q 'Do you want to proceed'; then note "FAIL a permission dialog appeared"; tui_shot "dialog-$(now_ms)"; tui_keys Escape; sleep 1.5; fi; }
@@ -139,11 +142,22 @@ check "the event stream started (calls.log has events --follow)" "grep -q 'event
 
 # At rest the band names the key that enters board mode.
 step rest
-check "at rest the band shows '0: board mode'" "at_rest"
+check "at rest the band shows '/cos pane: board mode'" "at_rest"
 
-# 0 enters board mode: the band says how to leave, the pane holds the keys.
-step zero lit:0
-check "0 entered board mode (band shows 'board mode · esc exit')" "in_board"
+# No printable key is taken at the prompt: a prompt may start with a digit.
+# One key at a time, as a person types: a burst is a paste, which no hook takes.
+step type-1 1 . Space f i x Space t h e Space b u g
+check "'1. fix the bug' typed at an empty prompt lands whole, and board mode stays off" "prompt_text | grep -q '^1. fix the bug$' && at_rest"
+tui_keys C-u
+sleep 0.4
+step type-0 0 Space t a s k s
+check "'0 tasks' typed at an empty prompt lands whole, and board mode stays off" "prompt_text | grep -q '^0 tasks$' && at_rest"
+tui_keys C-u
+sleep 0.5
+
+# /cos pane enters board mode: the band says how to leave, the pane holds the keys.
+step zero "${ENTER[@]}"
+check "/cos pane entered board mode (band shows 'board mode · esc exit')" "in_board"
 # From about 186 columns the band keeps 100 beside the docked preview and is
 # laid out that wide at rest; narrower, board mode lays it out again.
 if [ "$width" -ge 186 ]; then
@@ -151,7 +165,7 @@ if [ "$width" -ge 186 ]; then
 else
   note "LIMIT below 186 columns the docked preview leaves the band under 100 columns, so board mode lays the band out again"
 fi
-check "0 did not land in the prompt" "! prompt_text | grep -q 0"
+check "/cos pane left the prompt empty" "! prompt_text | grep -q 'cos pane'"
 
 # Every digit selects its row and stays out of the prompt.
 for d in 1 2 3 4 5 6 7 8 9; do
@@ -208,7 +222,7 @@ check "k in details moves back with the details open" "selected_is 'needs you ·
 step details-back Enter
 check "Enter again closed the details" "! shown | grep -q 'the task'"
 step help 'lit:?'
-check "? showed the help" "shown | grep -q 'enter board mode, from'"
+check "? showed the help" "shown | grep -q 'enter board mode, or click'"
 step help-back 'lit:?'
 step stray-x lit:x
 check "a letter the board does not use stays out of the prompt" "! prompt_text | grep -q x && in_board"
@@ -259,7 +273,7 @@ sleep 3
 # Esc leaves board mode: the pane closes and the keys reach the prompt again.
 nodialog
 step esc Escape
-check "esc left board mode (band shows '0: board mode')" "at_rest"
+check "esc left board mode (band shows '/cos pane: board mode')" "at_rest"
 if [ "$width" -ge 186 ]; then
   check "after esc the band keeps the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 fi
@@ -275,7 +289,7 @@ sleep 0.5
 
 # Tab and Shift+Tab would move the ring off the key field, onto the pane's
 # close mark, where a letter goes to the prompt: the mod keeps the ring.
-step tab-enter lit:0
+step tab-enter "${ENTER[@]}"
 step tab Tab
 step tab-type lit:z
 check "after Tab board mode holds, and a letter stays out of the prompt" "in_board && ! prompt_text | grep -q z"
@@ -303,15 +317,13 @@ check "a click on a row past nine entered board mode on it" "in_board && shown |
 step click-past-nine-esc Escape
 
 # ctrl+x tab gives the band the keys, and the pane cannot take them from
-# there: 0 then says how to enter board mode instead of failing quietly.
+# there. Esc, then /cos pane, enters board mode.
 tui_keys C-x
 sleep 1
 step ctrlx-tab Tab
-STEP_WAIT=0.6 step ctrlx-tab-zero lit:0
-check "0 after ctrl+x tab says how to enter board mode" "tui_text | grep -q 'esc, then 0'"
 step ctrlx-esc Escape
-step ctrlx-reenter lit:0
-check "esc, then 0 entered board mode" "in_board"
+step ctrlx-reenter "${ENTER[@]}"
+check "esc, then /cos pane entered board mode" "in_board"
 if [ "$width" -ge 186 ]; then
   check "board mode after ctrl+x tab has the columns of the band at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 fi
@@ -320,24 +332,18 @@ if [ "$width" -ge 186 ]; then
   check "after ctrl+x tab and board mode the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
 fi
 
-# Vim mode. In normal mode Claude Code gives a bare digit to vim (a count or
-# a motion) and raises nothing a mod sees, so 0 stays with vim: that is a
-# limit of the mod API, logged as LIMIT. i, then 0, enters board mode.
+# Vim mode. No key is taken at the prompt, so a 0 in vim insert mode is text.
 if vim_mode; then
   tui_keys Escape
   sleep 0.6
   step vim-normal
   check "Esc at the empty prompt left vim insert mode" "! shown | tail -3 | grep -q -- '-- INSERT --'"
-  step vim-normal-zero lit:0
-  if in_board; then note "PASS 0 in vim normal mode entered board mode"; step vim-normal-esc Escape; else note "LIMIT 0 in vim normal mode stays with vim (no event reaches the mod)"; fi
   step vim-insert i
   check "i put the prompt back in vim insert mode" "shown | tail -3 | grep -q -- '-- INSERT --'"
   step vim-insert-zero lit:0
-  check "0 in vim insert mode entered board mode" "in_board"
-  step vim-insert-digit lit:4
-  check "4 in board mode selected row 4" "shown | grep -q ' 4 of '"
-  step vim-insert-esc Escape
-  check "esc after vim insert mode left board mode" "at_rest"
+  check "0 in vim insert mode is text, and board mode stays off" "! in_board && prompt_text | grep -q 0"
+  tui_keys C-u
+  sleep 0.4
 else
   note "SKIP vim mode: this Claude Code is not in vim mode"
 fi
@@ -346,8 +352,10 @@ fi
 tui_type 'write a 3000 word essay on the history of tea, in one answer, no tools'
 tui_keys Enter
 for _ in $(seq 1 20); do turn_runs && break; sleep 0.5; done
-step turn-zero lit:0
-check "0 entered board mode while a turn ran" "in_board && shown | grep -q '… ([0-9]*s'"
+read -r cx cy <<<"$(tui_find "$(needs_titles | sed -n 3p | cut -c1-24)")"
+tui_click $((cx + 10)) "$cy"
+STEP_WAIT=1.2 step turn-click
+check "a click entered board mode while a turn ran" "in_board && shown | grep -q '… ([0-9]*s'"
 before_j="$last"
 step turn-j lit:j
 check "j moved while a turn ran, and stayed out of the prompt" "in_board && [ \"\$(pane_title $before_j)\" != \"\$(pane_title $last)\" ] && ! prompt_text | grep -q j"
@@ -385,7 +393,7 @@ touch "$stub/board.fail"
 for _ in $(seq 1 40); do tui_text | grep -q 'unavailable' && break; sleep 0.25; done
 step unavailable
 rm -f "$stub/board.fail"
-for _ in $(seq 1 40); do tui_text | grep -q '0: board mode' && break; sleep 0.25; done
+for _ in $(seq 1 40); do tui_text | grep -q '/cos pane: board mode' && break; sleep 0.25; done
 
 # Resize: the other size, then back.
 if [ "$width" -ge 150 ]; then other_w=120 other_h=40; else other_w=240 other_h=60; fi
@@ -398,7 +406,7 @@ STEP_WAIT=2 step resized-back
 if [ "$width" -ge 186 ]; then
   check "after a resize and back the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
   # The same with board mode on through the resize.
-  step resize-open lit:0
+  step resize-open "${ENTER[@]}"
   tmux -L "$TUI_NAME" resize-window -t tui -x "$other_w" -y "$other_h"
   TUI_W="$other_w" TUI_H="$other_h"
   STEP_WAIT=2 step resized-open
@@ -407,7 +415,7 @@ if [ "$width" -ge 186 ]; then
   TUI_W="$width" TUI_H="$height"
   STEP_WAIT=2 step resized-open-back
   check "after a resize with board mode on, and back, the band has the columns it had at rest" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
-  step resized-open-again lit:0
+  step resized-open-again "${ENTER[@]}"
   check "and board mode then moves no column" "node '$root/scripts/tui/columns.mjs' --cells '$TUI_OUT/01-rest.plain.txt' '$TUI_OUT/$last.plain.txt' >>'$log'"
   step resized-open-again-esc Escape
 fi

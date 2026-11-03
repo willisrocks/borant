@@ -306,15 +306,14 @@ export function helpLines(options = {}) {
   const row = (key, what) => '  ' + pad(key, 16) + what
   return [
     'board mode: every key goes to the board until esc',
-    row('0', 'enter board mode, from an empty prompt'),
-    row(digits, 'select a row; from the prompt it enters too'),
+    row('/cos pane', 'enter board mode, or click a row (no key is taken at the prompt)'),
+    row(digits, 'select a row, in board mode'),
     row('j k', 'move the selection; the preview follows'),
     row('enter', 'details; enter again goes back'),
     row('d', 'Done on the selected needs-you item'),
     row('a', 'Ask its orchestrator'),
     row('?', 'this help; ? or enter goes back'),
     row('esc', 'leave: the keys go back to the prompt'),
-    row('vim normal', 'press i, then 0'),
     row('click', 'a row selects it'),
     '',
     'commands',
@@ -354,16 +353,15 @@ export function bandItems(board, questions = allQuestions(board)) {
 
 /**
  * A row's chip: a plain Button that draws `1: `; past nine, three blank cells.
- * With `digitKeys` the digit is the Button's hotkey, so a bare digit at an
- * empty prompt presses it. Without, the digit is only drawn, and the mod's
- * prompt.edit hook takes the digit instead (see register.js).
+ * A digit is only drawn, never a hotkey: the engine gives a bare digit at an
+ * empty prompt to a band Button's hotkey, and a person must be able to start
+ * a prompt with a number. Digits select rows in board mode (the key field).
  */
-export function chip(item, index, digitKeys = true) {
+export function chip(item, index) {
   const digit = index < 9 ? String(index + 1) : ''
   const title = item.kind === 'needs' ? item.q.title : item.project.project
   const button = { key: item.key, label: digit ? '' : '   ', title: String(title || item.key), kind: 'select', arg: item.key, plain: true }
-  if (digit && digitKeys) button.hotkey = digit
-  else if (digit) button.digit = digit
+  if (digit) button.digit = digit
   return { text: digit ? digit + ': ' : '   ', style: 'hotkey', button }
 }
 
@@ -455,7 +453,7 @@ function needsRow(item, index, g, o) {
   const ageCells = age ? 3 + cells(age) : 0
   const where = [text(truncate(q.project || '?', Math.max(4, g.meta - ageCells)), 'bold'), ...(age ? [text(' · ' + age, 'dim')] : [])]
   const row = [
-    chip(item, index, o.digitKeys !== false),
+    chip(item, index),
     q.closed ? text(GLYPH.done + ' ', 'green') : q.gone ? text(GONE + ' ', 'dim') : text(GLYPH.needs + ' ', 'yellow'),
     ...cell([text(q.title || '', q.closed || q.gone ? 'dim' : 'yellowBold')], g.main),
   ]
@@ -499,7 +497,7 @@ function projectRow(item, index, g, o) {
   const p = projectParts(item.project)
   const name = Math.min(34, Math.max(6, Math.floor(g.main * 0.35)))
   const row = [
-    chip(item, index, o.digitKeys !== false),
+    chip(item, index),
     text(GLYPH[p.state] + ' ', p.state),
     ...cell([text(item.project.project, 'bold')], name),
     text(' '),
@@ -512,17 +510,16 @@ function projectRow(item, index, g, o) {
 
 /**
  * The mode at the title row's end. At rest it is the Button that enters
- * board mode, `0: board mode`, pressed by a bare 0 at the empty prompt; in
- * board mode it says how to leave. Both end at the row's end, and the rule
+ * board mode, `/cos pane: board mode`, pressed by a click; the command is the
+ * keyboard way in. No printable key is taken at the prompt: the engine gives
+ * a Button's hotkey a bare digit there, and a hotkey letter works only while
+ * the band holds the focus, where the pane cannot take the keys. In board
+ * mode it says how to leave. Both end at the row's end, and the rule
  * before them takes up the difference, so nothing else moves.
  */
 export function modeCells(active) {
   if (active) return [text('board mode', 'modeOn'), text(' · ', 'dim'), text('esc', 'key'), text(' exit', 'dim')]
-  return [
-    { text: '0: board mode', style: 'hotkey', button: { key: 'board', label: 'board mode', kind: 'board', hotkey: '0', plain: true } },
-    // In vim normal mode a bare 0 is vim's, and no mod sees it.
-    text(' (vim: i 0)', 'dim'),
-  ]
+  return [{ text: '/cos pane: board mode', style: 'hotkey', button: { key: 'board', label: '/cos pane: board mode', kind: 'board', plain: true } }]
 }
 
 /**
@@ -588,7 +585,7 @@ export function condensedRow(board, o) {
 /**
  * The band: the title row, then one row per needs-you item and per active
  * project. `o` is `{ width, gridWidth, maxRows, questions, items, waiting,
- * selected, active, statusFor, stale, digitKeys }`: `statusFor(item)` gives a
+ * selected, active, statusFor, stale }`: `statusFor(item)` gives a
  * needs row's short press status (mod/status.js), `active` says the board has
  * the keys (board mode), which fills the selected row. `items` replaces the
  * rows bandItems gives (board mode holds them still), `waiting` counts the
