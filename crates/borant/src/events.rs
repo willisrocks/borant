@@ -843,6 +843,7 @@ mod tests {
                 failed: vec!["ci".to_owned(), "lint".to_owned()],
             },
             review: borant_core::ports::ReviewState::ChangesRequested,
+            previous: None,
         })
         .about_task(borant_core::TaskId::new());
         assert!(

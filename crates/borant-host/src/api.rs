@@ -416,6 +416,7 @@ mod tests {
     fn query(kinds: &[&str]) -> EventsQuery {
         EventsQuery {
             since: None,
+            after_seq: None,
             follow: None,
             kinds: Some(kinds.join(",")),
             agent: Some("w1".parse().unwrap()),

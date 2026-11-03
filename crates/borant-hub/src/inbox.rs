@@ -116,7 +116,6 @@ impl Hub {
         text: String,
         expect_updated: Timestamp,
         key: Option<&str>,
-        by: &Sender,
     ) -> Result<Value, ApiError> {
         let key = key.filter(|k| !k.is_empty());
         if let Some(key) = key
@@ -166,7 +165,7 @@ impl Hub {
                 self.tell(&claimer, &text).await?;
                 Self::queue(
                     mem,
-                    self.task_answered(channel, id, key.map(str::to_owned), by),
+                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
                 );
                 json!({
                     "task": doc.value,
@@ -183,7 +182,7 @@ impl Hub {
                 self.tell(&owner, &text).await?;
                 Self::queue(
                     mem,
-                    self.task_answered(channel, id, key.map(str::to_owned), by),
+                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
                 );
                 json!({
                     "task": doc.value,

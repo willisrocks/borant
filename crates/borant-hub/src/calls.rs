@@ -418,16 +418,8 @@ impl Hub {
                 if actor.is_some() {
                     return Err(ApiError::invalid("only a person answers a task"));
                 }
-                self.answer(
-                    mem,
-                    &channel,
-                    &task,
-                    text,
-                    expect_updated,
-                    key.as_deref(),
-                    &Sender::Human,
-                )
-                .await
+                self.answer(mem, &channel, &task, text, expect_updated, key.as_deref())
+                    .await
             }
             ToolCall::Stop {
                 selector,

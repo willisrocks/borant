@@ -77,8 +77,9 @@ pub struct Change {
     pub verb: ChangeVerb,
     /// One line for the person.
     pub text: String,
-    /// Who caused it, when the log names one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Who caused it, when the log names one. The field is always present, so
+    /// a reader sees `null` and not a missing key.
+    #[serde(default)]
     pub by: Option<Sender>,
 }
 
