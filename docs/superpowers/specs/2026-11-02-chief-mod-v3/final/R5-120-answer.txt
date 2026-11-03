@@ -1,0 +1,42 @@
+# 120 columns, typing an answer
+# At 120 the list shrinks to 4 rows while the field has the keys, so the question, the recommendation, and the whole draft fit.
+                                                                 │                                                     ×
+                                                                 │ ANSWER       enter sends  esc keeps the draft, closes
+                                                                 │
+                                                                 │   ↑ 2 more items
+                                                                 │ ▲ answer  boopmark       E2E login: staging cre… 12m
+                                                                 │   ↓ 20 more items
+                                                                 │──────────────────────────────────────────────────────
+                                                                 │▲ NEEDS YOUR ANSWER                boopmark · personal
+                                                                 │waits for your answer since 14:35
+                                                                 │
+                                                                 │"The login E2E needs a real account. Use the staging
+                                                                 │creds from bundle boopmark-staging, or record a
+                                                                 │fixture once and replay it?"
+                                                                 │
+                                                                 │orch-boopmark-2 recommends: The fixture: no secret in
+                                                                 │CI, and the E2E runs offline.
+                                                                 │
+● orch-boopmark-2 asks how the login E2E gets an account. It is …│task     E2E: capture login flow
+                                                                 │why now  worker waits
+> ok, and what about the billing export?                         │worker   wkr-boop-1 · last tool call 40s ago
+                                                                 │owner    orch-boopmark-2 (orchestrator), online
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits…│
+                                                                 │── answer to wkr-boop-1 ──────────────────────────────
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offli…esc close [-] │› Record a fixture once and replay it. Keep the
+⊘ unblock roger-support   Spawn helper-qa… chief-work    3h      │  staging creds out of CI, and note in the README how
+■ decide  roger-emr       Billing export:… wkr-emr-7    38m      │  to record the fixture again.▌
+▲ answer  boopmark        E2E login: stag… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic co… orchestrator 42m      │
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h         │
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2              │
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                  │
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3        │
+◌ taglab         nobody: orch-taglab offline 1h                  │
+● steve          ● Slack threading wkr-steve-1 22m               │
+● roger-docs-app ● Upload progress wkr-app-1 15m                 │──────────────────────────────────────────────────────
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m              │enter send   esc keep draft
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

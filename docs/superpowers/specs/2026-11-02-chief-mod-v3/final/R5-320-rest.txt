@@ -1,0 +1,62 @@
+# 320 columns, at rest
+# All 315 cells. Left: what needs you, what went quiet, what changed, the PRs closest to merge. Right: every project; a busy one takes more rows, so no running task hides.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".
+
+> ok, and what about the billing export?
+
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.
+
+Borant 4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02  ·  8 projects with work, 20 agents                                                                                                                                                                                     ctrl+x b or /borant Borant keys [-]
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle github-work                holds release v1.0.23  chief-work          3h  │   PROJECT        WORKING NOW: task, who, for how long                             OPEN: ○ ready  ⊘ blocked  ◷ later           NEXT PR
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?                         worker stopped         wkr-emr-7          38m  │ ⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                          ⊘ Preprod QA                                no open PR
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a recorded fixture?       worker waits           wkr-boop-1         12m  │ ■ roger-emr      ■ Billing export wkr-emr-7 38m   ● Notes autosave wkr-emr-2 6m   ○ Fax OCR retry ○ Scheduler drag +2         ⇡ #2440 ready to merge
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts, about €40 a month       epics 3 to 5 wait      orchestrator       42m  │                  ● OASIS export wkr-emr-4 7m
+◌ silent  boopmark        Search: rank by recency: no tool call for 31m                                                              wkr-boop-2         31m  │ ▲ boopmark       ▲ E2E login wkr-boop-1 12m   ◌ Search ranking wkr-boop-2 31m     ○ Pinboard import ○ Dark mode               no open PR
+◌ offline taglab          orch-taglab offline: 2 tasks cannot start                                                                  orch-taglab         1h  │ ▲ borant         ▲ Approve epics 3-5 orchestrator 42m                             ◷ Hub move ◷ Golden image ◷ Delete borant-2 ⇡ #204 review requested
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   ✓ roger-emr approved PR #2440 Visit notes autosave                     │                  ● Hub backup wkr-borant-3 18m   ● Liveness sweep wkr-borant-5 4m
+         ✓ roger-docs-api merged PR #612 Retry-After on 429   ✓ borant released v0.19.2   ✓ borant merged PR #198 Never launch, relaunch, or move a chief    │                  ● Chief mod v3 mod-v3 2m
+⇡ to ship roger-emr       #2440 Visit notes autosave                                                          ready to merge         wkr-emr-2               │ ◌ taglab         nobody: orch-taglab offline 1h                                   ⊘ Label export ⊘ Flaky OCR test             no open PR
+⇡ to ship borant          #204 Liveness sweep: retry failed resumes                                           review requested       wkr-borant-5            │ ● steve          ● Slack threading wkr-steve-1 22m                                ○ DM digest ○ Retry webhooks +1             no open PR
+⇡ to ship borant          #203 Hub backup to object storage                                                   CI running             wkr-borant-3            │ ● roger-docs-app ● Upload progress wkr-app-1 15m                                  nothing unassigned                          ⇡ #88 CI running
+⇡ to ship roger-docs-app  #88 Upload progress bar                                                             CI running             wkr-app-1               │ ● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                               nothing unassigned                          no open PR
+                                                                                                                                                             │   idle: home-infra, litellm
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                                                                                                                                                                                                                                              ctrl+x b or /borant Borant keys

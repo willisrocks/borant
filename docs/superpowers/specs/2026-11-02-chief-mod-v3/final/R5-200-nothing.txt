@@ -1,0 +1,52 @@
+# 200 columns, nothing needs you
+# Nothing needs you, nothing went quiet, nothing new: the band says so in words, and the projects stay.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".
+
+> ok, and what about the billing export?
+
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.
+
+Borant 0 need you  ·  0 silent, 0 offline  ·  0 changed since 14:52  ·  8 projects with work, 20 agents                                                             ctrl+x b or /borant Borant keys [-]
+✓ Nothing needs you, nothing went quiet, and nothing changed since 14:52.
+  PROJECT        WORKING NOW: task, who, for how long                                                                    OPEN: ○ ready  ⊘ blocked  ◷ later           NEXT PR
+● roger-support  ● Release v1.0.23 orch-roger-support 3h  ● Preprod QA helper-qa-preprod 3h                              nothing unassigned                          no open PR
+● roger-emr      ● Billing export wkr-emr-7 38m  ● Notes autosave wkr-emr-2 6m  ● OASIS export wkr-emr-4 7m              ○ Fax OCR retry ○ Scheduler drag +2         ⇡ #2440 ready to merge
+● boopmark       ● E2E login wkr-boop-1 12m  ● Search ranking wkr-boop-2 31m                                             ○ Pinboard import ○ Dark mode               no open PR
+● borant         ● Hub backup wkr-borant-3 18m  ● Liveness sweep wkr-borant-5 4m  ● Chief mod v3 mod-v3 2m               ○ Hub move ○ Golden image ◷ Delete borant-2 ⇡ #204 review requested
+● taglab         nobody: orch-taglab online                                                                              ○ Label export ○ Flaky OCR test             no open PR
+● steve          ● Slack threading wkr-steve-1 22m                                                                       ○ DM digest ○ Retry webhooks +1             no open PR
+● roger-docs-app ● Upload progress wkr-app-1 15m                                                                         nothing unassigned                          ⇡ #88 CI running
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                                                                      nothing unassigned                          no open PR
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                                                                                                                      ctrl+x b or /borant Borant keys

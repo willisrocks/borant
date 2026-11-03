@@ -1,0 +1,52 @@
+# 200 columns, typing an answer
+# r opens the field. Every letter types; only enter (send) and esc (keep the draft, close) act. The draft wraps and the cursor follows it.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ ANSWER   boopmark › E2E login                    enter sends  esc keeps the draft, closes
+                                                                                                             │
+                                                                                                             │1 NEEDS YOU · 4
+                                                                                                             │ ⊘ unblock roger-support  Spawn helper-qa-preprod cannot start: no host has bundle g…  3h
+                                                                                                             │ ■ decide  roger-emr      Billing export: round visit minutes per visit or per claim? 38m
+                                                                                                             │ ▲ answer  boopmark       E2E login: staging creds from bundle boopmark-staging, or … 12m
+                                                                                                             │ ▲ approve borant         Saga Elastic compute: start epics 3 to 5? They add 3 hosts… 42m
+                                                                                                             │2 QUIET · 2
+                                                                                                             │ ◌ silent  boopmark       Search: rank by recency: no tool call for 31m               31m
+                                                                                                             │ ◌ offline taglab         orch-taglab offline: 2 tasks cannot start                    1h
+                                                                                                             │3 SHIPS NEXT · 4
+                                                                                                             │ ⇡ #2440   Visit notes autosave                                          ready to merge
+                                                                                                             │ ⇡ #204    Liveness sweep: retry failed resumes                          review requested
+                                                                                                             │ ⇡ #203    Hub backup to object storage                                  CI running
+                                                                                                             │ ⇡ #88     Upload progress bar                                           CI running
+                                                                                                             │4 CHANGED SINCE 14:02 · 5                                                x marks them seen
+                                                                                                             │ + new       steve          3 tasks: DM digest, Retry webhooks, Rate-limit the Linea…  9m
+                                                                                                             │ ✓ approved  roger-emr      PR #2440 Visit notes autosave                             11m
+                                                                                                             │ ✓ merged    roger-docs-api PR #612 Retry-After on 429                                17m
+                                                                                                             │   ↓ 10 more items
+                                                                                                             │──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                             │▲ NEEDS YOUR ANSWER                                                    boopmark · personal
+                                                                                                             │waits for your answer since 14:35
+                                                                                                             │
+                                                                                                             │"The login E2E needs a real account. Use the staging creds from bundle boopmark-staging,
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │or record a fixture once and replay it?"
+                                                                                                             │
+> ok, and what about the billing export?                                                                     │orch-boopmark-2 recommends: The fixture: no secret in CI, and the E2E runs offline.
+                                                                                                             │
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │task     E2E: capture login flow
+                                                                                                             │why now  worker waits
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02                 esc close [-] │worker   wkr-boop-1 · last tool call 40s ago
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │owner    orch-boopmark-2 (orchestrator), online
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │HISTORY
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts,… orchestrator 42m      │13:52  wkr-boop-1 claimed the task
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   +4 more                │14:35  wkr-boop-1 asked; the task needs you
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │── answer to wkr-boop-1 ──────────────────────────────────────────────────────────────────
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │› Record a fixture once and replay it. Keep the staging creds out of CI, and note in the
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3                 ◷ Hub move ◷ Golden image +1       │  README how to record the fixture again.▌
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │──────────────────────────────────────────────────────────────────────────────────────────
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │enter send to wkr-boop-1   esc keep the draft and close
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

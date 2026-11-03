@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# A stand-in `open` for the chief mod's tests: it records the URL and opens nothing.
+echo "$(date +%s.%N) open $*" >>"${BORANT_STUB_DIR:?}/calls.log"

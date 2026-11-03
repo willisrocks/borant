@@ -434,6 +434,9 @@ pub enum ChannelCmd {
         /// The channel name.
         name: ChannelName,
     },
+    /// List every channel as JSON: its name, kind, project, collection,
+    /// owner, and whether it is closed.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1696,6 +1699,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
         },
         Command::Channel { cmd } => match cmd {
             ChannelCmd::Close { name } => pretty(&call(&c, ToolCall::ChannelClose { name }).await?),
+            ChannelCmd::List => pretty(&call(&c, ToolCall::ChannelList).await?),
         },
         Command::Send {
             to,
@@ -2451,6 +2455,16 @@ mod tests {
             panic!("not a channel close");
         };
         assert_eq!(name, "sagatest".parse::<ChannelName>().unwrap());
+    }
+
+    #[test]
+    fn channel_list_parses() {
+        assert!(matches!(
+            cli_command("borant channel list"),
+            Command::Channel {
+                cmd: ChannelCmd::List
+            }
+        ));
     }
 
     #[test]

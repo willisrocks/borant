@@ -1,0 +1,42 @@
+# 100 columns, the panel inline
+# Under 110 columns Claude Code seats the panel inline above the prompt. While it is open, the band shrinks to its first row so both fit.
+
+
+
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ KEYS ON BORANT                                                            h all keys  esc close  │
+│                                                                                                  │
+│   ↑ 1 more items                                                                                 │
+│ ■ decide  roger-emr      Billing export: round visit minutes per visit or per claim?       38m   │
+│ ▲ answer  boopmark       E2E login: staging creds from bundle boopmark-staging, or a reco… 12m   │
+│ ▲ approve borant         Saga Elastic compute: start epics 3 to 5? They add 3 hosts, abou… 42m   │
+│2 QUIET · 2                                                                                       │
+│ ◌ silent  boopmark       Search: rank by recency: no tool call for 31m                     31m   │
+│   ↓ 18 more items                                                                                │
+│────────────────────────────────────────────────────────────────────────────────────────────────  │
+│▲ NEEDS YOUR ANSWER                                                          boopmark · personal  │
+│waits for your answer since 14:35                                                                 │
+│                                                                                                  │
+│"The login E2E needs a real account. Use the staging creds from bundle boopmark-staging, or       │
+│record a fixture once and replay it?"                                                             │
+│                                                                                                  │
+│orch-boopmark-2 recommends: The fixture: no secret in CI, and the E2E runs offline.               │
+│                                                                                                  │
+│↓ 4 more lines · enter shows all                                                                  │
+│────────────────────────────────────────────────────────────────────────────────────────────────  │
+│r answer   a ask   g go to   1-5 section   esc close                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02        esc close [-]
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

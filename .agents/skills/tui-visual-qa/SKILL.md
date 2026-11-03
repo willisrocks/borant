@@ -25,22 +25,20 @@ the mod so far was one of these.
    step before: a focus move must change what the screen shows.
 4. Fix, and run the same steps again.
 
-`just cos-visual` runs the basic mod states at both sizes.
-`just cos-scenario [plugin] [out] [width] [height] [board]` runs the full
-interaction scenario at one size, on the `big` board (12 projects, 6 need you)
-or the `fixture`. It drives board mode with a PNG after every key: 0, each
-digit, j and k, a live board update in the middle of navigation, Enter and
-the details, ?, Done (closed and still open), Ask, Esc, typing at the prompt
-after Esc, Tab and Shift+Tab, and vim insert and normal mode. Then the
-refresh time with an event, an unavailable board, a resize, the empty board,
-and `/cos help`. Each run writes `<out>/<width>/NN-<state>.png` and
-`log.txt`, so runs at several sizes can share one `<out>`. A log line that
-starts with FAIL is a defect: a key that reached the prompt in board mode, a
-key that did not reach it after Esc, a column that moved across the live
-update (`scripts/tui/columns.mjs` compares the plain captures), or a slow
-refresh. LIMIT names what the mod API cannot do. Read the log and the PNGs.
-Where `freeze` is not installed (a Mac without nix), `tui_shot` renders the
-PNG with headless Chrome in a profile of its own; run the script directly.
+`just cos-scenario [plugin] [out] [width] [height]` runs the chief mod's
+flows at one size, on the design's sample swarm (`scripts/tui/swarm.mjs`, 10
+projects in 2 collections) served by `scripts/tui/borant-stub`: the hotkey at
+rest, digits and letters typed at the prompt (the mod must take none), ctrl+x
+b, j, the section digits, a project's tasks and b, an answer and its result,
+an approval (y, y) and its result, h, x, esc, ctrl+x b with text in the prompt,
+and the hub down and back. Each step writes `<out>/<width>/NN-<step>.png` and
+a PASS or FAIL line in `log.txt`, so runs at several sizes can share one
+`<out>`. With `RECORD=1` it also captures the pane every 200 ms
+(`scripts/tui/record.mjs`) and joins the frames into
+`<out>/<width>/rec/flows-<width>.mp4` with ffmpeg. Read the log and the PNGs,
+and watch the video for layout shift, flicker, and cut text. Where `freeze`
+is not installed (a Mac without nix), `tui_shot` renders the PNG with
+headless Chrome in a profile of its own; run the script directly.
 
 ## Safety
 
@@ -128,6 +126,17 @@ Code's mod API cannot do something, say which limit, quote the type docs
 - Done's real path needs the plugin's MCP server: the scenario serves
   `scripts/tui/stub-mcp.mjs` as `borant mcp`. Haiku did not load the
   deferred MCP tools in one run of two, so the scenario runs Sonnet.
+- A band Button with `action: "app:cycleDiffBase"` is pressed by ctrl+x b
+  from the prompt: the one hotkey that reaches a mod without taking a
+  printable key. `/borant` (a command) is the fallback.
+- When the panel's tree swaps a focused row for an Input, the ring does not
+  follow by itself, and the letters typed next go to the prompt: Enter then
+  sends them to the model. Move the ring onto the field with `$.ui.focus`,
+  and never draw a field as if it had the keys while the pane has none.
+- A key that a hint names but no Button holds goes to the prompt and takes
+  the keys with it. "h all keys" in a top line must be a Button with hotkey h.
+- The plugin test kit has no implementation behind a mod's own `$.ui.focus`;
+  check the ring move in a real session.
 - Claude Code 2.1.316 shows a running turn as `Ruminating… (12s · …)`,
   not "esc to interrupt".
 - The plugin test kit refuses input to a field after its redraw, so a race
