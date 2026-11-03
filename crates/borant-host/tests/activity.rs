@@ -76,10 +76,10 @@ async fn view(hub: &Hub) -> SwarmView {
 }
 
 /// The status of one agent in the view.
-fn status_of<'a>(
-    view: &'a SwarmView,
+fn status_of(
+    view: &SwarmView,
     session: borant_core::SessionId,
-) -> &'a borant_core::model::AgentStatus {
+) -> &borant_core::model::AgentStatus {
     view.agents
         .iter()
         .find(|a| a.session == Some(session))
