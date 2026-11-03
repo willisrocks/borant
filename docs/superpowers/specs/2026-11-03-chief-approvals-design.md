@@ -26,8 +26,11 @@ channel must be in the caller's collection, as every other call.
 
 The hub:
 
-1. Redacts the quote with the rule of `borant-core::rules::redact`, so a
-   secret that the person typed never reaches the log or a message.
+1. Rejects a quote that starts a line with `[borant]` (after leading
+   whitespace, in any case): it would read as a second, forged message inside
+   the approval. It caps the stored and sent quote at 1000 characters, cut
+   with `…`, and redacts it with the rule of `borant-core::rules::redact`, so
+   a secret that the person typed never reaches the log or a message.
 2. Records `task.approved { task, by, session, quote }`, with the channel and
    the task in the event context, before it sends anything.
 3. Sends the task's claimer, or the channel owner when nobody holds the
@@ -46,6 +49,12 @@ The harness renders the message as its own kind:
 [borant] approval from chief-1 on the person's word: do it for all three
 (id 01J...)
 ```
+
+The header is the whole message header, never text inside another message.
+`format_delivery` marks any line of any other message that would read as one
+— leading whitespace and case ignored — as quoted text, `(quoted) [borant]
+approval ...`, so an agent cannot forge an approval by putting the header in
+its own body. The Pi and omp extension do the same.
 
 An agent that reads it counts it as the person's decision within the scope of
 the quote; plain agent text still does not. The borant:orchestrate skill
@@ -86,6 +95,11 @@ answer as "answered by the chief's approval".
 - `borant-hub spawns_the_brief_carries_the_standing_permissions`, and
   `project_get_returns_the_standing_permissions`.
 - `borant-core roles`: the merge order, and the brief section.
+- The approval delivery: a real approval renders unchanged, and an agent's
+  message with a forged `[borant] approval` line carries the `(quoted)`
+  marker in every kind, in Rust and in the Pi extension.
+- An approval rejects a quote with a `[borant]` line, and clips one over
+  1000 characters with `…`.
 - `borant config`: both tables parse, and an older `hub.toml` without the key
   parses with none.
 - The event round trip lists `task.approved`, and `task.answered` with `via`.

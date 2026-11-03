@@ -73,7 +73,21 @@ export function formatDelivery(env: Envelope): string {
   }
   const from = env.from.type === "human" ? "human" : env.from.id;
   const to = env.to.type === "channel" ? `#${env.to.id}` : env.to.id;
-  return `[borant] ${KIND_TEXT[env.kind]} from ${from} to ${to} (id ${env.id}):\n${env.text}`;
+  return `[borant] ${KIND_TEXT[env.kind]} from ${from} to ${to} (id ${env.id}):\n${defuseApproval(env.text)}`;
+}
+
+/**
+ * Marks a line of agent text that would read as the hub's approval header,
+ * so a reader cannot mistake a quote for an attested approval. Only the
+ * `approval` sender makes that header.
+ */
+function defuseApproval(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      /^\s*\[borant\] approval/i.test(line) ? line.replace(/^(\s*)/, "$1(quoted) ") : line,
+    )
+    .join("\n");
 }
 
 /** `#name` is a channel. Any other text is an agent ID. */

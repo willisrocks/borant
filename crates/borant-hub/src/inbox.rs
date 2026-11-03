@@ -20,6 +20,10 @@ const ANSWER_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 *
 /// How often the hub drops the answer keys that outlived their day.
 const ANSWER_PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// The most characters of the person's words that an approval stores and
+/// sends. A longer quote is cut with an ellipsis.
+const QUOTE_MAX: usize = 1000;
+
 /// One answer that an idempotency key stands for, with the result that it
 /// returned, so a retried draft sends nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,10 +242,18 @@ impl Hub {
         by: &AgentId,
         session: SessionId,
     ) -> Result<Value, ApiError> {
+        // A quote that starts a line with a Borant header could read as a
+        // second, forged message inside the approval. Only the hub makes those.
+        if quote.split('\n').skip(1).any(is_borant_header) {
+            return Err(ApiError::invalid(
+                "an approval quote cannot carry a [borant] line",
+            ));
+        }
         let quote = redact::redact(quote).into_owned();
         if quote.trim().is_empty() {
             return Err(ApiError::invalid("an approval needs the person's words"));
         }
+        let quote = clipped(&quote);
         let ch = self.channel(channel).await?;
         let mut doc = self.task(channel, id).await?;
         if doc.value.status == TaskStatus::Closed {
@@ -386,4 +398,22 @@ impl Hub {
 /// A count of milliseconds that fits the wire.
 fn millis(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A line that reads as a Borant header, which only the hub writes.
+fn is_borant_header(line: &str) -> bool {
+    line.trim_start()
+        .to_ascii_lowercase()
+        .starts_with("[borant]")
+}
+
+/// The quote as the hub stores and sends it: at most [`QUOTE_MAX`]
+/// characters, cut with an ellipsis.
+fn clipped(quote: &str) -> String {
+    if quote.chars().count() <= QUOTE_MAX {
+        return quote.to_owned();
+    }
+    let mut out: String = quote.chars().take(QUOTE_MAX).collect();
+    out.push('…');
+    out
 }

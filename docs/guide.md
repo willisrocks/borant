@@ -80,11 +80,15 @@ type, `approval`. A harness shows it as its own kind, not as agent text:
 ```
 
 An orchestrator counts that message as the person's decision, within the
-scope of the quote; plain agent text still does not. When the task waits in
-`needs_human`, the approval also answers it, as a board answer does: the
-attention message clears, a claimed task returns to `in_progress`, and the
-hub records `task.answered` with `via: chief`, so the board, the mod, and
-`borant inbox` show it answered.
+scope of the quote; plain agent text still does not. The header is the whole
+message header, never text inside another message: a line of an agent's
+message that would read as an approval header is shown as `(quoted) [borant]
+approval ...`, and an approval rejects a quote that starts a line with
+`[borant]`. The hub cuts the stored and sent quote at 1000 characters, with
+`…`. When the task waits in `needs_human`, the approval also answers it, as a
+board answer does: the attention message clears, a claimed task returns to
+`in_progress`, and the hub records `task.answered` with `via: chief`, so the
+board, the mod, and `borant inbox` show it answered.
 
 The person's standing permissions live in `hub.toml`, per collection and per
 project, and the hub stores nothing new:
