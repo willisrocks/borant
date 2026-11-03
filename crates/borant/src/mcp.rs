@@ -613,6 +613,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "approve",
                 "board",
                 "channel_close",
                 "channel_create",
