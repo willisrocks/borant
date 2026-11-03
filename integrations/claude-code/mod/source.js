@@ -62,12 +62,61 @@ async function run($, argv, timeoutMs = 8000) {
   }
 }
 
-/** Read the board. `{ board, reason }`. */
+/**
+ * Read the board, with its task lines (`--tasks`: every unfinished task, its
+ * start state, its PR state, and the recent done tasks). A borant without
+ * `--tasks` refuses the flag; then `options.legacy` is set and the plain board
+ * is read, with each channel's tasks read apart. `{ board, reason }`.
+ */
 export async function readBoard($, options = {}) {
   if (sourceMode(options.mode) === 'fixture') return { board: fixtureBoard, reason: null }
+  if (!options.legacy) {
+    const out = await run($, ['borant', 'board', '--json', '--tasks'])
+    if (out.ok) return parseBoard(out.stdout)
+    if (!/unexpected argument|unrecognized|--tasks/.test(out.reason || '')) return { board: null, reason: out.reason }
+    options.legacy = true
+  }
   const out = await run($, ['borant', 'board', '--json'])
   if (!out.ok) return { board: null, reason: out.reason }
   return parseBoard(out.stdout)
+}
+
+/** Each agent's activity, by agent id, from `borant status --json`. `{ agents, reason }`. */
+export async function readActivity($, options = {}) {
+  if (sourceMode(options.mode) === 'fixture') return { agents: {}, reason: null }
+  const out = await run($, ['borant', 'status', '--json'])
+  if (!out.ok) return { agents: null, reason: out.reason }
+  const r = parseJson(out.stdout, (v) => v && Array.isArray(v.agents), 'a swarm view')
+  if (!r.value) return { agents: null, reason: r.reason }
+  const agents = {}
+  for (const a of r.value.agents) agents[a.agent] = a
+  return { agents, reason: null }
+}
+
+/**
+ * The person-level changes since a mark: `{ seq }` (the last change marked
+ * seen) or `{ at }` (a time). `{ changes, at, reason }`; `changes` is null
+ * when this borant has no `changes` command.
+ */
+export async function readChanges($, options = {}, mark) {
+  if (sourceMode(options.mode) === 'fixture' || options.noFeed) return { changes: null, reason: null }
+  const since = mark && mark.seq !== undefined ? String(mark.seq) : String(mark?.at ?? 0)
+  const out = await run($, ['borant', 'changes', '--since', since, '--json'])
+  if (!out.ok) {
+    if (/unrecognized subcommand|unexpected argument/.test(out.reason || '')) options.noFeed = true
+    return { changes: null, reason: out.reason }
+  }
+  const r = parseJson(out.stdout, (v) => v && Array.isArray(v.changes), 'a changes feed')
+  return r.value ? { changes: r.value.changes, at: r.value.at, reason: null } : { changes: null, reason: r.reason }
+}
+
+/** One task's history, oldest first: `{ entries, reason }`. */
+export async function readHistory($, options = {}, channel, task) {
+  if (sourceMode(options.mode) === 'fixture') return { entries: [], reason: null }
+  const out = await run($, ['borant', 'task', 'history', channel + '/' + task, '--json'])
+  if (!out.ok) return { entries: null, reason: out.reason }
+  const r = parseList(out.stdout, 'a task history')
+  return { entries: r.value, reason: r.reason }
 }
 
 /** Read every channel. `{ channels, reason }`. */
@@ -100,7 +149,13 @@ export async function act($, options, argv) {
 
 /** The argv of each action. */
 export const ACTIONS = {
-  answer: (channel, task, text) => ['borant', 'answer', channel + '/' + task, text],
+  // With a key, a second send of the same draft (after a timeout) sends
+  // nothing new; with the version the person saw, a task that changed since
+  // is a conflict. An older borant takes neither: answerPlain.
+  answer: (channel, task, text, key, version) => ['borant', 'answer', channel + '/' + task, ...(key ? ['--key', key] : []), ...(version ? ['--expect-updated', String(version)] : []), text],
+  answerPlain: (channel, task, text) => ['borant', 'answer', channel + '/' + task, text],
+  sendTask: (to, text, channel, task) => ['borant', 'send', to, '--task', channel + '/' + task, text],
+  attach: (agent) => ['borant', 'attach', agent, '--window'],
   close: (channel, task, message) => ['borant', 'task', 'close', channel + '/' + task, '--reason', 'done', '--message', message],
   send: (to, text) => ['borant', 'send', to, text],
   resume: (agent) => ['borant', 'resume', agent],
