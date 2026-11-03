@@ -1,18 +1,29 @@
 # Borant cloud control plane design
 
-Date: 2026-11-03. Status: draft for Chris to review. Nothing is built.
+Date: 2026-11-03. Status: draft for Chris to review. Nothing is built, and no
+cloud money is spent.
 
-This document describes the next Borant: one TypeScript service in the cloud
-that receives work from many Sources, decides what work to start, runs every
-agent's durable loop with pi-durable, and runs tools in a Fly Machine per
-Ticket. It replaces the Rust hub, NATS JetStream, the host daemons, and the
-Claude Code and omp sessions in tmux.
+This document describes a new system, the Borant cloud control plane: one
+TypeScript service in the cloud. It receives work from many Sources and decides
+what work to start. It runs every agent's durable loop with pi-durable, and it
+runs tools in a Fly Machine per Ticket.
+
+The new system runs in parallel with current Borant: the Rust hub, NATS
+JetStream, the host daemons, and the Claude Code and omp sessions in tmux. The
+two systems share no hub, state, credentials, hosts, or NATS. This work changes
+nothing in current Borant and moves nothing off it (section 21).
 
 Marks in this document:
 
 - "(Decided)" means that Chris made the decision. The reason follows it.
 - "(My call)" means that the designer made the decision. A builder can change
   a call with a good reason, but must record the change in this document.
+- "(Chief default, for Chris to check)" means that the chief set a default
+  until Chris answers. It is not Chris's decision.
+- "(Recommendation)" means that the designer answers a question that Chris
+  left open, and gives the reason. Chris can overrule it.
+
+Section 24 lists every default and recommendation in one table.
 
 Inputs:
 
@@ -27,6 +38,10 @@ Inputs:
   (`2026-11-02-board-task-lines-design.md`, `2026-11-02-agent-activity-design.md`,
   `2026-11-02-person-changes-feed-design.md`, `2026-11-02-mod-actions-design.md`).
 - The current design: `2026-10-24-borant-design.md`.
+- The review page: https://claude.ai/artifact/KPQ3CGCqFGsbjaySSFUbTX, read on
+  2026-11-03 (private to Chris). It has the diagrams. It does not have the
+  parallel rule or the chief's defaults, so this document wins where they
+  differ.
 
 ## 1. Intent and why
 
@@ -58,14 +73,19 @@ his attention as possible. Work comes from GitHub, Linear, Slack, timers, and
 his own chat. The system decides which of it is work, asks him only when only
 he can answer, and shows him one screen with what needs him.
 
+The new system runs beside current Borant, not in place of it. Current Borant
+does Chris's real work every day, and the new system is unproven. So a failure
+of the new system must cost that work nothing. (Decided, order from Chris
+through the chief)
+
 ## 2. Goals, non-goals, and anti-goals
 
 ### Goals
 
 1. One TypeScript control-plane service runs the fleet manager, the Engine,
    the web UI, and the durable loop of every agent. (Decided)
-2. No agent runs on Chris's Mac. A laptop that sleeps changes nothing.
-   (Decided)
+2. No agent of the new system runs on Chris's Mac. A laptop that sleeps changes
+   nothing. (Decided)
 3. A crash of the control plane or of a sandbox loses at most the tool call
    that was running. Every Trigger, Input, report, and approval survives.
 4. Work enters only through Sources. Only an Eval starts a Ticket, and every
@@ -76,9 +96,16 @@ he can answer, and shows him one screen with what needs him.
 6. A loop (a Source, its Policy, and its prompts) is versioned, and stored
    Triggers can be replayed against a candidate version to see what changes.
    (Decided)
-7. One web screen replaces the chief mod: what needs Chris, quiet work,
-   changes since his last look, every project with tasks by name, the PRs
-   closest to merge, and one-key actions. (Decided)
+7. One web screen shows the new system: what needs Chris, quiet work, changes
+   since his last look, every project with tasks by name, the PRs closest to
+   merge, and one-key actions. (Decided) The chief mod stays as it is for
+   current Borant.
+8. The new system runs in parallel with current Borant. It has a separate hub,
+   state, credentials, and hosts, and no shared NATS. (Decided, order from
+   Chris through the chief)
+9. The first Profile is `personal`, and its first Project is `boopmark`.
+   (Chief default, for Chris to check, on the Profile. My call on the Project,
+   section 21.)
 
 ### Non-goals for this version
 
@@ -92,6 +119,15 @@ he can answer, and shows him one screen with what needs him.
   (My call)
 - Moving sessions between harnesses. pi-durable is the only harness.
   (Decided)
+- A cutover. No Project, Profile, or agent moves off current Borant in this
+  work. A move is a later, separate decision (section 21). (Decided, order
+  from Chris through the chief)
+- Retiring the Rust hub, NATS, the host daemons, or the Hetzner hosts. (Decided,
+  order from Chris through the chief)
+- The Roger work Projects. Roger work stays on Steve and Steve personal agents
+  (section 22). (Chief default, for Chris to check)
+- A link between the two systems: no shared board, no messages, no task import.
+  (My call)
 
 ### Anti-goals
 
@@ -102,6 +138,8 @@ he can answer, and shows him one screen with what needs him.
   Chris approved something, the design failed, even if the agent meant well.
 - More attention, not less. If Chris must check the system to learn whether
   it is working, the design failed.
+- A change to current Borant. If this work needs a change to the hub, the host
+  daemons, NATS, the mod, or the hosts, the design failed.
 - A framework. Every port, table, and command in this document exists for a
   named need. No plugin system, no generic workflow engine.
 
@@ -119,8 +157,38 @@ he can answer, and shows him one screen with what needs him.
 | Anthropic announced, then paused, a move of `claude -p` use to separate "Agent SDK credit" at API rates. | Chris |
 | Browserbase: a Context cannot be used by two sessions at once. Google blocks automated sign-in. | Chris |
 | Node >= 22.19 (the SDK requirement). | spike, setup |
-| Hosts today have no inbound internet access. All traffic goes over the Tailscale tailnet. | `borant-infra/README.md` |
 | Run focused tests only outside CI. | `AGENTS.md` |
+| Runs in parallel with current Borant: separate hub, state, credentials, and hosts. No shared NATS. No change to the running system. No cutover in this work. | Chris, through the chief |
+| No build, no infrastructure, and no cloud spend before Chris approves this document. | Chris, through the chief |
+| The `borant` repo is public. This document holds no internal details of Roger's systems. | `gh repo view` on 2026-11-03 |
+
+### Evidence from the pi-durable spike
+
+The design rests on these results. The scripts and raw output are in
+`~/Code/pi-durable-spike`.
+
+| What the design needs | Result | Spike |
+|---|---|---|
+| A retry of an Input does not duplicate it | The same `requestId` returned the same submission and wrote nothing: `follow-up id=13 retry id=13 same=true`. | Q2 |
+| The Engine can see delivery and run end | `observeCommits` reports `queued`, `placed`, `done`, tool start and end, and `pi.live`. Observers live in memory. | Q3 |
+| One process can hold every session | 50 conversations: about 84 KB heap each when idle. 500: about 25 KB each, RSS 172 MB. The `claude -p` processes are the limit, not the sessions. | Q4 |
+| Postgres and SQLite need a keyed bridge | No Postgres storage exists. The `Tx` object has no SQL method, so Engine SQL is always a separate transaction. | Q5 |
+| A control-plane crash does not repeat a sandbox job | The process was killed with `kill -9` 6 s into a 20 s job. The rerun reattached by task ID: `starts: 1, tookMs: 20002`. | Q6, Q9 |
+| A tool with no idempotency key is not run twice | After the same kill, the model got an error result: `Tool sleep20 was interrupted and may have partially run`. | Q9 |
+| A report is consumed once | The tool wrote the outbox entry, and the process killed itself before the result committed (exit status 137). After the restart, the outbox held one report, and the Engine consumed it once. | Q7 |
+| Claude runs on the subscription, with Pi running the tools | One real Haiku turn took 2047 ms and called `report_ready`. List price $0.0022, billed to the Claude Max subscription. | Q8 |
+
+The spike does not prove these points:
+
+- It ran on the Mac. The Fly Machine was a stand-in, `src/fake-fly.ts`.
+- Only one turn used a real model. All other runs used pi-ai's faux provider.
+- No real turn ran with Codex or LunaRoute. Both only register.
+- Nothing tested a `claude` login on a headless Linux machine.
+- Nothing tested the bridge with Postgres, a Litestream restore, or long
+  transcripts.
+
+The builder proves these points before the first Project runs, except LunaRoute.
+Section 21 lists them in order, and section 17 sets the model tests.
 
 ## 4. Approaches
 
@@ -130,7 +198,8 @@ One persistent Fly Machine with a volume runs one Node process: the control
 plane. The Engine keeps its records in Fly Managed Postgres. pi-durable keeps
 session state in SQLite on the volume. An idempotent bridge joins the two
 stores. Tools run in one Fly Machine per Ticket. Logged-in browser work runs
-in Browserbase. (Decided)
+in Browserbase. (Decided) The whole system runs beside current Borant and
+shares nothing with it. (Decided, order from Chris through the chief)
 
 ### Rejected approaches
 
@@ -142,6 +211,8 @@ in Browserbase. (Decided)
 | SQLite only (option A) | Engine state as pi-durable documents commits atomically with the session (spike Q5). One file, one backup. | Durable documents are JSON blobs with no SQL. The Engine needs queries for the board, Threads, Decisions, replay, and the changes feed. Raw Engine SQL in the same file is a separate transaction anyway (spike Q5). Chris chose option B. |
 | Postgres for both, with our own pi-durable `Storage` (option C) | One database, one backup, one restore point. | We write and maintain a storage adapter for an SDK that changes every few days, and pass its conformance suite at each release. It gives no shared transaction for Engine tables, and one process still owns the store. |
 | A local Mac runner | Fast local builds, local browser logins. | Laptop sleep stopped chiefs this week. Secrets on the laptop. Chris decided cloud only. |
+| Attach the new system to current Borant's hub and NATS | One board and one task list across both systems. | It shares state and failures with the running system, and it needs changes to that system. Chris's order rules it out. |
+| Cut over Project by Project as part of this work | One system sooner, and no double running. | It puts daily work on an unproven system. Chris's order rules it out. A move stays open as a later decision (section 21). |
 
 ## 5. Architecture
 
@@ -151,7 +222,7 @@ in Browserbase. (Decided)
 flowchart LR
   subgraph Sources
     GH[GitHub webhooks + recovery poll]
-    LN[Linear webhooks]
+    LN[Linear agent app]
     SL[Slack Events]
     CR[Cron and timers]
     WC[Web chat]
@@ -167,11 +238,13 @@ flowchart LR
     FM[Fleet manager]
     BB[Browser broker + CDP proxy]
     SEC[Secrets]
+    MC[MCP adapter]
   end
   PG[(Fly Managed Postgres: Engine records, effects queue)]
   SQ[(SQLite on volume: sessions)]
   SB[Sandbox Fly Machine per Ticket]
   BBS[Browserbase]
+  MS[Remote MCP servers]
   OBJ[(Object storage: Litestream)]
 
   Sources --> HTTP --> ENG
@@ -184,6 +257,7 @@ flowchart LR
   HAR -->|tool calls over 6PN| SB
   FM -->|Machines API| SB
   HAR -->|browser tools| BB --> BBS
+  HAR -->|Connection tools| MC --> MS
   EFF -->|Channel writes| Sources
 ```
 
@@ -194,11 +268,13 @@ flowchart LR
 | Engine | Owns every domain rule: Triggers, Threads, Evals, Decisions, Tickets, Mandates, Assignments, Subscriptions, Channels, approvals, stages, slots. It writes only to Postgres. |
 | Effects runner | Takes effect rows from Postgres with `SELECT ... FOR UPDATE SKIP LOCKED`, wakes on `LISTEN/NOTIFY`, and runs each effect after the commit that wrote it. |
 | Bridge | The only code that crosses from Postgres to SQLite and back: Inputs in, reports and activity out. Section 7. |
-| Harness | pi-durable 1.5.0 behind our own `SessionPort`. One conversation per Ticket, one router conversation per Collection. |
+| Harness | pi-durable 1.5.0 behind our own `SessionPort`. One conversation per Ticket, one router conversation per Profile. |
 | `claude -p` processes | Started by pi-claude-code for each Claude model request. They run on the control plane, not in sandboxes. |
 | Fleet manager | Creates, starts, stops, and destroys sandbox Machines through the Fly Machines API. |
 | Browser broker | Leases Browserbase Contexts, starts sessions, proxies CDP so that the Browserbase key stays in the control plane. |
 | Secrets | Holds credentials and injects them into one tool call at a time. Section 13. |
+| Git proxy | Forwards git from sandboxes to GitHub with an App token, and refuses a push outside the Ticket's branch prefix. Section 11. |
+| MCP adapter | Registers each tool of a Connection as a pi-durable tool and calls the remote MCP server. Section 14. |
 
 The Node process is one deployable unit with one entry point. The Engine,
 the effects runner, and the Harness are modules in that process. The Engine
@@ -206,18 +282,19 @@ must not import pi-durable. It talks to sessions only through the
 `SessionPort` interface. (My call, because pi-durable changes often and the
 port keeps those changes in one adapter.)
 
-Code lives in this repo, in a new `cloud/` directory as a pnpm workspace,
-next to the Rust crates until they retire. (My call)
+Code lives in a new private repo, `willisrocks/borant-cloud`, as a pnpm
+workspace. (My call, because a directory in the `borant` repo runs its CI and
+its releases, and a change to those is a change to current Borant.)
 
-The repo's ports-and-adapters rule carries over in a smaller form. The Engine
+The `borant` repo's ports-and-adapters rule carries over in a smaller form. The Engine
 calls outside systems only through four ports with neutral types:
 `SessionPort` (pi-durable), `SandboxPort` (Fly Machines), `BrowserPort`
 (Browserbase), and `ChannelPort` (one adapter per Source kind). Vendor names
 appear only in adapters. Postgres is the Engine's own database, not a port.
 Only `SessionPort` gets a contract suite at first: the spike's crash tests.
 The exec plugin protocol and the private-repo rule of the Rust system do not
-apply to `cloud/`. The builder updates `AGENTS.md` to say so. (My call,
-because a contract suite for each port is work that no change needs yet.)
+apply to the new repo. Its own `AGENTS.md` says so. (My call, because a
+contract suite for each port is work that no change needs yet.)
 
 ### Network
 
@@ -225,10 +302,39 @@ because a contract suite for each port is work that no change needs yet.)
   webhooks. Every webhook route checks the provider signature. The UI
   requires a login (section 12). (My call)
 - Sandboxes have no public address. The control plane reaches them over Fly's
-  private network (6PN). Sandboxes reach the internet for git, package
-  registries, and public web pages. (My call)
+  private network (6PN). Sandboxes reach the internet for package registries and
+  public web pages. Git to GitHub goes through the git proxy. (My call)
 - Sandboxes cannot reach Postgres or the control plane's admin routes. They
-  reach only the CDP proxy route, with a token per browser lease. (My call)
+  reach only the CDP proxy route and the git proxy route, with a token per
+  browser lease and per Assignment. (My call)
+- The Fly Machines do not join the Tailscale tailnet of current Borant. (My
+  call)
+
+### Separate from current Borant
+
+| Part | Current Borant | New system |
+|---|---|---|
+| Hub | The Rust hub | The control plane. It never connects to the Rust hub. |
+| State | NATS JetStream | Postgres and SQLite. No NATS server, client, or subject. |
+| Hosts | Two Hetzner hosts and the Mac, on the tailnet | Fly Machines in their own Fly apps |
+| Credentials | Its own | New values, none copied (section 13) |
+| Code | Rust crates in `willisrocks/borant` | `willisrocks/borant-cloud`, no shared code |
+| Person's view | The chief mod | The web screen (section 12) |
+| Group of Projects | "collection" | "Profile" (Chief default, for Chris to check) |
+
+The rules that follow from this table (Decided, order from Chris through the
+chief, with the details as my call):
+
+1. No code path joins the two systems at runtime. The control plane does not
+   call the `borant` CLI, the Borant MCP tools, or the hub. Current Borant does
+   not know that the new system exists.
+2. The build changes no file in the `borant` or `borant-infra` repos, except
+   this document.
+3. Agents of current Borant can write the new code, as normal tasks in the new
+   repo. That is use of a tool, not a runtime link.
+4. Only two outside things touch both systems: a Claude subscription's usage
+   limit, and a GitHub repo that both work on. Section 21 sets the rules for
+   each.
 
 ## 6. Domain model
 
@@ -240,14 +346,14 @@ names the session and the sandbox directly).
 
 | Term | Definition | Rules it keeps |
 |---|---|---|
-| Collection | A group of Projects with one router: today `work` and `personal`. | Each Collection has its own router session and its own Policy part. |
-| Project | Configuration: a repo, a setup command, a sandbox size, secret bundles, models, and its Policy part. | Configuration, not state. Versioned with the Policy (section 11). |
+| Profile | A group of Projects with one router. The first and only Profile is `personal`. The word applies to the new system only. Current Borant keeps "collection". (Chief default, for Chris to check) | Each Profile has its own router session, Policy part, Source instances, and Connections. |
+| Project | Configuration: a repo, a setup command, a sandbox size, secret bundles, Connections, models, and its Policy part. | Configuration, not state. Versioned with the Policy (section 11). |
 | Source | A stream of outside events. A Source kind is code (GitHub, Linear, Slack, cron, web chat, internal). A Source instance is one configuration of a kind. | Holds its read position. Drops its own bot's messages before they enter the domain. Says which Threads and Channel addresses an event belongs to. |
 | Trigger | One immutable event from a Source, with the actor as the Source gives it and a `human` flag. | ID = hash of Source instance ID and the Source's own event ID. A second insert is a no-op. |
 | Thread | Triggers in time order. The Source defines which Triggers form one Thread: a PR, an issue, a Slack thread, a chat conversation, a Ticket's own chat. | At most one Eval runs on a Thread at a time. Triggers that arrive meanwhile wait for the next batch. |
-| Subscription | A link between a Ticket and a Thread. | A Trigger on a Thread goes to every live subscribed Ticket as an Input, with no Eval. A Trigger that a live Ticket took this way never goes to an Eval, whoever sent it. A person's message on a Thread whose Tickets all ended resumes them under their Mandates, with no Eval. A bot or CI Trigger on such a Thread goes to an Eval. (My call) |
+| Subscription | A link between a Ticket and a Thread. | A Trigger from an allowed sender goes to every live subscribed Ticket as an Input, with no Eval. Allowed senders are the Source's allowed list and the CI and bot events that the Policy names. A Trigger from anyone else is recorded and does nothing else. A Trigger that a live Ticket took never goes to an Eval. A message from a person on the allowed list, on a Thread whose Tickets all ended, resumes them under their Mandates, with no Eval. A bot or CI Trigger on such a Thread goes to an Eval. (My call) |
 | Eval | The judgment on a batch of Triggers on one Thread: a deterministic gate, then a model assessment with a schema. | Holds no state of its own. Its output is one Decision. |
-| Decision | The stored result of one Eval: accept, ignore, stop, or unavailable. | Stores the candidate, the context snapshot, the gate result, the prompt revision, the model, and the raw model output (section 17). |
+| Decision | The stored result of one Eval: accept, ignore, stop, or unavailable. | Stores the candidate, the context snapshot, the gate result, the prompt revision, the model, and the raw model output (section 18). |
 | Candidate | What the Eval judges: the Trigger batch, plus a proposed brief when the router or an allowed bot proposed one. | Stored with its Decision. |
 | Policy | Versioned rules as data: who can originate work through each Source, the gate rules, standing permissions, accept mode (live or observe), and model choices. | Every Decision and Mandate records the Policy version. A change goes to each live Ticket as a notice. It revokes a Mandate only when the new allowed list no longer holds the Mandate's sender (section 8, `publish_policy`). |
 | Mandate | What an accept grants: strength (`explicit` or `inferred`), scope, Policy version, basis (the Trigger IDs and the exact text that asked), and sender. | Immutable. A wider scope needs a new Ticket. Only a person's stop or a revocation by `publish_policy` withdraws it. |
@@ -261,10 +367,11 @@ names the session and the sandbox directly).
 | Channel | The write side of a Thread: a GitHub comment, a PR review reply, a Slack thread reply, a Linear comment, a web chat message. | A Ticket holds a set of Channels. |
 | Outbox message | One pending Channel write. | Fixed message ID, chosen before the first attempt. Delivered in order per conversation. |
 | Effect | One unit of work that runs after a commit: submit an Input, run an Eval, write a Channel, start a sandbox, and the others in section 8. | Written in the same transaction as the state change that needs it. Idempotent by its key. |
-| Router | The chief of staff: a long-lived pi-durable conversation per Collection that talks with Chris. | Reads the board, adds notes, and proposes briefs. Grants nothing. |
+| Router | The chief of staff: a long-lived pi-durable conversation per Profile that talks with Chris. | Reads the board, adds notes, and proposes briefs. Grants nothing. Owns the Profile's chat Thread (section 8). |
 | Worker slot | Permission to run one working Ticket at a time. | A fixed number per control plane, plus one extra slot kept for a Ticket that just received a person's message. |
 | Sandbox | The Fly Machine where a Ticket's tools run. | One per live Assignment. Holds no secrets at rest. |
 | Browser Context | A Browserbase Context that holds one site login. | One user at a time, through a lease. |
+| Connection | One remote MCP server with one person's login, for one Profile. | The control plane holds its token and makes its calls. A sandbox never does (section 14). |
 
 ### Ticket and router sessions
 
@@ -273,9 +380,9 @@ subagents with pi-durable child tasks. The subagents share the Ticket's
 sandbox. There is no orchestrator tier: today's chief, orchestrator, and
 worker chain becomes router and Ticket worker. (Decided)
 
-Each Collection has one router conversation that lives as long as the
-Collection. (My call, because today's chiefs are split the same way and the
-two Collections have different Policy parts and Slack workspaces.)
+Each Profile has one router conversation that lives as long as the Profile.
+(My call, because a later Profile has its own Policy part, Source instances,
+and Connections.)
 
 ## 7. The Postgres and SQLite bridge
 
@@ -416,9 +523,9 @@ transaction.
 
 | Command | Locks | Writes | Effects |
 |---|---|---|---|
-| `ingest(sourceInstance, event)` | none | Trigger (`ON CONFLICT DO NOTHING`), Thread links, Source read position. For each live Ticket subscribed to the Thread: an Input (submitted or held, section 7). A person's message resumes ended subscribed Tickets. If no live Ticket took the Trigger and no person's message resumed one: `threads.eval_pending = true`. | `submit_input` or `assign` per Input. `run_eval` for the Thread. |
+| `ingest(sourceInstance, event)` | none | Trigger (`ON CONFLICT DO NOTHING`), Thread links, Source read position. A Subscription when the Trigger is a PR on a `cloud/<ticket id>/` branch of a live Ticket. On a Profile chat Thread: an Input for the router, and nothing else. On other Threads, if the sender is allowed: an Input for each live subscribed Ticket (submitted or held, section 7). A message from an allowed person resumes ended subscribed Tickets. If the Thread has no live subscribed Ticket and no message resumed one: `threads.eval_pending = true`. | `submit_input` or `assign` per Input. `run_eval` for the Thread. |
 | `claim_eval(thread)` | Thread row `FOR UPDATE` | `eval_running = <eval id>`, the batch of pending Trigger IDs, the Policy version. | none |
-| `decide(evalId, gateResult, assessment)` | Thread row `FOR UPDATE` | If the claim or the Policy version changed: nothing, and a new `run_eval`. Else the Decision. On accept: Ticket, Mandate, Subscriptions, Channels, Assignment (pending), brief Input, stage `queued`. Clear `eval_running`. | `channel_write` (acknowledgment). `assign`. `run_eval` again if Triggers arrived meanwhile. |
+| `decide(evalId, gateResult, assessment)` | Thread row `FOR UPDATE` | If the claim or the Policy version changed: nothing, and a new `run_eval`. Else the Decision. On accept: Ticket, Mandate, its own chat Thread, Subscriptions to that Thread and to each Thread of the batch except a Profile chat Thread, Channels, Assignment (pending), brief Input, stage `queued`. Clear `eval_running`. | `channel_write` (acknowledgment). `assign`. `run_eval` again if Triggers arrived meanwhile. |
 | `assign(ticket)` | slot counter row `FOR UPDATE`, Ticket row | If a slot is free: Assignment running, stage `working`. | `ensure_sandbox`, `submit_input`. |
 | `consume_report(entry)` | Ticket row `FOR UPDATE` | Report (unique outbox key), stage change, Ask, changes-feed event. | `channel_write` per Channel the report names. `stop_sandbox` after `done`. |
 | `run_ended(assignment, outcome)` | Ticket row, slot counter row | Slot release. Stage: kept if a report already set it, `blocked/failed` for a run failure or `restart_limit`, else `idle`. Idempotent: a second call for the same run does nothing. | `assign` for the next queued Ticket. `stop_sandbox` timer. |
@@ -456,24 +563,37 @@ If the assessment fails or times out after 3 attempts, the Decision is
 
 ### Why subscribed Triggers skip the Eval
 
-1. A Subscription exists only after an Eval accept on that Thread. Later CI,
-   review, and reply Triggers go to that Ticket as Inputs. They start no new
-   work and add no authority, so an Eval there costs a model call and a
-   delay, and protects nothing. (My call)
-2. The router path goes through the Eval because a proposal asks for a new
-   Ticket, which is new authority and spend, and the router reads untrusted
-   text that can carry a prompt injection. The Eval guards the start of work,
-   not each event inside approved work. (Decided)
-3. Risk: a hostile comment on a subscribed Thread reaches the worker
-   unchecked. The Mandate scope is enforced in code by `authorize` and by
-   secret injection. Gated actions still need a standing permission or
-   Chris's Approval row. The worker prompt marks Input from people other
-   than Chris as untrusted data. (My call)
+Two paths leave a Thread. The Eval path is the only way to start work. An accept
+creates the Ticket, its Mandate, and a Subscription to the Thread. After that,
+later Triggers on that Thread go straight to the Ticket's session as Inputs.
+They start no new work and add no authority.
+
+For example, Chris asks for a fix. The Eval accepts it, and the worker opens PR
+#50. The branch name holds the Ticket ID, so `ingest` subscribes the Ticket to
+the Thread of that PR. Later
+CI results, review comments, and Chris's replies on #50 go to that worker as
+Inputs. Each Eval costs a model call and adds delay. On a subscribed Thread, an
+Eval protects nothing, because the Trigger asks for no new authority. (My call)
+
+So a Subscription has two origins: the accept itself, and a PR whose head branch
+is `cloud/<ticket id>/...`. No other path creates one. (My call)
+
+The router path goes through the Eval because a proposal asks for a new Ticket.
+A new Ticket means new authority and new spend. The router also reads untrusted
+text, such as issue bodies and PR comments, and a prompt injection can make it
+propose work that Chris never asked for. So the Eval guards the start of work,
+not each event inside approved work. (Decided)
+
+The sender filter in `ingest` stops a stranger's comment in code, which matters
+because `boopmark` is a public repo. The remaining risk is untrusted text that
+the worker reads: a PR diff, an issue body, or the output of a tool. The worker
+prompt marks that text as untrusted data, and section 11 sets what holds if the
+text takes over the worker. (My call)
 
 ### Router and the web chat
 
 Chris's chief chat is a Source. Each message is a Trigger with
-`actor = <logged-in person>`, `human = true`, on the Collection's chat
+`actor = <logged-in person>`, `human = true`, on the Profile's chat
 Thread. The router conversation is subscribed to that Thread and receives
 each message as an Input. It answers in the chat. (Decided)
 
@@ -488,6 +608,13 @@ router unable to grant anything.)
 Triggers from GitHub, Linear, Slack, and cron go to the Eval directly. The
 router does not see them except through the board.
 
+The Profile's chat Thread belongs to the router alone. `ingest` gives each message
+to the router conversation and never sets `eval_pending` there, so only `propose`
+starts an Eval from chat. An accepted Ticket does not subscribe to this Thread. It
+gets its own chat Thread, and Chris answers a Ticket there, from the Ticket detail
+or with `r`. Router runs take no worker slot, because each Profile has one router
+and its runs are short. (My call)
+
 ### Effects and the queue
 
 The `effects` table is the only queue. (Decided)
@@ -495,7 +622,7 @@ The `effects` table is the only queue. (Decided)
 | Column | Meaning |
 |---|---|
 | `id` | Row ID |
-| `kind` | `submit_input`, `run_eval`, `assign`, `channel_write`, `ensure_sandbox`, `stop_sandbox`, `destroy_sandbox`, `recover_poll`, `browser_release` |
+| `kind` | `submit_input`, `run_eval`, `assign`, `channel_write`, `ensure_sandbox`, `stop_sandbox`, `destroy_sandbox`, `recover_poll`, `browser_release`, `notify` |
 | `key` | Unique idempotency key, for example `submit_input:<request_id>` |
 | `payload` | JSON |
 | `state` | `pending`, `running`, `done`, `dead` |
@@ -557,19 +684,19 @@ reason "sandbox lost" or "session failed". (My call)
 
 ### Worker slots
 
-The control plane runs at most `slots.working` Tickets at a time (start: 6),
+The control plane runs at most `slots.working` Tickets at a time (start: 2),
 plus one extra slot. When a person answers or approves an Ask, that Ticket
 takes a free normal slot, or the extra slot when none is free. So Chris never
-waits behind the queue. (Decided) The start value of 6 is my call. It is a
-guess at what one Claude Max subscription carries before rate limits, and the
-builder must tune it from the first week's data.
+waits behind the queue. (Decided) The start value of 2 is my call. It is low
+because a Claude subscription's usage limit can be shared with current Borant
+(section 21). The builder tunes it from the first week's data.
 
 ### Board query
 
 One query returns the whole board: every open Ticket with its Project,
 stage, title, who (the session name), since when, its open Ask, its PR state,
 and the last change. This replaces the "board task lines" read of the mod v3
-specs. The changes feed is the `events` table (section 18) after the person's
+specs. The changes feed is the `events` table (section 19) after the person's
 seen position.
 
 ## 11. Authorization and Mandates
@@ -595,12 +722,39 @@ seen position.
    permission takes effect at once. (My call on the mechanism)
 5. The router can add notes. A note is an Input with `human = false`. It
    grants nothing, and `authorize` never reads notes. (Decided)
-6. Standing permissions are Policy data, for example "a worker in `borant`
-   can merge its own PR when CI is green and a person approved the review".
-   (Decided)
+6. Standing permissions are Policy data, for example "a worker can comment on the
+   Linear issue of its own Ticket". (Decided)
+7. On the first Project, no standing permission covers `merge_pr`, and the Policy
+   grants no `deploy` or `spend`. `report_ready` names the PR and opens an
+   `approve` Ask for `merge_pr`. Chris approves with `y`, which writes the Approval
+   row and wakes the worker, and the worker calls `merge_pr`. A GitHub review does
+   not count as an Approval, because a tool with Chris's login can also write one.
+   If a merge runs a release workflow, the Ask says so. (My call)
 
 This removes this week's relay problem: no worker needs to trust what the
 router says Chris said.
+
+### What holds against a hijacked worker
+
+A worker reads untrusted text, and it has `bash` with internet access. A prompt
+injection can take it over. So the Mandate scope and the Approval rule must hold
+when the model is hostile, not only when it means well. (My call, because the
+anti-goal on forged approvals requires it)
+
+1. No GitHub write credential enters a sandbox. Git in the sandbox reaches GitHub
+   through a git proxy route on the control plane, with the Assignment's token.
+   The proxy reads the ref updates of each push and refuses any ref outside
+   `cloud/<ticket id>/`. It forwards the rest with an App token.
+2. Other GitHub writes (open a PR, comment, merge) are tools that run in the
+   control plane. `merge_pr` goes through `authorize`. So a hijacked worker cannot
+   merge or push to a branch of current Borant.
+3. The sender filter in `ingest` (section 6) keeps strangers' comments out of the
+   session.
+4. A secret bundle is the part that stays exposed. A value in `bash` can leave
+   through the open internet. So a bundle holds only test and staging values, and
+   no production secret goes into one. The first build has no egress filter,
+   because workers need package registries and public pages. This is an accepted
+   risk.
 
 ### Policy as data
 
@@ -612,9 +766,9 @@ diffs, review, and rollback with no new code.)
 
 ## 12. Web UI
 
-The web UI is the native chief-of-staff screen. It replaces the Claude Code
-mod. It reuses the approved mod v3 information design. (Decided) It is a
-web page, so the terminal limits of mod v3 (one chord, digits at the prompt,
+The web UI is the native chief-of-staff screen of the new system. It reuses the
+approved mod v3 information design. (Decided) The Claude Code mod stays as it
+is for current Borant. The screen is a web page, so the terminal limits of mod v3 (one chord, digits at the prompt,
 band height) do not apply. The keys keep the same meaning.
 
 Login: GitHub OAuth, with an allowed list of GitHub user IDs in the Policy.
@@ -629,7 +783,7 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 | Changes since your last look | New Tickets, done Tickets, merged and approved PRs, releases, answered Asks, Policy versions. "Mark seen" sets the seen position. Nothing else does. |
 | Projects | Every Project with its Tickets by name: who works on each, for how long, its stage, what it waits on. Idle Projects on one line. |
 | PRs closest to merge | Open PRs from Tickets, ordered by how close to merge: ready to merge, approved, review requested, CI running, CI failed. |
-| Chat | The router chat for the Collection, at the side. |
+| Chat | The router chat for the Profile, at the side. |
 
 | Key | Action |
 |---|---|
@@ -643,6 +797,16 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 | `x` | Mark the listed changes seen. |
 | `/` | Focus the chat. |
 
+### Notifications
+
+Chris must not have to look at the screen to learn that something needs him. The
+control plane sends a Web Push to his browser for each new Ask and each Ticket that
+enters `blocked/failed`. A `notify` effect carries it, keyed by the Ask or the
+stage change, so a retry sends nothing twice. Several within 5 minutes collapse to
+one. Web Push needs no outside account. On an iPhone, it needs the page on the home
+screen. The dead man's switch (section 19) stays outside, because a dead control
+plane cannot push. (My call, and another channel is one adapter.)
+
 ### Ticket detail
 
 The Mandate (strength, scope, basis with Chris's exact words, Policy
@@ -655,13 +819,18 @@ and the usage and list-price cost of the session.
 
 Every Browser Context with its site, state (valid, expired, in use, never
 used), time of the last login check, and the Ticket that holds its lease. "Log in"
-opens the Browserbase live view in the page (section 15).
+opens the Browserbase live view in the page (section 16).
+
+### Connections
+
+Every Connection of the Profile with its server, login state, and last refresh.
+"Log in" starts the OAuth flow (section 14).
 
 ### Loops
 
 Policy versions with their diffs, Decision lists with filters, the Decisions
 of observe mode ("would accept"), and replay runs with their diffs and scores
-(section 17).
+(section 18).
 
 ### Admin
 
@@ -672,14 +841,17 @@ Postgres reachability.
 ## 13. Secrets
 
 Secrets live in the control plane and are injected only into the tool call
-that needs them. (Decided)
+that needs them. (Decided) Every value is new to this system. The control plane
+holds no credential that current Borant uses. (Decided, order from Chris through
+the chief)
 
 | Secret | Where | Used by |
 |---|---|---|
 | Master key, `DATABASE_URL`, GitHub App private key, Slack and Linear tokens, Browserbase API key, GitHub OAuth client | Fly secrets on the control-plane app | The control plane only |
-| Claude subscription login | `claude` CLI credentials on the control-plane volume | pi-claude-code |
+| Claude subscription login | Its own `claude` login, in CLI credentials on the control-plane volume | pi-claude-code |
+| Connection OAuth tokens | `secrets` table in Postgres, AES-256-GCM under the master key | The control plane only |
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in Postgres, AES-256-GCM under the master key | The control plane, and injected tool calls |
-| GitHub tokens for git | Minted per tool call as a GitHub App installation token, scoped to the Project repo, valid for 1 hour | `bash` in the sandbox |
+| GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
 
 Rules:
 
@@ -693,12 +865,83 @@ Rules:
 4. The control plane gets its own Codex and LunaRoute logins. It does not
    reuse Chris's `~/.pi/agent/auth.json`, because a refresh rotates the token
    and logs out his CLI (spike Q8).
-5. Chris copies today's 1Password Agents vault items into the control plane
-   once, through the admin page. The control plane does not call 1Password at
-   runtime. (My call, because it removes a runtime dependency. Rotation then
-   happens in the admin page.)
+5. Chris creates a new token or key for each provider and enters it once,
+   through the admin page. No value is copied from a host of current Borant or
+   from the 1Password items that it uses, because a rotation of a shared value
+   breaks the other system. If a provider allows only one key, the builder
+   lists it for Chris. (My call)
+6. The control plane does not call 1Password at runtime. Chris keeps a copy of
+   the master key in a new 1Password item, because a lost master key loses the
+   `secrets` table. (My call)
 
-## 14. Sandboxes
+## 14. Tools and connections
+
+Sources and tools do different jobs:
+
+- A Source brings events in and can start work.
+- A Channel writes back to the Thread that started the work.
+- A tool is what a worker uses during work, for example to read a Linear issue,
+  query Sentry, or search Notion.
+
+Many tools must act as Chris, so a Profile needs its own logged-in Connections.
+
+### MCP servers
+
+| Part | Rule |
+|---|---|
+| Connection | One remote MCP server with Chris's login, for one Profile. For example, Linear with his personal account in the `personal` Profile. (My call) |
+| Where it runs | The control plane is the MCP client. A sandbox never connects to an MCP server and never holds its token. The browser broker follows the same rule. (My call) |
+| Login | OAuth from the web UI. Tokens go in the `secrets` table, and the control plane refreshes them. A failed refresh raises a "needs you" item of kind `login`, like an expired browser login. |
+| Tool calls | pi-durable has no MCP client. A small adapter in the control plane registers each MCP tool as a pi-durable tool, so each call is a durable tool task with a task ID. The README describes this bridge pattern, and `deferred: true` with `tool_search` for a large tool set. (My call) |
+| Crash behavior | MCP read tools are `replay: "safe"`. MCP write tools keep the default, so a crash gives the model an `interrupted` result (spike Q9). The worker prompt says to read the current state before it writes again. (My call) |
+| Permissions | A Project lists the Connections that its Tickets can use, and a Mandate can narrow the list. Read tools need no approval. Write tools (comment, status change, send message) go through `authorize`, like `merge_pr`. A standing permission can cover them, for example "a worker can comment on the Linear issue of its own Ticket". (My call) |
+| Output | MCP results are untrusted data, like PR comments. They enter the transcript with their source marked. |
+
+Workers do not run MCP servers through `claude -p`. Those calls bypass
+pi-durable and `authorize`, so a crash loses them and the Mandate does not limit
+them. pi-claude-code already returns each tool call to Pi (spike Q8). (My call)
+
+### How a Source receives events
+
+Linear has no webhook for one user's events. It offers three kinds of intake:
+
+| Intake | What arrives | Setup | Use in this design |
+|---|---|---|---|
+| Linear agent app | Only issues that someone assigns to the agent or mentions it in | An admin installs the app once per workspace | The Source that starts work, because an assignment or a mention is clear intent. (My call) |
+| Workspace or team webhook | Every issue and comment change in the team, from everyone | An admin creates it | Observe mode only, to feed the board and Subscriptions. The gate drops most events in code, before any model call. (My call) |
+| Notifications, polled as Chris | His inbox: assignments, mentions, comments on issues he follows | His OAuth login | Not used at first. It adds a poll delay, and the agent app covers assignment and mention. |
+
+The other Sources follow the same pattern. GitHub uses App webhooks for the repos
+where the App is installed. Slack uses an app that receives mentions and DMs. Cron
+needs no setup. A Source that receives every event must stay cheap, so the gate
+rejects most events in code and only the rest reach the assessment model.
+
+The first build has the web chat, GitHub, and internal Sources. Cron, Linear, and
+Slack follow when a Project needs them. (My call, because `boopmark` needs only
+GitHub, and each Source is more to set up.)
+
+### Who acts on GitHub
+
+Agents act on GitHub as a GitHub App, not as Chris. (Recommendation) Chris installs
+the App on his own account, on the `boopmark` repo only. The reasons:
+
+- GitHub does not let an author approve their own PR. A worker with Chris's token
+  opens PRs in his name, so he cannot approve them, and the review stage of the
+  board stops working.
+- An App gives tokens that last 1 hour and cover one repo (section 13). A token of
+  Chris's covers every repo that he can reach.
+- An App is a separate credential, so it meets the parallel rule. Its bot name also
+  shows which system wrote a PR when both systems work on one repo.
+
+The cost is that commits and PRs show the bot, and one more private key lives in
+Fly secrets. The earlier cost of this choice, a Roger org admin who must install
+the App, goes away while Roger work stays on Steve.
+
+The same logic applies to Linear and Slack, where an app identity also exists. A
+Source and its Channel writes use the app. A Connection write shows as Chris, so it
+goes through `authorize`.
+
+## 15. Sandboxes
 
 One Fly Machine per Ticket runs its tools: bash, git, builds, and headless
 Chrome for public pages. (Decided) The agent loop stays in the control
@@ -753,7 +996,7 @@ stateDiagram-v2
    merges, the fleet manager destroys the Machine and the volume. A Ticket that
    a person resumes in that time gets the same sandbox.
 
-## 15. Browser for logged-in sites
+## 16. Browser for logged-in sites
 
 Logged-in browser work uses Browserbase. One persistent Context per site
 login stores the full Chromium user data directory, encrypted, until it is
@@ -798,7 +1041,7 @@ sequenceDiagram
    carries no account key, the proxy can go. (My call)
 6. Public pages use Chromium in the sandbox, not Browserbase. (Decided)
 
-## 16. Models and providers
+## 17. Models and providers
 
 | Provider | How | State |
 |---|---|---|
@@ -813,22 +1056,55 @@ per Project, and summaries. The configuration names a provider and a model
 alias. The control plane resolves the alias from discovery at startup. (My
 call)
 
-The builder must run one real turn with Codex and one with LunaRoute before
-any Project depends on them.
+The builder runs one real Codex turn before the first Project runs, because Codex
+is the fallback. LunaRoute gets one real turn before a Policy role names it.
 
 The spike ran its Claude turn on the Mac, where the `claude` login lives in
 the Keychain. No test yet shows that a `claude` login works and refreshes on
 a headless Linux Fly Machine under pi-claude-code's environment checks. This
 is the first task of the build, before any other work: one real turn from a
 Fly Machine, and one more after 24 hours to prove the refresh. If it fails,
-the fallback is open question 2 in section 22.
+the fallback is the recommendation at the end of this section.
+
+Nothing yet shows whether a new `claude` login on a shared account leaves the
+other logins of that account alone. A logout stops the agents of current Borant.
+So the account for this test is an open question for Chris (section 24).
 
 Every session records usage and list-price cost (pi-durable reports both).
 The Ticket detail and a monthly total show it. This number is also the
 estimate of what Claude work costs if Anthropic moves `claude -p` to API
 rates.
 
-## 17. Loop engineering and replay
+### If `claude -p` fails or changes billing
+
+(Recommendation) Move every role to Codex with one Policy commit, and hold no
+Anthropic API key. Two different events lead here:
+
+- `claude -p` cannot run headless on Fly. Then no role has Claude on the
+  subscription. The router and the assessor use the same provider as the workers,
+  so a split that keeps Claude for them needs an API key.
+- Anthropic moves `claude -p` to API rates. pi-claude-code fails a turn that Claude
+  Code bills to usage credits, unless `PI_CLAUDE_CODE_ALLOW_USAGE_CREDITS` is set
+  (spike Q8). The builder does not set it. So the Ticket goes to `blocked/failed`,
+  and no bill arrives by surprise. Chris then sees the measured list-price cost
+  and decides.
+
+The reasons:
+
+- The ChatGPT subscription is already paid, and model choice per role is Policy
+  data, so the move is one commit in the config repo.
+- An API key at list price needs a spend cap and Chris's approval of that spend.
+- pi-claude-code refuses to run when `ANTHROPIC_API_KEY` is set (spike Q8), so a key
+  in the environment closes the subscription path.
+
+The cost is one required test: a real Codex turn before the first Project runs,
+which this section already requires. Codex's quality on these Projects is unknown
+until then.
+
+If the subscription terms refuse both Claude and Codex on a server, the build stops.
+An Anthropic API key needs Chris's approval and a monthly cap.
+
+## 18. Loop engineering and replay
 
 A loop is a Source, its Policy part, and its prompts, all versioned in the
 config repo. (Decided)
@@ -874,7 +1150,7 @@ A Source instance or a single rule can be in observe mode. Its Evals run and
 store "would accept" Decisions, but create no Ticket. New Sources start in
 observe mode. (Decided for the mode, my call for the start state.)
 
-## 18. Observability and audit
+## 19. Observability and audit
 
 - Logs: structured JSON lines to Fly's log stream, with Ticket, Thread,
   Trigger, and effect IDs on each line. Never secret values.
@@ -892,106 +1168,207 @@ observe mode. (Decided for the mode, my call for the start state.)
   minutes. If the pings stop, the check sends Chris a push notification, so a
   dead control plane does not stay silent. (My call)
 
-## 19. Cost per month at today's load
+## 20. Estimated cost per month
 
-Prices are Fly.io list prices read on 2026-11-02 from
+Nothing here is spent yet. Prices are Fly.io list prices read on 2026-11-02 from
 https://docs.fly.io/about/pricing: shared CPU about $0.69 per vCPU and
 $6.01 per GB RAM per 30 days, volumes and stopped rootfs $0.15 per GB, Managed
 Postgres Basic $38, outbound transfer $0.02 per GB in North America.
 
-| Item | Assumption | Per month |
+| Item | First Project: `boopmark`, 2 slots | Six slots, today's load |
 |---|---|---|
-| Control-plane Machine | `shared-cpu-4x`, 8 GB, always on. 8 GB holds Node and about 10 `claude -p` processes at once. | $51 |
-| Control-plane volume | 40 GB | $6 |
-| Litestream object storage | Under 10 GB | $1 |
-| Fly Managed Postgres | Basic plan | $38 |
-| Sandbox compute | `shared-cpu-4x`, 8 GB at $0.071 per hour. 4 sandboxes running on average for 10 hours a day, 30 days: 1200 hours. | $85 |
-| Sandbox volumes | 15 sandboxes alive at a time, 20 GB each | $45 |
-| Browserbase | Developer plan, about 60 hours | $32 |
-| Outbound transfer | Under 100 GB | $2 |
-| Models | Claude Max, ChatGPT, and LunaRoute subscriptions that Chris already pays | $0 more |
-| Total | | about $260 |
+| Control-plane Machine, always on | `shared-cpu-2x`, 4 GB: $25 | `shared-cpu-4x`, 8 GB: $51 |
+| Control-plane volume | 10 GB: $2 | 40 GB: $6 |
+| Litestream object storage, under 10 GB | $1 | $1 |
+| Fly Managed Postgres, Basic plan | $38 | $38 |
+| Sandbox compute, `shared-cpu-4x` 8 GB at $0.071 per hour | 1 running, 6 hours a day: 180 hours, $13 | 4 running, 10 hours a day: 1200 hours, $85 |
+| Sandbox volumes, 20 GB each | 3 alive: $9 | 15 alive: $45 |
+| Browserbase, Developer plan, about 60 hours | $32 | $32 |
+| Outbound transfer | $1 | $2 |
+| Models: subscriptions that Chris already pays | $0 more | $0 more |
+| Total | about $120 | about $260 |
 
-The sandbox hours are the weakest number. Today's load is about 20 agents,
-but most of them wait. If 10 sandboxes run 12 hours a day, sandbox compute is
-about $255 and the total is about $430. The first two weeks of metrics give
-the real number.
+The sandbox hours are the weakest number. If 10 sandboxes run 12 hours a day,
+sandbox compute is about $255 and the total is about $430. The first two weeks of
+metrics give the real number. The Browserbase line is $0 until stage 5 of section
+21, so the first months can cost about $90. (My call on all assumptions)
 
-What this estimate leaves out: the Hetzner boxes that retire (their cost
-goes away), and model cost if Anthropic moves `claude -p` to API rates
-(section 16 measures it).
+What this estimate leaves out:
 
-## 20. Migration from today's Borant
+- Savings. Current Borant keeps running, so its Hetzner bill does not change.
+- Model cost at API rates, if Anthropic moves `claude -p` (section 17).
+- A separate Claude subscription, if Chris gives the new system its own account
+  (section 21). It adds that subscription's price.
 
-Old and new run in parallel until each Project moves. No session moves
-between them. Work moves by Project. (My call)
+## 21. Running beside current Borant
 
-1. Build stage. The control plane runs with the web chat and GitHub Sources
-   and one personal Project, `taglab`. The old Borant runs everything else.
-   GitHub, Linear, and Slack Sources start in observe mode.
-2. Personal Collection. Projects move one at a time: `taglab`, then
-   `boopmark`, then `steve`, then `borant` last, because the old Borant
-   builds the new one. For each Project:
-   - The old orchestrator takes no new tasks.
-   - An import script reads its open Borant tasks and lists them in the UI.
-     Chris approves each one he wants. Each approval is a web chat Trigger,
-     so the imported Ticket gets an `explicit` Mandate whose basis is "import
-     of Borant task <id>, approved by Chris".
-   - Running old workers finish on the old system. Their PRs get Tickets
-     through the GitHub Source when Chris approves the import.
-   - When the old Project has no running worker, its orchestrator ends.
-3. The personal chief ends when its last Project moved.
-4. Work Collection. It moves after the personal Collection runs one week
-   with no lost Trigger, no duplicate Ticket, and no reconcile repair that a
-   person had to do. Roger Projects move in the same steps.
-5. Retirement. Two weeks after the last old task ends: stop the Rust hub,
-   NATS, and the host daemons, delete the Hetzner boxes with `borant-infra`,
-   remove the Borant plugin and daemon from the Mac, tag the last Rust commit,
-   and delete the Rust crates from `main`.
+This work ends with the control plane running one Profile and one Project beside
+current Borant. Nothing moves. (Decided, order from Chris through the chief)
 
-## 21. Risks
+### Build stages
+
+1. Prove the unproven points of section 3, in this order: a real `claude` turn from
+   a Fly Machine (section 17), a real Codex turn, the process kills inside each
+   failure window of section 7, and one Litestream restore.
+2. Build the core: the Engine, the bridge, effects, the Harness, sandboxes, the git
+   proxy, the web chat and GitHub Sources, Evals with stored Decisions, the
+   chief-of-staff screen, Ticket detail, notifications, and the admin page.
+3. Run the first Project, `boopmark`, in the `personal` Profile. Chris starts
+   Tickets from the web chat only.
+4. Measure for two weeks: lost Triggers, duplicate Tickets, reconcile repairs,
+   cost, and how often the usage limit stops a run.
+5. While it runs, add the rest, each as its own change: replay and the Loops page,
+   the MCP adapter and Connections, and the browser broker with Browserbase. The
+   Sources of section 14 follow when a Project needs them.
+
+Stage 5 completes the decided goals. Replay has data by then, because stage 2
+stores every Decision. (My call on the order)
+
+The first Profile is `personal`, because Roger work stays on Steve and Steve
+personal agents (section 22). (Chief default, for Chris to check)
+
+The first Project is `boopmark`. (My call) It is the only Project in the personal
+collection that is not current Borant's own code. `borant` and `borant-infra` stay
+off the new system, because a change to them can change the running system.
+
+### One repo, two systems
+
+`boopmark` stays a Project on current Borant too. The rules (My call):
+
+1. Chris starts each piece of work on one system. Neither system reads the other's
+   tasks.
+2. A Ticket pushes only to its `cloud/<ticket id>/` branches. The git proxy enforces
+   this (section 11).
+3. The GitHub Source stays in observe mode for `boopmark`. Its Evals store "would
+   accept" and create no Ticket, so a comment on a PR of current Borant cannot
+   start a duplicate Ticket. Subscribed Threads still deliver Inputs, because
+   observe mode applies only to Evals.
+4. Both systems merge through normal GitHub review, so GitHub handles conflicts
+   between their branches.
+
+### Shared Claude usage limit
+
+Subscription usage limits apply to all processes of one account together (spike
+Q8). If both systems use one account, a busy new system slows current Borant, and
+that breaks the rule that the new system costs current Borant nothing.
+
+The new system starts with 2 slots, and a metric counts the runs that hit the
+limit. Chris can give it a separate account by changing one login. (My call)
+
+### How a Profile moves later
+
+A move is a later, separate decision for Chris. This document does not schedule
+it, and no part of this work prepares it. What that decision needs:
+
+- The evidence: the measurements of the build stages above.
+- The mapping: collection `personal` becomes Profile `personal`.
+- The order: Project by Project, with `borant` and `borant-infra` last, because
+  current Borant builds the new system.
+- The steps for a Project: the orchestrator of current Borant takes no new tasks.
+  An import reads its open tasks and lists them in the UI. Each task that Chris
+  approves becomes a Ticket with an `explicit` Mandate whose basis is "import of
+  Borant task <id>, approved by Chris". Running workers finish where they are.
+
+Retiring the Rust hub, NATS, the host daemons, and the Hetzner hosts is a further
+decision after that. Moving Roger work is a separate decision again. It needs an
+answer on data rules and Roger's approval (section 22).
+
+## 22. Compared with Steve and Steve personal agents
+
+Steve is Roger's team bot, and the team hands it Linear issues. Steve personal
+agents are one app per employee: a chief of staff and specialists that act as that
+employee. Both are Roger's private code, read on 2026-10-30. Most of their docs say
+that no reviewer checked them.
+
+The `borant` repo is public, so this table stays at the level of design choices.
+The version with platform names is on the private review page. (My call)
+
+| Area | Steve | Personal agents | This design |
+|---|---|---|---|
+| Hosting and pay | Roger's cloud account. Models at API rates on Roger's budget. | One service and database per owner, on Roger's account and budget. | Chris's Fly account. His subscriptions. |
+| Loop | A workflow engine with step replay on Postgres. At least once. | Same | pi-durable sessions on SQLite, Engine on Postgres, keyed bridge. |
+| External writes | A two-phase ledger, so that a replay cannot repeat a write. | Same platform | `effects` table, written in the command's transaction, idempotent by key. The same idea. |
+| Intake | Linear agent app with a catch-up sweep, Slack, GitHub, cron. | Slack DMs, MCP, schedules, calls from Steve. | Sources with webhooks and a recovery poll. |
+| What starts work | A code eligibility check with reason codes, then a classifier. | No gate. A message or a schedule starts a turn. | Eval: a code gate, then a model assessment on a stored snapshot. Replay against new Policy. |
+| Sandbox | A microVM per session. | Per agent: in-process bash, or a microVM. | A Fly Machine per Ticket. |
+| Identity | A bot everywhere. | The employee. A gateway holds each person's OAuth grants, and the app never sees vendor tokens. | A GitHub App for GitHub (Recommendation). Connections act as Chris, with tokens in the control plane. |
+| Tools | Hosted MCP as the app, on an allowlist. | Many connectors through the gateway, with a per-tool allowlist. | Connections per Profile, called as durable tool tasks. |
+| Approvals | A Slack card when a person watches, denied when nobody does. | Allow, ask, or deny per agent, with per-tool overrides. Deletes always ask. | `authorize` against the Mandate, standing permissions, and Approval rows from Chris's login. |
+| Browser logins | Chromium in the image. No login handling found. | Same | Browserbase Contexts with a live view and login probes. |
+| UI | Slack cards, Linear sessions, MCP, CLI. | Slack DMs, MCP, and a web app. | One web screen from mod v3, plus chat. |
+
+### What this design takes from Steve
+
+We take ideas only. Steve is Roger's code, so none of it enters the new repo.
+(Decided, the same rule as for the superagent prototype)
+
+- Gate reasons. Every gate rejection records a reason code, so that the board and
+  replay can show why. (My call)
+- Linear. When the Linear Source arrives, it answers each agent session at once and
+  runs a 60 s catch-up sweep, because a webhook can miss a re-delegation. (My call)
+- Connection policy. Allow, ask, or deny per Connection for reads and writes, with
+  per-tool overrides, and deletes always ask. This is the shape of the Policy data
+  that `authorize` reads for tools. (My call)
+- No model check on each shell command. That check asked too often in Steve. The
+  Mandate scope and the sandbox limits do this job here. (My call)
+
+### What it means for Roger work
+
+Personal agents already do most of what a work Profile needs. They act as Chris in
+Roger's tools, with tokens in a gateway, on Roger's account and budget. A work
+Profile on the new system puts Roger data and tokens in a personal Fly account, and
+healthcare data rules can reach the sandboxes and Browserbase. So Roger work stays
+on Steve and Steve personal agents. (Chief default, for Chris to check)
+
+## 23. Risks
 
 | Risk | Effect | Mitigation |
 |---|---|---|
 | pi-durable changes its API often (18 releases in 6 weeks) | An upgrade breaks the control plane. | Pin exact versions. Keep it behind `SessionPort`. Promote the spike's crash tests (Q2, Q6, Q7, Q9) to a contract suite that each upgrade must pass. Upgrade on purpose, not on a schedule. |
 | Anthropic moves `claude -p` use to API rates | Claude work costs list price. | Measure list-price cost per session from day one. Keep the Codex and LunaRoute providers working with a real turn, so the Policy can move roles to them. |
-| The `claude` login does not work headless on Fly | No Claude model in the control plane. | First build task proves it (section 16). Fallback: open question 2. |
+| The `claude` login does not work headless on Fly | No Claude model in the control plane. | First build task proves it (section 17). Fallback: the recommendation in section 17. |
 | One machine owns all sessions | A Fly host failure stops all agents. The volume lives on one host. | Litestream to object storage, a written restore runbook, the dead man's switch. Recovery is a new Machine, a restore, and the reconcile. |
 | Google logins | An agent cannot log in to Google. Logins expire. | Chris logs in through the live view. Login probes raise a "needs you" item early. |
 | Bridge bugs | A lost or doubled Input or report. | Every crossing is keyed. The reconcile is the same code at every startup, so it runs often. Bridge lag is a metric with an alert. Contract tests kill the process inside each failure window of section 7. |
 | Many `claude -p` processes on one machine | Memory pressure, subscription rate limits. | Worker slots cap concurrency. A metric counts the processes. The Machine can grow to more RAM with one command. |
-| Litestream and pi-durable's own WAL checkpoints | A broken SQLite replica. | The builder makes sure that pi-durable's `node:sqlite` settings work with Litestream before the first Project moves, with one restore test. |
+| Litestream and pi-durable's own WAL checkpoints | A broken SQLite replica. | The builder makes sure that pi-durable's `node:sqlite` settings work with Litestream before the first Project runs, with one restore test. |
+| A shared Claude usage limit, or a new login that logs out the others | Current Borant's agents slow down or stop. | 2 slots at the start, a metric for limit hits, and the login test on another account (section 17, section 21). |
+| Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21: one system per piece of work, `cloud/` branches, GitHub Source in observe mode. |
+| Two screens during the parallel run | More attention from Chris, which is an anti-goal. | Accepted while the new system has one Project. The measurements in section 21 feed the later decision. |
+| Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | This document did not check the terms. Open question for Chris (section 24). |
+| A hijacked worker | It can leak a value from a secret bundle. | Bundles hold only test and staging values. It cannot push outside its prefix or merge (section 11). |
 
-## 22. Open questions for Chris
+## 24. Defaults and recommendations for Chris to check
 
-Only Chris can answer these, and each answer changes what gets built. Each
-one names the default that this document uses until he answers. Most
-important first.
+None of these is Chris's decision yet. The document uses each one until he answers.
 
-1. Do the Roger work Projects move to this control plane? The work
-   Collection brings Roger's GitHub org, Roger's Slack workspace, Roger
-   secret bundles, and Roger work on Chris's personal Claude Max
-   subscription, all in a Fly app on his personal account. Healthcare data
-   rules can also apply to sandboxes and Browserbase. The answer decides
-   whether Source instances, secrets, and subscriptions must be split per
-   Collection from the start, and whether the old Borant must keep running
-   for work. Default: one control plane for both Collections, with separate
-   Source instances and secret bundles per Collection, and work moves last
-   (section 20, step 4).
-2. If `claude -p` cannot run headless on Fly, or Anthropic moves it to API
-   rates, what replaces it? The choices are Codex for the workers with Claude
-   kept for the router and the assessor, an Anthropic API key at list price
-   with a monthly cap, or a stop to decide then. The answer decides which
-   provider gets real tests first and whether the build needs a spend cap.
-   Default: Codex for the workers.
-3. Do agents act on GitHub as a GitHub App or as Chris? A GitHub App gives
-   scoped tokens that last 1 hour per repo, and PRs show as the app's bot.
-   It needs an org admin to install it on the Roger org. Chris's token makes
-   PRs his own, so GitHub does not let him approve them, and one broad token
-   then lives in the control plane. The answer changes the GitHub adapter,
-   the review flow, and the secrets. Default: a GitHub App.
+| Topic | Value | Mark | Section |
+|---|---|---|---|
+| Roger work | Stays on Steve and Steve personal agents. The first Profile is `personal`. | Chief default, for Chris to check | 21, 22 |
+| Naming | "Profile" applies to the new system only. Current Borant keeps "collection". | Chief default, for Chris to check | 5, 6 |
+| `claude -p` fallback | Every role moves to Codex. No Anthropic API key. | Recommendation | 17 |
+| GitHub identity | A GitHub App that Chris installs on `boopmark`. | Recommendation | 14 |
 
-## 23. Left to the builder
+### Open questions for Chris
+
+Only Chris can answer these, and each answer changes what gets built. A fresh
+builder read this document, and the designer settled its other points as calls.
+
+1. Which Claude account does the new system use? The first build task runs a real
+   `claude` turn from a Fly Machine, and all Claude work then counts against that
+   account's usage limit. An account that current Borant also uses shares its limit
+   with those agents. A new login on it can also log them out, and nothing tests
+   that yet. A separate account removes both risks and adds its monthly price.
+   Default: a separate account if Chris has one. Otherwise the current account, 2
+   slots, and a first login at a time that Chris picks, so that he can watch current
+   Borant.
+2. Do the Claude and ChatGPT subscription terms allow this use on a server? The
+   whole model plan rests on `claude -p` and ChatGPT OAuth running headless, and this
+   document did not check the terms. If Claude is refused, the build starts on
+   Codex. If both are refused, the build stops until Chris decides on an API key
+   with a cap. Default: the plan assumes yes, and Chris checks before the build.
+
+## 25. Left to the builder
 
 - The HTTP framework, the UI framework, the migration tool, and the test
   runner.
@@ -999,13 +1376,13 @@ important first.
 - Retry and timeout values that this document does not set.
 - The sandbox image build and the toolchains in it.
 - The Fly app layout (one app for the control plane, one for sandboxes, or
-  one app for both).
+  one app for both), inside the rule that they are new apps.
 - The schema of each report tool and of the assessment output, inside the
   fields named here.
 - The prompts of the router, the assessor, and the worker, in the config repo.
 - The login probe for each site.
 
-## 24. What this design cut
+## 26. What this design cut
 
 - Correlation and Executor from the prototype (section 6)
 - A webhook spool file for Postgres outages (section 8)
@@ -1015,3 +1392,10 @@ important first.
 - A 1Password runtime connection (section 13)
 - Several users and cross-Source identity mapping
 - Feishu, which the prototype supports
+- The cutover, the task import, and the retirement of current Borant (section 21)
+- The work Profile, and a view of Roger work on the board through the steve-agents
+  MCP (section 22)
+- Any link between the new system and current Borant
+- Cron, Linear, and Slack Sources from the first build (section 14)
+- An egress filter for sandboxes (section 11)
+- The platform names of Steve in this public document (section 22)
