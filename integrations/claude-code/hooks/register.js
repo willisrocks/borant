@@ -510,7 +510,14 @@ function panel($) {
     }
     const t = p.tasks.find((x) => 't:' + x.id === taskSel) || p.tasks[0]
     if (t) taskSel = 't:' + t.id
-    return panelLines(w, h, { top: topLine(w, 'list', 'all projects › ' + p.name), entries: (lw) => taskEntries(p, lw, taskSel), sel: taskSel, detail: (dw) => (t ? taskDetail(t, p, dw) : []), keys: taskKeys(t, p), listShare: 0.4 })
+    const tg = t ? target(m) : null
+    const detail = (dw) => {
+      if (!t) return []
+      if (tg?.kind === 'need') return needDetail(tg.item, p, dw, { below: belowOf(tg.item.id, dw), history: historyOf($, t.channel, t.id) })
+      return taskDetail(t, p, dw, { below: belowOf(taskSel, dw), history: historyOf($, t.channel, t.id) })
+    }
+    const mode = field ? (sendState?.state === 'unconfirmed' ? 'retry' : 'typing') : 'list'
+    return panelLines(w, h, { top: topLine(w, mode, 'all projects › ' + p.name), entries: (lw) => taskEntries(p, lw, taskSel), sel: taskSel, detail, keys: field ? [] : confirm ? [['y', 'yes', 'yes'], ['n', 'no', 'no']] : taskKeys(t, p), listShare: field || confirm ? 0.15 : 0.4 })
   }
   if (view === 'detail' && cur) {
     const d = detailOf($, m, cur, w)
@@ -570,7 +577,19 @@ function historyOf($, channel, task) {
 /** The detail of the selected item, with the field or the confirmation under it. */
 function detailOf($, m, cur, w) {
   if (!cur || !cur.item) return [{ parts: [{ segs: [S('Nothing selected.', 'dim')] }] }]
+  const below = belowOf(cur.item.id, w)
+  if (cur.kind === 'need') return needDetail(cur.item, projectOf(m, cur.item.project), w, { below, history: historyOf($, cur.item.channel, cur.item.task) })
+  if (cur.kind === 'quiet') return quietDetail(cur.item, projectOf(m, cur.item.project), w)
+  if (cur.kind === 'ship') return shipDetail(cur.item, w)
+  if (cur.kind === 'change') return changeDetail(cur.item, w)
+  if (cur.kind === 'project') return projectDetail(cur.item, w)
+  return []
+}
+
+/** The confirmation or the answer field of an item, while it is open. */
+function belowOf(id, w) {
   const below = []
+  const cur = { item: { id } }
   if (confirm && confirm.item === cur.item.id) {
     below.push({ parts: [{ segs: [] }] }, { parts: [{ segs: rule(w, [S(confirm.what === 'approve' ? 'approve' : 'close as done', 'y')]) }] })
     const q = confirm.what === 'approve' ? 'Approve it? The gate closes as done.' : 'Close this task as done?'
@@ -587,12 +606,7 @@ function detailOf($, m, cur, w) {
     if (sendState?.state === 'unconfirmed') below.push({ parts: [{ segs: [S('◷ not confirmed: ' + sendState.reason + '. ', 'o'), S('enter', 'kb'), S(' checks, then sends only if needed', 't')] }] })
     if (sendState?.state === 'refused') below.push({ parts: [{ segs: [S('! refused: ' + sendState.reason, 'r')] }] })
   }
-  if (cur.kind === 'need') return needDetail(cur.item, projectOf(m, cur.item.project), w, { below, history: historyOf($, cur.item.channel, cur.item.task) })
-  if (cur.kind === 'quiet') return quietDetail(cur.item, projectOf(m, cur.item.project), w)
-  if (cur.kind === 'ship') return shipDetail(cur.item, w)
-  if (cur.kind === 'change') return changeDetail(cur.item, w)
-  if (cur.kind === 'project') return projectDetail(cur.item, w)
-  return []
+  return below
 }
 
 const NAV = [['j', 'down', 'move', 1], ['k', 'up', 'move', -1], ['1', 'needs', 'section', 1], ['2', 'quiet', 'section', 2], ['3', 'PRs', 'section', 3], ['4', 'changed', 'section', 4], ['5', 'projects', 'section', 5]]

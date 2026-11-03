@@ -117,15 +117,20 @@ check "j j selects the third item: its detail shows" "shown | grep -q 'NEEDS YOU
 
 step ships 3
 check "3 jumps to the open PRs" "shown | grep -q '⇡ OPEN PR'"
-check "the open PRs say how close each is to merge" "shown | grep -q 'ready to merge'"
+check "the open PRs say how close each is to merge" "shown | grep -q 'approved, checks pass'"
 step projects 5
 # The selected project, as its detail names it: "<name>  <collection> · ".
 picked="$(shown | perl -CS -ne 'if (/(?:\x{2502} ?|^)([a-z][a-z0-9-]+)  (personal|work) \x{b7} /) { print $1; exit }')"
 step tasks Enter
 check "enter opens the selected project's tasks ($picked)" "[ -n \"$picked\" ] && shown | grep -q \"$picked: every task\""
 step task j
-step back b
-check "b goes back to the list" "! shown | grep -q ': every task'"
+step task-back k
+step task-answer r
+check "r in a project's task list opens the answer field there" "shown | grep -q ' ANSWER ' && shown | grep -q 'answer to wkr-emr-7'"
+step task-esc Escape
+check "esc from the field gives the keys back" "! shown | grep -q 'KEYS ON BORANT\\| ANSWER '"
+step reopen chord:b
+check "ctrl+x b opens the list again" "shown | grep -q 'KEYS ON BORANT' && ! shown | grep -q ': every task'"
 
 step needs 1 j j
 step answer r

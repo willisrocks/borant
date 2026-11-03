@@ -238,7 +238,7 @@ function projectLines(p, w, opts = {}) {
 
 /** The color of a PR's state. */
 export function prStyle(words) {
-  if (/ready|merged|passed/.test(words)) return 'g'
+  if (/ready|merged|pass|approved/.test(words)) return 'g'
   if (/failed|changes/.test(words)) return 'r'
   if (/review/.test(words)) return 'y'
   return 'dim'
@@ -416,10 +416,7 @@ export function needDetail(n, p, w, extra = {}) {
   if (n.asked) out.push(fact('asked', n.asked.owner + ' at ' + n.asked.time + '; the reply comes to your chief', 'c'))
   // A confirmation or a field comes before the history: it must stay in view.
   for (const l of extra.below || []) out.push(l)
-  if (extra.history && extra.history.length) {
-    out.push(text([]), text([S('HISTORY', 'dim')]))
-    for (const h of extra.history.slice(-6)) out.push(...wrap(h.text, Math.max(10, w - 7)).map((l, i) => text([S((i ? '' : clock(h.at)).padEnd(7), 'dim'), S(l, 't')])))
-  }
+  out.push(...historyLines(extra.history, w))
   return out
 }
 
@@ -497,7 +494,7 @@ export function projectDetail(p, w) {
   return out
 }
 
-export function taskDetail(t, p, w) {
+export function taskDetail(t, p, w, extra = {}) {
   const [g, st] = TASK_MARK[t.state]
   const words = { wait: 'NEEDS YOU', stuck: 'STUCK', run: 'WORKING', silent: 'SILENT', ready: 'READY, NOBODY ON IT', blocked: 'BLOCKED', later: 'LATER', done: 'DONE' }
   return [
@@ -510,13 +507,22 @@ export function taskDetail(t, p, w) {
     ...(t.pr ? [fact('PR', t.pr.label + (t.pr.words && t.pr.words !== 'open' ? ' · ' + t.pr.words : '') + ' · ' + t.pr.url)] : []),
     ...(t.note ? facts('note', t.note, w) : []),
     fact('task', t.channel + '/' + t.id, 'dim'),
+    ...(extra.below || []),
+    ...historyLines(extra.history, w),
   ]
+}
+
+/** The last entries of a task's history, one wrapped line each, under a head. */
+function historyLines(history, w) {
+  if (!history || !history.length) return []
+  return [text([]), text([S('HISTORY', 'dim')]), ...history.slice(-6).flatMap((h) => wrap(h.text, Math.max(10, w - 7)).map((l, i) => text([S((i ? '' : clock(h.at)).padEnd(7), 'dim'), S(l, 't')])))]
 }
 
 /** Every key, for h. */
 export function helpLines(w) {
-  const k = (key, what) => text(fit([S(' ' + key.padEnd(13), 'kb'), S(what, 't')], w))
-  return [
+  // A long description wraps under itself, so a narrow panel shows every key's meaning.
+  const k = (key, what) => wrap(what, Math.max(10, w - 14)).map((l, i) => text(fit([S(' ' + (i ? '' : key).padEnd(13), 'kb'), S(l, 't')], w)))
+  return [].concat(
     text([S('ALL KEYS', 'head')]),
     text([]),
     text([S('At the prompt. Borant takes no other key there.', 'dim')]),
@@ -547,7 +553,7 @@ export function helpLines(w) {
     ...wrap('ctrl+x b is the default chord. Borant cannot read your key bindings.', w - 1).map((l) => text([S(' ' + l, 't')])),
     ...wrap('Claude Code gives the panel the keys only over an empty prompt.', w - 1).map((l) => text([S(' ' + l, 't')])),
     ...wrap('"Changed since" holds until you press x. Closing the panel marks nothing seen.', w - 1).map((l) => text([S(' ' + l, 't')])),
-  ]
+  )
 }
 
 /** Key Buttons over as many lines as they need: `[[hotkey, label, act, arg], ...]`; a key with no hotkey is text. */

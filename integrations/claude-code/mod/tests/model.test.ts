@@ -98,7 +98,7 @@ test('task lines from the board: start state, PR state in words, and the recent 
     ['Archive 2025', 'later', 'after Weekly digest'],
     ['The import', 'done', ''],
   ])
-  expect(m.ships[0].pr.words).toBe('ready to merge')
+  expect(m.ships[0].pr.words).toBe('approved, checks pass')
 })
 
 test('a claimed task whose worker made no tool call for 30 minutes is silent; no data is not silence', () => {
