@@ -34,6 +34,9 @@ fn status(state: ChangeState, head: &str, checks: CheckState, review: ReviewStat
         head: head.to_owned(),
         checks,
         review,
+        checks_passed: None,
+        checks_total: None,
+        review_requested: false,
     }
 }
 

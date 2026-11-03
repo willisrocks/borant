@@ -9,6 +9,9 @@ use crate::ports::PortResult;
 /// The state of one change request, as the PR watch compares and reports it.
 /// The wire shape is the one of the plugin:
 /// `{"state":"open","head":"<sha>","checks":{"pass":{}},"review":"none"}`.
+/// An adapter that counts the checks adds `checks_passed` and
+/// `checks_total`, and one that knows of a requested review adds
+/// `review_requested`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeStatus {
     pub state: ChangeState,
@@ -16,6 +19,18 @@ pub struct ChangeStatus {
     pub head: String,
     pub checks: CheckState,
     pub review: ReviewState,
+    /// How many checks of the head passed, when the adapter counts them. An
+    /// adapter without counts leaves both empty, and a reader shows the
+    /// state alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_passed: Option<u32>,
+    /// How many checks reported on the head, when the adapter counts them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_total: Option<u32>,
+    /// A review was requested and none arrived yet. An adapter without the
+    /// fact leaves it false.
+    #[serde(default)]
+    pub review_requested: bool,
 }
 
 /// Whether the change is open, merged, or closed without a merge.
@@ -71,6 +86,9 @@ mod tests {
                 head: "abc123".into(),
                 checks: CheckState::Pass {},
                 review: ReviewState::None,
+                checks_passed: None,
+                checks_total: None,
+                review_requested: false,
             }
         );
 
@@ -107,5 +125,21 @@ mod tests {
             "{s}"
         );
         assert!(s.contains(r#""review":"changes_requested""#), "{s}");
+        // An adapter that leaves the counts out writes nothing for them.
+        assert!(!s.contains("checks_passed"), "{s}");
+        assert!(!s.contains("checks_total"), "{s}");
+
+        // An adapter that counts the checks and sees a requested review
+        // reports both, and they parse back.
+        let counted: ChangeStatus = serde_json::from_str(
+            r#"{"state":"open","head":"f","checks":{"pending":{}},"review":"none","checks_passed":2,"checks_total":3,"review_requested":true}"#,
+        )
+        .unwrap();
+        assert_eq!((counted.checks_passed, counted.checks_total), (Some(2), Some(3)));
+        assert!(counted.review_requested);
+        let s = serde_json::to_string(&counted).unwrap();
+        assert!(s.contains(r#""checks_passed":2"#), "{s}");
+        assert!(s.contains(r#""checks_total":3"#), "{s}");
+        assert!(s.contains(r#""review_requested":true"#), "{s}");
     }
 }

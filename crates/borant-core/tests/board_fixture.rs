@@ -428,6 +428,9 @@ fn render() -> String {
             spawns: &[],
             agents: &records.agents,
             collections: &collections,
+            // The fixture is the reply without `--tasks`, which the mod reads
+            // today.
+            lines: None,
         },
         &[Some(col("personal"))],
     );
