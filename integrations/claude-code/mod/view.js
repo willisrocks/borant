@@ -392,9 +392,9 @@ export function windowed(entries, sel, h) {
   return shown
 }
 
-const fact = (k, v, st = 't') => text([S(k.padEnd(9), 'dim'), S(v, st)])
+const fact = (k, v, st = 't') => text([S(k.padEnd(10), 'dim'), S(v, st)])
 /** A fact whose value wraps under itself, for a note or a question. */
-const facts = (k, v, w, st = 't') => wrap(v, Math.max(10, w - 9)).map((l, i) => text([S((i ? '' : k).padEnd(9), 'dim'), S(l, st)]))
+const facts = (k, v, w, st = 't') => wrap(v, Math.max(10, w - 10)).map((l, i) => text([S((i ? '' : k).padEnd(10), 'dim'), S(l, st)]))
 
 /** The detail of a needs-you item. */
 export function needDetail(n, p, w, extra = {}) {
@@ -414,11 +414,12 @@ export function needDetail(n, p, w, extra = {}) {
   if (n.owner && n.owner !== n.worker) out.push(fact(n.verb === 'unblock' ? 'spawner' : 'owner', n.owner + (p && p.orchestrators.some((o) => o.agent === n.owner) ? ' (orchestrator), ' + (p.orchestrators.find((o) => o.agent === n.owner).online ? 'online' : 'offline') : '')))
   if (n.task) out.push(fact('task', n.channel + '/' + n.task, 'dim'))
   if (n.asked) out.push(fact('asked', n.asked.owner + ' at ' + n.asked.time + '; the reply comes to your chief', 'c'))
+  // A confirmation or a field comes before the history: it must stay in view.
+  for (const l of extra.below || []) out.push(l)
   if (extra.history && extra.history.length) {
     out.push(text([]), text([S('HISTORY', 'dim')]))
     for (const h of extra.history.slice(-6)) out.push(...wrap(h.text, Math.max(10, w - 7)).map((l, i) => text([S((i ? '' : clock(h.at)).padEnd(7), 'dim'), S(l, 't')])))
   }
-  for (const l of extra.below || []) out.push(l)
   return out
 }
 

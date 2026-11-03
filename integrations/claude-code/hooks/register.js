@@ -85,6 +85,8 @@ let clockNow = 0
 
 // The panel.
 let paneOpen = false
+/** The panel closed (esc, its close mark) and no open came since: its last draw as it closes does not open it again. */
+let paneClosed = false
 let paneFocused = false
 let placement = null
 let paneCols = 90
@@ -161,6 +163,7 @@ export function register(on) {
       measure(e)
       clockNow = await nowMs($)
       const props = e.props || {}
+      if (paneClosed) return tree($, e, [{ parts: [{ segs: [] }] }], true)
       paneOpen = true
       const focused = Boolean(props.isFocused)
       const place = props.placement || null
@@ -197,6 +200,7 @@ export function register(on) {
     try {
       if (e.id === PANE) {
         paneOpen = false
+        paneClosed = true
         paneFocused = false
         placement = null
         view = 'list'
@@ -519,7 +523,7 @@ function panel($) {
     sel,
     detail: (dw) => detailOf($, m, cur, dw),
     keys: field ? [] : confirm ? [['y', 'yes', 'yes'], ['n', 'no', 'no']] : keysFor(cur),
-    listShare: field ? 0.15 : 0.45,
+    listShare: field || confirm ? 0.15 : 0.45,
   })
 }
 
@@ -893,9 +897,11 @@ async function openPanel($) {
     store($, 'used', true)
   }
   try {
+    paneClosed = false
     const term = terminalColumns()
     const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, columns: Math.max(24, Math.floor(term * 0.45)), rows: Math.max(12, Math.min(28, (maxRows || 14) + 10)), focus: true, closeOnEscape: true })
     if (opened && opened.isPlaced === false) return false
+    paneClosed = false
     paneOpen = true
     redraw($)
     return true
