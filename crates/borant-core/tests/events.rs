@@ -203,7 +203,31 @@ fn every_kind() -> Vec<SwarmEventBody> {
                 failed: vec!["ci".into()],
             },
             review: ReviewState::ChangesRequested,
+            previous: Some(borant_core::ports::ChangeStatus {
+                state: ChangeState::Open,
+                head: "def456".into(),
+                checks: CheckState::Pass {},
+                review: ReviewState::None,
+            }),
         },
+        SwarmEventBody::TaskCreated {
+            title: "Ship it".into(),
+            by: Sender::Agent(agent.clone()),
+        },
+        SwarmEventBody::TaskAnswered {
+            key: Some("q1".into()),
+            by: Sender::Human,
+        },
+        SwarmEventBody::MessageSent {
+            from: Sender::Agent(agent.clone()),
+            to: borant_core::model::Target::Agent(id("chief")),
+            text: "go".into(),
+        },
+        SwarmEventBody::SpawnBlocked {
+            reason: "no host online".into(),
+            action: "start borant-2".into(),
+        },
+        SwarmEventBody::SpawnUnblocked,
         SwarmEventBody::AlertFired {
             rule: "needs_human".into(),
             subject: "api/01".into(),

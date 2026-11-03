@@ -998,6 +998,11 @@ pub struct Envelope {
     pub text: String,
     #[serde(default)]
     pub urgent: bool,
+    /// The task that the message is about, when it names one (person changes
+    /// feed spec). `send --task` sets it, so `task history` can show the
+    /// message.
+    #[serde(default)]
+    pub task: Option<TaskRef>,
     #[serde(default)]
     pub event: Option<TaskEvent>,
     pub sent: Timestamp,

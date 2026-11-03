@@ -109,6 +109,7 @@ impl Hub {
                 kind: EnvelopeKind::Direct,
                 text,
                 urgent: false,
+                task: None,
                 event: None,
                 sent: now,
             };

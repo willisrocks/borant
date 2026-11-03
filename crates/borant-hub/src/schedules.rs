@@ -197,6 +197,7 @@ impl Hub {
                     kind: EnvelopeKind::Direct,
                     text: schedule.expand_date(text, fire),
                     urgent: false,
+                    task: None,
                     event: None,
                     sent: now,
                 };

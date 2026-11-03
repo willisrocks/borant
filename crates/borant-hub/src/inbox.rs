@@ -247,6 +247,7 @@ impl Hub {
             kind: EnvelopeKind::Direct,
             text: text.to_owned(),
             urgent: false,
+            task: None,
             event: None,
             sent: self.now(),
         };

@@ -673,6 +673,7 @@ mod tests {
             kind: EnvelopeKind::Direct,
             text: "go".into(),
             urgent: false,
+            task: None,
             event: None,
             sent: Timestamp(0),
         };

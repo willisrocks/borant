@@ -604,6 +604,7 @@ impl Hub {
                         next.id, next.title
                     ),
                     urgent: false,
+                    task: None,
                     event: None,
                     sent: now,
                 };
@@ -661,6 +662,7 @@ impl Hub {
             kind: EnvelopeKind::Event,
             text,
             urgent: false,
+            task: None,
             event: Some(TaskEvent {
                 channel: channel.clone(),
                 task: task.id,

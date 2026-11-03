@@ -223,6 +223,7 @@ person to run /mcp to reconnect.";
                 kind: EnvelopeKind::Direct,
                 text: TEXT.to_owned(),
                 urgent: false,
+                task: None,
                 event: None,
                 sent: self.inner.clock.now(),
             };

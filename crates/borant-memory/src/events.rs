@@ -57,17 +57,24 @@ impl MemoryEventLog {
 impl EventLog for MemoryEventLog {
     async fn publish(&self, event: &SwarmEvent) -> PortResult<()> {
         self.inner.available.check()?;
-        {
+        let event = {
             let mut events = self.events();
             if events.iter().any(|e| e.id == event.id) {
                 return Ok(());
             }
+            // The log numbers its events, so a reader can resume after one.
+            let seq = events.iter().map(|e| e.seq).max().unwrap_or(0) + 1;
+            let event = SwarmEvent {
+                seq,
+                ..event.clone()
+            };
             events.push(event.clone());
             // Oldest first. A stable sort keeps the order of equal times.
             events.sort_by_key(|e| e.at);
-        }
+            event
+        };
         // A reader that is gone is not an error: the event is stored.
-        let _ = self.inner.tx.send(event.clone());
+        let _ = self.inner.tx.send(event);
         Ok(())
     }
 
