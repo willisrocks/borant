@@ -9,18 +9,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::model::{Harness, SwarmView};
-use borant_core::proto::{CtlRequest, LocalEvent, LocalRegister, LocalState, ToolCall};
+use borant_core::proto::{CtlRequest, LocalRegister, LocalState, ToolCall};
 use borant_core::{ManualClock, Timestamp};
+use borant_host::client::Outcome;
 use borant_host::outbox::Outbox;
-use borant_host::{Host, HostConfig};
+use borant_host::{Host, HostConfig, LocalClient};
 use borant_hub::{Hub, HubConfig};
 use borant_launch::ProcessLauncher;
 use borant_memory::{MemoryBus, MemorySession, MemoryState};
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
-/// A host and a hub on the same memory bus, served on the bus. The host runs
-/// on `clock`, so a test moves its time; the hub keeps its own clock, so a
-/// lease still renews.
-async fn fixture(dir: &Path, clock: &Arc<ManualClock>, bus: &MemoryBus) -> (Host, Arc<Hub>) {
+/// A host and a hub on the same memory bus, served on the bus, and the local
+/// API of the host. The host runs on `clock`, so a test moves its time; the
+/// hub keeps its own clock, so a lease still renews.
+async fn fixture(
+    dir: &Path,
+    clock: &Arc<ManualClock>,
+    bus: &MemoryBus,
+) -> (Host, Arc<Hub>, LocalClient) {
     let sessions = Arc::new(MemorySession::new());
     let hub = Arc::new(Hub::new(
         Arc::new(MemoryState::new()),
@@ -43,7 +50,41 @@ async fn fixture(dir: &Path, clock: &Arc<ManualClock>, bus: &MemoryBus) -> (Host
         Outbox::in_memory().expect("an in-memory outbox"),
     );
     common::serve_hub(bus, hub.clone()).await;
-    (host, hub)
+    // The local API, as a harness reaches it. The server runs in its own task
+    // for the life of the test.
+    let socket = dir.join("host.sock");
+    let stop = CancellationToken::new();
+    let serving = host.clone();
+    let s = socket.clone();
+    let st = stop.clone();
+    tokio::spawn(async move {
+        let _ = borant_host::api::serve(serving, &s, st).await;
+    });
+    for _ in 0..50 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (host, hub, LocalClient::new(socket))
+}
+
+/// One event as a hook posts it to the local API, in the wire form of
+/// `LocalEvent`.
+async fn event(client: &LocalClient, session: borant_core::SessionId, ev: Value) {
+    let r: Value = match client
+        .post(
+            &format!("/v1/sessions/{session}/events"),
+            &ev,
+            Duration::from_secs(5),
+        )
+        .await
+    {
+        Outcome::Reply(Ok(v)) => v,
+        Outcome::Reply(Err(e)) => panic!("api error: {e}"),
+        Outcome::Down(e) => panic!("daemon down: {e}"),
+    };
+    assert!(r["fenced"].is_null());
 }
 
 async fn register(host: &Host, dir: &Path, agent: &str) -> borant_core::proto::LocalSession {
@@ -91,34 +132,36 @@ async fn activity_from_the_hooks_reaches_the_hub_redacted() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
     let bus = MemoryBus::new();
-    let (host, hub) = fixture(dir.path(), &clock, &bus).await;
+    let (host, hub, client) = fixture(dir.path(), &clock, &bus).await;
     let w1 = register(&host, dir.path(), "w1").await;
     // A second session that no hook of the activity has ever seen.
     let w2 = register(&host, dir.path(), "w2").await;
 
-    // PreToolUse: a Bash call that names a token, and PostToolUse: its result
-    // has not arrived, so the tool runs now.
-    host.event(
+    // PreToolUse: a Bash call that names a token. Its result has not arrived,
+    // so the tool runs now.
+    event(
+        &client,
         w1.session,
-        LocalEvent::ToolStart {
-            name: "Bash".into(),
-            input: r#"{"command":"curl -H 'Authorization: Bearer sk-live-0123456789abcdef' https://api"}"#.into(),
-        },
+        json!({
+            "event": "tool_start",
+            "name": "Bash",
+            "input": r#"{"command":"curl -H 'Authorization: Bearer sk-live-0123456789abcdef' https://api"}"#,
+        }),
     )
-    .await
-    .unwrap();
+    .await;
     // The Stop hook: the last assistant text, which names another token.
-    host.event(
+    event(
+        &client,
         w1.session,
-        LocalEvent::AssistantMessage {
-            text: format!(
+        json!({
+            "event": "assistant_message",
+            "text": format!(
                 "{} the token ghp_0123456789abcdefghij is in .env",
                 "x".repeat(200)
             ),
-        },
+        }),
     )
-    .await
-    .unwrap();
+    .await;
     host.heartbeat_once().await;
 
     let v = view(&hub).await;
@@ -156,18 +199,19 @@ async fn activity_goes_out_once_each_thirty_seconds_and_a_result_ends_the_tool()
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
     let bus = MemoryBus::new();
-    let (host, hub) = fixture(dir.path(), &clock, &bus).await;
+    let (host, hub, client) = fixture(dir.path(), &clock, &bus).await;
     let w1 = register(&host, dir.path(), "w1").await;
 
-    host.event(
+    event(
+        &client,
         w1.session,
-        LocalEvent::ToolStart {
-            name: "Read".into(),
-            input: r#"{"file_path":"/work/src/lib.rs"}"#.into(),
-        },
+        json!({
+            "event": "tool_start",
+            "name": "Read",
+            "input": r#"{"file_path":"/work/src/lib.rs"}"#,
+        }),
     )
-    .await
-    .unwrap();
+    .await;
     host.heartbeat_once().await;
     let v = view(&hub).await;
     assert_eq!(
@@ -177,16 +221,17 @@ async fn activity_goes_out_once_each_thirty_seconds_and_a_result_ends_the_tool()
 
     // PostToolUse: the tool ended, but the renewal sent its report under 30 s
     // ago, so the next beat carries nothing.
-    host.event(
+    event(
+        &client,
         w1.session,
-        LocalEvent::ToolResult {
-            name: "Read".into(),
-            output: "fn main() {}".into(),
-            is_error: false,
-        },
+        json!({
+            "event": "tool_result",
+            "name": "Read",
+            "output": "fn main() {}",
+            "is_error": false,
+        }),
     )
-    .await
-    .unwrap();
+    .await;
     host.heartbeat_once().await;
     let v = view(&hub).await;
     assert_eq!(
