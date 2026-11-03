@@ -532,6 +532,7 @@ impl Hub {
                     kind: EnvelopeKind::Direct,
                     text: WAKE_TEXT.to_owned(),
                     urgent: false,
+                    task: None,
                     event: None,
                     sent: now,
                 };

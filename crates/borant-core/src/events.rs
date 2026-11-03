@@ -7,7 +7,7 @@ use crate::ids::{
     AgentId, BundleName, ChannelName, EventId, FencingToken, HostName, MemberName, MessageId,
     PoolName, SessionId, TaskId,
 };
-use crate::model::{Harness, MoveReason, Sender, TaskStatus};
+use crate::model::{Harness, MoveReason, Sender, Target, TaskStatus};
 use crate::time::Timestamp;
 
 /// How bad an event is. A reader can filter on the minimum.
@@ -48,6 +48,11 @@ pub struct SwarmEvent {
     pub at: Timestamp,
     pub source: EventSource,
     pub severity: Severity,
+    /// The place of the event in the log, when the log gives one. The reader
+    /// fills it from the store; a published event leaves it out, because the
+    /// store assigns it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub seq: u64,
     /// The agent the event is about, when it is about one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentId>,
@@ -233,7 +238,49 @@ pub enum SwarmEventBody {
         head: String,
         checks: crate::ports::CheckState,
         review: crate::ports::ReviewState,
+        /// The status before this update, when the watch had one, so a reader
+        /// sees a transition and not only the new state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<crate::ports::ChangeStatus>,
     },
+    /// A task was created. The channel and the task are the fields of the
+    /// event context. The person changes feed groups these.
+    #[serde(rename = "task.created")]
+    TaskCreated {
+        title: String,
+        /// The person or the agent that created it.
+        by: Sender,
+    },
+    /// A person answered a task's question (person changes feed spec). The
+    /// channel and the task are the fields of the event context.
+    #[serde(rename = "task.answered")]
+    TaskAnswered {
+        /// The idempotency key of the answer, when it sent one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        /// Who answered: a person, or an agent on its behalf.
+        by: Sender,
+    },
+    /// A direct message that names a task, so `task history` can show it. The
+    /// channel and the task are the fields of the event context.
+    #[serde(rename = "message.sent")]
+    MessageSent {
+        from: Sender,
+        to: Target,
+        text: String,
+    },
+    /// A queued spawn waits for something that only a person can fix
+    /// (blocked-work alarm spec). The agent is the one of the event context.
+    #[serde(rename = "spawn.blocked")]
+    SpawnBlocked {
+        /// The refusal, as `borant ps --queued` prints it.
+        reason: String,
+        /// The one action that unblocks the spawn.
+        action: String,
+    },
+    /// The spawn that was blocked now places.
+    #[serde(rename = "spawn.unblocked")]
+    SpawnUnblocked,
     #[serde(rename = "placement.chosen")]
     /// The chosen host is the one of the event context.
     PlacementChosen {
@@ -348,6 +395,7 @@ impl SwarmEvent {
             at,
             source: EventSource::Hub,
             severity,
+            seq: 0,
             agent: None,
             host: None,
             channel: None,
@@ -364,6 +412,7 @@ impl SwarmEvent {
             at,
             source: EventSource::Host(host.clone()),
             severity,
+            seq: 0,
             agent: None,
             host: None,
             channel: None,
@@ -405,6 +454,11 @@ pub struct EventFilter {
     /// Only events at or after this time.
     #[serde(default)]
     pub since: Option<Timestamp>,
+    /// Only events with a sequence number above this, when the log gives one.
+    /// A log that numbers its events reads from that place, so a late event
+    /// is not lost.
+    #[serde(default)]
+    pub after_seq: Option<u64>,
     /// Only these kinds. An entry may end in `.*`, for example `lease.*`, to
     /// match every kind below it. No entry means every kind.
     #[serde(default)]
@@ -424,6 +478,14 @@ impl EventFilter {
     /// True when the event passes every field that the filter sets.
     pub fn matches(&self, event: &SwarmEvent) -> bool {
         if self.since.is_some_and(|since| event.at < since) {
+            return false;
+        }
+        // An event that the log did not number passes: a reader cannot place
+        // it, and dropping it would lose a change.
+        if self
+            .after_seq
+            .is_some_and(|after| event.seq != 0 && event.seq <= after)
+        {
             return false;
         }
         if self.min_severity.is_some_and(|min| event.severity < min) {
@@ -455,6 +517,11 @@ impl EventFilter {
         }
         true
     }
+}
+
+/// True when a count is zero, for a field that the store fills.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// True when `pattern` names the kind of `event`. `lease.*` matches every kind
@@ -501,6 +568,11 @@ pub fn kind_of(event: &SwarmEvent) -> &'static str {
         SwarmEventBody::AgentResumed => "agent.resumed",
         SwarmEventBody::ChannelOwner { .. } => "channel.owner",
         SwarmEventBody::ChangeUpdated { .. } => "change.updated",
+        SwarmEventBody::TaskCreated { .. } => "task.created",
+        SwarmEventBody::TaskAnswered { .. } => "task.answered",
+        SwarmEventBody::MessageSent { .. } => "message.sent",
+        SwarmEventBody::SpawnBlocked { .. } => "spawn.blocked",
+        SwarmEventBody::SpawnUnblocked => "spawn.unblocked",
         SwarmEventBody::PlacementChosen { .. } => "placement.chosen",
         SwarmEventBody::PlacementRefused { .. } => "placement.refused",
         SwarmEventBody::MoveRequested { .. } => "move.requested",

@@ -14,6 +14,7 @@ mod continuation;
 pub mod elastic;
 mod events;
 pub mod export;
+mod feed;
 pub mod http;
 mod inbox;
 mod join;
@@ -386,6 +387,58 @@ impl Hub {
                     }
                     serde_json::to_value(self.view_for(actor.as_ref().map(|a| &a.agent)).await?)
                         .map_err(|e| ApiError::internal(e.to_string()))
+                }
+                .await;
+                if let Err(e) = &result {
+                    tracing::debug!("request failed: {e}");
+                }
+                return result.into();
+            }
+            // The board reads every task and the live view, so it must not
+            // run behind the request mutex either.
+            CtlRequest::Call {
+                actor,
+                key: None,
+                call: ToolCall::Changes { since },
+                ..
+            } => {
+                drop(mem);
+                let result = async {
+                    self.authorize(&actor, &ToolCall::Changes { since }).await?;
+                    let mine = self
+                        .collection_of(&actor.as_ref().map(|a| a.agent.clone()))
+                        .await?;
+                    serde_json::to_value(self.changes(since, mine.as_ref()).await?)
+                        .map_err(|e| ApiError::internal(e.to_string()))
+                }
+                .await;
+                if let Err(e) = &result {
+                    tracing::debug!("request failed: {e}");
+                }
+                return result.into();
+            }
+            // The history reads the whole log, so it stays out of the mutex.
+            CtlRequest::Call {
+                actor,
+                key: None,
+                call: ToolCall::TaskHistory { channel, id },
+                ..
+            } => {
+                drop(mem);
+                let result = async {
+                    self.authorize(
+                        &actor,
+                        &ToolCall::TaskHistory {
+                            channel: channel.clone(),
+                            id,
+                        },
+                    )
+                    .await?;
+                    let mine = self
+                        .collection_of(&actor.as_ref().map(|a| a.agent.clone()))
+                        .await?;
+                    self.channel_for(mine.as_ref(), &channel).await?;
+                    self.task_history(&channel, &id).await
                 }
                 .await;
                 if let Err(e) = &result {

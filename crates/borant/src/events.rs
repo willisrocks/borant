@@ -269,6 +269,7 @@ fn detail(event: &SwarmEvent) -> String {
             head,
             checks,
             review,
+            previous: _,
         } => format!(
             "{} at {} checks={} review={}",
             word(state),
@@ -276,6 +277,14 @@ fn detail(event: &SwarmEvent) -> String {
             checks_word(checks),
             word(review)
         ),
+        B::TaskCreated { title, by } => format!("{title} by {by}"),
+        B::TaskAnswered { key, by } => match key {
+            Some(key) => format!("by {by} (key {key})"),
+            None => format!("by {by}"),
+        },
+        B::MessageSent { from, to, text } => format!("{from} -> {to}: {text}"),
+        B::SpawnBlocked { reason, action } => format!("{reason}; unblock: {action}"),
+        B::SpawnUnblocked => String::new(),
         B::PlacementChosen { harness, reason } => {
             let host = event.host.as_ref().map(ToString::to_string);
             format!(
@@ -834,6 +843,7 @@ mod tests {
                 failed: vec!["ci".to_owned(), "lint".to_owned()],
             },
             review: borant_core::ports::ReviewState::ChangesRequested,
+            previous: None,
         })
         .about_task(borant_core::TaskId::new());
         assert!(

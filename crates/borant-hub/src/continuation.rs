@@ -104,6 +104,7 @@ impl Hub {
                     kind: EnvelopeKind::Direct,
                     text: continue_text(channel, id),
                     urgent: false,
+                    task: None,
                     event: None,
                     sent: now,
                 };

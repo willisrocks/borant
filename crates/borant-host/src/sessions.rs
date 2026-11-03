@@ -995,7 +995,7 @@ impl Host {
         };
         let text = format!("Borant: agent {agent} reached its wake limit.");
         let _ = self
-            .send(None, Target::Agent(to.clone()), text, false)
+            .send(None, Target::Agent(to.clone()), text, false, None)
             .await;
     }
 }

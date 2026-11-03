@@ -4,9 +4,9 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use borant_core::events::{SwarmEvent, SwarmEventBody};
+use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
-    Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskStatus,
+    Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskRef, TaskStatus,
 };
 use borant_core::ports::{Delivery, Notice, PortError, PortErrorKind};
 use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
@@ -223,6 +223,7 @@ person to run /mcp to reconnect.";
                 kind: EnvelopeKind::Direct,
                 text: TEXT.to_owned(),
                 urgent: false,
+                task: None,
                 event: None,
                 sent: self.inner.clock.now(),
             };
@@ -384,9 +385,14 @@ person to run /mcp to reconnect.";
             }
         };
         match call {
-            ToolCall::Send { to, text, urgent } => {
+            ToolCall::Send {
+                to,
+                text,
+                urgent,
+                task,
+            } => {
                 let from = actor.as_ref().map(|a| a.agent.clone());
-                self.send(from.as_ref(), to, text, urgent).await
+                self.send(from.as_ref(), to, text, urgent, task).await
             }
             ToolCall::SessionHistory { page, page_size } => {
                 let a =
@@ -413,13 +419,15 @@ person to run /mcp to reconnect.";
     }
 
     /// Publishes a message. If the bus is unreachable, the message waits in
-    /// the outbox.
+    /// the outbox. A message that names a task also writes a `message.sent`
+    /// event, so `task history` shows it.
     pub(crate) async fn send(
         &self,
         from: Option<&AgentId>,
         to: Target,
         text: String,
         urgent: bool,
+        task: Option<TaskRef>,
     ) -> Result<Value, ApiError> {
         if text.len() > MAX_MESSAGE_BYTES {
             return Err(ApiError::invalid(format!(
@@ -438,11 +446,12 @@ person to run /mcp to reconnect.";
             kind,
             text,
             urgent,
+            task: task.clone(),
             event: None,
             sent: self.inner.clock.now(),
         };
-        match self.inner.bus.publish(&subject, &env).await {
-            Ok(()) => Ok(json!({ "id": env.id, "queued": false })),
+        let queued = match self.inner.bus.publish(&subject, &env).await {
+            Ok(()) => false,
             Err(e) if matches!(e.kind, PortErrorKind::Unavailable | PortErrorKind::Timeout) => {
                 let payload =
                     serde_json::to_vec(&env).map_err(|e| ApiError::internal(e.to_string()))?;
@@ -450,10 +459,26 @@ person to run /mcp to reconnect.";
                     .outbox
                     .push(OutboxKind::Publish, &subject, &payload)
                     .map_err(|e| ApiError::internal(e.to_string()))?;
-                Ok(json!({ "id": env.id, "queued": true }))
+                true
             }
-            Err(e) => Err(e.into()),
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(task) = task {
+            let event = SwarmEvent::host(
+                self.inner.clock.now(),
+                &self.inner.cfg.name,
+                Severity::Info,
+                SwarmEventBody::MessageSent {
+                    from: env.from.clone(),
+                    to: env.to.clone(),
+                    text: env.text.clone(),
+                },
+            )
+            .about_channel(task.channel.clone())
+            .about_task(task.id);
+            self.emit_event(event).await;
         }
+        Ok(json!({ "id": env.id, "queued": queued }))
     }
 
     /// One page of the session log, counted from the newest end. Page 0 holds

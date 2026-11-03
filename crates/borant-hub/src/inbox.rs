@@ -107,7 +107,7 @@ impl Hub {
     /// and sends nothing, and the same key with other text is a Conflict, so an
     /// edited draft takes a new key. The key is checked before
     /// `expect_updated`, because the retry follows the task change of the
-    /// first call.
+    /// first call. The key also names the durable `task.answered` event.
     pub(crate) async fn answer(
         &self,
         mem: &mut Memory,
@@ -163,6 +163,10 @@ impl Hub {
                 .await?;
                 self.task_status_event(mem, channel, &before, &doc.value);
                 self.tell(&claimer, &text).await?;
+                Self::queue(
+                    mem,
+                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
+                );
                 json!({
                     "task": doc.value,
                     "to": claimer,
@@ -176,6 +180,10 @@ impl Hub {
                     )));
                 };
                 self.tell(&owner, &text).await?;
+                Self::queue(
+                    mem,
+                    self.task_answered(channel, id, key.map(str::to_owned), &Sender::Human),
+                );
                 json!({
                     "task": doc.value,
                     "to": owner,
@@ -247,6 +255,7 @@ impl Hub {
             kind: EnvelopeKind::Direct,
             text: text.to_owned(),
             urgent: false,
+            task: None,
             event: None,
             sent: self.now(),
         };

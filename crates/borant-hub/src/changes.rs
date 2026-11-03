@@ -138,6 +138,7 @@ impl Hub {
             watched.told_green = false;
         }
         let changed = watched.last.as_ref() != Some(status);
+        let previous = watched.last.clone();
         let head = &status.head;
         // The worker hears about a failure of its head, once per head. Only
         // fails and requested changes count: no check reported is not a fail,
@@ -200,6 +201,7 @@ impl Hub {
                         head: status.head.clone(),
                         checks: status.checks.clone(),
                         review: status.review,
+                        previous,
                     },
                 )
                 .about_channel(channel.name.clone())

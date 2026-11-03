@@ -14,7 +14,7 @@ use crate::ids::{
 use crate::model::{
     Activity, ChannelKind, CloseReason, ContinuePolicy, Envelope, GitAuthor, Harness, HostInfo,
     HostStats, MoveReason, NewTask, Project, RepoInfo, SandboxKind, Target, TaskBinding, TaskPatch,
-    TaskStatus, UsageWindow,
+    TaskRef, TaskStatus, UsageWindow,
 };
 use crate::ports::{PortError, PortErrorKind};
 use crate::time::Timestamp;
@@ -394,6 +394,10 @@ pub enum ToolCall {
         text: String,
         #[serde(default)]
         urgent: bool,
+        /// The task that the message is about, so the reply to an answer
+        /// names it and `task history` can show it.
+        #[serde(default)]
+        task: Option<TaskRef>,
     },
     TaskCreate {
         channel: ChannelName,
@@ -592,6 +596,19 @@ pub enum ToolCall {
         /// `done_since`. `None` is one day before the read.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         done_since: Option<Timestamp>,
+    },
+    /// What changed for a person since a mark, newest first (person changes
+    /// feed spec). A computed read that stores nothing.
+    Changes {
+        /// The last change that the person saw. `None` reads the whole log.
+        #[serde(default)]
+        since: Option<crate::changes::ChangeMark>,
+    },
+    /// The history of one task, oldest first, at most 50 entries: its status
+    /// changes, its claims, its answers, and the messages that name it.
+    TaskHistory {
+        channel: ChannelName,
+        id: TaskId,
     },
     /// The latest usage report of one bundle member, from a human.
     UsageReport {
@@ -1024,6 +1041,7 @@ mod tests {
             kind: EnvelopeKind::Broadcast,
             text: "ship it".into(),
             urgent: false,
+            task: None,
             event: None,
             sent: Timestamp(0),
         };

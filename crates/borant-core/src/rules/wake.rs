@@ -70,6 +70,7 @@ mod tests {
             kind,
             text: "x".into(),
             urgent,
+            task: None,
             event,
             sent: Timestamp(0),
         }

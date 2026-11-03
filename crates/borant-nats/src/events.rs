@@ -144,9 +144,15 @@ impl EventLog for NatsEventLog {
         follow: bool,
     ) -> PortResult<BoxStream<'static, SwarmEvent>> {
         let stream = self.stream().await?;
+        let deliver_policy = match filter.after_seq {
+            Some(after) => DeliverPolicy::ByStartSequence {
+                start_sequence: after.saturating_add(1),
+            },
+            None => DeliverPolicy::All,
+        };
         let consumer = stream
             .create_consumer(pull::Config {
-                deliver_policy: DeliverPolicy::All,
+                deliver_policy,
                 ack_policy: AckPolicy::Explicit,
                 ack_wait: Duration::from_secs(30),
                 filter_subjects: subjects_of(&filter.kinds)?,
@@ -205,7 +211,12 @@ async fn read_into(
                 return;
             }
             match serde_json::from_slice::<SwarmEvent>(&message.payload) {
-                Ok(event) => {
+                Ok(mut event) => {
+                    // The stream numbers the event; a reader resumes after it.
+                    event.seq = message
+                        .info()
+                        .map(|info| info.stream_sequence)
+                        .unwrap_or_default();
                     // A filter that keeps the event out is no reason to end
                     // or fail, and neither is the event of a newer release.
                     if filter.matches(&event) && tx.send(event).await.is_err() {

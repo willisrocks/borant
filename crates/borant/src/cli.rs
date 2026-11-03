@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use borant_core::board::{BoardView, EpicLine, SagaState, StartState};
+use borant_core::changes::ChangeMark;
 use borant_core::model::{
-    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskStatus,
-    UsageWindow,
+    CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskRef,
+    TaskStatus, UsageWindow,
 };
 use borant_core::ports::ChangeState;
 use borant_core::proto::{LocalSession, MoveSelector, MoveTarget, PauseSelector, ToolCall};
@@ -140,6 +141,10 @@ pub enum Command {
         /// Wake every member for a broadcast.
         #[arg(long)]
         urgent: bool,
+        /// The task that the message names, as CHANNEL/ID. The reply to an
+        /// answer names the task, so the person sees it in the task history.
+        #[arg(long)]
+        task: Option<String>,
     },
     /// Start an agent in a channel.
     Spawn {
@@ -257,6 +262,17 @@ pub enum Command {
         /// `24h`, or an RFC 3339 time. Default 24 hours. Needs `--tasks`.
         #[arg(long, requires = "tasks")]
         done_since: Option<String>,
+    },
+    /// What changed for a person: new tasks, done, releases, PRs, answers,
+    /// and blocked spawns, newest first.
+    Changes {
+        /// Start after the last change that the person saw: its sequence
+        /// number, a duration such as 30m or 2d, or an RFC 3339 time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Print the changes as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Answer the question of a task. The claimer gets the text, or the
     /// channel owner when nobody holds it.
@@ -389,6 +405,15 @@ pub enum TaskCmd {
         /// The issue key or URL. An empty string clears it.
         #[arg(long)]
         issue: Option<String>,
+    },
+    /// Show a task's history: its claims, its status changes, its answers,
+    /// and the messages that name it.
+    History {
+        /// The task, as CHANNEL/ID.
+        task: String,
+        /// Print the history as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -765,6 +790,62 @@ fn task_ref(text: &str) -> anyhow::Result<(ChannelName, TaskId)> {
         .map_err(|e| anyhow!("{e}"))?;
     let id = id.trim().parse::<TaskId>().map_err(|e| anyhow!("{e}"))?;
     Ok((channel, id))
+}
+
+/// The `--since` of `borant changes`: a sequence number of the log, or a time
+/// as `borant events --since` reads one. The mod passes the sequence number
+/// of the last change that the person saw, which a late event cannot outrun.
+fn change_mark(text: &str) -> anyhow::Result<ChangeMark> {
+    let text = text.trim();
+    // A log sequence is small; a time in milliseconds is not. A person types
+    // a duration or a date, so a bare small number is a sequence.
+    if let Ok(seq) = text.parse::<u64>()
+        && seq < 100_000_000_000
+    {
+        return Ok(ChangeMark::Seq(seq));
+    }
+    Ok(ChangeMark::At(crate::events::parse_since(
+        text,
+        crate::events::now(),
+    )?))
+}
+
+/// The changes as one line each: the time, the verb, and the text.
+fn render_changes(v: &Value) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for change in v["changes"].as_array().into_iter().flatten() {
+        let at = change["at"].as_u64().unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "{} {:<16} {}",
+            crate::events::utc_time(Timestamp(i64::try_from(at).unwrap_or(i64::MAX))),
+            change["verb"].as_str().unwrap_or("?"),
+            change["text"].as_str().unwrap_or(""),
+        );
+    }
+    out
+}
+
+/// A task's history as one line each, oldest first.
+fn render_history(v: &Value) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "{}/{}:\n",
+        v["channel"].as_str().unwrap_or("?"),
+        v["task"].as_str().unwrap_or("?")
+    );
+    for entry in v["entries"].as_array().into_iter().flatten() {
+        let at = entry["at"].as_u64().unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "{} {:<9} {}",
+            crate::events::utc_time(Timestamp(i64::try_from(at).unwrap_or(i64::MAX))),
+            entry["kind"].as_str().unwrap_or("?"),
+            entry["text"].as_str().unwrap_or(""),
+        );
+    }
+    out
 }
 
 /// The patch of `borant task update`: it needs at least one of the two
@@ -1593,12 +1674,33 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 let patch = task_update_patch(issue, issue_target)?;
                 pretty(&call(&c, ToolCall::TaskUpdate { channel, id, patch }).await?);
             }
+            TaskCmd::History { task, json } => {
+                let (channel, id) = task_ref(&task)?;
+                let v = call_in_session(&c, ToolCall::TaskHistory { channel, id }).await?;
+                if json {
+                    pretty(&v);
+                } else {
+                    print!("{}", render_history(&v));
+                }
+            }
         },
         Command::Channel { cmd } => match cmd {
             ChannelCmd::Close { name } => pretty(&call(&c, ToolCall::ChannelClose { name }).await?),
         },
-        Command::Send { to, text, urgent } => {
+        Command::Send {
+            to,
+            text,
+            urgent,
+            task,
+        } => {
             let to: Target = to.parse()?;
+            let task = match task {
+                Some(text) => {
+                    let (channel, id) = task_ref(&text)?;
+                    Some(TaskRef { channel, id })
+                }
+                None => None,
+            };
             pretty(
                 &call(
                     &c,
@@ -1606,6 +1708,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                         to,
                         text: text.join(" "),
                         urgent,
+                        task,
                     },
                 )
                 .await?,
@@ -1815,6 +1918,18 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 pretty(&v);
             } else {
                 print!("{}", render_inbox(&v));
+            }
+        }
+        Command::Changes { since, json } => {
+            let since = match since {
+                Some(text) => Some(change_mark(&text)?),
+                None => None,
+            };
+            let v = call_in_session(&c, ToolCall::Changes { since }).await?;
+            if json {
+                pretty(&v);
+            } else {
+                print!("{}", render_changes(&v));
             }
         }
         Command::Board {

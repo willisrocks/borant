@@ -24,6 +24,7 @@ async fn send(fx: &Fx, from: &borant_core::proto::LocalSession, to: Target, text
                 to,
                 text: text.into(),
                 urgent: false,
+                task: None,
             },
         )
         .await
@@ -254,6 +255,7 @@ async fn oversized_message_is_rejected() {
                 to: Target::Agent(agent("b")),
                 text: "x".repeat(64 * 1024 + 1),
                 urgent: false,
+                task: None,
             },
         )
         .await

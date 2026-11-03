@@ -44,6 +44,7 @@ pub fn envelope(to: Target, text: &str) -> Envelope {
         kind,
         text: text.to_owned(),
         urgent: false,
+        task: None,
         event: None,
         sent: Timestamp(0),
     }

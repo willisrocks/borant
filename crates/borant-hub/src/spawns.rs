@@ -225,6 +225,7 @@ impl Hub {
                         create_key,
                     )
                     .await?;
+                Self::queue(mem, self.task_created(channel, &created, &by));
                 // The task create checked the rules of the channel; rule 7
                 // reads the epic of the new task from the channel's tasks.
                 if channel == &req.channel {
