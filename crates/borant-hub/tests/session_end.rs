@@ -10,7 +10,7 @@ use borant_core::model::{
     Agent, ChannelKind, Harness, Lease, LeaseState, MoveReason, NewTask, SessionEvent,
     SessionEventBody, Task, TaskStatus,
 };
-use borant_core::ports::{EventLog, SessionStore, StateStore};
+use borant_core::ports::{SessionStore, StateStore};
 use borant_core::proto::{CtlRequest, HostCommand, Registered, ToolCall};
 use borant_core::{ChannelName, EventId, Timestamp, keys};
 use common::{Fx, next_cmd};

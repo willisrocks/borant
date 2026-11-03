@@ -124,27 +124,60 @@ impl Hub {
     /// The time of the last `task.status` event of each task, for the task
     /// lines. A task that the log predates has none, and its line falls back
     /// to the record's own time.
+    ///
+    /// The board reads this every few seconds, so a pass scans only the
+    /// events that arrived since the last one: the whole history is read
+    /// once, on the first pass of the hub.
     async fn status_since(&self) -> Result<Vec<(TaskId, Timestamp)>, ApiError> {
         let Some(log) = &self.events else {
             return Ok(Vec::new());
         };
+        // The pass starts here, and the next one reads from a millisecond
+        // before it: an event stamped in the same millisecond as this pass
+        // arrived after this read, and must still be seen.
+        let now = self.now();
         let filter = EventFilter {
             kinds: vec!["task.status".to_owned()],
+            since: self
+                .status_since
+                .lock()
+                .expect("the status times")
+                .scanned_to
+                .map(|at| Timestamp(at.0.saturating_sub(1))),
             ..EventFilter::default()
         };
-        let mut stream = log.read(&filter, false).await?;
-        let mut since: HashMap<TaskId, Timestamp> = HashMap::new();
-        while let Some(event) = stream.next().await {
+        let mut read = log.read(&filter, false).await?;
+        let mut fresh: HashMap<TaskId, Timestamp> = HashMap::new();
+        while let Some(event) = read.next().await {
             let Some(task) = event.task else {
                 continue;
             };
-            since
+            fresh
                 .entry(task)
                 .and_modify(|at| *at = (*at).max(event.at))
                 .or_insert(event.at);
         }
-        Ok(since.into_iter().collect())
+        // Another pass may have read the same window; the times merge by
+        // max, so the answer is the same.
+        let mut held = self.status_since.lock().expect("the status times");
+        for (task, at) in fresh {
+            held.since
+                .entry(task)
+                .and_modify(|had| *had = (*had).max(at))
+                .or_insert(at);
+        }
+        held.scanned_to = Some(held.scanned_to.map_or(now, |had| had.max(now)));
+        Ok(held.since.iter().map(|(task, at)| (*task, *at)).collect())
     }
+}
+
+/// How far the task lines have read the status changes of the tasks.
+#[derive(Debug, Default)]
+pub(crate) struct StatusSinces {
+    /// The start of the last pass that read the log. `None` reads it all.
+    scanned_to: Option<Timestamp>,
+    /// The time of the last status change of a task, by task id.
+    since: HashMap<TaskId, Timestamp>,
 }
 
 /// C16: every collection of `hub.toml`, of a project, or of a channel, plus

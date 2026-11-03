@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borant_core::model::{Harness, HostInfo, RepoInfo};
-use borant_core::ports::{Incoming, MessageBus, Notice, Notifier, PortResult};
+use borant_core::ports::{EventLog, Incoming, MessageBus, Notice, Notifier, PortResult};
 use borant_core::proto::{
     Actor, ApiError, CtlRequest, HeartbeatReply, HostCommand, RegisterSession, Registered,
     SessionLeaseRef, ToolCall,
@@ -41,7 +41,7 @@ pub struct Fx {
     pub state: MemoryState,
     pub bus: MemoryBus,
     pub sessions: MemorySession,
-    pub events: MemoryEventLog,
+    pub events: Arc<dyn EventLog>,
     pub clock: Arc<ManualClock>,
     pub recorder: Arc<Recorder>,
 }
@@ -75,10 +75,22 @@ impl Fx {
         cfg: HubConfig,
         make: impl FnOnce(MemoryBus, MemoryState) -> Arc<dyn MessageBus>,
     ) -> Self {
+        Self::build(cfg, make, Arc::new(MemoryEventLog::new()))
+    }
+
+    /// A hub whose event log is `log`, so a test sees what the hub read.
+    pub fn with_log(cfg: HubConfig, log: Arc<dyn EventLog>) -> Self {
+        Self::build(cfg, |bus, _state| Arc::new(bus), log)
+    }
+
+    fn build(
+        cfg: HubConfig,
+        make: impl FnOnce(MemoryBus, MemoryState) -> Arc<dyn MessageBus>,
+        events: Arc<dyn EventLog>,
+    ) -> Self {
         let state = MemoryState::new();
         let bus = MemoryBus::new();
         let sessions = MemorySession::new();
-        let events = MemoryEventLog::new();
         let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
         let recorder = Arc::new(Recorder::default());
         let hub = Arc::new(
@@ -90,7 +102,7 @@ impl Fx {
                 cfg,
             )
             .with_notifier(recorder.clone())
-            .with_events(Arc::new(events.clone())),
+            .with_events(events.clone()),
         );
         Self {
             hub,

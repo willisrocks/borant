@@ -92,7 +92,11 @@ tasks of a closed saga or epic are left out.
 
 A board read already loads every task of every channel. The lines add no
 store read. The PR state comes from the PR watch's keys: one read per task
-with a `pr_url`.
+with a `pr_url`. The status change times come from the event log: the first
+board read of a hub scans it once, and every read after that scans only the
+`task.status` events that arrived since, merging them into the map that the
+hub keeps in memory. The mod reads the board every few seconds, so the cost
+does not grow with the history.
 
 ## Tests
 

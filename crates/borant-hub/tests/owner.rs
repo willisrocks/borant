@@ -5,7 +5,7 @@ mod common;
 
 use borant_core::events::{EventFilter, kind_of};
 use borant_core::model::{Channel, ChannelKind, CloseReason, Harness, NewTask, Task};
-use borant_core::ports::{EventLog, StateStore};
+use borant_core::ports::StateStore;
 use borant_core::proto::{Registered, ToolCall};
 use borant_core::{AgentId, ChannelName, keys};
 use common::Fx;

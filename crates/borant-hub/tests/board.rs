@@ -5,19 +5,25 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use borant_core::board::{BoardView, Counts, SagaState};
-use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
+use borant_core::events::{EventFilter, Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     Channel, ChannelKind, CloseReason, Harness, Project, Task, TaskKind, TaskStatus,
 };
-use borant_core::ports::{EventLog, StateStore};
-use borant_core::proto::{ApiErrorCode, Registered, ToolCall};
+use borant_core::ports::{EventLog, PortResult, StateStore};
+use borant_core::proto::{ApiErrorCode, CtlRequest, Registered, ToolCall};
 use borant_core::rules::roles::CollectionConfig;
 use borant_core::{ChannelName, CollectionName, ProjectName, TaskId, Timestamp, keys};
-use borant_hub::HubConfig;
+use borant_hub::{Hub, HubConfig};
+use borant_memory::MemoryEventLog;
 use bytes::Bytes;
 use common::Fx;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
 fn id(n: u8) -> TaskId {
@@ -518,9 +524,9 @@ async fn board_writes_nothing() {
     assert_eq!(before, after);
 }
 
-/// A hub of the personal collection and no records yet.
-fn personal_hub() -> Fx {
-    Fx::with(HubConfig {
+/// The config of the personal collection.
+fn personal_cfg() -> HubConfig {
+    HubConfig {
         collections: BTreeMap::from([(
             col("personal"),
             CollectionConfig {
@@ -529,7 +535,12 @@ fn personal_hub() -> Fx {
             },
         )]),
         ..HubConfig::default()
-    })
+    }
+}
+
+/// A hub of the personal collection and no records yet.
+fn personal_hub() -> Fx {
+    Fx::with(personal_cfg())
 }
 
 /// The last read of the PR watch, as it stores it under `pr.<channel>.<task>`.
@@ -559,16 +570,7 @@ async fn put_status_event(fx: &Fx, channel: &str, task: TaskId, at: i64, to: Tas
 
 #[tokio::test]
 async fn board_task_lines_carry_the_start_state_the_since_and_the_pr() {
-    let fx = Fx::with(HubConfig {
-        collections: BTreeMap::from([(
-            col("personal"),
-            CollectionConfig {
-                mirror_issues: true,
-                ..CollectionConfig::default()
-            },
-        )]),
-        ..HubConfig::default()
-    });
+    let fx = Fx::with(personal_cfg());
     fx.host("h1", &[Harness::Fake]).await;
     put_project(&fx, &project("mirror", Some("personal"))).await;
     put_channel(
@@ -788,4 +790,185 @@ async fn board_done_since_takes_the_time_of_the_call() {
         .await
         .unwrap();
     assert_eq!(v["collections"][0]["projects"][0]["done_since"], 1);
+}
+
+/// The event log of a hub that records what each read asked for and returned,
+/// so a test sees that a board pass scans only the newer status events.
+#[derive(Debug)]
+struct CountingLog {
+    inner: MemoryEventLog,
+    /// The filter of each read, and the number of events that it returned.
+    reads: Mutex<Vec<(EventFilter, Arc<AtomicUsize>)>>,
+}
+
+impl CountingLog {
+    fn new() -> Self {
+        Self {
+            inner: MemoryEventLog::new(),
+            reads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The filter and the event count of each read so far, oldest first.
+    fn reads(&self) -> Vec<(EventFilter, usize)> {
+        self.reads
+            .lock()
+            .expect("the reads")
+            .iter()
+            .map(|(filter, count)| (filter.clone(), count.load(Ordering::SeqCst)))
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl EventLog for CountingLog {
+    async fn publish(&self, event: &SwarmEvent) -> PortResult<()> {
+        self.inner.publish(event).await
+    }
+
+    async fn read(
+        &self,
+        filter: &EventFilter,
+        follow: bool,
+    ) -> PortResult<BoxStream<'static, SwarmEvent>> {
+        let count = Arc::new(AtomicUsize::new(0));
+        self.reads
+            .lock()
+            .expect("the reads")
+            .push((filter.clone(), count.clone()));
+        let stream = self.inner.read(filter, follow).await?;
+        Ok(stream
+            .map(move |event| {
+                count.fetch_add(1, Ordering::SeqCst);
+                event
+            })
+            .boxed())
+    }
+}
+
+#[tokio::test]
+async fn board_task_lines_read_only_the_newer_status_events() {
+    let log = Arc::new(CountingLog::new());
+    let fx = Fx::with_log(personal_cfg(), log.clone());
+    put_project(&fx, &project("mirror", Some("personal"))).await;
+    put_channel(
+        &fx,
+        &channel(
+            "mirror-api",
+            ChannelKind::Project,
+            Some("mirror"),
+            Some("personal"),
+        ),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            status: TaskStatus::InProgress,
+            updated: Timestamp(500_000),
+            ..task(1, "the guide", TaskStatus::InProgress, 1_000)
+        },
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(600_000),
+            ..task(2, "the skills", TaskStatus::Open, 1_100)
+        },
+    )
+    .await;
+    // One status change before the first pass.
+    put_status_event(&fx, "mirror-api", id(1), 900_000, TaskStatus::InProgress).await;
+
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let lines = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(lines[0]["since"], 900_000);
+    // The first pass reads the whole log.
+    assert_eq!(
+        log.reads(),
+        [(
+            EventFilter {
+                kinds: vec!["task.status".to_owned()],
+                ..EventFilter::default()
+            },
+            1
+        )]
+    );
+
+    // One more status change, stamped after the first pass as a real publish
+    // is. The hub's clock moves with it.
+    fx.clock.advance(Duration::from_millis(5_000));
+    put_status_event(&fx, "mirror-api", id(2), 1_005_000, TaskStatus::Open).await;
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let cached = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(cached[0]["since"], 900_000);
+    assert_eq!(cached[1]["since"], 1_005_000);
+    // The second pass asks for the events from a millisecond before the
+    // first one ran, and the log holds only the new one of them.
+    let reads = log.reads();
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[1].0.since, Some(Timestamp(999_999)));
+    assert_eq!(reads[1].1, 1);
+
+    // A hub that reads the whole log once answers with the same lines.
+    let fresh = Hub::new(
+        Arc::new(fx.state.clone()),
+        Arc::new(fx.bus.clone()),
+        Arc::new(fx.sessions.clone()),
+        fx.clock.clone(),
+        personal_cfg(),
+    )
+    .with_events(log.clone());
+    let v = fresh
+        .handle(CtlRequest::Call {
+            actor: None,
+            key: None,
+            call: ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        })
+        .await
+        .into_result()
+        .unwrap();
+    let full = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(cached, full);
+    // The fresh hub read both events.
+    let reads = log.reads();
+    assert_eq!(reads.len(), 3);
+    assert_eq!(reads[2].0.since, None);
+    assert_eq!(reads[2].1, 2);
 }

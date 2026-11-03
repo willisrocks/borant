@@ -12,7 +12,7 @@ use borant_core::model::{
     Agent, ChannelKind, Harness, HostStats, Lease, LeaseState, MoveReason, NewTask, SessionStats,
     Task, TaskStatus,
 };
-use borant_core::ports::{EventLog, StateStore};
+use borant_core::ports::StateStore;
 use borant_core::proto::{
     CtlRequest, HostCommand, MoveSelector, MoveTarget, PauseSelector, Registered, SessionLeaseRef,
     ToolCall,

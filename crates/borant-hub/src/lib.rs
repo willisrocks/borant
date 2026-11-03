@@ -273,6 +273,10 @@ pub struct Hub {
     pub(crate) events: Option<Arc<dyn EventLog>>,
     /// The notifier of the hub alerts. `None` keeps the alerts in KV only.
     pub(crate) notifier: Option<Arc<dyn Notifier>>,
+    /// How far the task lines of the board have read the status changes, and
+    /// the time of the last one of each task. A board read every few seconds
+    /// then scans only what is new.
+    pub(crate) status_since: std::sync::Mutex<board::StatusSinces>,
     pub(crate) mem: Mutex<Memory>,
 }
 
@@ -292,6 +296,7 @@ impl Hub {
             cfg,
             events: None,
             notifier: None,
+            status_since: std::sync::Mutex::new(board::StatusSinces::default()),
             mem: Mutex::new(Memory::default()),
         }
     }
