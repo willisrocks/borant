@@ -45,7 +45,7 @@ export function prOf(pr) {
   else if (checks === 'fail') [words, rank] = ['checks failed', 5]
   else if (pr.review === 'changes_requested') [words, rank] = ['changes requested', 4]
   else if (checks === 'pass' && pr.review === 'approved') [words, rank] = ['ready to merge', 0]
-  else if (checks === 'pending') [words, rank] = ['checks running' + counts, 3]
+  else if (checks === 'pending') [words, rank] = [counts ? 'checks' + counts : 'checks running', 3]
   else if (pr.review_requested) [words, rank] = ['review requested', 1]
   else if (checks === 'pass') [words, rank] = ['checks passed', 2]
   return { url: pr.url, label: prLabel(pr.url), state: pr.state || 'open', words, rank, checks: checks ? checks + counts : null, review: pr.review === 'none' ? (pr.review_requested ? 'requested' : 'none yet') : String(pr.review || '').replace('_', ' ') }

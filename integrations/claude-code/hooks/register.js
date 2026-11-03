@@ -591,7 +591,7 @@ function detailOf($, m, cur, w) {
   return []
 }
 
-const NAV = [['j', 'down', 'move', 1], ['k', 'up', 'move', -1], ['1', 'needs', 'section', 1], ['2', 'offline', 'section', 2], ['3', 'PRs', 'section', 3], ['4', 'changed', 'section', 4], ['5', 'projects', 'section', 5]]
+const NAV = [['j', 'down', 'move', 1], ['k', 'up', 'move', -1], ['1', 'needs', 'section', 1], ['2', 'quiet', 'section', 2], ['3', 'PRs', 'section', 3], ['4', 'changed', 'section', 4], ['5', 'projects', 'section', 5]]
 /** In a narrow panel the keys keep their verb and lose their target, so all of them fit. */
 const narrow = () => paneCols < 80
 const who = (name) => (narrow() ? '' : ' ' + name)
