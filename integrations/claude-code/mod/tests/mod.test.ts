@@ -292,7 +292,7 @@ async function enter($: Engine, pane: Mounted) {
 const PLUGIN_PROMPT = 'The borant plugin sent a message:\n'
 const PLUGIN_NOTE = '\n\nA plugin submits between turns. Address the message above.'
 
-test('a digit selects its row and enters board mode: the key field is the pane\'s only focusable element', async ($, on) => {
+test('a click on a row enters board mode: the key field is the pane\'s only focusable element', async ($, on) => {
   const opens: { title?: string; focus?: boolean; closeOnEscape?: boolean }[] = []
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
   const clock = mock.clock(on)
@@ -310,10 +310,11 @@ test('a digit selects its row and enters board mode: the key field is the pane\'
 
   await $.session.start({ ...SESSION })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await band.find({ type: 'Button', key: GATE }))?.props.hotkey).toBe('1')
-  expect((await band.find({ type: 'Button', key: BORANT }))?.props.hotkey).toBe('3')
+  // No row digit is a hotkey: the engine would give it a bare digit at the prompt.
+  expect((await band.find({ type: 'Button', key: GATE }))?.props.hotkey).toBeUndefined()
+  expect((await band.find({ type: 'Button', key: BORANT }))?.props.hotkey).toBeUndefined()
   // At rest the band names the key that enters board mode, and no row is filled.
-  expect((await band.find({ type: 'Button', key: 'board' }))?.props.hotkey).toBe('0')
+  expect((await band.find({ type: 'Button', key: 'board' }))?.props.hotkey).toBeUndefined()
   expect((await band.find({ key: 'band-row-1' }))?.props.backgroundColor).toBeUndefined()
   await band.press({ key: BORANT })
   // One open, asking for the keys, and Esc gives them back and closes it.
@@ -356,7 +357,7 @@ function typed(text: string, key: string) {
   } as const
 }
 
-test('from 144 columns a digit at an empty prompt opens the preview with the keys; below, the chips carry the digits', async ($, on) => {
+test('outside board mode no printable key is taken: a prompt starts with any digit or letter', async ($, on) => {
   const opens: { focus?: boolean }[] = []
   mock.env(on, { BORANT_ROLE: 'chief', BORANT_COS_BOARD: 'fixture' })
   mock.clock(on)
@@ -373,25 +374,25 @@ test('from 144 columns a digit at an empty prompt opens the preview with the key
   on('prompt.edit', ($, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
   await $.session.start({ ...SESSION })
 
-  // 200 columns: the chips draw their digits but carry no hotkey, so a bare
-  // digit reaches prompt.edit, which takes it and opens the preview.
-  const wide = await $.ui.mount({ ...BAND, viewport: { ...BAND.viewport, columns: 200 }, props: { ...BAND.props, bodyColumns: 200 }, surface: 'terminal' })
-  expect((await wide.find({ type: 'Button', key: BORANT }))?.props.hotkey).toBeUndefined()
-  expect(await $.prompt.edit(typed('', '3'))).toEqual({ text: '', cursor: 0 })
-  expect(opens).toEqual([{ focus: true }])
-  // A digit with no row, a digit after text, and a letter are typing.
-  expect((await $.prompt.edit(typed('', '9'))).text).toBe('9')
-  expect((await $.prompt.edit(typed('a', '1'))).text).toBe('a1')
-  expect((await $.prompt.edit(typed('', 'x'))).text).toBe('x')
-  expect(opens).toHaveLength(1)
-  await wide.unmount()
-
-  // 120 columns: an unasked pane is not placed there, so the chips keep the
-  // digits as hotkeys, and the engine presses the chip instead.
-  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await narrow.find({ type: 'Button', key: BORANT }))?.props.hotkey).toBe('3')
-  expect((await $.prompt.edit(typed('', '3'))).text).toBe('3')
-  await narrow.unmount()
+  // At 200 and at 120 columns, no Button carries a digit as its hotkey (the
+  // engine presses one from an empty prompt), and every key is typing.
+  for (const columns of [200, 120]) {
+    const band = await $.ui.mount({ ...BAND, viewport: { ...BAND.viewport, columns }, props: { ...BAND.props, bodyColumns: columns }, surface: 'terminal' })
+    for (const key of [GATE, BORANT, 'board']) {
+      expect(String((await band.find({ type: 'Button', key }))?.props.hotkey ?? '')).not.toMatch(/[0-9]/)
+    }
+    await band.unmount()
+  }
+  for (const key of ['0', '1', '3', '9', 'x', 'j', 'd']) {
+    expect((await $.prompt.edit(typed('', key))).text).toBe(key)
+  }
+  // "1. fix the bug" and "0 tasks", typed one key at a time, arrive whole.
+  for (const line of ['1. fix the bug', '0 tasks']) {
+    let text = ''
+    for (const ch of line) text = (await $.prompt.edit(typed(text, ch))).text
+    expect(text).toBe(line)
+  }
+  expect(opens).toEqual([])
 })
 
 test('in board mode every key goes to the board: digits, j k, d, a, and keys it does not use', async ($, on) => {
@@ -504,10 +505,10 @@ test('Tab cannot move the ring off the key field, and a pane without the keys sa
   const off = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false }, surface: 'terminal' })
   await clock.advance(1)
   expect((await field(off)).props.label).toBe('board mode off')
-  expect(String((await field(off)).props.placeholder)).toContain('0 at an empty prompt')
-  expect((await band.find({ type: 'Button', key: 'board' }))?.props.hotkey).toBe('0')
+  expect(String((await field(off)).props.placeholder)).toContain('/cos pane or a click')
+  expect((await band.find({ type: 'Button', key: 'board' }))?.props.hotkey).toBeUndefined()
   expect((await band.find({ key: 'band-row-1' }))?.props.backgroundColor).toBeUndefined()
-  // 0 asks for the keys again.
+  // A click asks for the keys again.
   await band.press({ key: 'board' })
   expect(opens.at(-1)).toBe('chief of staff focus')
   await off.unmount()
@@ -544,13 +545,13 @@ test('? shows the help in board mode, and /cos help prints it', async ($, on) =>
   await band.press({ key: 'board' })
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await typeKey($, pane, '?')
-  expect(await pane.find({ type: 'Text', text: /enter board mode, from/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /enter board mode, or click/ })).toBeDefined()
   expect((await field(pane)).props.submitLabel).toBe('back')
   await typeKey($, pane, '?')
-  expect(await pane.find({ type: 'Text', text: /enter board mode, from/ })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /enter board mode, or click/ })).toBeUndefined()
   await typeKey($, pane, '?')
   await enter($, pane)
-  expect(await pane.find({ type: 'Text', text: /enter board mode, from/ })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /enter board mode, or click/ })).toBeUndefined()
   await pane.unmount()
   await band.unmount()
   const answer = await $.command.run({ command: 'cos', args: 'help' })

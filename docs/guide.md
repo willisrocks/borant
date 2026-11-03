@@ -182,10 +182,12 @@ as idle ("2 active · 1 idle"), and `/cos <project>` still shows an idle
 project. A project with plain tasks and no saga or epic shows its count of
 open tasks ("3 open tasks") in place of its epic.
 
-Board mode holds the keyboard, as a vim mode does. Press `0` at the empty
-prompt to enter it: the band's title row shows `0: board mode` at rest and
-`board mode · esc exit` while it is on. A row's digit at the empty prompt
-enters board mode on that row. In board mode every key goes to the board and
+Board mode holds the keyboard, as a vim mode does. Outside it the mod takes
+no printable key: a prompt can start with any digit or letter. Type
+`/cos pane` and press Enter, or click the band's board-mode button. The title
+row shows `/cos pane: board mode` at rest and
+`board mode · esc exit` while it is on. A click anywhere on a row enters
+board mode on that row. In board mode every key goes to the board and
 none goes to the prompt, until you press Esc. Board mode opens the preview of
 the selected row. Beside the transcript (110 columns and up) the preview is a
 tall card. On a narrower terminal it is a compact block above the band.
@@ -200,12 +202,9 @@ tall card. On a narrower terminal it is a compact block above the band.
 |`?`|the help; `?` or Enter goes back|
 |Esc|leave board mode: the preview closes and the keys go back to the prompt|
 
-Tab and Shift+Tab do not leave board mode. In vim normal mode, Claude Code
-gives a bare digit to vim and tells the mod nothing, so press `i` first and
-then `0`: the band says `(vim: i 0)`. A `0` or a digit in a prompt that holds
-text stays text. A click anywhere on a row enters board mode on that row. Claude Code
-gives board mode the keys only from an empty prompt that holds them. After
-Ctrl+X Tab the band holds them, so `0` there says to press Esc and then `0`.
+Tab and Shift+Tab do not leave board mode. A digit or a letter at the prompt,
+empty or not, is always text. If the pane did not get the keys, the mod says
+so: press Esc, then type `/cos pane`.
 
 The band is a grid of columns that depends on its width alone: the title, the
 project and age of a needs-you item or the bar and counts of a project, then

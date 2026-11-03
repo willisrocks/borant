@@ -21,7 +21,7 @@ import {
   rowText,
 } from '../board.js'
 
-type Cell = { text: string; button?: { key: string; kind: string; hotkey?: string } }
+type Cell = { text: string; button?: { key: string; kind: string; hotkey?: string; digit?: string } }
 type Row = { key: string; cells: Cell[]; selected?: boolean }
 
 /** The band's rows as plain text. */
@@ -192,15 +192,17 @@ test('the band has a title row, one row per needs-you item, and one per active p
   expect(lines[4]).toMatch(/^4: ● notes +3 open tasks +●1 +■1/)
   // The idle boopmark has no row.
   expect(lines.join('\n')).not.toContain('boopmark')
-  // Each row's chip is a plain Button with its digit, keyed by the item.
-  expect(rows.slice(1).map((r) => hotkeys(r)[0])).toEqual(['1', '2', '3', '4'])
+  // Each row's chip is a plain Button that draws its digit and is no hotkey:
+  // a bare digit at the empty prompt must stay text.
+  expect(rows.slice(1).map((r) => hotkeys(r))).toEqual([[], [], [], []])
+  expect(rows.slice(1).map((r) => r.cells[0].button?.digit)).toEqual(['1', '2', '3', '4'])
   expect(rows.slice(1).map((r) => r.key)).toEqual(bandItems(board).map((i: { key: string }) => i.key))
   // The rows run the full width; the title row ends where the grid ends.
   for (const line of lines.slice(1)) expect(Array.from(line).length).toBe(120)
   expect(lines[0].trimEnd()).toHaveLength(bandGrid(120).row)
 })
 
-test('rows past nine keep their columns with a blank chip and no hotkey', () => {
+test('rows past nine keep their columns with a blank chip and no digit', () => {
   const many = structuredClone(board)
   const projects: (typeof many.collections)[0]['projects'] = []
   for (let i = 0; i < 10; i += 1) {
@@ -211,18 +213,21 @@ test('rows past nine keep their columns with a blank chip and no hotkey', () => 
   many.collections[0].projects = projects
   const rows = bandRows(many, { width: 120 }) as Row[]
   // Two needs rows, then ten projects: 1 to 9 have a digit, the last three none.
-  expect(hotkeys(rows[9])).toEqual(['9'])
-  expect(hotkeys(rows[10])).toEqual([])
+  expect(rows[9].cells[0].button?.digit).toBe('9')
+  expect(rows[10].cells[0].button?.digit).toBeUndefined()
+  expect(hotkeys(rows[9])).toEqual([])
   expect(rowText(rows[10].cells)).toMatch(/^ {3}▲ p07 /)
   expect(rowText(rows[10].cells).indexOf('█')).toBe(rowText(rows[9].cells).indexOf('█'))
 })
 
-test('the title row ends with the mode: 0 enters board mode, and board mode says esc exits', () => {
+test('the title row ends with the mode: a click enters board mode, and board mode says esc exits', () => {
   const rest = bandRows(board, { width: 140 }) as Row[]
   const title = rowText(rest[0].cells).trimEnd()
-  expect(title).toMatch(/0: board mode \(vim: i 0\) ─$/)
-  // 0 is the band's own Button, pressed by a bare 0 at the empty prompt.
-  expect(hotkeys(rest[0])).toEqual(['0'])
+  expect(title).toMatch(/\/cos pane: board mode ─$/)
+  // The mode is a click, and no row has a hotkey: no printable key is taken at
+  // the prompt, where the engine would give a bare digit to a Button's hotkey.
+  expect(hotkeys(rest[0])).toEqual([])
+  expect(bandRows(board, { width: 140 }).flatMap((r) => hotkeys(r as Row))).toEqual([])
   const selected = bandItems(board)[0].key
   const on = bandRows(board, { width: 140, active: true, selected }) as Row[]
   const boardTitle = rowText(on[0].cells).trimEnd()
@@ -236,14 +241,14 @@ test('the title row ends with the mode: 0 enters board mode, and board mode says
   expect(rest.some((r) => r.selected)).toBe(false)
   // A stale board says so before the mode; a healthy one says nothing.
   const stale = bandRows(board, { width: 140, stale: { text: 'stale · 2m', style: 'yellow' } }) as Row[]
-  expect(rowText(stale[0].cells)).toContain('stale · 2m ─ 0: board mode (vim: i 0) ─')
+  expect(rowText(stale[0].cells)).toContain('stale · 2m ─ /cos pane: board mode ─')
   expect(title).not.toMatch(/live|reading|polling/)
   for (const width of [240, 200, 110, 100, 80, 60, 40, 30]) {
     for (const active of [false, true]) {
       const row = (bandRows(board, { width, active, selected }) as Row[])[0]
       expect(Array.from(rowText(row.cells)).length).toBeLessThanOrEqual(width)
       // The mode is never cut: its key, or how to leave, shows at every width.
-      expect(rowText(row.cells)).toContain(active ? 'board mode · esc exit' : '0: board mode')
+      expect(rowText(row.cells)).toContain(active ? 'board mode · esc exit' : '/cos pane: board mode')
     }
   }
 })
@@ -320,10 +325,10 @@ test('an empty board is one title row, and a collapsed band one row', () => {
 
 test('the help names the keys and the commands', () => {
   const text = helpLines({ rows: 4 }).join('\n')
-  for (const word of ['board mode', '0 ', '1-4', 'j k', 'enter', 'esc', '?', '/cos pane', '/cos help', 'Done', 'Ask']) {
+  for (const word of ['board mode', '/cos pane', '1-4', 'j k', 'enter', 'esc', '?', '/cos pane', '/cos help', 'Done', 'Ask']) {
     expect(text).toContain(word)
   }
-  expect(text).not.toContain('ctrl+x tab')
+  expect(text).not.toContain('vim')
 })
 
 test('a band taller than its room keeps the title and the selected row in view', () => {
