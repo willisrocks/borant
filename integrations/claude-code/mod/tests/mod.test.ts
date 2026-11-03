@@ -301,3 +301,14 @@ test('the guard still refuses project work in the chief\'s shell', async ($, on)
   const verdict = await $.tool.check({ tool: 'Bash', input: { command: 'git commit -m x' } } as never)
   expect(verdict.decision).toBe('deny')
 })
+
+test('when only the task-line read fails, the plain board keeps the band working', async ($, on) => {
+  const runs: string[][] = []
+  const cli = fixtureCli(runs)
+  chief(on, { mode: 'cli', runs, run: (argv) => (argv.includes('--tasks') ? { exitCode: 1, stdout: '', stderr: 'hub unavailable: request timed out' } : cli(argv)) })
+  await $.session.start({ ...SESSION })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /no hub/ })).toBeUndefined()
+  expect(runs.some((r) => r.join(' ') === 'borant board --json')).toBe(true)
+  await band.unmount()
+})

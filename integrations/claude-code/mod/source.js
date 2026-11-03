@@ -73,7 +73,14 @@ export async function readBoard($, options = {}) {
   if (!options.legacy) {
     const out = await run($, ['borant', 'board', '--json', '--tasks'])
     if (out.ok) return parseBoard(out.stdout)
-    if (!/unexpected argument|unrecognized|--tasks/.test(out.reason || '')) return { board: null, reason: out.reason }
+    if (!/unexpected argument|unrecognized|--tasks/.test(out.reason || '')) {
+      // The task lines cost the hub more than the plain board. When only that
+      // read fails (a slow hub), the plain board still shows the person the
+      // asks, so the band keeps working instead of saying "no hub".
+      const plain = await run($, ['borant', 'board', '--json'])
+      if (plain.ok) return parseBoard(plain.stdout)
+      return { board: null, reason: out.reason }
+    }
     options.legacy = true
   }
   const out = await run($, ['borant', 'board', '--json'])
