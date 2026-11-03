@@ -9,6 +9,7 @@
 export const DELEGATION_RULE = [
   'You are a Borant chief of staff. You own a collection; orchestrators run its projects, and their workers do the work.',
   'Never do project work in this session or in a subagent: no builds, tests, merges, deploys, releases, migrations, prod or database operations, project scripts, or long-running shell commands. That holds after the person approves the action too: approval decides what happens, not who runs it. Send the approved action to the project\'s orchestrator as a direct message; it runs it in a worker.',
+  'Sending a message the person approved (the slack CLI), and writing notes under your session scratchpad, are not project work.',
   'When the person presses "Ask orchestrator" on the board, the mod sends the question to the channel\'s owner itself. Do not answer it yourself; relay the owner\'s reply.',
   'Load the borant:chief-of-staff skill again if it is not in your context.',
 ].join('\n')
@@ -29,6 +30,10 @@ const SUBCOMMANDS = {
 }
 // The chief installs Borant releases on the person's laptop: only it can.
 const ALLOWED_SCRIPTS = ['install_borant.sh']
+// Sending a message the person approved is not project work.
+const ALLOWED_COMMANDS = new Set(['slack'])
+// File commands that only touch scratch folders change no project file.
+const FILE_OPS = new Set(['rm', 'mv', 'cp', 'tee', 'dd', 'chmod', 'chown'])
 
 /**
  * The line without the bodies of its heredocs. A body is text for the command
@@ -86,7 +91,7 @@ function commandsOf(line) {
     if (c === '\\' && top !== "'" && i + 1 < s.length) {
       cur += c + s[i + 1]
       i += 1
-    } else if (top === "'") {
+    } else if (top === "'" || top === 'a') {
       if (c === "'") stack.pop()
       cur += c
     } else if (top === '"') {
@@ -100,7 +105,8 @@ function commandsOf(line) {
       }
       cur += c
     } else if (c === '"' || c === "'") {
-      stack.push(c)
+      // $'...' is ANSI-C quoting: a backslash escapes the next character.
+      stack.push(c === "'" && s[i - 1] === '$' ? 'a' : c)
       cur += c
     } else if ((c === '$' && s[i + 1] === '(') || (top === '(' && c === '(')) {
       stack.push('(')
@@ -150,7 +156,7 @@ function split(command) {
     } else if (c === '\\' && top !== "'" && i + 1 < s.length) {
       cur = (cur ?? '') + s[i + 1]
       i += 1
-    } else if (top === "'") {
+    } else if (top === "'" || top === 'a') {
       if (c === "'") stack.pop()
       else cur += c
     } else if (top === '"') {
@@ -161,8 +167,9 @@ function split(command) {
         i += 1
       } else cur += c
     } else if (c === '"' || c === "'") {
-      stack.push(c)
+      stack.push(c === "'" && s[i - 1] === '$' ? 'a' : c)
       cur = cur ?? ''
+      if (c === "'" && s[i - 1] === '$' && cur === '$') cur = ''
     } else if (c === '$' && s[i + 1] === '(') {
       stack.push('(')
       cur = (cur ?? '') + '$('
@@ -194,11 +201,13 @@ export function projectWork(input) {
   const line = String(input?.command || '')
   if (ALLOWED_SCRIPTS.some((s) => line.includes(s)) && !/[;&|]/.test(line.replace(/2>&1/g, ''))) return null
   if (input?.run_in_background) return 'it runs in the background'
+  const vars = assignments(line)
   for (const command of commandsOf(line)) {
     const w = words(command)
     const first = w[0] || ''
     const name = first.split('/').pop()
-    if (RUNS.has(name)) return 'it runs `' + name + '`'
+    if (ALLOWED_COMMANDS.has(name)) continue
+    if (RUNS.has(name) && !(FILE_OPS.has(name) && scratchOnly(name, w, vars))) return 'it runs `' + name + '`'
     if (/\.(sh|bash|py|rb|js|ts)$/.test(name) || (first.includes('/') && !first.startsWith('/usr/') && !first.startsWith('/bin/'))) {
       if (!ALLOWED_SCRIPTS.includes(name)) return 'it runs the script `' + name + '`'
     }
@@ -211,27 +220,56 @@ export function projectWork(input) {
       const hit = sub.find((s) => rest === s || rest.startsWith(s + ' '))
       if (hit) return 'it runs `' + name + ' ' + hit + '`'
     }
-    if (name === 'sed' && w.some((x) => x === '-i' || x.startsWith('-i'))) return 'it edits a file in place'
+    if (name === 'sed' && w.some((x) => x === '-i' || x.startsWith('-i')) && !sedScratchOnly(w, vars)) return 'it edits a file in place'
     // A redirect into a file writes it; /dev/null, 2>&1, and a temporary
     // folder do not count.
     // A `>` inside quotes is text; a quoted target keeps its spaces.
     const quoted = []
-    const masked = command.replace(/"[^"]*"|'[^']*'/g, (q) => '\u0000' + (quoted.push(q.slice(1, -1)) - 1) + '\u0000')
+    const masked = command.replace(/\$'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|'[^']*'/g, (q) => '\u0000' + (quoted.push(q.replace(/^\$?['"]|['"]$/g, '')) - 1) + '\u0000')
     const target = masked.match(/(?:^|[^0-9&])>>?\s*([^\s&|;]+)/)
     const path = target && target[1].replace(/\u0000(\d+)\u0000/g, (_, n) => quoted[Number(n)])
-    if (path && !scratch(path)) return 'it writes `' + path + '`'
+    if (path && !scratch(path, vars)) return 'it writes `' + path + '`'
   }
   return null
 }
 
 // Folders a redirect may write: devices, temporary folders (macOS keeps
 // $TMPDIR under /var/folders), and a Claude Code scratchpad.
+const SCRATCH_RE = /\/\.claude[^/]*\/projects\/[^/]+\/./
 const SCRATCH = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/', '$TMPDIR/', '${TMPDIR}/']
 
 /** True when a redirect into `path` writes no project file. */
-function scratch(path) {
-  const p = path.replace(/^["']|["']$/g, '')
-  return SCRATCH.some((dir) => p.startsWith(dir)) || p.includes('/scratchpad/')
+function scratch(path, vars = {}) {
+  let p = path.replace(/^["']|["']$/g, '')
+  // A variable the line assigns, such as d=/tmp/.../scratchpad, then $d/x.txt.
+  p = p.replace(/^\$(?:\{(\w+)\}|(\w+))(?=\/)/, (m, a, b) => vars[a ?? b] ?? m)
+  if (p.split('/').includes('..')) return false
+  return SCRATCH.some((dir) => p.startsWith(dir)) || p.includes('/scratchpad/') || SCRATCH_RE.test(p)
+}
+
+/** The NAME=value words of a line, quotes removed. */
+function assignments(line) {
+  const vars = {}
+  for (const m of String(line).matchAll(/(?:^|[\s;&|])([A-Za-z_]\w*)=("[^"]*"|'[^']*'|[^\s;&|]*)/g)) {
+    vars[m[1]] = m[2].replace(/^["']|["']$/g, '')
+  }
+  return vars
+}
+
+/** True when the file command writes only scratch paths. */
+function scratchOnly(name, w, vars) {
+  let args = w.slice(1).filter((a) => !a.startsWith('-') || a === '-')
+  if (name === 'dd') args = args.map((a) => a.replace(/^(?:of|if)=/, '')).filter((a) => a.includes('/'))
+  if (name === 'chmod' || name === 'chown') args = args.slice(1)
+  if (name === 'cp') args = args.slice(-1)
+  return args.length > 0 && args.every((a) => scratch(a, vars))
+}
+
+/** True when `sed -i` edits only scratch files (the words after the script). */
+function sedScratchOnly(w, vars) {
+  const args = w.slice(1).filter((a) => !a.startsWith('-'))
+  const files = w.some((x) => x === '-e' || x === '-f' || x.startsWith('--expression')) ? args : args.slice(1)
+  return files.length > 0 && files.every((a) => scratch(a, vars))
 }
 
 /** The reason the model reads for a call the guard refuses. */
