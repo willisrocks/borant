@@ -1335,8 +1335,45 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | A shared Claude usage limit, or a new login that logs out the others | Current Borant's agents slow down or stop. | 2 slots at the start, a metric for limit hits, and the login test on another account (section 17, section 21). |
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21: one system per piece of work, `cloud/` branches, GitHub Source in observe mode. |
 | Two screens during the parallel run | More attention from Chris, which is an anti-goal. | Accepted while the new system has one Project. The measurements in section 21 feed the later decision. |
-| Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | This document did not check the terms. Open question for Chris (section 24). |
+| Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | The terms check below this table sets build constraints. Open question 2 in section 24 stays with Chris. |
 | A hijacked worker | It can leak a value from a secret bundle. | Bundles hold only test and staging values. It cannot push outside its prefix or merge (section 11). |
+
+### Subscription terms check
+
+This is chief-personal's read of public docs on 2026-11-03. It is not legal advice,
+and it is partly inference. Chris has not decided yet.
+
+Claude:
+
+- `claude setup-token` is documented for "CI pipelines, scripts". The docs and the
+  GitHub Actions page support subscription use.
+- Plan limits "assume ordinary, individual usage". The docs do not define this, and
+  enforcement can come without notice.
+- Credentials must not be routed for other users.
+- Sources: https://code.claude.com/docs/en/authentication and
+  https://code.claude.com/docs/en/legal-and-compliance.
+
+Codex:
+
+- API keys are the stated default for automation.
+- ChatGPT login is allowed on trusted private infrastructure.
+- Source: https://learn.chatgpt.com/docs/auth/ci-cd-auth.
+
+Build constraints that follow from this read:
+
+1. The system stays single-user. Nobody else submits work, because other users move
+   it toward the prohibited "on behalf of users" case.
+2. Each machine has one Codex login. Do not share or copy an `auth.json` across
+   concurrent machines.
+3. Pin and test the `claude -p` auth path. The docs say that `--bare` ignores OAuth
+   and will become the `-p` default in a future release.
+4. Keep the slot count low and measure usage, because the always-on threshold is
+   unstated.
+5. Test whether a new login or "log out of all" revokes a setup-token on other
+   machines. The docs do not say.
+
+The fallback does not change: all roles move to Codex by a Policy commit (section
+17). A capped API key is Chris's decision.
 
 ## 24. Defaults and recommendations for Chris to check
 
@@ -1363,10 +1400,12 @@ builder read this document, and the designer settled its other points as calls.
    slots, and a first login at a time that Chris picks, so that he can watch current
    Borant.
 2. Do the Claude and ChatGPT subscription terms allow this use on a server? The
-   whole model plan rests on `claude -p` and ChatGPT OAuth running headless, and this
-   document did not check the terms. If Claude is refused, the build starts on
-   Codex. If both are refused, the build stops until Chris decides on an API key
-   with a cap. Default: the plan assumes yes, and Chris checks before the build.
+   whole model plan rests on `claude -p` and ChatGPT OAuth running headless.
+   Chief-personal read the public docs, and section 23 holds that read and the build
+   constraints that follow from it. The read is not legal advice and is partly
+   inference, so the decision stays with Chris. If Claude is refused, the build
+   starts on Codex. If both are refused, the build stops until Chris decides on an
+   API key with a cap. Default: the plan assumes yes, under those build constraints.
 
 ## 25. Left to the builder
 
