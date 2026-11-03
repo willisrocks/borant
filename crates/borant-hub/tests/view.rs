@@ -3,8 +3,10 @@
 
 mod common;
 
-use borant_core::model::{AgentStatus, Harness, HostStats, LeaseState, SessionStats, SwarmView};
-use borant_core::proto::{CtlRequest, Registered, ToolCall};
+use borant_core::model::{
+    Activity, AgentStatus, Harness, HostStats, LeaseState, SessionStats, SwarmView,
+};
+use borant_core::proto::{CtlRequest, Registered, SessionLeaseRef, ToolCall};
 use borant_core::{AgentId, Timestamp};
 use common::{Fx, name};
 
@@ -231,4 +233,137 @@ fn view_parses_without_the_new_agent_fields() {
     assert_eq!(view.agents[0].model, None);
     assert!(!view.agents[0].pinned);
     assert!(!view.agents[0].retired);
+    assert_eq!(view.agents[0].last_tool_at, None);
+    assert_eq!(view.agents[0].last_tool, None);
+    assert_eq!(view.agents[0].last_text_at, None);
+    assert_eq!(view.agents[0].last_text, None);
+    assert_eq!(view.agents[0].tool_running_since, None);
+}
+
+/// One heartbeat that carries the activity of a session, as a host sends it
+/// at most once each 30 s.
+async fn heartbeat_activity(fx: &Fx, host: &str, reg: &Registered, activity: Activity) {
+    fx.req(CtlRequest::HostHeartbeat {
+        host: name(host),
+        sessions: vec![SessionLeaseRef {
+            session: reg.session,
+            agent: reg.agent.clone(),
+            token: reg.token,
+            idle_since: None,
+            last_event_at: None,
+            pinned: false,
+            activity: Some(activity),
+        }],
+        stats: None,
+        launching: Vec::new(),
+    })
+    .await
+    .unwrap();
+}
+
+async fn agent_status(fx: &Fx, agent: &AgentId) -> AgentStatus {
+    let v = fx
+        .req(CtlRequest::Call {
+            actor: None,
+            key: None,
+            call: ToolCall::View,
+        })
+        .await
+        .unwrap();
+    let view: SwarmView = serde_json::from_value(v).unwrap();
+    view.agents
+        .iter()
+        .find(|a| &a.agent == agent)
+        .cloned()
+        .expect("the agent is in the view")
+}
+
+/// The last activity that a host reports with the lease renewal lands on the
+/// agent's status.
+#[tokio::test]
+async fn heartbeat_activity_reaches_the_agent_status() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let w1 = fx.register("h1", Some("w1"), None).await;
+    heartbeat_activity(
+        &fx,
+        "h1",
+        &w1,
+        Activity {
+            last_tool_at: Some(Timestamp(999_000)),
+            last_tool: Some("Bash cargo test".into()),
+            last_text_at: Some(Timestamp(998_000)),
+            last_text: Some("the tests pass".into()),
+            tool_running_since: Some(Timestamp(999_500)),
+        },
+    )
+    .await;
+
+    let a = agent_status(&fx, &w1.agent).await;
+    assert_eq!(a.session, Some(w1.session));
+    assert_eq!(a.last_tool_at, Some(Timestamp(999_000)));
+    assert_eq!(a.last_tool.as_deref(), Some("Bash cargo test"));
+    assert_eq!(a.last_text_at, Some(Timestamp(998_000)));
+    assert_eq!(a.last_text.as_deref(), Some("the tests pass"));
+    assert_eq!(a.tool_running_since, Some(Timestamp(999_500)));
+}
+
+/// The activity text goes only to a caller that shares a channel with the
+/// agent: another agent sees none of it, and a person sees all of it.
+#[tokio::test]
+async fn activity_text_goes_only_to_a_reader_of_the_channel() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    // The channel exists before the sessions name it, so the registration
+    // joins them.
+    let owner = fx.register("h1", Some("owner"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: "api".parse().unwrap(),
+            schema: None,
+            project: None,
+            branch: None,
+            kind: borant_core::model::ChannelKind::Project,
+            title: None,
+            issue: None,
+            issue_target: None,
+        },
+    )
+    .await
+    .unwrap();
+    let w1 = fx.register("h1", Some("w1"), Some("api")).await;
+    let peer = fx.register("h1", Some("peer"), Some("api")).await;
+    let stranger = fx.register("h1", Some("stranger"), None).await;
+    heartbeat_activity(
+        &fx,
+        "h1",
+        &w1,
+        Activity {
+            last_tool_at: Some(Timestamp(999_000)),
+            last_tool: Some("Read /work/secret.rs".into()),
+            last_text_at: None,
+            last_text: Some("the fix is in secret.rs".into()),
+            tool_running_since: None,
+        },
+    )
+    .await;
+
+    let read = |v: serde_json::Value| -> AgentStatus {
+        let view: SwarmView = serde_json::from_value(v).unwrap();
+        view.agents
+            .iter()
+            .find(|a| a.agent == w1.agent)
+            .cloned()
+            .expect("the agent is in the view")
+    };
+    let seen = read(fx.call(Some(&peer), ToolCall::View).await.unwrap());
+    assert_eq!(seen.last_tool.as_deref(), Some("Read /work/secret.rs"));
+    assert_eq!(seen.last_text.as_deref(), Some("the fix is in secret.rs"));
+    let blind = read(fx.call(Some(&stranger), ToolCall::View).await.unwrap());
+    assert_eq!(blind.last_tool, None);
+    assert_eq!(blind.last_text, None);
+    assert_eq!(blind.last_tool_at, None);
+    assert_eq!(blind.last_text_at, None);
+    assert_eq!(blind.tool_running_since, None);
 }

@@ -7,11 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
-use borant_core::model::{SessionEventBody, Target};
+use borant_core::model::{Activity, SessionEventBody, Target};
 use borant_core::proto::{
     ApiError, CtlRequest, EventReply, LocalEvent, LocalRegister, LocalSession, LocalState,
     RegisterSession, Registered, RenewedLease, SessionLeaseRef,
 };
+use borant_core::rules::redact::redact;
 use borant_core::rules::session_log;
 use borant_core::{AgentId, BundleName, FencingToken, MemberName, SessionId, Timestamp};
 use tokio::sync::Notify;
@@ -19,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint;
 use crate::outbox::OutboxKind;
-use crate::{Host, LocalSess, Queued, terminate};
+use crate::{Host, LocalSess, Queued, activity, terminate};
 
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
 /// How long a registration call waits for the first attach attempt.
@@ -90,6 +91,8 @@ impl Host {
                     busy: false,
                     idle_since: None,
                     last_event_at: None,
+                    activity: Activity::default(),
+                    activity_sent: None,
                     fenced: None,
                     paused: false,
                     wake_pending: false,
@@ -287,18 +290,36 @@ impl Host {
     }
 
     pub(crate) fn lease_refs(&self) -> Vec<SessionLeaseRef> {
-        self.state()
-            .sessions
-            .values()
+        let now = self.inner.clock.now();
+        let mut st = self.state();
+        st.sessions
+            .values_mut()
             .filter(|s| s.fenced.is_none())
             .filter_map(|s| {
-                s.reg.as_ref().map(|r| SessionLeaseRef {
+                let (agent, token, pinned) = {
+                    let r = s.reg.as_ref()?;
+                    (r.agent.clone(), r.token, r.pinned)
+                };
+                // The activity goes out at most once each 30 s, and only when
+                // the session has any: a session with no hook, or from before
+                // this report, tells the hub nothing, which is not silence.
+                let activity = if s.activity.is_empty()
+                    || s.activity_sent
+                        .is_some_and(|at| now.since(at) < activity::REPORT_EVERY)
+                {
+                    None
+                } else {
+                    s.activity_sent = Some(now);
+                    Some(s.activity.clone())
+                };
+                Some(SessionLeaseRef {
                     session: s.id,
-                    agent: r.agent.clone(),
-                    token: r.token,
+                    agent,
+                    token,
                     idle_since: s.idle_since,
                     last_event_at: s.last_event_at,
-                    pinned: r.pinned,
+                    pinned,
+                    activity,
                 })
             })
             .collect()
@@ -383,6 +404,25 @@ impl Host {
         if let LocalEvent::MemberLimited { bundle, resets_at } = &ev {
             self.member_limited(id, bundle.clone(), *resets_at).await;
         }
+        // The activity report that the lease renewal carries: the input of a
+        // tool call and the last text are project content, so the host
+        // redacts them before it keeps them, and they never leave it any
+        // other way.
+        let activity_agent = self.state().sessions.get(&id).and_then(LocalSess::agent);
+        let redacted = |text: &str| match &activity_agent {
+            Some(agent) => self.redact_text(agent, text).into_owned(),
+            None => redact(text).into_owned(),
+        };
+        let tool = match &ev {
+            LocalEvent::ToolStart { name, input } | LocalEvent::ToolCall { name, input } => {
+                Some((name.clone(), redacted(input)))
+            }
+            _ => None,
+        };
+        let last_text = match &ev {
+            LocalEvent::AssistantMessage { text } => Some(redacted(text)),
+            _ => None,
+        };
         let (agent, start_turn) = {
             let mut st = self.state();
             let restored = st.restored;
@@ -402,6 +442,25 @@ impl Host {
             if matches!(ev, LocalEvent::TurnEnd) {
                 s.busy = false;
                 s.idle_since = Some(now);
+            }
+            // A tool cannot run past its turn: a missed result hook must not
+            // leave a dead worker looking like one that runs a tool.
+            if start || matches!(ev, LocalEvent::TurnEnd | LocalEvent::End { .. }) {
+                activity::tool_finished(&mut s.activity);
+            }
+            match &ev {
+                LocalEvent::ToolStart { .. } | LocalEvent::ToolCall { .. } => {
+                    if let Some((name, input)) = &tool {
+                        activity::tool_started(&mut s.activity, name, input, now);
+                    }
+                }
+                LocalEvent::ToolResult { .. } => activity::tool_finished(&mut s.activity),
+                LocalEvent::AssistantMessage { .. } => {
+                    if let Some(text) = &last_text {
+                        activity::text(&mut s.activity, text, now);
+                    }
+                }
+                _ => {}
             }
             (s.reg.as_ref().map(|r| r.agent.clone()), start)
         };

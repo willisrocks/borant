@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use borant_core::model::Harness;
+use borant_core::model::{Activity, Harness};
 use borant_core::ports::LaunchHandle;
 use borant_core::ports::secrets::{BundleName, MemberName};
 use borant_core::proto::{ApiError, CtlRequest, Registered};
@@ -209,6 +209,8 @@ impl Host {
                     // host reports no idle signal until a turn ends.
                     idle_since: None,
                     last_event_at: None,
+                    activity: Activity::default(),
+                    activity_sent: None,
                     fenced: s.fenced,
                     paused: false,
                     wake_pending: false,

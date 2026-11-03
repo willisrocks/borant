@@ -176,6 +176,7 @@ async fn a_register_retry_keeps_its_lease() {
                 idle_since: None,
                 last_event_at: None,
                 pinned: false,
+                activity: None,
             }],
             stats: None,
             launching: Vec::new(),

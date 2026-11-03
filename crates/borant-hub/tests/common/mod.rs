@@ -232,6 +232,7 @@ impl Fx {
                 idle_since: *idle_since,
                 last_event_at: None,
                 pinned: false,
+                activity: None,
             })
             .collect();
         let v = self

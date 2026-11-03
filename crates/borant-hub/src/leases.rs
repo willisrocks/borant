@@ -18,7 +18,7 @@ use borant_core::{
 use serde_json::{Value, json};
 
 use crate::store::Doc;
-use crate::{HostSessions, Hub, IdleReport, Memory, PendingMove};
+use crate::{ActivityReport, HostSessions, Hub, IdleReport, Memory, PendingMove};
 
 /// How often the hub reads the pending messages of an idle expired agent.
 const WAKE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -156,6 +156,18 @@ impl Hub {
                     at: now,
                 },
             );
+            // The activity arrives at most each 30 s, so a beat without one
+            // keeps the last report. The session of the report must match the
+            // live session of the agent, or the live view shows none.
+            if let Some(activity) = &s.activity {
+                mem.activity.insert(
+                    s.agent.clone(),
+                    ActivityReport {
+                        session: s.session,
+                        activity: activity.clone(),
+                    },
+                );
+            }
         }
         let mut lost = Vec::new();
         let mut renewed = Vec::new();

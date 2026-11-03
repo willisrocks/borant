@@ -118,6 +118,7 @@ impl Fx {
                     idle_since: None,
                     last_event_at: None,
                     pinned: false,
+                    activity: None,
                 }]
             })
             .unwrap_or_default();

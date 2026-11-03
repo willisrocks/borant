@@ -140,6 +140,7 @@ async fn stats_heartbeat(
             idle_since: *since,
             last_event_at: None,
             pinned: false,
+            activity: None,
         })
         .collect();
     let v = fx
