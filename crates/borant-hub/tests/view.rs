@@ -367,3 +367,44 @@ async fn activity_text_goes_only_to_a_reader_of_the_channel() {
     assert_eq!(blind.last_text_at, None);
     assert_eq!(blind.tool_running_since, None);
 }
+
+/// A caller of the agent's own collection reads its activity, with no channel
+/// in common (the chief reads the agents of its collection, as its board
+/// does); a caller of another collection does not.
+#[tokio::test]
+async fn activity_text_goes_to_a_caller_of_the_same_collection() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let w1 = fx.register_in("h1", Some("w1"), None, Some("work")).await;
+    let chief = fx
+        .register_in("h1", Some("chief"), None, Some("work"))
+        .await;
+    let other = fx
+        .register_in("h1", Some("other"), None, Some("personal"))
+        .await;
+    heartbeat_activity(
+        &fx,
+        "h1",
+        &w1,
+        Activity {
+            last_tool_at: Some(Timestamp(999_000)),
+            last_tool: Some("Bash cargo test".into()),
+            last_text_at: None,
+            last_text: None,
+            tool_running_since: None,
+        },
+    )
+    .await;
+    let read = |v: serde_json::Value| -> AgentStatus {
+        let view: SwarmView = serde_json::from_value(v).unwrap();
+        view.agents
+            .iter()
+            .find(|a| a.agent == w1.agent)
+            .cloned()
+            .expect("the agent is in the view")
+    };
+    let seen = read(fx.call(Some(&chief), ToolCall::View).await.unwrap());
+    assert_eq!(seen.last_tool.as_deref(), Some("Bash cargo test"));
+    let blind = read(fx.call(Some(&other), ToolCall::View).await.unwrap());
+    assert_eq!(blind.last_tool, None);
+}

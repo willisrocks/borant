@@ -50,6 +50,16 @@ impl Hub {
                 .unwrap_or_default()
         });
 
+        // The collection of an agent caller: a chief reads the agents of its
+        // own collection, as it reads their board, though it shares no channel
+        // with each of them.
+        let caller_collection = caller.and_then(|c| {
+            agents
+                .iter()
+                .find(|doc| &doc.value.id == c)
+                .and_then(|doc| doc.value.collection.clone())
+        });
+
         let mut view = SwarmView {
             at: Some(now),
             ..SwarmView::default()
@@ -86,6 +96,7 @@ impl Hub {
                     || caller_channels
                         .as_ref()
                         .is_some_and(|mine| agent.channels.iter().any(|ch| mine.contains(ch)))
+                    || (caller_collection.is_some() && caller_collection == agent.collection)
             });
             let report = activity
                 .get(&agent.id)
