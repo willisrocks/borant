@@ -47,6 +47,15 @@ pub fn agent(id: &AgentId) -> String {
 
 pub const AGENT_PREFIX: &str = "agent.";
 
+/// The answer that a person's idempotency key stands for, with its result,
+/// kept for a day so a retried draft sends nothing (mod actions spec). The
+/// key comes from the caller, so it is escaped for the KV.
+pub fn answer(key: &str) -> String {
+    format!("answer.{}", escape_part(key))
+}
+
+pub const ANSWER_PREFIX: &str = "answer.";
+
 pub fn session(id: &SessionId) -> String {
     format!("session.{id}")
 }

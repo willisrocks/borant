@@ -626,6 +626,7 @@ async fn resume_clears_failed_hosts_and_a_failed_resume_tells_the_resumer() {
         Some(&boss),
         ToolCall::Resume {
             selector: PauseSelector::Agent(w.agent.clone()),
+            without_bundle: None,
         },
     )
     .await

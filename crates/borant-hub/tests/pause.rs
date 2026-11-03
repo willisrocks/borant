@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use borant_core::events::EventFilter;
 use borant_core::model::{
     Agent, ChannelKind, Harness, HostStats, Lease, LeaseState, MoveReason, NewTask, SessionStats,
-    Task, TaskStatus,
+    SpawnRecord, SpawnState, Task, TaskStatus,
 };
 use borant_core::ports::{EventLog, StateStore};
 use borant_core::proto::{
@@ -121,6 +121,16 @@ async fn lease_of(fx: &Fx, id: &str) -> Lease {
         .await
         .unwrap()
         .expect("the lease");
+    serde_json::from_slice(&doc.value).unwrap()
+}
+
+async fn spawn_record_of(fx: &Fx, id: &str) -> SpawnRecord {
+    let doc = fx
+        .state
+        .get(&keys::spawn(&agent(id)))
+        .await
+        .unwrap()
+        .expect("the spawn record");
     serde_json::from_slice(&doc.value).unwrap()
 }
 
@@ -469,6 +479,7 @@ async fn pause_resume_places_the_agent_again() {
             Some(&owner),
             ToolCall::Resume {
                 selector: paused_selector("w1"),
+                without_bundle: None,
             },
         )
         .await
@@ -491,6 +502,106 @@ async fn pause_resume_places_the_agent_again() {
         },
     };
     assert_eq!(launched.reason, MoveReason::Resume);
+}
+
+/// A spawn waits on a bundle that no host defines; a person drops that bundle
+/// from the queued spawn and the placement takes the host. The spawn keeps
+/// its own prompt, and the agent's next launch carries no bundle.
+#[tokio::test]
+async fn pause_resume_without_a_bundle_places_the_queued_spawn() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let owner = fx.register("h1", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: api(),
+            schema: None,
+            project: None,
+            branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            issue_target: None,
+        },
+    )
+    .await
+    .unwrap();
+    let bundle: borant_core::BundleName = "github-work".parse().unwrap();
+    fx.call(
+        None,
+        ToolCall::Spawn {
+            key: None,
+            task: None,
+            stop_on_close: None,
+            continues: None,
+            priority: None,
+            bundles: vec![bundle.clone()],
+            channel: api(),
+            prompt: "do the work".into(),
+            harness: Some(Harness::Fake),
+            host: None,
+            name: Some(agent("w1")),
+            model: None,
+            role: None,
+        },
+    )
+    .await
+    .expect("the spawn waits for the bundle");
+    let queued = spawn_record_of(&fx, "w1").await;
+    assert_eq!(queued.state, SpawnState::Queued);
+    assert_eq!(queued.spec.bundles, vec![bundle.clone()]);
+
+    // The spawn carries only that bundle: another one is a wrong argument,
+    // not a silent placement.
+    let err = fx
+        .call(
+            None,
+            ToolCall::Resume {
+                selector: paused_selector("w1"),
+                without_bundle: Some("other".parse().unwrap()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code,
+        borant_core::proto::ApiErrorCode::Invalid,
+        "{err:?}"
+    );
+
+    let mut h1 = fx.commands("h1").await;
+    let reply = fx
+        .call(
+            None,
+            ToolCall::Resume {
+                selector: paused_selector("w1"),
+                without_bundle: Some(bundle.clone()),
+            },
+        )
+        .await
+        .expect("a person drops the bundle");
+    assert_eq!(reply["placed"], true, "{reply}");
+
+    // The record lost the bundle, and the placement is the spawn's own with
+    // the prompt of the record.
+    let placed = spawn_record_of(&fx, "w1").await;
+    assert!(placed.spec.bundles.is_empty(), "{placed:?}");
+    assert!(agent_of(&fx, "w1").await.bundles.is_empty());
+    let launch = match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => o,
+        other => panic!("expected a launch, got {other:?}"),
+    };
+    assert_eq!(launch.reason, MoveReason::Spawn);
+    assert_eq!(launch.prompt, "do the work");
+    assert!(launch.bundles.is_empty(), "{launch:?}");
+
+    // The queue sees the reservation and marks the record as launching.
+    fx.hub.tick().await.unwrap();
+    assert_eq!(
+        spawn_record_of(&fx, "w1").await.state,
+        SpawnState::Launching
+    );
 }
 
 #[tokio::test]
@@ -742,6 +853,7 @@ async fn pause_resume_of_a_capped_agent_starts_the_cap_over() {
             Some(&owner),
             ToolCall::Resume {
                 selector: paused_selector("w1"),
+                without_bundle: None,
             },
         )
         .await
@@ -827,6 +939,7 @@ async fn pause_resume_of_a_stopped_agent_keeps_the_turn_counter() {
         Some(&owner),
         ToolCall::Resume {
             selector: paused_selector("w1"),
+            without_bundle: None,
         },
     )
     .await
@@ -879,6 +992,7 @@ async fn pause_resume_of_a_session_hours_cap_starts_the_hours_over() {
         Some(&owner),
         ToolCall::Resume {
             selector: paused_selector("w1"),
+            without_bundle: None,
         },
     )
     .await

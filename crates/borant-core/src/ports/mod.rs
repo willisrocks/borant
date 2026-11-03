@@ -16,7 +16,7 @@ pub use bus::{Acker, Delivery, InboxStats, Incoming, MessageBus, Responder, subj
 pub use changes::{ChangeRequests, ChangeState, ChangeStatus, CheckState, ReviewState};
 pub use events::EventLog;
 pub use issues::{IssueRef, IssueState, IssueTracker, IssueWrite};
-pub use launch::{LaunchHandle, LaunchSpec, Launcher};
+pub use launch::{FOCUS_NOT_SUPPORTED, LaunchHandle, LaunchSpec, Launcher};
 pub use notify::{Notice, Notifier, Priority};
 pub use provision::{
     HostRecord, HostSpec, ProviderHostId, ProviderState, Provisioner, ProvisionerCapabilities,

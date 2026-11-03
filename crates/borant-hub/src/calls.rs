@@ -411,19 +411,25 @@ impl Hub {
                 task,
                 text,
                 expect_updated,
-                ..
+                key,
             } => {
                 if actor.is_some() {
                     return Err(ApiError::invalid("only a person answers a task"));
                 }
-                self.answer(mem, &channel, &task, text, expect_updated)
+                self.answer(mem, &channel, &task, text, expect_updated, key.as_deref())
                     .await
             }
             ToolCall::Stop {
                 selector,
                 grace_secs,
             } => self.stop(mem, actor.as_ref(), selector, grace_secs).await,
-            ToolCall::Resume { selector } => self.resume(mem, actor.as_ref(), selector).await,
+            ToolCall::Resume {
+                selector,
+                without_bundle,
+            } => {
+                self.resume(mem, actor.as_ref(), selector, without_bundle)
+                    .await
+            }
             ToolCall::AgentHistory { .. } => {
                 Err(ApiError::invalid("agent_history is not built yet"))
             }

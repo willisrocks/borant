@@ -325,6 +325,138 @@ async fn inbox_answer_without_a_claimer_goes_to_the_owner() {
 }
 
 #[tokio::test]
+async fn inbox_answer_retry_with_the_same_key_sends_nothing() {
+    let fx = Fx::new();
+    let owner = with_channel(&fx).await;
+    let w1 = fx.register("h1", Some("w1"), Some("api")).await;
+    let task = create(&fx, &owner, "decide the storage").await;
+    let id: TaskId = task["id"].as_str().unwrap().parse().unwrap();
+    ask(&fx, &w1, id, TaskStatus::NeedsHuman, "which database?").await;
+    let expect = updated(&fx, &owner, id).await;
+
+    let mut messages = fx
+        .bus
+        .subscribe(&borant_core::subjects::agent(&w1.agent))
+        .await
+        .unwrap();
+    let answer = |expect: i64| ToolCall::Answer {
+        channel: api(),
+        task: id,
+        text: "use postgres".into(),
+        expect_updated: borant_core::Timestamp(expect),
+        key: Some("draft-1".into()),
+    };
+    // The first answer changes the task a moment after the person read it.
+    fx.advance(1);
+    let first = fx.call(None, answer(expect)).await.unwrap();
+    let envelope: Envelope = messages.next().await.expect("the first answer");
+    assert_eq!(envelope.text, "use postgres");
+
+    // The person's draft times out and the mod retries with the same key and
+    // the version of the task that the person saw. The retry returns the
+    // first result and sends nothing, although the first answer changed the
+    // task.
+    let again = fx.call(None, answer(expect)).await.unwrap();
+    assert_eq!(again, first);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), messages.next())
+            .await
+            .is_err(),
+        "the retry sent a second message"
+    );
+    let now = fx
+        .call(Some(&owner), ToolCall::TaskGet { channel: api(), id })
+        .await
+        .unwrap();
+    assert_eq!(now["updated"], first["task"]["updated"]);
+}
+
+#[tokio::test]
+async fn inbox_answer_key_with_another_text_is_a_conflict() {
+    let fx = Fx::new();
+    let owner = with_channel(&fx).await;
+    let w1 = fx.register("h1", Some("w1"), Some("api")).await;
+    let task = create(&fx, &owner, "decide the storage").await;
+    let id: TaskId = task["id"].as_str().unwrap().parse().unwrap();
+    ask(&fx, &w1, id, TaskStatus::NeedsHuman, "which database?").await;
+    let expect = updated(&fx, &owner, id).await;
+    fx.call(
+        None,
+        ToolCall::Answer {
+            channel: api(),
+            task: id,
+            text: "use postgres".into(),
+            expect_updated: borant_core::Timestamp(expect),
+            key: Some("draft-1".into()),
+        },
+    )
+    .await
+    .unwrap();
+
+    // An edited draft needs a new key: the old one holds another text.
+    let err = fx
+        .call(
+            None,
+            ToolCall::Answer {
+                channel: api(),
+                task: id,
+                text: "use sqlite".into(),
+                expect_updated: borant_core::Timestamp(expect),
+                key: Some("draft-1".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Conflict, "{err:?}");
+    assert!(err.message.contains("new key"), "{err:?}");
+}
+
+/// The key and its result live for a day, so a key that a person sent again
+/// after that is new and its text may differ.
+#[tokio::test]
+async fn inbox_answer_key_expires_after_a_day() {
+    let fx = Fx::new();
+    let owner = with_channel(&fx).await;
+    let w1 = fx.register("h1", Some("w1"), Some("api")).await;
+    let task = create(&fx, &owner, "decide the storage").await;
+    let id: TaskId = task["id"].as_str().unwrap().parse().unwrap();
+    ask(&fx, &w1, id, TaskStatus::NeedsHuman, "which database?").await;
+    let expect = updated(&fx, &owner, id).await;
+    // The first answer changes the task a moment later.
+    fx.advance(1);
+    fx.call(
+        None,
+        ToolCall::Answer {
+            channel: api(),
+            task: id,
+            text: "use postgres".into(),
+            expect_updated: borant_core::Timestamp(expect),
+            key: Some("draft-1".into()),
+        },
+    )
+    .await
+    .unwrap();
+
+    fx.advance(24 * 60 * 60);
+    // The answer is new, and the task has changed since the person read it.
+    let err = fx
+        .call(
+            None,
+            ToolCall::Answer {
+                channel: api(),
+                task: id,
+                text: "use sqlite".into(),
+                expect_updated: borant_core::Timestamp(expect),
+                key: Some("draft-1".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ApiErrorCode::Conflict, "{err:?}");
+    assert!(err.message.contains("changed at"), "{err:?}");
+}
+
+#[tokio::test]
 async fn inbox_answer_needs_text() {
     let fx = Fx::new();
     let owner = with_channel(&fx).await;

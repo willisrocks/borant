@@ -29,6 +29,30 @@ pub(crate) const HUB_DOWN_WHY: &str =
     "The Borant hub is unreachable, so tools are paused until it returns.";
 
 impl Host {
+    /// Opens the session of `agent` in a new window of the person's launcher
+    /// (mod actions spec, "Go to an agent"). The agent must have a session or
+    /// a launch here: another host's agent is not this daemon's to show.
+    pub async fn focus(&self, agent: &AgentId) -> Result<(), ApiError> {
+        let here = {
+            let st = self.state();
+            st.sessions
+                .values()
+                .any(|s| s.agent().as_ref() == Some(agent))
+                || st.pending_launch.contains_key(agent)
+                || st.last_launch.contains_key(agent)
+        };
+        if !here {
+            return Err(ApiError::not_found(format!(
+                "agent {agent} runs in no session of this host"
+            )));
+        }
+        self.inner
+            .launcher
+            .focus(agent)
+            .await
+            .map_err(ApiError::from)
+    }
+
     /// Registers a harness session. If the hub is unreachable, the session is
     /// detached and the daemon retries in the background.
     pub async fn register(&self, mut req: LocalRegister) -> Result<LocalSession, ApiError> {
@@ -914,5 +938,82 @@ impl Host {
         let _ = self
             .send(None, Target::Agent(to.clone()), text, false)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use borant_core::ports::{LaunchHandle, LaunchSpec, Launcher, PortError, PortResult};
+    use borant_core::proto::ApiErrorCode;
+    use borant_core::{AgentId, ManualClock, Timestamp};
+    use borant_memory::{MemoryBus, MemorySession};
+
+    use crate::outbox::Outbox;
+    use crate::{Host, HostConfig};
+
+    /// A launcher that records the focus calls and launches nothing.
+    #[derive(Debug, Clone, Default)]
+    struct FocusLauncher(Arc<Mutex<Vec<AgentId>>>);
+
+    #[async_trait::async_trait]
+    impl Launcher for FocusLauncher {
+        fn kind(&self) -> &'static str {
+            "focus-test"
+        }
+
+        async fn launch(&self, _spec: &LaunchSpec) -> PortResult<LaunchHandle> {
+            Err(PortError::other("the test launcher starts no session"))
+        }
+
+        async fn stop(&self, _handle: &LaunchHandle) -> PortResult<()> {
+            Ok(())
+        }
+
+        async fn is_running(&self, _handle: &LaunchHandle) -> PortResult<bool> {
+            Ok(false)
+        }
+
+        fn attach_command(&self, _handle: &LaunchHandle) -> Option<Vec<String>> {
+            None
+        }
+
+        async fn focus(&self, agent: &AgentId) -> PortResult<()> {
+            self.0.lock().unwrap().push(agent.clone());
+            Ok(())
+        }
+    }
+
+    /// `focus` shows only an agent of this host, and it asks the launcher for
+    /// the window: the local API is a pass-through with a guard.
+    #[tokio::test]
+    async fn focus_shows_only_an_agent_of_this_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = FocusLauncher::default();
+        let host = Host::new(
+            HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf()),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            Arc::new(ManualClock::new(Timestamp(1_000_000))),
+            Box::new(launcher.clone()),
+            None,
+            None,
+            Outbox::in_memory().unwrap(),
+        );
+        let agent: AgentId = "w1".parse().unwrap();
+        let err = host.focus(&agent).await.unwrap_err();
+        assert_eq!(err.code, ApiErrorCode::NotFound, "{err:?}");
+        assert!(launcher.0.lock().unwrap().is_empty());
+
+        host.state().last_launch.insert(
+            agent.clone(),
+            LaunchHandle {
+                kind: "focus-test".into(),
+                id: "window".into(),
+            },
+        );
+        host.focus(&agent).await.unwrap();
+        assert_eq!(*launcher.0.lock().unwrap(), vec![agent]);
     }
 }
