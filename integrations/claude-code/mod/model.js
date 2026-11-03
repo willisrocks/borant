@@ -44,7 +44,8 @@ export function prOf(pr) {
   else if (pr.state === 'closed') [words, rank] = ['closed', 9]
   else if (checks === 'fail') [words, rank] = ['checks failed', 5]
   else if (pr.review === 'changes_requested') [words, rank] = ['changes requested', 4]
-  else if (checks === 'pass' && pr.review === 'approved') [words, rank] = ['ready to merge', 0]
+  // Passing checks and an approval, nothing more: the PR watch reads no draft or conflict state.
+  else if (checks === 'pass' && pr.review === 'approved') [words, rank] = ['approved, checks pass', 0]
   else if (checks === 'pending') [words, rank] = [counts ? 'checks' + counts : 'checks running', 3]
   else if (pr.review_requested) [words, rank] = ['review requested', 1]
   else if (checks === 'pass') [words, rank] = ['checks passed', 2]
