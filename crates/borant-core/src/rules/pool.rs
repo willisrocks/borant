@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{AgentId, HostName, PoolName, Tag};
 use crate::model::Harness;
 use crate::ports::provision::{HostRecord, ProviderHostId};
-use crate::rules::schedule::HostView;
+use crate::rules::schedule::{HostView, low_memory};
 use crate::time::Timestamp;
 
 /// How close to the end of its billing step an idle host must be before the
@@ -324,7 +324,8 @@ fn creates(
             // A static host: `place` already put an agent there.
             continue;
         };
-        if !view.online || view.info.draining {
+        // A host that refuses for low memory is full: the pool must grow.
+        if !view.online || view.info.draining || low_memory(view).is_some() {
             continue;
         }
         if let Some(slots) = free.get_mut(pool) {
@@ -600,6 +601,33 @@ mod tests {
         );
         assert!(
             !actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_with_low_memory_is_full_so_the_pool_creates() {
+        let pools = [pool("workers")];
+        let hosts = [ElasticHost {
+            phase: Phase::Ready,
+            last_busy: NOW,
+            ..key("e1", Phase::Ready)
+        }];
+        let live = [HostView {
+            mem_avail_mb: Some(218),
+            ..view("e1", 0, true)
+        }];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &live,
+            &[need("a")],
+            &records(&["e1"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Create { .. })),
             "{actions:?}"
         );
     }

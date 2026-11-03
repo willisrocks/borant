@@ -35,6 +35,14 @@ pub struct HostView {
     pub disk_used_pct: Option<f64>,
 }
 
+/// The free and the reserved memory of a host that has less free than it
+/// reserves. A host that reports no memory passes: a v0.7.0 host keeps working.
+pub fn low_memory(h: &HostView) -> Option<(u64, u32)> {
+    let avail_mb = h.mem_avail_mb?;
+    let reserve_mb = h.info.reserve_mem_mb.unwrap_or(DEFAULT_RESERVE_MEM_MB);
+    (avail_mb < u64::from(reserve_mb)).then_some((avail_mb, reserve_mb))
+}
+
 /// Why a host did not take an agent. The first failed rule of a host is its
 /// reason, and `Display` is what `borant ps --queued` prints.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,15 +235,11 @@ fn reject(
     {
         return Err(Reject::NoMemberBundle(bundle.clone()));
     }
-    // A host that reports no memory passes: a v0.7.0 host keeps working.
-    if let Some(avail_mb) = h.mem_avail_mb {
-        let reserve_mb = h.info.reserve_mem_mb.unwrap_or(DEFAULT_RESERVE_MEM_MB);
-        if avail_mb < u64::from(reserve_mb) {
-            return Err(Reject::LowMemory {
-                avail_mb,
-                reserve_mb,
-            });
-        }
+    if let Some((avail_mb, reserve_mb)) = low_memory(h) {
+        return Err(Reject::LowMemory {
+            avail_mb,
+            reserve_mb,
+        });
     }
     // A host that reports no disk passes, as with the memory rule.
     if let Some(used) = h.disk_used_pct {
