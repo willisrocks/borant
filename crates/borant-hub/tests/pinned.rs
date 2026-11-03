@@ -649,8 +649,10 @@ async fn pinned_session_report_from_before_the_expiry_keeps_the_pin() {
 
 /// A hub whose `chief` role is pinned, as a person-started chief is.
 fn chief_hub() -> Fx {
-    let mut chief = borant_core::rules::roles::RoleConfig::default();
-    chief.pinned = true;
+    let chief = borant_core::rules::roles::RoleConfig {
+        pinned: true,
+        ..Default::default()
+    };
     Fx::with(borant_hub::HubConfig {
         roles: std::collections::BTreeMap::from([("chief".parse().unwrap(), chief)]),
         ..Default::default()
