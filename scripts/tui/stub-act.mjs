@@ -28,7 +28,9 @@ fs.writeFileSync(boardFile, JSON.stringify(board, null, 1))
 
 // The hub's feed and the task's history get the change, as the hub's log would.
 const feedFile = path.join(dir, 'changes.jsonl')
-const seq = (fs.existsSync(feedFile) ? fs.readFileSync(feedFile, 'utf8').split('\n').filter(Boolean).length : 0) + 100
+// A hub's log sequence only grows; the stub's grows with the clock, so a seen
+// mark that the mod kept from an earlier run never hides a new change.
+const seq = Math.floor(Date.now() / 1000)
 if (verb !== 'resume') {
   const [channel, id] = ref.split('/')
   const t = JSON.parse(fs.readFileSync(path.join(dir, 'tasks-' + channel + '.json'), 'utf8')).find((x) => x.id === id)

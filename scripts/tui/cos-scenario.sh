@@ -94,7 +94,7 @@ step rest
 check "at rest the band names the hotkey" "shown | grep -q 'ctrl+x b'"
 check "a worker with no tool call for 30 minutes is silent" "shown | grep -q '1 silent'"
 # A change lands while the person looks: it shows, by name, on the next read.
-echo '{"seq":50,"at":'"$(node -e 'console.log(Date.now())')"',"project":"roger-docs-api","channel":"work-roger-docs-api","task":null,"verb":"pr_merged","text":"PR #612 Retry-After on 429","by":{"type":"agent","id":"wkr-docs-1"}}' >>"$stub/changes.jsonl"
+echo '{"seq":'"$(date +%s)"',"at":'"$(node -e 'console.log(Date.now())')"',"project":"roger-docs-api","channel":"work-roger-docs-api","task":null,"verb":"pr_merged","text":"PR #612 Retry-After on 429","by":{"type":"agent","id":"wkr-docs-1"}}' >>"$stub/changes.jsonl"
 echo '{"kind":"change.updated"}' >>"$stub/events.jsonl"
 STEP_WAIT=6 step live-change
 check "a change from the hub feed shows by name" "shown | grep -q 'Retry-After on 429'"
