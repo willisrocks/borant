@@ -7,7 +7,6 @@ use borant_core::Clock;
 use borant_core::changes::ChangeMark;
 use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{ChannelKind, CloseReason, Harness, NewTask, Sender, Target, TaskStatus};
-use borant_core::ports::EventLog;
 use borant_core::proto::{Registered, ToolCall};
 use borant_core::{ChannelName, TaskId};
 use common::Fx;
@@ -176,7 +175,7 @@ async fn a_task_history_shows_its_claims_answers_and_named_messages() {
 }
 
 #[tokio::test]
-async fn a_changes_read_shows_new_tasks_and_a_done_task_after_a_mark() {
+async fn history_and_changes_read_new_tasks_and_a_done_task_after_a_mark() {
     let fx = Fx::new();
     let owner = with_channel(&fx).await;
     let first = create(&fx, &owner, "Add the export button").await;

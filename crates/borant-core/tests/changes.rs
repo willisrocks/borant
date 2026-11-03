@@ -153,7 +153,7 @@ fn verbs() -> Vec<ChangeVerb> {
 }
 
 #[test]
-fn the_feed_reads_the_recorded_log_newest_first() {
+fn changes_read_the_recorded_log_newest_first() {
     let view = feed(0);
     let seqs: Vec<u64> = view.changes.iter().map(|c| c.seq).collect();
     let mut sorted = seqs.clone();
@@ -177,7 +177,7 @@ fn the_feed_reads_the_recorded_log_newest_first() {
 }
 
 #[test]
-fn a_group_of_new_tasks_is_one_change_and_never_spans_the_mark() {
+fn changes_group_new_tasks_and_never_span_the_mark() {
     let view = feed(0);
     let new: Vec<&borant_core::changes::Change> = view
         .changes
@@ -210,7 +210,7 @@ fn a_group_of_new_tasks_is_one_change_and_never_spans_the_mark() {
 }
 
 #[test]
-fn one_task_gives_one_primary_change() {
+fn changes_give_one_primary_change_per_task() {
     let view = feed(0);
     let verbs_of = |task: &str| -> Vec<ChangeVerb> {
         view.changes
@@ -247,7 +247,7 @@ fn one_task_gives_one_primary_change() {
 }
 
 #[test]
-fn the_mark_reads_only_the_events_after_it() {
+fn changes_read_only_after_the_mark() {
     let view = feed(10);
     let seqs: Vec<u64> = view.changes.iter().map(|c| c.seq).collect();
     assert_eq!(seqs, vec![12, 11], "only the session changes remain");
@@ -263,7 +263,7 @@ fn the_mark_reads_only_the_events_after_it() {
 }
 
 #[test]
-fn a_task_history_reads_its_events_oldest_first() {
+fn changes_history_reads_its_events_oldest_first() {
     let entries = history(&events(), &chan("steve"), &id(HEADER));
     let kinds: Vec<HistoryKind> = entries.iter().map(|e| e.kind).collect();
     assert_eq!(
@@ -284,7 +284,7 @@ fn a_task_history_reads_its_events_oldest_first() {
 }
 
 #[test]
-fn a_task_history_claims_and_leaves_out_other_tasks() {
+fn changes_history_claims_and_leaves_out_other_tasks() {
     let entries = history(&events(), &chan("steve"), &id(EXPORT));
     let kinds: Vec<HistoryKind> = entries.iter().map(|e| e.kind).collect();
     assert_eq!(
@@ -304,7 +304,7 @@ fn a_task_history_claims_and_leaves_out_other_tasks() {
 }
 
 #[test]
-fn a_task_history_keeps_the_last_fifty_entries() {
+fn changes_history_keeps_the_last_fifty_entries() {
     let mut log = events();
     let at = Timestamp(1_793_686_100_000);
     for n in 0..60u64 {

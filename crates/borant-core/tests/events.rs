@@ -208,6 +208,9 @@ fn every_kind() -> Vec<SwarmEventBody> {
                 head: "def456".into(),
                 checks: CheckState::Pass {},
                 review: ReviewState::None,
+                checks_passed: None,
+                checks_total: None,
+                review_requested: false,
             }),
         },
         SwarmEventBody::TaskCreated {
