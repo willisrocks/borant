@@ -116,3 +116,44 @@ git status`,
   expect(projectWork({ command: `cat <<'EOF'\nhi\nEOF\n./steve-688.sh inspect` })).toBe('it runs the script `steve-688.sh`')
   expect(projectWork({ command: `cat <<'EOF' > notes.txt\nhi\nEOF` })).toBe('it writes `notes.txt`')
 })
+
+test('a > in a quoted argument is text, also in $\'...\' with escapes', () => {
+  for (const command of [
+    `slack post C0B1C41JY3H --as user --format raw --no-unfurl --yes --text $'<https://github.com/x|TITLE>\\nLine two.'`,
+    // An escaped quote does not end the string.
+    `echo $'it\\'s <b>bold</b>\\nThe end'`,
+    `echo "a > b" 'c > d'`,
+  ]) {
+    expect(projectWork({ command })).toBeNull()
+  }
+  expect(projectWork({ command: `echo $'a\\'b' > notes.txt` })).toBe('it writes `notes.txt`')
+})
+
+test('writes under the session scratchpad and the Claude profile are no project work', () => {
+  const pad = '/tmp/claude-1000/-home-chris-proj/550ab06d/scratchpad'
+  const results = '/home/chris/.claude/projects/-home-chris-proj/550ab06d/tool-results'
+  for (const command of [
+    `d=${pad}; echo x > $d/pr3885.txt`,
+    `cp notes.md ${pad}/notes.md`,
+    `sed -i s/a/b/ ${results}/toolu_1.txt`,
+    `mv ${pad}/a.txt ${pad}/b.txt`,
+    `tee ${pad}/out.txt`,
+    `rm ${pad}/a.txt`,
+  ]) {
+    expect(projectWork({ command })).toBeNull()
+  }
+  for (const command of [
+    `cp ${pad}/a.txt config.toml`,
+    `sed -i s/a/b/ config.toml`,
+    `rm -rf src`,
+    `cp x ${pad}/../../src/y`,
+    `d=/work/proj; echo x > $d/pr.txt`,
+  ]) {
+    expect(projectWork({ command })).not.toBeNull()
+  }
+})
+
+test('the slack CLI is allowed, for a chief and its subagents', () => {
+  expect(projectWork({ command: `slack post C0B1C41JY3H --as user --yes --text "Merged #12"` })).toBeNull()
+  expect(projectWork({ command: `slack post C1 --text hi && ./deploy.sh` })).toBe('it runs the script `deploy.sh`')
+})
