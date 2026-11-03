@@ -31,21 +31,86 @@ const SUBCOMMANDS = {
 const ALLOWED_SCRIPTS = ['install_borant.sh']
 
 /**
+ * The line without the bodies of its heredocs. A body is text for the command
+ * (an issue description, a script on stdin), never a command of the line, and
+ * a quoted tag (<<'EOF') makes it literal too. The `<<TAG` line stays, so the
+ * command that reads the body is still checked. A heredoc with no closing
+ * line stays as it is.
+ */
+function stripHeredocs(line) {
+  let s = String(line || '')
+  const open = /(^|[^<])<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/g
+  let from = 0
+  for (;;) {
+    open.lastIndex = from
+    const m = open.exec(s)
+    if (!m) return s
+    const tag = m[3] ?? m[4] ?? m[5]
+    const eol = s.indexOf('\n', m.index + m[0].length)
+    from = m.index + m[0].length
+    if (eol < 0) return s
+    let at = eol + 1
+    let end = -1
+    while (at <= s.length) {
+      let next = s.indexOf('\n', at)
+      if (next < 0) next = s.length
+      const text = s.slice(at, next)
+      if ((m[2] ? text.trim() : text.replace(/\r$/, '')) === tag) {
+        end = next
+        break
+      }
+      if (next >= s.length) break
+      at = next + 1
+    }
+    if (end < 0) continue
+    // Keep the newline that ends the `<<TAG` line, drop the body and the tag.
+    s = s.slice(0, eol + 1) + s.slice(Math.min(end + 1, s.length))
+    from = eol + 1
+  }
+}
+
+/**
  * The simple commands of a shell line, split on ;, &&, ||, |, and newlines
- * outside quotes.
+ * outside quotes and outside `$( )`. Inside double quotes `$(` opens a new
+ * context, where quotes start fresh, as in the shell.
  */
 function commandsOf(line) {
   const out = []
   let cur = ''
-  let quote = ''
-  const s = String(line || '')
+  // Open contexts: '"', "'", or '(' for $( ) and ( ).
+  const stack = []
+  const s = stripHeredocs(line)
   for (let i = 0; i < s.length; i += 1) {
     const c = s[i]
-    if (quote) {
-      if (c === quote) quote = ''
+    const top = stack[stack.length - 1]
+    if (c === '\\' && top !== "'" && i + 1 < s.length) {
+      cur += c + s[i + 1]
+      i += 1
+    } else if (top === "'") {
+      if (c === "'") stack.pop()
+      cur += c
+    } else if (top === '"') {
+      if (c === '"') stack.pop()
+      else if (c === '$' && s[i + 1] === '(') {
+        stack.push('(')
+        cur += '$'
+        i += 1
+        cur += '('
+        continue
+      }
       cur += c
     } else if (c === '"' || c === "'") {
-      quote = c
+      stack.push(c)
+      cur += c
+    } else if ((c === '$' && s[i + 1] === '(') || (top === '(' && c === '(')) {
+      stack.push('(')
+      cur += c
+      if (c === '$') {
+        i += 1
+        cur += '('
+      }
+    } else if (top === '(') {
+      if (c === ')') stack.pop()
       cur += c
     } else if (c === '\n' || c === ';' || c === '|' || (c === '&' && s[i + 1] === '&')) {
       if ((c === '|' || c === '&') && s[i + 1] === c) i += 1
@@ -59,18 +124,49 @@ function commandsOf(line) {
   return out.map((c) => c.trim()).filter(Boolean)
 }
 
-/** The words of a simple command, split on blanks outside quotes, quotes removed. */
+/**
+ * The words of a simple command, split on blanks outside quotes, quotes
+ * removed. A `$( )` keeps its text as it is, quotes and blanks included.
+ */
 function split(command) {
   const out = []
   let cur = null
-  let quote = ''
-  for (const c of command) {
-    if (quote) {
-      if (c === quote) quote = ''
+  const stack = []
+  const s = String(command)
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i]
+    const top = stack[stack.length - 1]
+    if (top === '(') {
+      cur += c
+      if (c === '"' || c === "'") {
+        // A quoted run inside $( ) may hold a ")": skip to its end.
+        const end = s.indexOf(c, i + 1)
+        if (end > 0) {
+          cur += s.slice(i + 1, end + 1)
+          i = end
+        }
+      } else if (c === '(') stack.push('(')
+      else if (c === ')') stack.pop()
+    } else if (c === '\\' && top !== "'" && i + 1 < s.length) {
+      cur = (cur ?? '') + s[i + 1]
+      i += 1
+    } else if (top === "'") {
+      if (c === "'") stack.pop()
       else cur += c
+    } else if (top === '"') {
+      if (c === '"') stack.pop()
+      else if (c === '$' && s[i + 1] === '(') {
+        stack.push('(')
+        cur += '$('
+        i += 1
+      } else cur += c
     } else if (c === '"' || c === "'") {
-      quote = c
+      stack.push(c)
       cur = cur ?? ''
+    } else if (c === '$' && s[i + 1] === '(') {
+      stack.push('(')
+      cur = (cur ?? '') + '$('
+      i += 1
     } else if (/\s/.test(c)) {
       if (cur !== null) out.push(cur)
       cur = null

@@ -85,3 +85,34 @@ test('another session gets no guard and no rule', async ($, on) => {
   expect((await $.tool.check({ tool: 'Bash', input: { command: './steve-688.sh inspect' } })).decision).toBe('allow')
   expect((await $.prompt.compose(COMPOSE)).sections.map((s) => s.id)).toEqual(['intro'])
 })
+
+test('text in quoted arguments and quoted heredocs is never a command', () => {
+  for (const command of [
+    // The reported call: the body holds a date with slashes and a comma.
+    `linear issue update EMR-3474 --description "$(cat <<'EOF'
+Captured 9/29/2026, 1:07 PM
+He said "retry" -> it's > 3 tries; ./run.sh | rm -rf x
+EOF
+)"`,
+    // A body written to a scratchpad file, then read by the CLI.
+    `cat > /tmp/claude-1000/proj/sess/scratchpad/body.md <<'EOF'
+Steps: 1) a > b 2) ./deploy.sh
+EOF
+linear issue create --title "Fix it" --description "$(cat /tmp/claude-1000/proj/sess/scratchpad/body.md)"`,
+    `linear issue create --title "Fix it" --description-file /tmp/claude-1000/proj/sess/scratchpad/body.md`,
+    `linear issue comment add EMR-1 --body "see 9/29/2026, 1:07 PM; ./a.sh > b"`,
+    // An unquoted tag and a dashed one end the body as well.
+    `cat <<-EOF
+\t./a.sh
+\tEOF
+git status`,
+    // Double quotes inside $( ) start fresh.
+    `echo "$(echo "a; ./x.sh")"`,
+  ]) {
+    expect(projectWork({ command })).toBeNull()
+  }
+  // The command that reads the body is still checked, and so is what follows it.
+  expect(projectWork({ command: `python3 - <<'EOF'\nprint(1)\nEOF` })).toBe('it runs `python3`')
+  expect(projectWork({ command: `cat <<'EOF'\nhi\nEOF\n./steve-688.sh inspect` })).toBe('it runs the script `steve-688.sh`')
+  expect(projectWork({ command: `cat <<'EOF' > notes.txt\nhi\nEOF` })).toBe('it writes `notes.txt`')
+})
