@@ -1023,10 +1023,18 @@ fn render_queue(v: &Value, queued_only: bool) -> String {
 
 /// Why a queue row waits or stopped: the reason of a failed spawn, else the
 /// hosts that refused it and the last launch error. A failed spawn names its
-/// last error in the reason already.
+/// last error in the reason already. A spawn that runs, ended, or was
+/// cancelled waits for nothing: the refusals of its earlier tries are history
+/// and would read as a block.
 fn render_queue_reason(rec: &Value) -> String {
     if let Some(reason) = rec["fail_reason"].as_str() {
         return reason.to_owned();
+    }
+    if matches!(
+        rec["state"].as_str(),
+        Some("running" | "ended" | "cancelled")
+    ) {
+        return "-".to_owned();
     }
     let reject = render_reject(&rec["last_reject"]);
     let error = match (
@@ -2487,6 +2495,24 @@ mod tests {
             out.contains("borant-1: full (6/6), borant-2: low memory (700 MB free, 1024 reserved)"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn cli_render_queue_hides_old_refusals_of_a_running_spawn() {
+        let v = json!([
+            {"agent": "w1", "state": "running", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"},
+             "last_reject": [["borant-1", "full (10/10)"]],
+             "last_error": {"host": "borant-2", "text": "resolve failed"}},
+            {"agent": "w2", "state": "launching", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"},
+             "last_reject": [["borant-1", "full (10/10)"]]},
+        ]);
+        let out = render_queue(&v, false);
+        let w1 = out.lines().find(|l| l.starts_with("w1")).unwrap();
+        assert!(!w1.contains("full") && !w1.contains("resolve"), "{out}");
+        let w2 = out.lines().find(|l| l.starts_with("w2")).unwrap();
+        assert!(w2.contains("borant-1: full (10/10)"), "{out}");
     }
 
     #[test]
