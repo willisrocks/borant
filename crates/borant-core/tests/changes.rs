@@ -7,9 +7,7 @@ use borant_core::changes::{
     ChangeMark, ChangeVerb, ChangesInput, HISTORY_LIMIT, HistoryKind, build, history,
 };
 use borant_core::events::SwarmEvent;
-use borant_core::model::{
-    Channel, ChannelKind, CloseReason, Sender, Task, TaskStatus,
-};
+use borant_core::model::{Channel, ChannelKind, CloseReason, Sender, Task, TaskStatus};
 use borant_core::{ChannelName, ProjectName, TaskId, Timestamp};
 use serde_json::json;
 
@@ -96,7 +94,12 @@ fn records() -> (Vec<Channel>, Vec<(ChannelName, Task)>) {
         channel("steve", ChannelKind::Project, None),
         channel("steve-saga", ChannelKind::Saga, Some(GATE)),
     ];
-    let mut export = task(EXPORT, "Add the export button", Some(CloseReason::Done), vec![]);
+    let mut export = task(
+        EXPORT,
+        "Add the export button",
+        Some(CloseReason::Done),
+        vec![],
+    );
     export.properties.insert(
         "pr_url".into(),
         json!("https://github.com/acme/steve/pull/42"),
@@ -107,14 +110,27 @@ fn records() -> (Vec<Channel>, Vec<(ChannelName, Task)>) {
             chan("steve"),
             task(HEADER, "Fix the CSV header", None, vec![]),
         ),
-        (chan("steve"), task(REPORT, "Cache the report", None, vec![])),
+        (
+            chan("steve"),
+            task(REPORT, "Cache the report", None, vec![]),
+        ),
         (
             chan("steve-saga"),
-            task(GATE, "Approve the export epic", Some(CloseReason::Done), vec![]),
+            task(
+                GATE,
+                "Approve the export epic",
+                Some(CloseReason::Done),
+                vec![],
+            ),
         ),
         (
             chan("steve"),
-            task(RELEASE, "1.2", Some(CloseReason::Done), vec![("release", true)]),
+            task(
+                RELEASE,
+                "1.2",
+                Some(CloseReason::Done),
+                vec![("release", true)],
+            ),
         ),
     ];
     (channels, tasks)
@@ -122,10 +138,7 @@ fn records() -> (Vec<Channel>, Vec<(ChannelName, Task)>) {
 
 fn feed(from_seq: u64) -> borant_core::changes::ChangesView {
     let (channels, tasks) = records();
-    let events: Vec<SwarmEvent> = events()
-        .into_iter()
-        .filter(|e| e.seq > from_seq)
-        .collect();
+    let events: Vec<SwarmEvent> = events().into_iter().filter(|e| e.seq > from_seq).collect();
     build(&ChangesInput {
         at: Timestamp(1_793_687_000_000),
         events: &events,
@@ -255,14 +268,17 @@ fn a_task_history_reads_its_events_oldest_first() {
     let kinds: Vec<HistoryKind> = entries.iter().map(|e| e.kind).collect();
     assert_eq!(
         kinds,
-        vec![HistoryKind::Created, HistoryKind::Answered, HistoryKind::Message],
+        vec![
+            HistoryKind::Created,
+            HistoryKind::Answered,
+            HistoryKind::Message
+        ],
         "created, answered, and the message that names it"
     );
     assert!(entries[1].text.contains("key q1"));
     assert_eq!(entries[1].by, Some(Sender::Human));
     assert_eq!(
-        entries[2].text,
-        "orch to chief: Use RFC 4180 for the header.",
+        entries[2].text, "orch to chief: Use RFC 4180 for the header.",
         "the message text, so the person reads what the orchestrator said"
     );
 }
@@ -305,4 +321,3 @@ fn a_task_history_keeps_the_last_fifty_entries() {
         "the newest events are the ones kept"
     );
 }
-

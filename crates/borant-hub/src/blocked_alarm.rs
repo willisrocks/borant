@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use borant_core::events::{Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Lease, LeaseState, SpawnRecord, SpawnState, Task, TaskEventKind, TaskStatus,
 };
@@ -110,15 +111,16 @@ impl Hub {
             let Some(blocked) = blocked::blocked(record, now) else {
                 continue;
             };
-            {
+            let (repeat_due, told_before) = {
                 let mem = self.mem.lock().await;
-                if mem
-                    .blocked_told
-                    .get(&record.agent)
-                    .is_some_and(|at| now.since(*at) < blocked::REPEAT_EVERY)
-                {
-                    continue;
-                }
+                let told = mem.blocked_told.get(&record.agent);
+                (
+                    told.is_some_and(|at| now.since(*at) < blocked::REPEAT_EVERY),
+                    told.is_some(),
+                )
+            };
+            if repeat_due {
+                continue;
             }
             let agent = &record.agent;
             let text = blocked.text(agent);
@@ -132,11 +134,24 @@ impl Hub {
                 .await;
             self.tell_blocked(record, &text).await;
             self.stick_bound_task(record, &text).await?;
-            self.mem
-                .lock()
-                .await
-                .blocked_told
-                .insert(agent.clone(), now);
+            let mut mem = self.mem.lock().await;
+            // The feed shows the transition into the block, not the repeat
+            // of a spawn that stays blocked.
+            if !told_before {
+                let event = self
+                    .event(
+                        now,
+                        Severity::Warn,
+                        SwarmEventBody::SpawnBlocked {
+                            reason: blocked.reason.clone(),
+                            action: blocked.action(agent),
+                        },
+                    )
+                    .about_agent(agent.clone())
+                    .about_channel(record.spec.channel.clone());
+                Self::queue(&mut mem, event);
+            }
+            mem.blocked_told.insert(agent.clone(), now);
         }
         Ok(())
     }
@@ -306,6 +321,12 @@ impl Hub {
         let Some(stuck) = mem.blocked_tasks.remove(agent) else {
             return;
         };
+        // The spawn left the queue, so the feed shows the block cleared.
+        let event = self
+            .event(self.now(), Severity::Info, SwarmEventBody::SpawnUnblocked)
+            .about_agent(agent.clone())
+            .about_channel(stuck.channel.clone());
+        Self::queue(mem, event);
         if let Some((before, next)) = self.restore_task(agent, &stuck).await {
             self.task_status_event(mem, &stuck.channel, &before, &next);
         }

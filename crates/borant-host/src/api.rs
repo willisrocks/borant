@@ -90,6 +90,8 @@ struct CallBody {
 struct EventsQuery {
     /// Only events at or after this time, in unix milliseconds.
     since: Option<Timestamp>,
+    /// Only events after this sequence number of the log.
+    after_seq: Option<u64>,
     /// `1` or `true` keeps the stream open for the events published from now
     /// on. Without it the reply holds the events of the filter and closes.
     follow: Option<String>,
@@ -226,6 +228,7 @@ async fn events(
         .collect();
     let filter = EventFilter {
         since: q.since,
+        after_seq: q.after_seq,
         kinds,
         agent: q.agent,
         channel: q.channel,

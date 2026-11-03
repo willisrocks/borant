@@ -149,7 +149,9 @@ The person's standing permissions for this project: {permissions}.
 Create every task before the first spawn, and give each worker the borant worker
 brief. CI runs the full suite; run focused tests only.
 Report to the chief, not the person: a task closed, a task is stuck, a task needs a
-human, or the goal is done. Send it as a direct message to {chief_id}.
+human, or the goal is done. Send it as a direct message to {chief_id}, with the
+borant `send` tool and `task: "<channel>/<id>"`, so the reply names its task and
+the person reads it in the task's history.
 Ask the chief before anything outside the standing permissions, and before any
 change to CI, secrets, releases, or infrastructure.
 ```
@@ -188,7 +190,9 @@ change to CI, secrets, releases, or infrastructure.
 - **The person pressed Ask orchestrator on the board:** the mod already sent the
   question to the owner of the task's channel, as the person, and you get a note with
   the next prompt. Do not answer it yourself, and do not send it again. When the owner
-  replies, relay the reply to the person.
+  replies, relay the reply to the person. An owner that replies with the borant `send`
+  tool and `task: "<channel>/<id>"` names the task, and the person reads the reply in
+  that task's history.
 - **An orchestrator asks you to run something** (a prod script, a command that needs
   the laptop): refuse, and tell it to spawn a worker for it, naming the laptop's host
   when the step needs the laptop. When no role it may spawn can run on the laptop, spawn

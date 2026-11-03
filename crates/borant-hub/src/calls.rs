@@ -284,7 +284,9 @@ impl Hub {
             )),
             ToolCall::TaskCreate { channel, task } => {
                 self.channel_for(mine.as_ref(), &channel).await?;
-                to_value(&self.task_create(&sender, &channel, task, key).await?)
+                let created = self.task_create(&sender, &channel, task, key).await?;
+                Self::queue(mem, self.task_created(&channel, &created, &sender));
+                to_value(&created)
             }
             ToolCall::TaskGet { channel, id } => {
                 self.channel_for(mine.as_ref(), &channel).await?;
@@ -416,8 +418,16 @@ impl Hub {
                 if actor.is_some() {
                     return Err(ApiError::invalid("only a person answers a task"));
                 }
-                self.answer(mem, &channel, &task, text, expect_updated, key.as_deref())
-                    .await
+                self.answer(
+                    mem,
+                    &channel,
+                    &task,
+                    text,
+                    expect_updated,
+                    key.as_deref(),
+                    &Sender::Human,
+                )
+                .await
             }
             ToolCall::Stop {
                 selector,
@@ -515,6 +525,14 @@ impl Hub {
             ToolCall::Board { .. } => Err(ApiError::internal(
                 "a board must not run behind the hub request mutex",
             )),
+            // The feed reads the whole event log, so `Hub::handle` routes it
+            // before the mutex too.
+            ToolCall::Changes { .. } => Err(ApiError::internal(
+                "the changes feed must not run behind the hub request mutex",
+            )),
+            ToolCall::TaskHistory { .. } => Err(ApiError::internal(
+                "a task history must not run behind the hub request mutex",
+            )),
         }
     }
 
@@ -544,7 +562,7 @@ impl Hub {
     }
 
     /// The collection of the caller: its own, or `None` for a person.
-    async fn collection_of(
+    pub(crate) async fn collection_of(
         &self,
         me: &Option<AgentId>,
     ) -> Result<Option<CollectionName>, ApiError> {

@@ -101,6 +101,9 @@ pub struct SendArgs {
     pub text: String,
     /// Wake every member for a broadcast. Direct messages always wake.
     pub urgent: Option<bool>,
+    /// The task that the message names, as CHANNEL/ID. Reply to an answer
+    /// with it, so the person sees the reply in the task's history.
+    pub task: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -453,8 +456,23 @@ impl BorantMcp {
 
     #[tool(description = "Send a direct message to an agent, or a broadcast to '#channel'.")]
     async fn send(&self, Parameters(a): Parameters<SendArgs>) -> Result<String, String> {
-        self.forward(json!({"tool": "send", "to": target(&a.to), "text": a.text, "urgent": a.urgent.unwrap_or(false)}))
-            .await
+        let task = match &a.task {
+            Some(text) => {
+                let (channel, id) = text
+                    .split_once('/')
+                    .ok_or_else(|| format!("{text} is not CHANNEL/ID"))?;
+                json!({ "channel": channel, "id": id })
+            }
+            None => Value::Null,
+        };
+        self.forward(json!({
+            "tool": "send",
+            "to": target(&a.to),
+            "text": a.text,
+            "urgent": a.urgent.unwrap_or(false),
+            "task": task,
+        }))
+        .await
     }
 
     #[tool(description = "Create a task in a channel.")]

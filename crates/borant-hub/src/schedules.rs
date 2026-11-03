@@ -261,8 +261,14 @@ impl Hub {
             ..NewTask::default()
         };
         let key = format!("sched.{}.{}", schedule.name, rfc3339(fire));
-        self.task_create(&Sender::Human, channel, new, Some(key))
-            .await
+        let task = self
+            .task_create(&Sender::Human, channel, new, Some(key))
+            .await?;
+        // The schedule pass holds no memory lock, so it publishes the event
+        // of the new task at once.
+        self.publish(self.task_created(channel, &task, &Sender::Human))
+            .await;
+        Ok(task)
     }
 
     async fn save(

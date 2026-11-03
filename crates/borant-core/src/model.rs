@@ -1021,6 +1021,10 @@ pub struct SessionEvent {
     pub body: SessionEventBody,
 }
 
+/// One step of a session, as a host logs it. The message variant carries the
+/// whole envelope, so the enum is larger than the other variants; it is a
+/// stored wire record, and boxing it would change the shape in the log.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEventBody {

@@ -135,9 +135,7 @@ pub fn build(input: &ChangesInput<'_>) -> ChangesView {
     for event in input.events {
         // A group closes at the first event that is not a create of the same
         // creator and channel, so the feed keeps the order of the log.
-        let closes = group
-            .as_mut()
-            .is_some_and(|open| !open.accepts(event));
+        let closes = group.as_mut().is_some_and(|open| !open.accepts(event));
         if closes && let Some(done) = group.take() {
             changes.push(done.finish());
         }
@@ -161,9 +159,7 @@ pub fn build(input: &ChangesInput<'_>) -> ChangesView {
                 match &mut group {
                     Some(open) => open.add(&facts, event, id, title),
                     None => {
-                        group = Some(NewTaskGroup::start(
-                            &facts, event, channel, *id, title, by,
-                        ))
+                        group = Some(NewTaskGroup::start(&facts, event, channel, *id, title, by))
                     }
                 }
             }
@@ -172,16 +168,8 @@ pub fn build(input: &ChangesInput<'_>) -> ChangesView {
                     changes.push(change);
                 }
             }
-            SwarmEventBody::ChangeUpdated {
-                state,
-                head,
-                checks,
-                review,
-                previous,
-            } => {
-                if let Some(change) =
-                    change_request_change(&facts, event, channel, *state, head, checks, *review, previous.as_ref())
-                {
+            SwarmEventBody::ChangeUpdated { .. } => {
+                if let Some(change) = change_request_change(&facts, event, channel, &event.body) {
                     changes.push(change);
                 }
             }
@@ -360,29 +348,33 @@ fn change_request_change(
     facts: &Facts<'_>,
     event: &SwarmEvent,
     channel: &ChannelName,
-    state: crate::ports::ChangeState,
-    head: &str,
-    checks: &CheckState,
-    review: ReviewState,
-    previous: Option<&crate::ports::ChangeStatus>,
+    body: &SwarmEventBody,
 ) -> Option<Change> {
+    let SwarmEventBody::ChangeUpdated {
+        state,
+        head,
+        checks,
+        review,
+        previous,
+    } = body
+    else {
+        return None;
+    };
     let id = event.task?;
-    let was = previous;
-    let merged = state == crate::ports::ChangeState::Merged
+    let was = previous.as_ref();
+    let merged = *state == crate::ports::ChangeState::Merged
         && was.is_none_or(|p| p.state != crate::ports::ChangeState::Merged);
     let failed = match checks {
-        CheckState::Fail { .. } => was.is_none_or(|p| {
-            !matches!(p.checks, CheckState::Fail { .. }) || p.head != head
-        }),
+        CheckState::Fail { .. } => {
+            was.is_none_or(|p| !matches!(p.checks, CheckState::Fail { .. }) || &p.head != head)
+        }
         _ => false,
     };
-    let approved = state == crate::ports::ChangeState::Open
-        && review == ReviewState::Approved
+    let approved = *state == crate::ports::ChangeState::Open
+        && *review == ReviewState::Approved
         && was.is_none_or(|p| p.review != ReviewState::Approved);
     let url = facts.pr_url(channel, &id);
-    let pr = url
-        .clone()
-        .unwrap_or_else(|| format!("{channel}/{}", id));
+    let pr = url.clone().unwrap_or_else(|| format!("{channel}/{}", id));
     let (verb, text) = if merged {
         (ChangeVerb::PrMerged, format!("PR {pr} merged"))
     } else if failed {
@@ -464,7 +456,10 @@ pub fn history(events: &[SwarmEvent], channel: &ChannelName, id: &TaskId) -> Vec
                 claimed_by,
                 attention_msg,
             } => {
-                let claimed = claimed_by.is_some() && *from != TaskStatus::InProgress;
+                // A claim is `open -> in progress` with a claimer. The
+                // answer of a question also sets `in progress`, with the
+                // claim kept, and that is an answer and not a claim.
+                let claimed = claimed_by.is_some() && *from == TaskStatus::Open;
                 let mut text = if claimed {
                     format!("claimed by {}", claimed_by.as_ref().expect("checked"))
                 } else {

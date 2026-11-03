@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use borant_core::events::{Severity, SwarmEventBody};
+use borant_core::events::{Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     ChannelKind, CloseReason, Envelope, EnvelopeKind, NewTask, Sender, Target, Task, TaskEvent,
     TaskEventKind, TaskPatch, TaskStatus,
@@ -636,6 +636,48 @@ impl Hub {
         Ok(false)
     }
 
+    /// The event of a new task, for the person changes feed. A caller that
+    /// holds `mem` queues it; one that does not publishes it.
+    pub(crate) fn task_created(
+        &self,
+        channel: &ChannelName,
+        task: &Task,
+        by: &Sender,
+    ) -> SwarmEvent {
+        self.event(
+            self.now(),
+            Severity::Info,
+            SwarmEventBody::TaskCreated {
+                title: task.title.clone(),
+                by: by.clone(),
+            },
+        )
+        .about_channel(channel.clone())
+        .about_task(task.id)
+    }
+
+    /// The event of an answer, for the person changes feed and the task
+    /// history.
+    pub(crate) fn task_answered(
+        &self,
+        channel: &ChannelName,
+        id: &TaskId,
+        key: Option<String>,
+        by: &Sender,
+    ) -> SwarmEvent {
+        self.event(
+            self.now(),
+            Severity::Info,
+            SwarmEventBody::TaskAnswered {
+                key,
+                by: by.clone(),
+            },
+        )
+        .about_channel(channel.clone())
+        .about_task(*id)
+    }
+
+    /// The events of a task change go to the channel as a message too.
     pub(crate) async fn task_event(
         &self,
         channel: &ChannelName,
