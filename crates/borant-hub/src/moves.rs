@@ -59,6 +59,17 @@ fn rejected_hosts(rejected: &[(HostName, Reject)]) -> Vec<RejectedHost> {
 }
 
 impl Hub {
+    /// True for an agent whose role a person starts, such as a chief: a role
+    /// that config pins. The hub never launches, relaunches, or moves it. Its
+    /// lease goes to the session that the person starts, and a second session
+    /// that the hub launched would take the lease from that one.
+    pub(crate) fn person_started(&self, agent: &Agent) -> bool {
+        agent
+            .role
+            .as_ref()
+            .is_some_and(|role| self.cfg.roles.get(role).is_some_and(|c| c.pinned))
+    }
+
     /// Stores the refused hosts of a placement in the spawn record of the
     /// agent, for `borant ps --queued`. An agent without a spawn record is not
     /// stored, and a record that another request changed is left to the next
@@ -223,6 +234,10 @@ impl Hub {
         // places it again.
         if agent.retired || agent.paused.is_some() {
             tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
+            return Ok(false);
+        }
+        if self.person_started(agent) {
+            tracing::debug!(agent = %agent.id, "placement skipped: a person starts this role");
             return Ok(false);
         }
         // The sweep gave up on this claim after its recovery limit: it waits
