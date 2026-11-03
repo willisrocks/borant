@@ -1,157 +1,103 @@
-// borant's chief-of-staff mod. It draws the board above the prompt, a preview
-// of the selected row, a toast when something new needs the person, and the
-// `/cos` digest. Only a chief session sees any of it: the role comes from
-// BORANT_ROLE, which is how a chief is started (see
-// crates/borant/src/hook.rs, session_start). Every other session registers no
-// timer, no command, and draws nothing.
+// borant's chief mod (v3). Only a chief session sees any of it: the role comes
+// from BORANT_ROLE (see crates/borant/src/hook.rs, session_start). Every other
+// session registers no timer, no command, and draws nothing.
 //
-// Board mode holds the keyboard, as a vim mode does. Outside it the mod takes
-// no printable key: a prompt starts with any digit or letter. A click on the
-// band's `/cos pane: board mode` Button or on a row, or the command
-// `/cos pane`, opens the preview pane with the keys, and the pane's only focusable
-// element is an
-// Input: while it has the focus, Claude Code gives every printable key to it
-// and none to the prompt. The mod reads each key from the Input's change
-// (1-9 select, j k move, d Done, a Ask, ? help) and Enter from its submit
-// (details). Esc gives the keys back to the prompt and closes the pane. Tab
-// and Shift+Tab move the focus off the Input, and the band and the pane then
-// say that board mode is off.
+// The band above the prompt shows, at rest, what needs the person, what is
+// offline, what changed since they pressed x, every project with its tasks
+// by name, and the PRs that ship next. It takes no key at the prompt: its rows
+// are Buttons without hotkeys (a digit hotkey in the band would take a bare
+// digit at an empty prompt, Claude Code's rule), and no prompt.edit hook.
 //
-// A row's digit is drawn, never a hotkey: the engine gives a bare digit at an
-// empty prompt to a band Button's hotkey, and that took the first character
-// of prompts like "1. fix the bug". Digits select rows in board mode.
+// The one way in is the band's `ctrl+x b` Button: it names the engine action
+// app:cycleDiffBase, whose chord (ctrl+x b by default) presses it from the
+// prompt. `/borant` does the same, for when the diff panel holds that chord.
+// Either opens the panel with the keys ("keys on Borant"): a list of every
+// item and the selected item's detail. The panel's keys are its Buttons'
+// hotkeys; the arrows walk the list rows; an answer field (an Input) takes
+// every key while it is open. Esc gives the keys back and closes the panel.
 //
-// Docked (a wide terminal) the preview is a tall card beside the transcript;
-// inline (a narrow one) it is a compact block over the band, open only while
-// it has the keys.
+// Data: `borant board --json`, `borant channel list`, and `borant tasks
+// <channel>` for every channel of a project. Actions run the borant CLI.
+// The "seen" snapshot (x) lives in $.store, so it lasts across sessions.
 
-import { allQuestions, bandItems, bandRows, digest, helpLines, text as seg, truncate, hhmm } from '../mod/board.js'
-import { channelsFor, helpPreview, previewLines, questionKey, findProject, titleLineCount } from '../mod/preview.js'
-import { readBoard, readTasks, sourceMode } from '../mod/source.js'
+import { buildModel, allChannels, find, listItems, snapshot, RECEIPT_MS } from '../mod/model.js'
+import { ACTIONS, act, readBoard, readChannels, readTasks, sourceMode } from '../mod/source.js'
 import { DELEGATION_RULE, guardReason, projectWork } from '../mod/guard.js'
-import { inserted } from '../mod/keys.js'
-import { CLOSED_SHOW_MS, canDone, freshness, pressStatus, pressStatusShort, withClosed } from '../mod/status.js'
+import {
+  S,
+  bandLines,
+  changeDetail,
+  clock,
+  helpLines,
+  keyLines,
+  listEntries,
+  needDetail,
+  panelLines,
+  projectDetail,
+  quietDetail,
+  rule,
+  shipDetail,
+  taskDetail,
+  taskEntries,
+  topLine,
+  wrap,
+} from '../mod/view.js'
 
-/** The preview pane's id and title. */
 const PANE = 'cos'
-const PANE_TITLE = 'chief of staff'
-/** The docked preview's width, as asked: wide enough for a card's title and
- * fields. Claude Code caps it at 45% of the terminal, and a width the person
- * dragged or keyed wins over it. */
-const PANE_COLUMNS = 80
-/** Where the band keeps this many columns beside the docked preview (a
- * terminal of about 186 columns and up), it lays its columns out that wide
- * at rest too, so entering board mode moves no column. Narrower, a band that
- * wide would waste half the terminal at rest, so board mode lays it out
- * again. */
-const DOCKED_GRID = 100
-/** From this width a fullscreen terminal docks the preview beside the transcript. */
-const DOCK_COLUMNS = 110
-/** A docked preview narrower than this draws the compact block, as inline. */
-const NARROW_PANE = 52
-/** From this width the board-mode field names its keys in words. */
-const WORDY_KEYS = 64
-/** The selection's background, in the band and in the preview: the theme's
- * user-message grey, darker than promptBorder, so yellow titles, colored
- * glyphs and blue keys keep their colors and stay readable on it. */
-const SELECTED_BG = 'userMessageBackground'
-/** How often the board is read while the session is the chief: the fallback
- * for changes the event stream does not carry, such as a new task. */
+const PANE_TITLE = 'Borant'
+/** How often the board is read: the fallback for changes no event carries. */
 const REFRESH_MS = 5000
 /** A read arriving sooner than this after the last one is skipped. */
 const DEBOUNCE_MS = 1000
 /** An event is read this long after it arrives, so a burst costs one read. */
 const PUSH_DELAY_MS = 300
-/** A dropped event stream starts again after this long. */
 const EVENTS_RETRY_MS = 5000
-/** A Done that the hub has not closed by then shows as still open. A test
- * shortens it with BORANT_COS_DONE_WAIT_S. */
-const DONE_WAIT_MS = 120000
-let doneWaitMs = DONE_WAIT_MS
-/** How long after asking for the keys the mod checks that the pane has them. */
-const FOCUS_CHECK_MS = 400
-/** An inline preview that lost the keys closes after this long. */
-const INLINE_IDLE_MS = 400
-/** What the chief reads when a tool in a Done's turn would ask the person. */
-const DONE_TURN_REASON =
-  'Chief mod: refused. This turn comes from a Done the person pressed on the board, and they are not at the prompt to approve tools. ' +
-  'Close the task with the borant MCP tools (task_close, or send to its owner). If that does not work, say so in one line; do not ask the person to allow anything.'
+/** Every channel's tasks are read again after this long, at most. */
+const TASKS_MS = 15000
+/** The selection's background: the theme's user-message grey. */
+const SELECTED_BG = 'userMessageBackground'
 
-/** Set to `chief` by the role check, and nothing else ever turns the mod on. */
 let isChief = false
 let config = null
 let board = null
+let channels = []
+/** Each channel's tasks, as `borant tasks` printed them. */
+const tasks = {}
+let tasksAt = 0
 let unavailable = false
-/** The reason of the last failed read, for a person to see. */
 let reason = ''
-let lastReadAt = 0
-/** When the last read succeeded, by the session clock, for the header's age. */
 let lastOkAt = null
-/** Done presses by `<channel>/<task>`, as mod/status.js names their states. */
-let pending = {}
-/** Ask presses, by question: `{ state: 'sending' | 'sent' | 'failed', owner, time, reason }`. */
-let asked = {}
-/** The id of the chief's turn that runs a Done's prompt, while it runs: no
- * tool may ask the person in it. Set at turn.start, which carries the prompt. */
-let doneTurnId = null
-/**
- * The rule is owed to the conversation: a session that was running when the
- * mod loaded keeps the system prompt it started with, and a compaction can
- * drop what it was told. The first turn after either gets the rule as a row.
- */
-let ruleOwed = false
-/** A read the event stream asked for is waiting on its timer. */
+let downSince = null
+/** The first read of the board and every channel's tasks has landed. */
+let ready = false
+let seen = null
+let used = true
+const marks = { receipts: {}, asked: {}, changes: [] }
 let pushQueued = false
-/** The needs-you items the last drawing saw; a new one raises a toast. */
 let seenNeeds = null
-/** The selected band row, by its key, and its place, for when it goes. When
- * it leaves the board the row now at its place is shown, but takes no Done
- * or Ask until the person selects a row again (`selMoved`). */
-let selKey = null
-let selIndex = 0
-let selMoved = false
-/** Enter's "more" in the preview, and the help view in place of the preview. */
-let more = false
-let helpShown = false
-/** One channel's tasks, as `borant tasks` printed them, or null on failure. */
-let taskCache = new Map()
-/** The preview pane: open, where it sits, whether it holds the keys, its width. */
-let paneOpen = false
-/** The pane closed (esc, ctrl+x x, its close mark) and no open came since. */
-let paneClosed = false
-let placement = null
-let paneFocused = false
-let paneWidth = 60
-/** Board mode's key field: it is drawn afresh, empty, after each key (a new
- * key), and the text each field held last tells a new key from an old one. */
-let fieldGen = 0
-const fieldSeen = new Map()
-/** Board-mode keys run one after another, in the order typed. Each board
- * mode has its own number: a key still queued when board mode ends is dropped. */
-let keyChain = Promise.resolve()
-let boardGen = 0
-/** Board mode's rows, held still while it lasts: each band row as last seen,
- * in the order it had when board mode began. A row that leaves the board
- * stays, marked; a new one waits until esc. Null at rest. */
-let frozen = null
-/** The docked preview's width as the person keeps it (dragged or keyed),
- * seen in its drawing: at rest the band lays its columns out as wide as it
- * is beside that dock, so entering board mode moves no column. A width the
- * 45% cap set is not kept: it is the terminal's, not the person's. And the
- * band's viewport (the terminal's width) and width at rest. */
-let dockPane = null
-let restSeen = null
-/** The last docked drawing of the pane: the terminal's width then, and the
- * dock's. A band as wide as the rest of that terminal is a docked band. */
-let lastDock = null
-/** Board reads in the order they started: a slow one that ends after a newer
- * one is dropped. */
-let readSeq = 0
-let appliedSeq = 0
-/** The terminal, as last measured while drawing the band. */
-let columns = 0
-/** The session clock as of the last draw, for the drawing's ages. */
 let clockNow = 0
+
+// The panel.
+let paneOpen = false
+let paneFocused = false
+let placement = null
+let paneCols = 90
+let paneRows = 40
+let columns = 0
+let maxRows = 10
+/** The selected list item, and where the panel is: list, detail, tasks, help. */
+let sel = null
+let view = 'list'
+let viewBeforeHelp = 'list'
+let project = null
+let taskSel = null
+/** An answer or message field: { kind, item, to } while it is open. */
+let field = null
+const drafts = new Map()
+/** The last send of a field: { state: sending | unconfirmed | refused, reason }. */
+let sendState = null
+/** A confirmation waiting for y or n: { what, item }. */
+let confirm = null
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -169,39 +115,35 @@ export function register(on) {
       if (!isChief) return next(e)
       measure(e)
       clockNow = await nowMs($)
-      const width = widthOf(e)
+      const w = widthOf(e)
+      maxRows = e.props?.maxRows || maxRows
       if (!board) {
         if (!unavailable) return next(e)
-        const label = width >= 110 ? 'chief of staff' : 'cos'
-        const room = Math.max(8, width - label.length - 31)
-        const row = [seg('── ', 'faint'), seg(label, 'bold'), seg(' ─ ', 'faint'), freshness({ unavailable: true })]
-        if (reason) row.push(seg(' · ' + truncate(reason, room), 'dim'))
-        return tree($, e, [{ key: 'band-title', cells: row }])
+        return tree($, e, [{ parts: [{ segs: [S('Borant ', 'head'), S('✕ ' + (reason || 'board unavailable'), 'r')] }] }, { parts: [{ segs: [S('Run ', 't'), S('borant doctor', 'kb'), S(' in a shell to see why; it names the fix. Your prompt works as usual.', 't')] }] }])
       }
-      const cur = current()
-      if (!cur.item && paneOpen && !helpShown) closeSoon($, () => !current().item && !helpShown)
-      // The band's viewport is the conversation's: narrower while the preview
-      // is docked, so only a band at rest says how wide the terminal is. The
-      // pane's drawing as it closes does not count (paneClosed).
-      // A band exactly as wide as the conversation beside the last drawn dock
-      // is docked too, whatever the pane's state says by then.
-      const dockedNow = (paneOpen && !paneClosed && placement === 'dock') || (lastDock !== null && columns === lastDock.terminal - lastDock.pane - 1)
-      if (!dockedNow) restSeen = { columns, width }
-      const docks = e.viewport?.isFullscreen === true && terminalColumns() >= DOCK_COLUMNS
-      const docked = dockedNow ? width : dockedBandWidth(width)
-      const rows = bandRows(board, {
-        width,
-        gridWidth: docks && docked >= DOCKED_GRID ? docked : width,
-        maxRows: e.props?.maxRows,
-        questions: drawnQuestions(),
-        items: frozen ? items() : undefined,
-        waiting: waitingRows(),
-        selected: cur.item ? cur.item.key : null,
-        active: active(),
-        statusFor: (item) => shortStatus(item),
-        stale: await stale($),
+      if (!ready) return tree($, e, [{ parts: [{ segs: [S('Borant ', 'head'), S('reading the swarm…', 'dim')] }] }])
+      const m = model()
+      const state = unavailable ? 'down' : paneOpen && paneFocused ? 'on' : paneOpen ? 'nokeys' : 'rest'
+      const lines = bandLines(m, w, {
+        state,
+        sel: paneOpen ? sel : null,
+        maxRows,
+        tip: !used,
+        headerOnly: paneOpen && placement === 'inline',
+        info: { seenAt: seen ? clock(seen.at) : null, downSince: downSince ? clock(downSince) : null, lastOk: lastOkAt ? clock(lastOkAt) : null, reason },
       })
-      return tree($, e, rows, cur.item ? cur.item.key : null)
+      return tree($, e, lines)
+    } catch {
+      return next(e)
+    }
+  })
+
+  // The footer names the hotkey too.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    await ensureStarted($).catch(() => {})
+    if (!isChief || paneFocused) return next(e)
+    try {
+      return next({ ...e, props: { ...e.props, tail: 'ctrl+x b Borant keys' } })
     } catch {
       return next(e)
     }
@@ -213,105 +155,65 @@ export function register(on) {
       measure(e)
       clockNow = await nowMs($)
       const props = e.props || {}
-      // A drawing of the pane means it is open, also after the module reloads,
-      // but not the one it draws as it closes.
-      if (!paneClosed) paneOpen = true
-      if (board && !helpShown && !current().item) closeSoon($, () => !current().item && !helpShown)
+      paneOpen = true
       const focused = Boolean(props.isFocused)
       const place = props.placement || null
       if (focused !== paneFocused || place !== placement) {
-        setFocused(focused)
+        paneFocused = focused
         placement = place
-        // The band's selection and hint follow where the keys are.
         redrawSoon($)
       }
-      paneWidth = typeof props.bodyColumns === 'number' && props.bodyColumns > 0 ? props.bodyColumns : 60
-      // Docked, the terminal is the conversation, the dock, and its border.
-      // A dock at the 45% cap is the terminal's width, not the person's.
-      if (place === 'dock' && typeof e.viewport?.columns === 'number') {
-        const terminal = e.viewport.columns + paneWidth + 1
-        lastDock = { terminal, pane: paneWidth }
-        if (!paneClosed && paneWidth + 2 < Math.floor(terminal * 0.45)) dockPane = paneWidth
-      }
-      if (place === 'inline' && !focused) {
-        // Inline, the preview is there only in board mode.
-        closeSoon($, () => placement === 'inline' && !paneFocused)
-      }
-      return paneBody($, e, await paneLines($), focused)
+      if (typeof props.bodyColumns === 'number' && props.bodyColumns > 0) paneCols = props.bodyColumns
+      if (typeof props.scroll?.bodyRows === 'number' && props.scroll.bodyRows > 0) paneRows = props.scroll.bodyRows
+      return tree($, e, panel(), true)
     } catch {
       return next(e)
     }
   })
 
-  // In board mode the ring stays on the key field: Tab or Shift+Tab would put
-  // it on the pane's close mark, where a letter goes to the prompt while the
-  // board still looks modal. Esc still gives the keys back.
+  // The ring walks the list rows and the answer field only: on a key Button or
+  // the close mark, a letter would go to the prompt while the panel looks modal.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    if (isChief && e.origin?.kind === 'person' && !String(e.element || '').startsWith('board-keys-')) {
-      return { deny: 'board mode keeps the keys on its field; esc gives them back' }
+    if (!isChief || e.origin?.kind !== 'person') return next(e)
+    const el = String(e.element || '')
+    if (el.startsWith('row:')) {
+      const id = el.slice(4)
+      if (id.startsWith('t:')) taskSel = id
+      else sel = id
+      redrawSoon($)
+      return next(e)
     }
-    return next(e)
+    if (el === 'field') return next(e)
+    return { deny: 'the panel keeps the ring on its rows; esc gives the keys back' }
   })
 
-  // Esc in board mode, ctrl+x x, or the close mark: the preview goes, and
-  // "more" with it.
   on('ui.close', async ($, e, next) => {
     try {
       if (e.id === PANE) {
-        boardGen += 1
         paneOpen = false
-        paneClosed = true
-        setFocused(false)
+        paneFocused = false
         placement = null
-        more = false
-        helpShown = false
+        view = 'list'
+        field = null
+        confirm = null
         redraw($)
       }
     } catch {
-      // Fall through: the pane closes.
+      // Fall through: the panel closes.
     }
     return next(e)
   })
 
-  on('command.run', { command: 'cos' }, async ($, e) => {
+  on('command.run', { command: 'borant' }, async ($, e) => {
     await ensureStarted($).catch(() => {})
-    try {
-      if (!isChief) return { text: 'cos: the chief-of-staff mod is off in this session (BORANT_ROLE is not chief)' }
-      await refresh($, true)
-      const args = String(e.args || '').trim()
-      if (args === 'help') return { text: helpText() }
-      if (args === 'pane') {
-        if (!board) return { text: 'cos: board unavailable' }
-        helpShown = false
-        return (await openPane($, true)) ? {} : { text: 'cos: the preview did not open' }
-      }
-      if (!board) return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
-      // A docked pane can take up to 45% of the terminal; keep the digest
-      // inside the transcript column it leaves, so it never wraps.
-      const width = Math.max(48, Math.floor((terminalColumns() || 96) * 0.55) - 1)
-      return { text: digest(board, { project: args || null, width }) }
-    } catch {
-      return { text: 'cos: board unavailable' + (reason ? ' · ' + reason : '') }
-    }
+    if (!isChief) return { text: 'borant: the chief mod is off in this session (BORANT_ROLE is not chief)' }
+    const args = String(e.args || '').trim()
+    if (args === 'help') return { text: helpLines(80).map((l) => l.parts.flatMap((p) => p.segs || []).map((s) => s.text).join('').trimEnd()).join('\n') }
+    await refresh($, true)
+    return (await openPanel($)) ? {} : { text: 'borant: the panel did not open' }
   })
 
-  // Typing means the prompt has the keys; the board no longer has them. The
-  // mod takes no key here: every printable key goes on to the prompt.
-  on('prompt.edit', async ($, e, next) => {
-    try {
-      if (isChief && paneFocused) {
-        setFocused(false)
-        redraw($)
-      }
-    } catch {
-      // An edit is never worth an error.
-    }
-    return next(e)
-  })
-
-  // The chief's rule, in the system prompt, where compaction cannot drop it
-  // the way it drops a skill. A reload of the mod runs session.start again,
-  // so a long session gets it too.
+  // The chief's rule, in the system prompt, where compaction cannot drop it.
   on('prompt.compose', async ($, e, next) => {
     await ensureStarted($).catch(() => {})
     const out = await next(e)
@@ -319,25 +221,15 @@ export function register(on) {
     return { ...out, sections: [...out.sections, { id: 'borant:chief-delegation', text: DELEGATION_RULE, scope: 'session' }] }
   })
 
-  // Project work that reaches the chief's shell is refused, in any mode, with
-  // a reason the model reads; the person gets no prompt. Reads, and the
-  // Borant CLI, pass. In the turn a Done press started, any call that would
-  // ask the person is refused too: they pressed a key on the board and are
-  // not at the prompt to approve it.
+  // Project work that reaches the chief's shell is refused, with a reason the
+  // model reads. Reads and the Borant CLI pass.
   on('tool.check', async ($, e, next) => {
     await ensureStarted($).catch(() => {})
     const verdict = await next(e)
     if (!isChief || verdict.decision === 'deny') return verdict
     const why = e.tool === 'Bash' ? projectWork(e.input) : null
     if (why) return { decision: 'deny', reason: guardReason(why) }
-    if (doneTurnId && verdict.decision === 'ask' && e.agentId === undefined) return { decision: 'deny', reason: DONE_TURN_REASON }
     return verdict
-  })
-
-  on('turn.complete', async ($, e, next) => {
-    const out = await next(e)
-    if (e.agentId === undefined && e.turnId === doneTurnId) doneTurnId = null
-    return out
   })
 
   on('session.compact', async ($, e, next) => {
@@ -350,45 +242,22 @@ export function register(on) {
   on('turn.start', async ($, e, next) => {
     try {
       await ensureStarted($)
-      // A Done's own turn, not one it was queued behind: the guard holds in
-      // it, and the chief has the prompt, so the item is closing from now.
-      // Claude Code wraps a plugin's prompt in words of its own ("The borant
-      // plugin sent a message:" before it, a note after it), so the turn's
-      // text holds the prompt. Each Done's prompt names its task.
-      if (isChief && e.agentId === undefined) {
-        const text = String(e.text || '')
-        const done = Object.entries(pending).find(([, m]) => m.state === 'sending' && text.includes(m.prompt))
-        doneTurnId = done ? e.turnId : null
-        if (done) {
-          pending[done[0]] = { ...done[1], state: 'closing', at: await nowMs($) }
-          redraw($)
-        }
-      }
       if (isChief && ruleOwed && e.agentId === undefined) {
         ruleOwed = false
         await tell($, DELEGATION_RULE)
       }
-    } catch {
-      // The system prompt still carries the rule.
-    }
-    try {
       if (isChief) {
         await refresh($)
-        await refreshTasks($)
-        $.ui.invalidate('ui.render')
+        redraw($)
       }
     } catch {
-      // Quiet: a refresh never disturbs a turn.
+      // A refresh never disturbs a turn.
     }
     return next(e)
   })
 }
 
-/**
- * Starts the mod once per load. A reload does not always raise session.start
- * (`/reload-plugins` loads the module and goes on), so the hooks a chief needs
- * at once start it too.
- */
+let ruleOwed = false
 let started = false
 async function ensureStarted($) {
   if (started) return
@@ -396,7 +265,6 @@ async function ensureStarted($) {
   await start($)
 }
 
-/** The one cheap role check. A chief is started with BORANT_ROLE=chief. */
 async function start($) {
   let role
   try {
@@ -407,7 +275,6 @@ async function start($) {
   if (role !== 'chief') return
   isChief = true
   ruleOwed = true
-
   let mode = 'cli'
   try {
     mode = sourceMode(await $.env.get('BORANT_COS_BOARD'))
@@ -415,60 +282,47 @@ async function start($) {
     mode = 'cli'
   }
   config = { mode }
-
   try {
-    const wait = Number(await $.env.get('BORANT_COS_DONE_WAIT_S'))
-    if (Number.isFinite(wait) && wait > 0) doneWaitMs = wait * 1000
+    const s = await $.store.get('seen')
+    if (s && typeof s === 'object' && typeof s.at === 'number' && s.ids) seen = s
+    used = Boolean(await $.store.get('used'))
   } catch {
-    doneWaitMs = DONE_WAIT_MS
+    // No store: changes start from now.
   }
-
   try {
-    await $.command.register({
-      name: 'cos',
-      description: 'The chief-of-staff board: /cos, /cos <project>, /cos pane, or /cos help',
-      argumentHint: '[help|pane|project]',
-      immediate: true,
-    })
+    await $.command.register({ name: 'borant', description: 'Give the Borant panel the keys (or /borant help for every key)', argumentHint: '[help]', immediate: true })
   } catch {
     // A taken name only costs the command, not the band.
   }
-
   try {
     $.clock.every(REFRESH_MS, () => {
       refresh($)
-        .then(async () => {
-          await refreshTasks($)
-          $.ui.invalidate('ui.render')
-        })
+        .then(() => redraw($))
         .catch(() => {})
+    })
+    $.clock.every(1000, () => {
+      // Receipts leave after RECEIPT_MS, and ages count up.
+      if (Object.keys(marks.receipts).length) redraw($)
     })
   } catch {
     // Without a timer the board still refreshes on each turn.
   }
-
   await refresh($, true)
+  redraw($)
   if (mode === 'cli') followEvents($)
 }
 
-/**
- * Follow the host's event stream, and read the board soon after each event
- * that can change it: a task's status, a lease, an agent, a spawn, a move.
- *
- * A spawn lives as long as the hook that starts it: one started in a render
- * or session hook ends when that hook returns. So the stream starts from a
- * timer, and one that ends or is refused starts again from a timer.
- */
 function followEvents($) {
   try {
     $.clock.after(0, () => {
       streamEvents($).catch(() => {})
     })
   } catch {
-    // Without a timer the 5 s poll still reads the board.
+    // The poll still reads the board.
   }
 }
 
+/** Follow the host's event stream; a task event reads that channel again. */
 async function streamEvents($) {
   try {
     const stream = $.process.spawn({ argv: ['borant', 'events', '--follow', '--json'] })
@@ -477,32 +331,38 @@ async function streamEvents($) {
       if (!piece || piece.stream !== 'stdout') continue
       const lines = (rest + piece.text).split('\n')
       rest = lines.pop() || ''
-      if (lines.some(changesBoard)) pushRefresh($)
+      for (const l of lines) {
+        const ev = eventOf(l)
+        if (!ev) continue
+        if (ev.channel && ev.kind.startsWith('task.')) staleChannels.add(ev.channel)
+        pushRefresh($)
+      }
     }
   } catch {
-    // No borant, or an old one: the 5 s poll still reads the board.
+    // No borant, or an old one: the poll still reads the board.
   }
   try {
     $.clock.after(EVENTS_RETRY_MS, () => {
       streamEvents($).catch(() => {})
     })
   } catch {
-    // The 5 s poll still reads the board.
+    // The poll still reads the board.
   }
 }
 
-/** Whether one line of `borant events --json` can change what the board shows. */
-function changesBoard(line) {
-  let kind = ''
+const staleChannels = new Set()
+
+function eventOf(line) {
   try {
-    kind = String(JSON.parse(line).kind || '')
+    const v = JSON.parse(line)
+    const kind = String(v.kind || '')
+    if (!/^(task|lease|agent|spawn|move|channel|change)\./.test(kind)) return null
+    return { kind, channel: v.channel || v.context?.channel || null }
   } catch {
-    return false
+    return null
   }
-  return /^(task|lease|agent|spawn|move|channel)\./.test(kind)
 }
 
-/** One read, shortly after a burst of events. */
 function pushRefresh($) {
   if (pushQueued) return
   pushQueued = true
@@ -510,10 +370,7 @@ function pushRefresh($) {
     $.clock.after(PUSH_DELAY_MS, () => {
       pushQueued = false
       refresh($, true)
-        .then(async () => {
-          await refreshTasks($)
-          redraw($)
-        })
+        .then(() => redraw($))
         .catch(() => {})
     })
   } catch {
@@ -521,99 +378,589 @@ function pushRefresh($) {
   }
 }
 
-/** `stale · 2m` once no read succeeded for a while, or null: a healthy board
- * says nothing about itself, so nothing on it moves. */
-async function stale($) {
-  const now = await nowMs($)
-  return freshness({ ageMs: lastOkAt === null ? null : Math.max(0, now - lastOkAt) })
-}
-
-/** Read the board and note what is new. Never throws. */
+let reading = null
+/** Read the board, the channels, and the tasks. Never throws. */
 async function refresh($, force = false) {
   if (!isChief || !config) return
-  // The mock clock of a test controls this; the timer and the turn hook share it.
-  let now = 0
-  try {
-    now = await $.clock.now()
-  } catch {
-    now = 0
+  if (reading) {
+    if (!force) return reading
+    await reading.catch(() => {})
+    if (reading) return reading
   }
+  const now = await nowMs($)
   if (!force && now - lastReadAt < DEBOUNCE_MS) return
   lastReadAt = now
-  const seq = ++readSeq
-  const result = await readBoard($, config)
-  // A read that started before one already applied is older news.
-  if (seq < appliedSeq) return
-  appliedSeq = seq
-  if (!result.board) {
-    // A failed read draws an empty board with the reason, never the stale one:
-    // a session that refuses to read as the person must say so.
-    board = null
+  reading = readAll($, now).finally(() => {
+    reading = null
+  })
+  return reading
+}
+let lastReadAt = -Infinity
+
+async function readAll($, now) {
+  const b = await readBoard($, config)
+  if (!b.board) {
+    if (!unavailable) downSince = now
     unavailable = true
-    reason = result.reason || ''
+    reason = b.reason || ''
     return
   }
-  board = result.board
-  lastOkAt = now
+  board = b.board
   unavailable = false
+  downSince = null
   reason = ''
+  lastOkAt = now
+  if (!channels.length || now - tasksAt >= TASKS_MS) {
+    const c = await readChannels($, config)
+    if (c.channels) channels = c.channels
+  }
+  const all = allChannels(board, channels)
+  const due = now - tasksAt >= TASKS_MS
+  for (const ch of all) {
+    if (!due && ch in tasks && !staleChannels.has(ch)) continue
+    staleChannels.delete(ch)
+    const r = await readTasks($, config, ch)
+    if (r.tasks) tasks[ch] = r.tasks
+  }
+  if (due) tasksAt = now
+  ready = true
+  // The first read with no snapshot takes one: changes start from now.
+  if (!seen) {
+    seen = snapshot(tasks, now)
+    store($, 'seen', seen)
+  }
   announceNew($)
-  // A row a Done closed stays CLOSED_SHOW_MS and then goes: that is no news.
-  // The check runs before any await, so no drawing can move the selection
-  // onto the row now in its place first (current() also marks that move).
-  // A row the person's own Done took off is no news either.
-  const closedRow = Boolean(selKey && pending[selKey.replace(/^q:/, '')])
-  if (selKey && !liveItems().some((i) => i.key === selKey)) {
-    // Board mode keeps the row, marked; at rest the next row takes its place.
-    if (!items().some((i) => i.key === selKey)) selMoved = true
-    if (!closedRow) toast($, 'the selected item left the board')
-  }
-  await settlePending($, now)
 }
 
-/**
- * A Done whose item left the board landed: the hub closed the task (or
- * answered it). Its row stays CLOSED_SHOW_MS as closed, then goes. One the
- * hub has not closed DONE_WAIT_MS after the prompt landed shows as still open,
- * and its Done button comes back.
- */
-async function settlePending($, now) {
-  const open = new Set(allQuestions(board).map(questionKey))
-  // An Ask's mark goes with its item.
-  for (const key of Object.keys(asked)) if (!open.has(key)) delete asked[key]
-  for (const [key, mark] of Object.entries(pending)) {
-    if (mark.state === 'closed' || mark.state === 'moved' || mark.state === 'unknown') {
-      // Back on the board: it needs the person again, with its keys.
-      if (open.has(key) || now - mark.closedAt >= CLOSED_SHOW_MS) delete pending[key]
-    } else if (!open.has(key)) {
-      if (mark.state === 'unsent') {
-        delete pending[key]
-      } else {
-        // The item left needs-you. That is closed only when the task is: a
-        // task that went back to work leaves the list too.
-        const status = await taskStatus($, mark.question)
-        // A newer read can have settled it, or seen it back, meanwhile.
-        if (pending[key] !== mark || allQuestions(board).some((q) => questionKey(q) === key)) continue
-        const state = status === 'closed' ? 'closed' : status ? 'moved' : 'unknown'
-        pending[key] = { ...mark, state, status, closedAt: now }
-        toast($, { closed: 'closed: ', moved: 'no longer needs you: ', unknown: 'left the board, status unknown: ' }[state] + mark.title)
-      }
-    } else if (mark.state === 'closing' && now - mark.at >= doneWaitMs) {
-      pending[key] = { ...mark, state: 'failed', waitMs: doneWaitMs, reason: 'not closed within ' + Math.round(doneWaitMs / 1000) + ' s' }
-      toast($, 'still open: ' + mark.title)
+/** A toast when the board shows a needs-you item that was not there before. */
+function announceNew($) {
+  const m = model()
+  const ids = new Set(m.needs.map((n) => n.id))
+  if (seenNeeds) {
+    const fresh = m.needs.find((n) => !seenNeeds.has(n.id) && !n.receipt)
+    if (fresh) toast($, 'needs you: ' + fresh.ask)
+  }
+  seenNeeds = ids
+}
+
+function model() {
+  // A receipt older than RECEIPT_MS is gone for good.
+  for (const [id, r] of Object.entries(marks.receipts)) if (clockNow - r.at >= RECEIPT_MS) delete marks.receipts[id]
+  return buildModel({ board, channels, tasks, seen, marks, now: clockNow })
+}
+
+// ------------------------------------------------------------------ the panel
+
+/** The selected list item, kept on an item that exists. */
+function current(m) {
+  const items = listItems(m)
+  if (!items.length) return null
+  const at = items.findIndex((i) => i.id === sel)
+  // An item that left the list gives its place to the row now there.
+  if (at < 0) sel = items[Math.min(selIndex, items.length - 1)].id
+  else selIndex = at
+  return find(m, sel)
+}
+let selIndex = 0
+
+function projectOf(m, name) {
+  return m.projects.find((p) => p.name === name) || null
+}
+
+/** The lines of the panel as it is now. */
+function panel() {
+  const m = model()
+  const w = paneCols
+  const h = Math.max(8, paneRows)
+  if (!paneFocused) {
+    const cur = current(m)
+    return panelLines(w, h, { top: topLine(w, 'nokeys'), entries: (lw) => listEntries(m, lw, null, info()), sel, detail: (dw) => detailOf(m, cur, dw), keys: [] })
+  }
+  if (view === 'help') return [topLine(w, 'help'), { parts: [{ segs: [] }] }, ...helpLines(w), ...keyBar([['b', 'back', 'back']], w)]
+  const cur = current(m)
+  if (view === 'tasks') {
+    const p = projectOf(m, project)
+    if (!p) {
+      view = 'list'
+      return panel()
     }
+    const t = p.tasks.find((x) => 't:' + x.id === taskSel) || p.tasks[0]
+    if (t) taskSel = 't:' + t.id
+    return panelLines(w, h, { top: topLine(w, 'list', 'all projects › ' + p.name), entries: (lw) => taskEntries(p, lw, taskSel), sel: taskSel, detail: (dw) => (t ? taskDetail(t, p, dw) : []), keys: taskKeys(t, p), listShare: 0.4 })
+  }
+  if (view === 'detail' && cur) {
+    const d = detailOf(m, cur, w)
+    return [topLine(w, field ? (sendState?.state === 'unconfirmed' ? 'retry' : 'typing') : 'list', crumbOf(cur)), { parts: [{ segs: [] }] }, ...d.slice(0, h - 6), ...keyBar(field ? [] : [...keysFor(cur), ['b', 'back to the list', 'back']], w)]
+  }
+  const mode = field ? (sendState?.state === 'unconfirmed' ? 'retry' : 'typing') : 'list'
+  return panelLines(w, h, {
+    top: topLine(w, mode, field ? crumbOf(cur) : ''),
+    entries: (lw) => listEntries(m, lw, sel, info()),
+    sel,
+    detail: (dw) => detailOf(m, cur, dw),
+    keys: field ? [] : confirm ? [['y', 'yes', 'yes'], ['n', 'no', 'no']] : keysFor(cur),
+    listShare: field ? 0.15 : 0.45,
+  })
+}
+
+function info() {
+  return { seenAt: seen ? clock(seen.at) : null }
+}
+
+const cellsWide = (t) => String(t || '').length
+
+function crumbOf(cur) {
+  if (!cur?.item) return ''
+  return (cur.item.project || '') + (cur.item.ask ? ' › ' + cur.item.ask.slice(0, 30) : '')
+}
+
+function keyBar(keys, w) {
+  return keys.length ? [{ parts: [{ segs: rule(w) }] }, ...keyLines(keys, w)] : []
+}
+
+/** The detail of the selected item, with the field or the confirmation under it. */
+function detailOf(m, cur, w) {
+  if (!cur || !cur.item) return [{ parts: [{ segs: [S('Nothing selected.', 'dim')] }] }]
+  const below = []
+  if (confirm && confirm.item === cur.item.id) {
+    below.push({ parts: [{ segs: [] }] }, { parts: [{ segs: rule(w, [S(confirm.what === 'approve' ? 'approve' : 'close as done', 'y')]) }] })
+    const q = confirm.what === 'approve' ? 'Approve it? The gate closes as done.' : 'Close this task as done?'
+    below.push({ parts: [{ segs: [S(q + '  ', 'yb'), S('y', 'kb'), S(' yes   ', 't'), S('n', 'kb'), S(' no', 't')] }] })
+  }
+  if (field && field.item === cur.item.id) {
+    const draft = drafts.get(field.item) || ''
+    below.push({ parts: [{ segs: [] }] }, { parts: [{ segs: rule(w, [S((field.kind === 'answer' ? 'answer to ' : 'message to ') + field.to, 'k')]) }] })
+    // The field first, the whole draft under it: a line above the field would
+    // move it down as the draft grows, and a moved field loses the keys.
+    below.push({ parts: [{ input: { key: 'field', value: draft, placeholder: field.kind === 'answer' ? 'type the answer' : 'type the message', label: field.kind } }] })
+    if (cellsWide(draft) > w - 16) for (const l of wrap(draft, w - 2)) below.push({ parts: [{ segs: [S('  ' + l, 'dim')] }] })
+    if (sendState?.state === 'sending') below.push({ parts: [{ segs: [S('◷ sending…', 'c')] }] })
+    if (sendState?.state === 'unconfirmed') below.push({ parts: [{ segs: [S('◷ not confirmed: ' + sendState.reason + '. ', 'o'), S('enter', 'kb'), S(' checks, then sends only if needed', 't')] }] })
+    if (sendState?.state === 'refused') below.push({ parts: [{ segs: [S('! refused: ' + sendState.reason, 'r')] }] })
+  }
+  if (cur.kind === 'need') return needDetail(cur.item, projectOf(m, cur.item.project), w, { below })
+  if (cur.kind === 'quiet') return quietDetail(cur.item, projectOf(m, cur.item.project), w)
+  if (cur.kind === 'ship') return shipDetail(cur.item, w)
+  if (cur.kind === 'change') return changeDetail(cur.item, w)
+  if (cur.kind === 'project') return projectDetail(cur.item, w)
+  return []
+}
+
+const NAV = [['j', 'down', 'move', 1], ['k', 'up', 'move', -1], ['1', 'needs', 'section', 1], ['2', 'offline', 'section', 2], ['3', 'PRs', 'section', 3], ['4', 'changed', 'section', 4], ['5', 'projects', 'section', 5]]
+/** In a narrow panel the keys keep their verb and lose their target, so all of them fit. */
+const narrow = () => paneCols < 80
+const who = (name) => (narrow() ? '' : ' ' + name)
+
+/** The keys of the selected item, then the moves. */
+function keysFor(cur) {
+  const keys = []
+  const it = cur?.item
+  if (cur?.kind === 'need' && it && !it.receipt) {
+    if (it.verb === 'approve') keys.push(['y', 'approve', 'approve'])
+    if (it.verb === 'answer' || it.verb === 'decide') keys.push(['r', 'answer' + who(it.worker || it.owner || 'the task'), 'answer'])
+    if (it.verb === 'unblock') keys.push(['u', 'retry the spawn', 'retry'])
+    if (it.owner) keys.push(['a', narrow() ? 'ask' : 'ask ' + it.owner + ' for a recommendation', 'ask'])
+    if (it.worker) keys.push(['m', 'message' + who(it.worker), 'message'], ['g', 'attach' + who('to ' + it.worker), 'attach'])
+    if (it.task) keys.push(['d', 'close as done', 'done'])
+  }
+  if (cur?.kind === 'quiet') keys.push(['u', 'resume ' + it.who, 'retry'])
+  if (cur?.kind === 'ship') keys.push(['o', 'open ' + it.pr.label, 'pr'], ...(it.who ? [['g', 'attach to ' + it.who, 'attach']] : []))
+  if (cur?.kind === 'project') keys.push(['enter', 'its tasks', null])
+  if (it?.project && cur?.kind !== 'project') keys.push(['p', 'project' + who(it.project), 'project'])
+  if (!narrow()) keys.push(['↑↓', 'move', null])
+  keys.push(...NAV)
+  if (model().changes.length) keys.push(['x', narrow() ? 'seen' : 'mark changes seen', 'seen'])
+  return keys
+}
+
+function taskKeys(t, p) {
+  const keys = []
+  const need = t && model().needs.find((n) => n.task === t.id && !n.receipt)
+  if (need) {
+    if (need.verb === 'approve') keys.push(['y', 'approve', 'approve'])
+    if (need.verb === 'answer' || need.verb === 'decide') keys.push(['r', 'answer' + who(need.worker || need.owner || ''), 'answer'])
+    if (need.owner) keys.push(['a', narrow() ? 'ask' : 'ask ' + need.owner + ' for a recommendation', 'ask'])
+  }
+  if (t?.pr) keys.push(['o', 'open ' + t.pr.label, 'pr'])
+  if (t?.who) keys.push(['g', 'attach' + who('to ' + t.who), 'attach'], ['m', 'message' + who(t.who), 'message'])
+  if (t && t.state !== 'done') keys.push(['d', 'close as done', 'done'])
+  keys.push(['b', narrow() ? 'back' : 'back to all projects', 'back'], ['j', 'down', 'move', 1], ['k', 'up', 'move', -1])
+  return keys
+}
+
+/** The item a key acts on: the task in the tasks view, else the selected item. */
+function target(m) {
+  if (view === 'tasks') {
+    const p = projectOf(m, project)
+    const t = p && p.tasks.find((x) => 't:' + x.id === taskSel)
+    // A task that needs the person acts as its needs-you item does.
+    const need = t && m.needs.find((n) => n.task === t.id && !n.receipt)
+    if (need) return { kind: 'need', item: need }
+    if (t) return { kind: 'task', item: { id: taskSel, channel: t.channel, task: t.id, title: t.title, ask: t.title, worker: t.who, owner: p.orchestrators[0]?.agent || '', project: p.name, pr: t.pr, who: t.who } }
+  }
+  return current(m)
+}
+
+/** A press on a Button of the band or the panel. */
+async function press($, btn) {
+  try {
+    await dispatch($, btn.act, btn.arg)
+  } catch {
+    // A press is never worth an error.
+  }
+  redraw($)
+  ringSoon($)
+}
+
+/** After the redraw, put the ring on the selected row: a row that was not
+ * drawn yet (scrolled out, or a new view) cannot take it before. */
+function ringSoon($) {
+  if (!paneOpen || field) return
+  try {
+    $.clock.after(30, () => {
+      const id = view === 'tasks' ? taskSel : sel
+      if (id && !field) Promise.resolve($.ui.focus({ requestId: PANE, key: 'row:' + id })).catch(() => {})
+    })
+  } catch {
+    // The row's autoFocus still asks for the ring.
   }
 }
 
-/** A task's status as the hub has it now, or null when the read fails. */
-async function taskStatus($, q) {
-  let result = await readTasksOrdered($, q.channel)
-  // A newer read of the channel landed first: its answer is the one to use.
-  // One that has not landed yet is waited for by reading again.
-  if (result.stale) result = taskCacheSeq.get(q.channel) > result.seq ? { tasks: taskCache.get(q.channel) } : await readTasksOrdered($, q.channel)
-  if (result.stale) return null
-  const task = (result.tasks || []).find((t) => t.id === q.task)
-  return task ? task.status : null
+async function dispatch($, actName, arg) {
+  const m = model()
+  if (actName === 'open') return openPanel($)
+  if (actName === 'select') {
+    if (!paneOpen) {
+      sel = arg
+      view = 'list'
+      return openPanel($)
+    }
+    if (String(arg).startsWith('t:')) {
+      taskSel = arg
+      return
+    }
+    sel = arg
+    if (arg.startsWith('p:')) {
+      project = arg.slice(2)
+      view = 'tasks'
+      taskSel = null
+      return
+    }
+    view = view === 'detail' ? 'list' : 'detail'
+    return
+  }
+  if (actName === 'move') return move($, m, arg)
+  if (actName === 'section') {
+    const first = listItems(m).find((i) => i.section === arg)
+    if (first) {
+      sel = first.id
+      view = 'list'
+      focusRow($, sel)
+    } else toast($, 'nothing in that section')
+    return
+  }
+  if (actName === 'back') {
+    if (view === 'help') view = viewBeforeHelp
+    else view = 'list'
+    return
+  }
+  if (actName === 'help') {
+    if (view === 'help') view = viewBeforeHelp
+    else {
+      viewBeforeHelp = view
+      view = 'help'
+    }
+    return
+  }
+  if (actName === 'seen') {
+    tasksAt = 0
+    await refresh($, true)
+    seen = snapshot(tasks, clockNow)
+    marks.changes = []
+    store($, 'seen', seen)
+    toast($, 'changes marked seen at ' + clock(clockNow))
+    return
+  }
+  if (actName === 'no') {
+    confirm = null
+    return
+  }
+  const cur = target(m)
+  if (!cur?.item) return
+  const it = cur.item
+  if (actName === 'project') {
+    project = it.project
+    view = 'tasks'
+    taskSel = null
+    return
+  }
+  if (actName === 'answer' || actName === 'message') {
+    const to = actName === 'answer' ? it.worker || it.owner : it.worker || it.who
+    field = { kind: actName, item: it.id, to, channel: it.channel, task: it.task }
+    sendState = null
+    // The ring must move onto the field, or the letters typed next go to the prompt.
+    redraw($)
+    try {
+      $.clock.after(50, () => {
+        Promise.resolve($.ui.focus({ requestId: PANE, key: 'field' })).catch(() => {})
+      })
+    } catch {
+      // The field's autoFocus still asks for the ring.
+    }
+    return
+  }
+  if (actName === 'approve' || actName === 'done') {
+    confirm = { what: actName, item: it.id, channel: it.channel, task: it.task, title: it.ask || it.title }
+    return
+  }
+  if (actName === 'yes' && confirm) {
+    const c = confirm
+    confirm = null
+    const out = await act($, config, ACTIONS.close(c.channel, c.task, c.what === 'approve' ? 'Approved by the person from the chief mod.' : 'Closed as done by the person from the chief mod.'))
+    if (out.ok) {
+      receipt(m, c.item, (c.what === 'approve' ? '✓ approved ' : '✓ closed ') + clock(clockNow) + (c.what === 'approve' ? ' · the gate is closed' : ''), c.what === 'approve' ? 'approved' : 'done', c.title, c.task)
+      staleChannels.add(c.channel)
+      await refresh($, true)
+    } else toast($, (c.what === 'approve' ? 'approve' : 'close') + ' failed: ' + out.reason)
+    return
+  }
+  if (actName === 'ask') return askOwner($, m, it)
+  if (actName === 'pr') {
+    const url = it.pr?.url
+    if (!url) return toast($, 'no PR on this item')
+    const out = await act($, config, ACTIONS.open(url))
+    return toast($, out.ok ? 'opened ' + it.pr.label + ' in the browser' : 'could not open ' + it.pr.label + ': ' + out.reason)
+  }
+  if (actName === 'attach') {
+    const agent = it.worker || it.who
+    return toast($, 'Borant cannot open a terminal yet. In a terminal, run: borant attach ' + agent)
+  }
+  if (actName === 'retry') {
+    const agent = it.agent || it.who
+    const out = await act($, config, ACTIONS.resume(agent))
+    toast($, out.ok ? 'resumed ' + agent : 'resume failed: ' + out.reason)
+    if (out.ok) await refresh($, true)
+  }
+}
+
+/** Mark an item done by the person: a receipt row, and a change. */
+function receipt(m, id, text, verb, title, task) {
+  const index = m.needs.findIndex((n) => n.id === id)
+  const item = m.needs[index]
+  marks.receipts[id] = { text, at: clockNow, item, index }
+  marks.changes.push({ id: 'c:you:' + id + ':' + clockNow, verb, project: item?.project || '', text: (title || '') + ' (you)', who: 'you', at: clockNow, task: task || item?.task || null })
+}
+
+function move($, m, delta) {
+  if (view === 'tasks') {
+    const p = projectOf(m, project)
+    const ids = p ? p.tasks.map((t) => 't:' + t.id) : []
+    if (!ids.length) return
+    const at = Math.max(0, ids.indexOf(taskSel))
+    taskSel = ids[(at + delta + ids.length) % ids.length]
+    return focusRow($, taskSel)
+  }
+  const ids = listItems(m).map((i) => i.id)
+  if (!ids.length) return
+  const at = Math.max(0, ids.indexOf(sel))
+  sel = ids[(at + delta + ids.length) % ids.length]
+  if (view === 'detail') view = 'list'
+  focusRow($, sel)
+}
+
+function focusRow($, id) {
+  try {
+    Promise.resolve($.ui.focus({ requestId: PANE, key: 'row:' + id })).catch(() => {})
+  } catch {
+    // The selection still shows.
+  }
+}
+
+/** The answer or message field: Enter sends. */
+async function submitField($, value) {
+  if (!field) return
+  const f = field
+  const text = String(value ?? drafts.get(f.item) ?? '').trim()
+  if (!text) return
+  drafts.set(f.item, text)
+  // After an unconfirmed send, check first: a task that left needs-you got it.
+  if (sendState?.state === 'unconfirmed' && f.kind === 'answer') {
+    await refresh($, true)
+    const still = model().needs.some((n) => n.id === f.item && !n.receipt)
+    if (!still) return sent($, f, text)
+  }
+  sendState = { state: 'sending' }
+  redraw($)
+  const out = await act($, config, f.kind === 'answer' ? ACTIONS.answer(f.channel, f.task, text) : ACTIONS.send(f.to, text))
+  if (out.ok) return sent($, f, text)
+  sendState = out.timeout ? { state: 'unconfirmed', reason: 'the hub did not reply in 8 s' } : { state: 'refused', reason: out.reason }
+  redraw($)
+}
+
+async function sent($, f, text) {
+  const m = model()
+  drafts.delete(f.item)
+  field = null
+  sendState = null
+  if (f.kind === 'answer') {
+    const item = m.needs.find((n) => n.id === f.item)
+    receipt(m, f.item, '✓ answered ' + clock(clockNow) + ' · sent to ' + f.to, 'answered', item ? item.ask : '', f.task)
+  } else toast($, 'sent to ' + f.to + ': ' + text.slice(0, 40))
+  if (f.channel) staleChannels.add(f.channel)
+  await refresh($, true)
+  redraw($)
+}
+
+/** Ask: the question goes to the orchestrator as the person; the chief is told. */
+async function askOwner($, m, it) {
+  const owner = it.owner
+  if (!owner) return toast($, 'no orchestrator owns this item')
+  const what = it.ask || it.title
+  const text = 'Chris asks about "' + what + '" (' + it.channel + (it.task ? '/' + it.task : '') + '), from the chief\'s board: what does it need from him, and what do you recommend? Answer the chief, who relays it to Chris.'
+  const out = await act($, config, ACTIONS.send(owner, text))
+  if (!out.ok) return toast($, 'ask failed: ' + out.reason)
+  marks.asked[it.id] = { owner, time: clock(clockNow) }
+  await tell($, 'The person pressed "ask" on "' + what + '" in the board. The board sent the question to ' + owner + ' as a direct message. Do not answer it yourself; relay ' + owner + "'s reply.")
+  toast($, 'asked ' + owner + ' about ' + what.slice(0, 40))
+}
+
+async function openPanel($) {
+  if (!used) {
+    used = true
+    store($, 'used', true)
+  }
+  try {
+    const term = terminalColumns()
+    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, columns: Math.max(24, Math.floor(term * 0.45)), rows: Math.max(12, Math.min(28, (maxRows || 14) + 10)), focus: true, closeOnEscape: true })
+    if (opened && opened.isPlaced === false) return false
+    paneOpen = true
+    redraw($)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ------------------------------------------------------------------ drawing
+
+function terminalColumns() {
+  return columns || 120
+}
+
+function measure(e) {
+  const c = e.viewport && e.viewport.columns
+  if (typeof c === 'number' && c > 0 && e.component === 'AbovePrompt' && !paneOpen) columns = c
+}
+
+function widthOf(e) {
+  const body = e.props && e.props.bodyColumns
+  if (typeof body === 'number' && body > 0) return body
+  return columns > 0 ? columns - 5 : 96
+}
+
+function styleProps(style) {
+  switch (style) {
+    case 'dim':
+      return { dimColor: true }
+    case 'faint':
+      return { dimColor: true }
+    case 'bold':
+    case 'head':
+      return { bold: true }
+    case 'k':
+      return { color: 'suggestion' }
+    case 'kb':
+      return { color: 'suggestion', bold: true }
+    case 'keyson':
+      return { color: 'suggestion', bold: true, inverse: true }
+    case 'y':
+      return { color: 'yellow' }
+    case 'yb':
+      return { color: 'yellow', bold: true }
+    case 'r':
+      return { color: 'red' }
+    case 'rb':
+      return { color: 'red', bold: true }
+    case 'g':
+      return { color: 'green' }
+    case 'b':
+      return { color: 'blue' }
+    case 'c':
+      return { color: 'cyan' }
+    case 'm':
+      return { color: 'magenta' }
+    case 'o':
+      return { color: '#d7875f' }
+    default:
+      return {}
+  }
+}
+
+function texts($, e, segs, keyBase, selected) {
+  const { Text } = $.ui.resolve(e)
+  // An empty line still takes its row.
+  if (!segs.length || segs.every((s) => s.text === '')) return [Text({ key: keyBase + '-0', children: [' '] })]
+  return segs.map((s, j) => {
+    const props = { key: keyBase + '-' + j, children: [s.text], ...styleProps(s.style) }
+    if (selected) {
+      props.dimColor = false
+      if (!props.color) props.color = 'text'
+    }
+    return Text(props)
+  })
+}
+
+/** Lines as a column of row Boxes: text, plain Buttons, and the answer Input. */
+function tree($, e, lines, inPane = false) {
+  const { Box, Button, Input } = $.ui.resolve(e)
+  const ringRow = inPane ? 'row:' + (view === 'tasks' ? taskSel : sel) : null
+  return Box({
+    flexDirection: 'column',
+    children: lines.map((l, i) =>
+      Box({
+        key: 'line-' + i,
+        flexDirection: 'row',
+        ...(l.sel ? { backgroundColor: SELECTED_BG } : {}),
+        children: (l.parts || []).map((p, j) => {
+          const kb = 'l' + i + '-' + j
+          if (p.input) {
+            return Input({
+              key: p.input.key,
+              label: p.input.label,
+              placeholder: p.input.placeholder,
+              value: p.input.value,
+              submitLabel: 'send',
+              autoFocus: true,
+              onInput: (value) => {
+                if (field) drafts.set(field.item, value)
+                redraw($)
+              },
+              onSubmit: (value) => submitField($, value),
+            })
+          }
+          if (p.btn) {
+            const props = { key: p.btn.key, label: p.btn.label || p.btn.key, plain: true, onPress: () => press($, p.btn) }
+            if (p.btn.hotkey) props.hotkey = p.btn.hotkey
+            if (p.btn.action) props.action = p.btn.action
+            if (!p.btn.hotkey) props.children = texts($, e, p.segs, kb, l.sel)
+            if (!field && p.btn.key === ringRow) props.autoFocus = true
+            return Button(props)
+          }
+          return Box({ key: kb, flexDirection: 'row', children: texts($, e, p.segs || [], kb, l.sel) })
+        }),
+      }),
+    ),
+  })
+}
+
+// ------------------------------------------------------------------ helpers
+
+async function tell($, text) {
+  try {
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: '[borant chief mod] ' + text }] } })
+  } catch {
+    // Nothing to tell it with.
+  }
 }
 
 function toast($, text) {
@@ -624,670 +971,14 @@ function toast($, text) {
   }
 }
 
-/** A toast when the board shows a needs-you item that was not there before. */
-function announceNew($) {
-  const questions = allQuestions(board)
-  const keys = new Set(questions.map((q) => String(q.channel) + '/' + String(q.task)))
-  if (seenNeeds) {
-    const fresh = questions.find((q) => !seenNeeds.has(String(q.channel) + '/' + String(q.task)))
-    if (fresh) {
-      try {
-        $.ui.toast('needs you: ' + fresh.title)
-      } catch {
-        // A toast is never worth an error.
-      }
-    }
-  }
-  seenNeeds = keys
-}
-
-
-/** The needs-you items as drawn: the board's, with the ones a Done just closed. */
-function drawnQuestions() {
-  return withClosed(allQuestions(board), pending, clockNow)
-}
-
-function liveItems() {
-  return board ? bandItems(board, drawnQuestions()) : []
-}
-
-/** The band's rows: the board's, or in board mode the rows it began with. */
-function items() {
-  const live = liveItems()
-  if (!frozen || !board) return live
-  const now = new Map(live.map((i) => [i.key, i]))
-  frozen = frozen.map((old) => {
-    const fresh = now.get(old.key)
-    if (fresh) return fresh
-    // It left the board: it keeps its place, marked, until esc.
-    if (old.kind === 'needs' && !old.q.closed && !old.q.gone) return { ...old, q: { ...old.q, gone: true } }
-    return old
-  })
-  return frozen
-}
-
-/** How many rows board mode holds back: new on the board since it began. */
-function waitingRows() {
-  if (!frozen || !board) return 0
-  const held = new Set(frozen.map((i) => i.key))
-  return liveItems().filter((i) => !held.has(i.key) && !(i.kind === 'needs' && (i.q.closed || i.q.gone))).length
-}
-
-/** Where the keys are: board mode holds the rows still while it lasts. */
-function setFocused(focused) {
-  if (focused && !paneFocused) frozen = liveItems()
-  if (!focused) frozen = null
-  paneFocused = focused
-}
-
-/** The band's width at rest with the preview docked: the band's width less
- * the dock (as the person keeps it, under the 45% cap) and its border. */
-function dockedBandWidth(width) {
-  return width - Math.min(dockPane ?? PANE_COLUMNS, Math.floor(terminalColumns() * 0.45)) - 1
-}
-
-/** The terminal's width: the band's viewport at rest. */
-function terminalColumns() {
-  return restSeen ? restSeen.columns : columns
-}
-
-/** The docked preview's width to ask for. */
-function paneColumns() {
-  return Math.max(24, Math.min(PANE_COLUMNS, Math.floor(terminalColumns() * 0.45)))
-}
-
-/** The selected row: the one recorded, or the row now at its place when it
- * went, which takes no Done or Ask until the person selects again. */
-function current() {
-  const list = items()
-  if (!list.length) return { item: null, index: -1, count: 0 }
-  let index = list.findIndex((i) => i.key === selKey)
-  if (index < 0) {
-    index = Math.max(0, Math.min(selIndex, list.length - 1))
-    if (selKey) selMoved = true
-    selKey = list[index].key
-  }
-  selIndex = index
-  return { item: list[index], index, count: list.length }
-}
-
-/** Whether the board has the keys: board mode, the pane's key field focused. */
-function active() {
-  return paneFocused
-}
-
-/** The preview draws the compact block: inline, or in a narrow dock. */
-function compactPane() {
-  return placement === 'inline' || paneWidth < NARROW_PANE
-}
-
-/** The marks of a needs-you item: its Done, its Ask, and whether it is open. */
-function marks(item) {
-  const key = questionKey(item.q)
-  return { mark: pending[key], ask: asked[key], open: !item.q.closed && !item.q.gone }
-}
-
-/** A band row's short status, in its fixed tail. */
-function shortStatus(item) {
-  if (!item || item.kind !== 'needs') return []
-  const { mark, ask } = marks(item)
-  return pressStatusShort(mark, ask, clockNow) || (item.q.closed ? [seg('✓ closed', 'green')] : item.q.gone ? [seg('left the board', 'dim')] : [])
-}
-
-/** The preview's full status of the item: `◷ the chief is closing it, since 14:32`. */
-function fullStatus(item) {
-  if (!item || item.kind !== 'needs') return []
-  const { mark, ask } = marks(item)
-  return pressStatus(mark, ask, clockNow) || (item.q.closed ? [seg('✓ closed', 'green')] : item.q.gone ? [seg('left the board; the row goes after esc', 'dim')] : [])
-}
-
-/**
- * What d and a can do on the selected item now: Done while no Done is under
- * way, Ask while no Ask is under way or sent and no Done is under way, each
- * again after it failed. Neither on a project, a closed item, or a row that
- * moved into the place of one that left the board.
- */
-function presses(item) {
-  if (!item || item.kind !== 'needs' || selMoved) return { done: false, ask: false }
-  const { mark, ask, open } = marks(item)
-  const done = open && canDone(mark)
-  return { done, ask: done && (!ask || ask.state === 'failed') }
-}
-
-function select(key) {
-  const list = items()
-  const index = list.findIndex((i) => i.key === key)
-  if (index < 0) return
-  selKey = key
-  selIndex = index
-  selMoved = false
-  helpShown = false
-}
-
-/** A click on a row: select it and enter board mode. */
-async function chipPress($, key) {
-  select(key)
-  redraw($)
-  await enterBoard($)
-  if (more) detailsSoon($)
-}
-
-/**
- * A click: board mode on the selected row. If the pane did not get the keys
- * (the band holds them), the person is told how, rather than left with a
- * preview that has no keys.
- */
-async function enterBoard($) {
-  helpShown = false
-  redraw($)
-  if (!(await openPane($, true))) return
+function store($, key, value) {
   try {
-    $.clock.after(FOCUS_CHECK_MS, () => {
-      if (paneOpen && !paneFocused) toast($, 'board mode did not get the keys: esc, then /cos pane')
-    })
+    $.store.set(key, value).catch(() => {})
   } catch {
-    // Without a clock the pane still says board mode is off.
+    // No store: it lasts this session only.
   }
 }
 
-/**
- * The key field's text changed: the characters after what that field held
- * last are new keys. The field is drawn afresh after each key, so it stays
- * empty; a key typed before that redraw lands in the old field, and its text
- * there tells it apart. Backspace types nothing.
- */
-function fieldInput($, value, e) {
-  const field = (e && e.element) || ''
-  const typed = inserted(fieldSeen.get(field) || '', value)
-  fieldSeen.set(field, value)
-  if (fieldSeen.size > 8) fieldSeen.delete(fieldSeen.keys().next().value)
-  if (!typed) return keyChain
-  fieldGen += 1
-  redraw($)
-  // A key queued in one board mode never runs in the next one.
-  const mode = boardGen
-  for (const key of Array.from(typed)) keyChain = keyChain.then(() => (mode === boardGen ? boardKey($, key) : undefined)).catch(() => {})
-  return keyChain
-}
-
-/** One key in board mode. A key the board does not use does nothing. */
-async function boardKey($, key) {
-  if (/^[1-9]$/.test(key)) {
-    const item = items()[Number(key) - 1]
-    if (!item) return
-    select(item.key)
-    redraw($)
-    if (more) detailsSoon($)
-    return
-  }
-  if (key === 'j') return move($, 1)
-  if (key === 'k') return move($, -1)
-  if (key === '?') {
-    helpShown = !helpShown
-    return redraw($)
-  }
-  if (key !== 'd' && key !== 'a') return
-  const { item } = current()
-  const can = presses(item)
-  // Done and Ask run beside the keys: a slow send never holds up j or k.
-  if (key === 'd' && can.done) return void markDone($, pressedQuestion($, item.key)).catch(() => {})
-  if (key === 'a' && can.ask) return void askOwner($, pressedQuestion($, item.key)).catch(() => {})
-  toast($, (key === 'd' ? 'd: Done' : 'a: Ask') + ' needs a needs-you item, selected, with no Done under way')
-}
-
-/** Enter in board mode: details, or back from details or the help. Like a
- * key, an Enter still queued when board mode ends is dropped. */
-function fieldSubmit($) {
-  const mode = boardGen
-  keyChain = keyChain.then(() => (mode !== boardGen ? undefined : helpShown ? backFromHelp($) : toggleMore($))).catch(() => {})
-  return keyChain
-}
-
-/** Read the details' task lists beside the keys: a slow read never holds up
- * the next key, and draws when it lands. */
-function detailsSoon($) {
-  ensureTasks($)
-    .then(() => redraw($))
-    .catch(() => {})
-}
-
-/** j and k: the next or the previous row, wrapping at the ends. Details stay open. */
-async function move($, delta) {
-  const list = items()
-  if (!list.length) return
-  const { index } = current()
-  select(list[(index + delta + list.length) % list.length].key)
-  redraw($)
-  if (more) detailsSoon($)
-}
-
-/** The lines the details give the selected title, held while they stay on
- * one row at one width: a longer title on a refresh is cut, not moved. */
-let titleHold = null
-function heldTitle(item, width) {
-  if (!more || !item || item.kind !== 'needs') return null
-  if (!titleHold || titleHold.key !== item.key || titleHold.width !== width) {
-    titleHold = { key: item.key, width, lines: titleLineCount(item.q.title, width) }
-  }
-  return titleHold.lines
-}
-
-/** Enter: the preview's details, read on first use. */
-async function toggleMore($) {
-  helpShown = false
-  titleHold = null
-  more = !more
-  redraw($)
-  if (more) detailsSoon($)
-}
-
-/**
- * Open (or retitle) the preview. With `focus` it is board mode: it takes the
- * keys (a press at the empty prompt leaves them with the prompt, which can
- * hand them on), and Esc gives them back and closes it.
- */
-async function openPane($, focus) {
-  try {
-    const rows = Math.max(3, paneLinesCount())
-    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, rows, columns: paneColumns(), ...(focus ? { focus: true, closeOnEscape: true } : {}) })
-    if (opened && opened.isPlaced === false) return false
-    paneOpen = true
-    paneClosed = false
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** Close the preview soon, if the last `still()` asked holds then. */
-let closePending = false
-let closeWhen = () => false
-function closeSoon($, still) {
-  closeWhen = still
-  if (closePending) return
-  closePending = true
-  try {
-    $.clock.after(INLINE_IDLE_MS, () => {
-      closePending = false
-      if (!paneOpen || !closeWhen()) return
-      paneOpen = false
-      placement = null
-      setFocused(false)
-      more = false
-      $.ui.close({ id: PANE }).catch(() => {})
-      redraw($)
-    })
-  } catch {
-    // Without a clock the preview stays; ctrl+x x closes it.
-    closePending = false
-  }
-}
-
-/** Read the channels "more" shows for the selected row, if the cache lacks them. */
-async function ensureTasks($) {
-  const { item } = current()
-  for (const channel of channelsFor(board, item)) {
-    if (taskCache.has(channel)) continue
-    await readTasksOrdered($, channel)
-  }
-}
-
-/** Read again the channels "more" shows, on the board's tick. */
-async function refreshTasks($) {
-  if (!isChief || !config || !paneOpen || !more) return
-  for (const channel of channelsFor(board, current().item)) await readTasksOrdered($, channel)
-}
-
-/** One channel's tasks, read and cached; a read that ends after a newer one
- * of the same channel leaves the cache to it. */
-const taskSeq = new Map()
-const taskCacheSeq = new Map()
-async function readTasksOrdered($, channel) {
-  const seq = (taskSeq.get(channel) || 0) + 1
-  taskSeq.set(channel, seq)
-  const result = await readTasks($, config, channel)
-  const stale = taskSeq.get(channel) !== seq
-  if (!stale) {
-    taskCache.set(channel, result.tasks)
-    taskCacheSeq.set(channel, seq)
-  }
-  return { ...result, seq, stale }
-}
-
-function taskLists() {
-  const out = {}
-  for (const [channel, list] of taskCache) out[channel] = list
-  return out
-}
-
-/** The preview's lines, as the pane draws them now. */
-async function paneLines($) {
-  const width = paneWidth
-  if (helpShown) return helpPreview(helpLines({ rows: items().length }), width)
-  if (!board) return [[seg('board unavailable' + (reason ? ' · ' + reason : ''), 'dim')]]
-  const { item } = current()
-  const compact = compactPane()
-  // The header counts within the row's group: `needs you · 2 of 6`, `project · 3 of 9`.
-  const group = items().filter((i) => item && i.kind === item.kind)
-  const index = group.findIndex((i) => i.key === item?.key)
-  const count = group.length
-  return previewLines({
-    board,
-    item,
-    index,
-    count,
-    width,
-    compact,
-    more,
-    titleHold: heldTitle(item, width),
-    tasks: taskLists(),
-    actions: fullStatus(item),
-    fresh: [],
-  })
-}
-
-/** How many lines the inline preview wants, with its key line. */
-function paneLinesCount() {
-  if (helpShown) return helpLines({ rows: items().length }).length + 1
-  const { item, index, count } = current()
-  if (!item) return 1
-  return previewLines({ board, item, index, count, width: paneWidth, compact: true, more, tasks: taskLists(), actions: [] }).length + 2
-}
-
-/** The help as the transcript shows it, the same text as the preview's help view. */
-function helpText() {
-  return helpLines({ rows: items().length }).join('\n')
-}
-
-function measure(e) {
-  const c = e.viewport && e.viewport.columns
-  if (typeof c === 'number' && c > 0) columns = c
-}
-
-function widthOf(e) {
-  const body = e.props && e.props.bodyColumns
-  if (typeof body === 'number' && body > 0) return body
-  if (columns > 0) return columns
-  return 96
-}
-
-/** The Text props of one segment's style. */
-function styleProps(style) {
-  switch (style) {
-    case 'dim':
-    case 'faint':
-    case 'waiting':
-      return { dimColor: true }
-    case 'dimBold':
-      return { dimColor: true, bold: true }
-    case 'bold':
-      return { bold: true }
-    case 'key':
-      return { color: 'suggestion' }
-    case 'modeOn':
-      return { color: 'suggestion', bold: true, inverse: true }
-    case 'yellow':
-    case 'needs':
-      return { color: 'yellow' }
-    case 'yellowBold':
-      return { color: 'yellow', bold: true }
-    case 'red':
-    case 'blocked':
-      return { color: 'red' }
-    case 'cyan':
-      return { color: 'cyan' }
-    case 'green':
-    case 'done':
-      return { color: 'green' }
-    case 'blue':
-    case 'running':
-      return { color: 'blue' }
-    default:
-      return {}
-  }
-}
-
-/** One cell: a plain Button where it names one, else a Text. */
-function element($, e, s, key, selected = false, extra = {}) {
-  const { Text, Button } = $.ui.resolve(e)
-  if (s.button) {
-    const b = s.button
-    const props = { key: b.key, label: b.label, onPress: () => press($, b), ...extra }
-    if (b.hotkey) props.hotkey = b.hotkey
-    if (b.plain) props.plain = true
-    // A digit that is not a hotkey draws as one does: in the accent color, a colon.
-    if (b.digit) {
-      props.label = 'row ' + b.digit
-      props.children = [Text({ children: [b.digit + ':'], ...styleProps('key') }), ' ']
-    }
-    return Button(props)
-  }
-  const props = { key, children: [s.text], ...styleProps(s.style) }
-  // On the selection background a dim cell is drawn at full strength; every
-  // other cell keeps its own color, so a selected needs row stays yellow and
-  // a red or blue glyph keeps its meaning. A cell with no color of its own
-  // takes the theme's text color: on a row background it would draw dark.
-  if (selected) {
-    props.dimColor = false
-    if (!props.color) props.color = 'text'
-  }
-  return Text(props)
-}
-
-/** The band: its rows, the selected one on the selection background. A
- * row's chip and its text are one Button, so a click anywhere on the row
- * selects it. */
-function tree($, e, rows, selectedKey) {
-  const { Box } = $.ui.resolve(e)
-  // ctrl+x tab lands the ring on the selected row, so Enter acts on it.
-  const ring = rows.some((r) => r.key === selectedKey) ? selectedKey : rows[1] ? rows[1].key : null
-  return Box({
-    flexDirection: 'column',
-    children: rows.map((row, i) => {
-      const [first, ...rest] = row.cells
-      const focus = row.key === ring ? { autoFocus: true } : {}
-      const children =
-        first && first.button && first.button.kind === 'select'
-          ? [rowButton($, e, row, first.button, rest.map((s, j) => element($, e, s, 'band-' + i + '-' + (j + 1), row.selected)), focus)]
-          : row.cells.map((s, j) => element($, e, s, 'band-' + i + '-' + j, row.selected, s.button && s.button.key === ring ? focus : {}))
-      return Box({
-        key: 'band-row-' + i,
-        flexDirection: 'row',
-        ...(row.selected ? { backgroundColor: SELECTED_BG } : {}),
-        children,
-      })
-    }),
-  })
-}
-
-/** A band row as one plain Button: its digit (a hotkey, or drawn as one),
- * then the row's cells as its children. */
-function rowButton($, e, row, b, cells, extra) {
-  const { Text, Button } = $.ui.resolve(e)
-  const props = { key: b.key, label: b.title || b.key, plain: true, onPress: () => press($, b), ...extra }
-  if (b.hotkey) props.hotkey = b.hotkey
-  const lead = b.digit ? [Text({ key: 'digit', children: [b.digit + ':'], ...styleProps('key') }), ' '] : b.hotkey ? [] : ['   ']
-  props.children = [...lead, ...cells]
-  return Button(props)
-}
-
-/**
- * The keys board mode takes, for the key field: the words where there is
- * room, the letters alone where there is not. d and a only for an item they
- * act on.
- */
-function keysHint() {
-  const can = presses(current().item)
-  if (paneWidth < WORDY_KEYS) return ['1-9 j k', can.done ? 'd' : '', can.ask ? 'a' : '', '?'].filter(Boolean).join(' ') + ' · esc exit'
-  const keys = ['1-9 j k move']
-  if (can.done) keys.push('d done')
-  if (can.ask) keys.push('a ask')
-  keys.push('? help', 'esc exit')
-  return keys.join(' · ')
-}
-
-/**
- * The preview: board mode's key field, then its lines. The field is the
- * pane's only focusable element, so every key reaches it: a Button here
- * would let Up, Down, or Tab move the focus onto it, and a letter typed then
- * would go to the prompt. Inline, the item's status sits under the field.
- */
-function paneBody($, e, lines, focused) {
-  const { Box, Text, Input } = $.ui.resolve(e)
-  const compact = compactPane()
-  // The selected row's title lines draw on the band row's own background, so
-  // the two read as one selection.
-  const children = lines.map((line, i) =>
-    Box({
-      key: 'pane-line-' + i,
-      flexDirection: 'row',
-      ...(line.selected ? { backgroundColor: SELECTED_BG } : {}),
-      children: line.map((s, j) => element($, e, s, 'pane-' + i + '-' + j, Boolean(line.selected))),
-    }),
-  )
-  const field = Input({
-    key: 'board-keys-' + fieldGen,
-    label: focused ? 'board mode' : 'board mode off',
-    placeholder: focused ? keysHint() : '/cos pane or a click turns it on',
-    value: '',
-    submitLabel: helpShown || more ? 'back' : 'details',
-    autoFocus: true,
-    onInput: (value, ev) => fieldInput($, value, ev),
-    onSubmit: () => fieldSubmit($),
-  })
-  const status = compact && !helpShown ? fullStatus(current().item) : []
-  const statusLine = status.length ? [Box({ key: 'pane-status', flexDirection: 'row', children: status.map((s, j) => element($, e, s, 'pane-status-' + j)) })] : []
-  if (compact) return Box({ flexDirection: 'column', children: [field, ...statusLine, ...children] })
-  return Box({ flexDirection: 'column', children: [field, Text({ key: 'pane-field-gap', children: [' '] }), ...children] })
-}
-
-async function backFromHelp($) {
-  helpShown = false
-  redraw($)
-}
-
-/** A press on a cell of the band: a row's chip, or the board-mode Button. */
-function press($, button) {
-  switch (button.kind) {
-    case 'select':
-      return chipPress($, button.arg)
-    case 'board':
-      return enterBoard($)
-    default:
-      return redraw($)
-  }
-}
-
-/**
- * The item a Done or Ask button was drawn for, by its key. When it left the
- * board between the drawing and the press, the press does nothing and says
- * so: it never acts on the row that moved into its place.
- */
-function pressedQuestion($, key) {
-  const item = items().find((i) => i.key === key)
-  if (item && item.kind === 'needs' && !item.q.closed) return item.q
-  toast($, 'that item is no longer on the board')
-  return null
-}
-
-/**
- * Tells the chief something without a turn: a user-role row the person does
- * not see as typed, which the model reads with its next request.
- */
-async function tell($, text) {
-  try {
-    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: '[borant chief mod] ' + text }] } })
-  } catch {
-    // Nothing to tell it with; the board still shows the ask.
-  }
-}
-
-/**
- * Ask orchestrator: the mod sends the question to the owner of its channel
- * itself, as the person, and the chief is only told, with a row and no turn.
- * A prompt would have the chief answer it in its own session.
- */
-async function askOwner($, q) {
-  if (!q) return redraw($)
-  const owner = q.owner || (findProject(board, q.project)?.orchestrators || [])[0]?.agent
-  const key = questionKey(q)
-  // One Ask at a time: a second a while it is sending, or after it was sent, does nothing.
-  if (asked[key] && asked[key].state !== 'failed') return redraw($)
-  if (!owner) {
-    asked[key] = { state: 'failed', owner: '' }
-    toast($, 'ask: no orchestrator owns ' + q.channel)
-    return redraw($)
-  }
-  asked[key] = { state: 'sending', owner }
-  redraw($)
-  const text =
-    'Chris asks about ' + q.title + ' (' + q.channel + '/' + q.task + '), from the chief\'s board: ' +
-    'what does it need from him, and what do you recommend? Answer the chief, who relays it to Chris.'
-  let ok = false
-  let why = ''
-  try {
-    const run = await $.process.run(['borant', 'send', owner, text], { timeoutMs: 8000 })
-    ok = run.exitCode === 0
-    why = String(run.stderr || '').trim().split('\n')[0]
-  } catch (err) {
-    why = String(err?.message || err)
-  }
-  asked[key] = ok ? { state: 'sent', owner, time: hhmm(await nowMs($)) } : { state: 'failed', owner, reason: truncate(why, 40) }
-  if (ok) {
-    await tell(
-      $,
-      'The person pressed "Ask orchestrator" on ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
-        'The board sent the question to ' + owner + ' as a direct message. Do not answer it yourself; relay ' + owner + '\'s reply.',
-    )
-    toast($, 'asked ' + owner + ': ' + truncate(q.title, 40))
-  } else {
-    toast($, 'ask failed' + (why ? ' (' + truncate(why, 40) + ')' : '') + ': ' + truncate(q.title, 40))
-  }
-  return redraw($)
-}
-
-/**
- * Done: the row shows "marking done…" at once, and the chief gets a prompt
- * that says how to close the task. The hub lets only the channel's owner, a
- * person, or (for a saga gate) an approver close it as done, so the chief
- * closes a gate itself and asks the owner for anything else. The mark goes
- * when the item leaves the board, and turns into "still open" after
- * DONE_WAIT_MS.
- */
-async function markDone($, q) {
-  if (!q) return redraw($)
-  const key = questionKey(q)
-  // A second d before the first is in does nothing: the mark is set at once.
-  if (!canDone(pending[key])) return redraw($)
-  const index = allQuestions(board).findIndex((x) => questionKey(x) === key)
-  const text =
-    'Chris marked done: ' + q.title + ' (' + q.channel + '/' + q.task + '). ' +
-    'Close it as done now, with the borant MCP tools, not the shell: task_close it yourself if it is a saga gate or you own its channel; ' +
-    'otherwise send the owner of ' + q.channel + ' a direct message to close it as done, with "Chris marked it done in the board".'
-  // It stays "sending" until the chief's turn with this prompt starts
-  // (turn.start), which can wait behind a turn already running.
-  pending[key] = { state: 'sending', at: clockNow, title: q.title, question: q, index: Math.max(0, index), prompt: text }
-  const unsent = (reason) => {
-    if (pending[key] && pending[key].state === 'sending') pending[key] = { ...pending[key], state: 'unsent', reason }
-    redraw($)
-  }
-  // The prompt submits when the session is idle and resolves once it is in; a
-  // press must not wait for that.
-  try {
-    $.prompt
-      .submit({ text })
-      .then((out) => {
-        if (out && out.drop) return unsent('the prompt was refused')
-        redraw($)
-      })
-      .catch(() => unsent('the prompt was not sent'))
-  } catch {
-    unsent('the prompt was not sent')
-  }
-  return redraw($)
-}
-
-/** The session clock, or 0 without one. */
 async function nowMs($) {
   try {
     return await $.clock.now()
@@ -1304,7 +995,6 @@ function redraw($) {
   }
 }
 
-/** A redraw from inside a drawing, once it is done. */
 function redrawSoon($) {
   try {
     $.clock.after(0, () => redraw($))

@@ -1,0 +1,42 @@
+# 120 columns, keys on Borant
+# The 54-cell panel stacks the list over the detail; a cut detail says how many lines are left.
+                                                                 │                                                     ×
+                                                                 │ KEYS ON BORANT                  h all keys  esc close
+                                                                 │
+                                                                 │1 NEEDS YOU · 4
+                                                                 │ ⊘ unblock roger-support  Spawn helper-qa-prepro…  3h
+                                                                 │ ■ decide  roger-emr      Billing export: round … 38m
+                                                                 │ ▲ answer  boopmark       E2E login: staging cre… 12m
+                                                                 │ ▲ approve borant         Saga Elastic compute: … 42m
+                                                                 │2 QUIET · 2
+                                                                 │ ◌ silent  boopmark       Search: rank by recenc… 31m
+                                                                 │ ◌ offline taglab         orch-taglab offline: 2…  1h
+                                                                 │3 SHIPS NEXT · 4
+                                                                 │ ⇡ #2440   Visit notes autosave      ready to merge
+                                                                 │ ⇡ #204    Liveness sweep: retry fa… review requested
+                                                                 │ ⇡ #203    Hub backup to object sto… CI running
+                                                                 │   ↓ 14 more items
+                                                                 │──────────────────────────────────────────────────────
+● orch-boopmark-2 asks how the login E2E gets an account. It is …│▲ NEEDS YOUR ANSWER                boopmark · personal
+                                                                 │waits for your answer since 14:35
+> ok, and what about the billing export?                         │
+                                                                 │"The login E2E needs a real account. Use the staging
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits…│creds from bundle boopmark-staging, or record a
+                                                                 │fixture once and replay it?"
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offli…esc close [-] │
+⊘ unblock roger-support   Spawn helper-qa… chief-work    3h      │orch-boopmark-2 recommends: The fixture: no secret in
+■ decide  roger-emr       Billing export:… wkr-emr-7    38m      │CI, and the E2E runs offline.
+▲ answer  boopmark        E2E login: stag… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic co… orchestrator 42m      │task     E2E: capture login flow
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h         │why now  worker waits
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2              │worker   wkr-boop-1 · last tool call 40s ago
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                  │owner    orch-boopmark-2 (orchestrator), online
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3        │
+◌ taglab         nobody: orch-taglab offline 1h                  │↓ 3 more lines · enter shows all
+● steve          ● Slack threading wkr-steve-1 22m               │──────────────────────────────────────────────────────
+● roger-docs-app ● Upload progress wkr-app-1 15m                 │r answer   a ask for a recommendation   g go to
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m              │p project   1-5 section
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

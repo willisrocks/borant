@@ -1,0 +1,52 @@
+# 200 columns, h: all keys
+# h shows every key. h or b closes it; esc closes the panel.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ KEYS ON BORANT   all keys                                          h or b back  esc close
+                                                                                                             │
+                                                                                                             │ALL KEYS
+                                                                                                             │
+                                                                                                             │At the prompt. Borant takes no other key there.
+                                                                                                             │ ctrl+x b     give Borant the keys; the panel opens
+                                                                                                             │ /borant      the same, when ctrl+x b does nothing
+                                                                                                             │               (the diff panel holds ctrl+x b, or you bound it to another key)
+                                                                                                             │
+                                                                                                             │In the panel
+                                                                                                             │ ↑ ↓   j k    move
+                                                                                                             │ 1 2 3 4 5    jump to: needs you, quiet, ships next, changed, projects
+                                                                                                             │ enter  b     open a project's tasks  ·  back
+                                                                                                             │ r  y  n  d   answer  ·  approve  ·  no  ·  close as done
+                                                                                                             │ a  m         ask the orchestrator for a recommendation  ·  message the worker
+                                                                                                             │ o  g  p      open the PR in the browser  ·  go to the agent  ·  the project
+                                                                                                             │ u  w         retry or resume  ·  spawn without the missing bundle
+                                                                                                             │ x            mark the changes seen
+                                                                                                             │ h            this list (h or b closes it)
+                                                                                                             │ esc          give the keys back to the prompt and close the panel
+                                                                                                             │
+                                                                                                             │In an answer field every key types, except:
+                                                                                                             │ enter  esc   send  ·  keep the draft and close
+                                                                                                             │
+                                                                                                             │Marks
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │ ▲ needs you   ■ stuck   ⊘ blocked   ◌ silent or offline   ● working
+                                                                                                             │ ○ ready, nobody on it   ◷ later   ⇡ open PR   ✓ done
+> ok, and what about the billing export?                                                                     │
+                                                                                                             │Notes
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │ ctrl+x b is the default chord. Borant cannot read your key bindings.
+                                                                                                             │ Claude Code gives the panel the keys only over an empty prompt.
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02                 esc close [-] │ "Changed since" holds until you press x. Closing the panel marks nothing seen.
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts,… orchestrator 42m      │
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   +4 more                │
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3                 ◷ Hub move ◷ Golden image +1       │
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

@@ -1,0 +1,52 @@
+# 200 columns, a task inside a project
+# enter on a project puts its tasks in the list; ↑↓ selects a task, and its detail shows below. b goes back to all projects.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ KEYS ON BORANT   all projects › borant                              h all keys  esc close
+                                                                                                             │
+                                                                                                             │borant: every task
+                                                                                                             │NEEDS YOU · 1
+                                                                                                             │ ▲ Approve epics 3 to 5 of saga Elastic compute                        orchestrator   42m
+                                                                                                             │WORKING NOW · 3
+                                                                                                             │ ● Hub backup to object storage                                        wkr-borant-3   18m
+                                                                                                             │ ● Liveness sweep: retry failed resumes                                wkr-borant-5    4m
+                                                                                                             │ ● Chief mod v3 design                                                 mod-v3          2m
+                                                                                                             │LATER: WAITS ON SOMETHING · 3
+                                                                                                             │ ◷ Hub move to borant-hub                                              nobody
+                                                                                                             │ ◷ Golden image for pool boxes                                         nobody
+                                                                                                             │ ◷ Delete borant-2                                                     nobody
+                                                                                                             │   ↓ 3 more items
+                                                                                                             │──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                             │● WORKING  borant · personal
+                                                                                                             │in progress 18m · last tool call 20s ago
+                                                                                                             │
+                                                                                                             │Hub backup to object storage
+                                                                                                             │
+                                                                                                             │worker   wkr-borant-3 · sonnet · macbook
+                                                                                                             │epic     2 of saga Elastic compute
+                                                                                                             │PR       #203 · checks 3 of 7 done, none failed · review not requested yet
+                                                                                                             │next     Delete borant-2 waits on this task
+                                                                                                             │
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │
+                                                                                                             │
+> ok, and what about the billing export?                                                                     │
+                                                                                                             │
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │
+                                                                                                             │
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02                 esc close [-] │
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts,… orchestrator 42m      │
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   +4 more                │
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3                 ◷ Hub move ◷ Golden image +1       │
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │──────────────────────────────────────────────────────────────────────────────────────────
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │o open PR #203   g go to wkr-borant-3   m message wkr-borant-3   d close as done
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │b back to all projects
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

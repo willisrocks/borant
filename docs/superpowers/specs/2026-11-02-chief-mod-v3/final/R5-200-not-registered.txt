@@ -1,0 +1,52 @@
+# 200 columns, session not registered
+# The chief session did not register, so Borant cannot read or act as the chief. The band says what failed and how to fix it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".
+
+> ok, and what about the billing export?
+
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.
+
+Borant ✕ this session is not registered with Borant: borant board exited 2: unknown session                                                                         ctrl+x b or /borant Borant keys [-]
+Run borant doctor in a shell to see why; it names the fix. Then /borant reads again. Your prompt works as usual meanwhile.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                                                                                                                      ctrl+x b or /borant Borant keys

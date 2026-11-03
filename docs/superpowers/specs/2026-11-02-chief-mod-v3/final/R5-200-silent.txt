@@ -1,0 +1,52 @@
+# 200 columns, a silent worker
+# Silent: claimed, no tool call for 30 minutes. The detail shows the evidence (session, lease, last tool call, last text), not a verdict.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ KEYS ON BORANT                                                      h all keys  esc close
+                                                                                                             │
+                                                                                                             │1 NEEDS YOU · 4
+                                                                                                             │ ⊘ unblock roger-support  Spawn helper-qa-preprod cannot start: no host has bundle g…  3h
+                                                                                                             │ ■ decide  roger-emr      Billing export: round visit minutes per visit or per claim? 38m
+                                                                                                             │ ▲ answer  boopmark       E2E login: staging creds from bundle boopmark-staging, or … 12m
+                                                                                                             │ ▲ approve borant         Saga Elastic compute: start epics 3 to 5? They add 3 hosts… 42m
+                                                                                                             │2 QUIET · 2
+                                                                                                             │ ◌ silent  boopmark       Search: rank by recency: no tool call for 31m               31m
+                                                                                                             │ ◌ offline taglab         orch-taglab offline: 2 tasks cannot start                    1h
+                                                                                                             │3 SHIPS NEXT · 4
+                                                                                                             │ ⇡ #2440   Visit notes autosave                                          ready to merge
+                                                                                                             │ ⇡ #204    Liveness sweep: retry failed resumes                          review requested
+                                                                                                             │ ⇡ #203    Hub backup to object storage                                  CI running
+                                                                                                             │ ⇡ #88     Upload progress bar                                           CI running
+                                                                                                             │4 CHANGED SINCE 14:02 · 5                                                x marks them seen
+                                                                                                             │ + new       steve          3 tasks: DM digest, Retry webhooks, Rate-limit the Linea…  9m
+                                                                                                             │ ✓ approved  roger-emr      PR #2440 Visit notes autosave                             11m
+                                                                                                             │ ✓ merged    roger-docs-api PR #612 Retry-After on 429                                17m
+                                                                                                             │   ↓ 10 more items
+                                                                                                             │──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                             │◌ SILENT WORKER                                                        boopmark · personal
+                                                                                                             │no tool call since 14:16 (31m); session alive, lease held
+                                                                                                             │
+                                                                                                             │Search: rank by recency: no tool call for 31m
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │
+                                                                                                             │task     Search: rank by recency
+> ok, and what about the billing export?                                                                     │worker   wkr-boop-2 · last tool call 31m ago
+                                                                                                             │owner    orch-boopmark-2 (orchestrator), online
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │
+                                                                                                             │HISTORY
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02                 esc close [-] │13:40  wkr-boop-2 claimed the task
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │14:16  last tool call: Bash "npm test -- search" (exit 1)
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │14:16  last text: "3 ranking tests fail; reading the scorer"
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts,… orchestrator 42m      │
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   +4 more                │
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3                 ◷ Hub move ◷ Golden image +1       │
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │──────────────────────────────────────────────────────────────────────────────────────────
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │m message wkr-boop-2   g go to wkr-boop-2   a ask orch-boopmark-2 for a recommendation
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │p project boopmark
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

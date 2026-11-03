@@ -1,0 +1,52 @@
+# 200 columns, a blocked spawn
+# A blocked spawn says what is missing, what it holds, and the fixes the hub knows.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ KEYS ON BORANT                                                      h all keys  esc close
+                                                                                                             │
+                                                                                                             │1 NEEDS YOU · 4
+                                                                                                             │ ⊘ unblock roger-support  Spawn helper-qa-preprod cannot start: no host has bundle g…  3h
+                                                                                                             │ ■ decide  roger-emr      Billing export: round visit minutes per visit or per claim? 38m
+                                                                                                             │ ▲ answer  boopmark       E2E login: staging creds from bundle boopmark-staging, or … 12m
+                                                                                                             │ ▲ approve borant         Saga Elastic compute: start epics 3 to 5? They add 3 hosts… 42m
+                                                                                                             │2 QUIET · 2
+                                                                                                             │ ◌ silent  boopmark       Search: rank by recency: no tool call for 31m               31m
+                                                                                                             │ ◌ offline taglab         orch-taglab offline: 2 tasks cannot start                    1h
+                                                                                                             │3 SHIPS NEXT · 4
+                                                                                                             │ ⇡ #2440   Visit notes autosave                                          ready to merge
+                                                                                                             │ ⇡ #204    Liveness sweep: retry failed resumes                          review requested
+                                                                                                             │ ⇡ #203    Hub backup to object storage                                  CI running
+                                                                                                             │ ⇡ #88     Upload progress bar                                           CI running
+                                                                                                             │4 CHANGED SINCE 14:02 · 5                                                x marks them seen
+                                                                                                             │ + new       steve          3 tasks: DM digest, Retry webhooks, Rate-limit the Linea…  9m
+                                                                                                             │ ✓ approved  roger-emr      PR #2440 Visit notes autosave                             11m
+                                                                                                             │ ✓ merged    roger-docs-api PR #612 Retry-After on 429                                17m
+                                                                                                             │   ↓ 10 more items
+                                                                                                             │──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                             │⊘ BLOCKED SPAWN                                                       roger-support · work
+                                                                                                             │queued since 11:02, blocked: missing bundle github-work
+                                                                                                             │
+                                                                                                             │The hub queued helper-qa-preprod at 11:02 for "Preprod QA of v1.0.23". No host offers
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │bundle github-work, so no host can take it.
+                                                                                                             │
+> ok, and what about the billing export?                                                                     │task     Preprod QA of v1.0.23
+                                                                                                             │why now  holds release v1.0.23
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │owner    orch-roger-support (orchestrator), online
+                                                                                                             │
+ KEYS ON BORANT   4 need you  ·  1 silent, 1 offline  ·  5 changed since 14:02                 esc close [-] │HISTORY
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │11:02  orch-roger-support spawned helper-qa-preprod
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │11:17  the hub marked it blocked and told chief-work
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │
+▲ approve borant          Saga Elastic compute: start epics 3 to 5? They add 3 hosts,… orchestrator 42m      │FIXES
+changed  + steve new 3 tasks: DM digest, Retry webhooks, Rate-limit the Linear sync   +4 more                │ u  retry the spawn now (after you add the bundle to a host)
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │ w  spawn it without bundle github-work
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │ a  ask chief-work to fix it
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │
+▲ borant         ▲ Approve epics 3-5 orchestrator 42m  +3                 ◷ Hub move ◷ Golden image +1       │
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │──────────────────────────────────────────────────────────────────────────────────────────
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │u retry now   w spawn without github-work   a ask chief-work   p project roger-support
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

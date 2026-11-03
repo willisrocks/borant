@@ -1,0 +1,52 @@
+# 200 columns, after the approval
+# The receipt says only what is true: the gate is closed. Hub move and Golden image are ready, nobody on them yet; a claim is a new change.
+                                                                                                             │                                                                                         ×
+                                                                                                             │ KEYS ON BORANT                                                      h all keys  esc close
+                                                                                                             │
+                                                                                                             │   ↑ 9 more items
+                                                                                                             │ ⇡ #88     Upload progress bar                                           CI running
+                                                                                                             │4 CHANGED SINCE 14:02 · 6                                                x marks them seen
+                                                                                                             │ ✓ approved  borant         epics 3 to 5 of saga Elastic compute (gate closed)        now
+                                                                                                             │ + new       steve          3 tasks: DM digest, Retry webhooks, Rate-limit the Linea…  9m
+                                                                                                             │ ✓ approved  roger-emr      PR #2440 Visit notes autosave                             11m
+                                                                                                             │ ✓ merged    roger-docs-api PR #612 Retry-After on 429                                17m
+                                                                                                             │ ✓ released  borant         v0.19.2                                                   20m
+                                                                                                             │ ✓ merged    borant         PR #198 Never launch, relaunch, or move a chief           26m
+                                                                                                             │5 PROJECTS · 8 with work · idle: home-infra, litellm
+                                                                                                             │ ⊘ roger-support   1 need you · 1 blocked
+                                                                                                             │ ■ roger-emr       1 need you · 2 working · 3 ready · 1 later
+                                                                                                             │ ▲ boopmark        1 need you · 1 silent · 2 ready
+                                                                                                             │ ● borant          3 working · 2 ready · 1 later
+                                                                                                             │ ◌ taglab          2 blocked
+                                                                                                             │ ● steve           1 working · 3 ready
+                                                                                                             │ ● roger-docs-app  1 working
+                                                                                                             │ ● roger-docs-api  1 working
+                                                                                                             │──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                             │borant  personal · orchestrator (orchestrator) online
+                                                                                                             │saga Elastic compute: epic 1 done, epic 2 running, epics 3 to 5 approved 14:49
+                                                                                                             │
+                                                                                                             │WORKING NOW · 3
+● orch-boopmark-2 asks how the login E2E gets an account. It is in your list: "answer · boopmark".           │ ● Hub backup to object storage              wkr-borant-3     18m #203 CI running
+                                                                                                             │ ● Liveness sweep: retry failed resumes      wkr-borant-5      4m #204 review requested
+> ok, and what about the billing export?                                                                     │ ● Chief mod v3 design                       mod-v3            2m
+                                                                                                             │
+● wkr-emr-7 stopped: 3 claim fixtures fail. orch-roger-emr waits for your call on the rounding rule.         │READY, NOBODY ON IT · 2
+                                                                                                             │ ○ Hub move to borant-hub                    nobody
+ KEYS ON BORANT   3 need you  ·  1 silent, 1 offline  ·  6 changed since 14:02                 esc close [-] │ ○ Golden image for pool boxes               nobody
+⊘ unblock roger-support   Spawn helper-qa-preprod cannot start: no host has bundle gi… chief-work    3h      │
+■ decide  roger-emr       Billing export: round visit minutes per visit or per claim?  wkr-emr-7    38m      │LATER: WAITS ON SOMETHING · 1
+▲ answer  boopmark        E2E login: staging creds from bundle boopmark-staging, or a… wkr-boop-1   12m      │ ◷ Delete borant-2                           nobody               after Hub backup
+✓ approve borant          ✓ approved 14:49 · gate closed; orchestrator was told        orchestrator          │
+changed  ✓ borant approved epics 3 to 5 of saga Elastic compute (gate closed)   +5 more                      │DONE SINCE 14:02 · 3
+⊘ roger-support  ▲ Release v1.0.23 orch-roger-support 3h                  ⊘ Preprod QA                       │ ✓ Approved epics 3 to 5 of saga Elastic co… orchestrator     now
+■ roger-emr      ■ Billing export wkr-emr-7 38m  +2                       ○ Fax OCR retry +3                 │ ✓ Never launch, relaunch, or move a chief   wkr-borant-1     26m #198 merged
+▲ boopmark       ▲ E2E login wkr-boop-1 12m  +1                           ○ Pinboard import ○ Dark mode      │ ✓ Release v0.19.2                           orchestrator     20m
+● borant         ● Hub backup wkr-borant-3 18m  +2                        ○ Hub move ○ Golden image +1       │
+◌ taglab         nobody: orch-taglab offline 1h                           ⊘ Label export +1                  │   23 more done before 14:02
+● steve          ● Slack threading wkr-steve-1 22m                        ○ DM digest +2                     │
+● roger-docs-app ● Upload progress wkr-app-1 15m                          nothing unassigned                 │──────────────────────────────────────────────────────────────────────────────────────────
+● roger-docs-api ● Rate-limit headers wkr-docs-1 9m                       nothing unassigned                 │enter select a task   a ask orchestrator for a recommendation   ↑↓ move
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "what changed today?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts
