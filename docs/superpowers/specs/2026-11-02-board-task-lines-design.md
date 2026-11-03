@@ -70,6 +70,10 @@ tasks of a closed saga or epic are left out.
   `updated`.
 - `recent_done`: the last 10 tasks of the project closed as done, with title,
   closer, time, and PR. The project view lists them by name.
+- The list of lines is `task_lines`, not the spec's `tasks`: `ProjectBoard`
+  already has `tasks` as the counts, and an older reader reads that. The
+  count and the list are left out of the reply, not empty, when the caller
+  does not ask for `--tasks`.
 - The rules reuse the existing claim and readiness rules (`rules/graph.rs`)
   and do not copy them. When both apply, `blocked` wins over `later`.
 - An approval inside a saga, as drawn ("approve epics 3 to 5"), needs no new
@@ -88,7 +92,11 @@ tasks of a closed saga or epic are left out.
 
 A board read already loads every task of every channel. The lines add no
 store read. The PR state comes from the PR watch's keys: one read per task
-with a `pr_url`.
+with a `pr_url`. The status change times come from the event log: the first
+board read of a hub scans it once, and every read after that scans only the
+`task.status` events that arrived since, merging them into the map that the
+hub keeps in memory. The mod reads the board every few seconds, so the cost
+does not grow with the history.
 
 ## Tests
 

@@ -262,7 +262,6 @@ async fn roles_a_sandboxed_spawn_goes_to_a_host_with_the_sandbox() {
 #[tokio::test]
 async fn roles_a_sandboxed_spawn_is_refused_without_the_sandbox() {
     use borant_core::events::{EventFilter, RejectedHost, SwarmEventBody};
-    use borant_core::ports::EventLog;
 
     let fx = fx();
     let boss = chief(&fx).await;

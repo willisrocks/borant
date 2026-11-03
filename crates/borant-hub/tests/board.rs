@@ -5,19 +5,26 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use borant_core::board::{BoardView, Counts, SagaState};
+use borant_core::events::{EventFilter, Severity, SwarmEvent, SwarmEventBody};
 use borant_core::model::{
     Channel, ChannelKind, CloseReason, Harness, Project, Task, TaskKind, TaskStatus,
 };
-use borant_core::ports::StateStore;
-use borant_core::proto::{ApiErrorCode, Registered, ToolCall};
+use borant_core::ports::{EventLog, PortResult, StateStore};
+use borant_core::proto::{ApiErrorCode, CtlRequest, Registered, ToolCall};
 use borant_core::rules::roles::CollectionConfig;
 use borant_core::{ChannelName, CollectionName, ProjectName, TaskId, Timestamp, keys};
-use borant_hub::HubConfig;
+use borant_hub::{Hub, HubConfig};
+use borant_memory::MemoryEventLog;
 use bytes::Bytes;
 use common::Fx;
-use serde_json::json;
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use serde_json::{Value, json};
 
 fn id(n: u8) -> TaskId {
     format!("01J{n:023}").parse().unwrap()
@@ -255,7 +262,14 @@ async fn one_collection() -> (Fx, Registered) {
 async fn board_shows_a_collection() {
     let (fx, _me) = one_collection().await;
     let v = fx
-        .call(None, ToolCall::Board { collection: None })
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -406,7 +420,14 @@ async fn board_without_a_collection_lists_every_collection() {
     .await;
 
     let v = fx
-        .call(None, ToolCall::Board { collection: None })
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
         .await
         .unwrap();
     let board: BoardView = serde_json::from_value(v).unwrap();
@@ -424,7 +445,14 @@ async fn board_without_a_collection_lists_every_collection() {
 async fn board_agent_sees_only_its_collection() {
     let (fx, me) = one_collection().await;
     let personal = fx
-        .call(Some(&me), ToolCall::Board { collection: None })
+        .call(
+            Some(&me),
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
         .await
         .unwrap();
     let board: BoardView = serde_json::from_value(personal).unwrap();
@@ -437,6 +465,8 @@ async fn board_agent_sees_only_its_collection() {
             Some(&me),
             ToolCall::Board {
                 collection: Some(col("personal")),
+                tasks: false,
+                done_since: None,
             },
         )
         .await
@@ -449,6 +479,8 @@ async fn board_agent_sees_only_its_collection() {
             Some(&me),
             ToolCall::Board {
                 collection: Some(col("work")),
+                tasks: false,
+                done_since: None,
             },
         )
         .await
@@ -469,7 +501,14 @@ async fn board_writes_nothing() {
         .collect();
 
     let v = fx
-        .call(None, ToolCall::Board { collection: None })
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(v["collections"].as_array().map(Vec::len), Some(1));
@@ -483,4 +522,453 @@ async fn board_writes_nothing() {
         .map(|e| (e.key, e.revision, e.value.len()))
         .collect();
     assert_eq!(before, after);
+}
+
+/// The config of the personal collection.
+fn personal_cfg() -> HubConfig {
+    HubConfig {
+        collections: BTreeMap::from([(
+            col("personal"),
+            CollectionConfig {
+                mirror_issues: true,
+                ..CollectionConfig::default()
+            },
+        )]),
+        ..HubConfig::default()
+    }
+}
+
+/// A hub of the personal collection and no records yet.
+fn personal_hub() -> Fx {
+    Fx::with(personal_cfg())
+}
+
+/// The last read of the PR watch, as it stores it under `pr.<channel>.<task>`.
+fn put_change(fx: &Fx, channel: &str, task: TaskId, status: Value) {
+    fx.state.seed(
+        &format!("pr.{channel}.{task}"),
+        bytes(&json!({ "last": status })),
+    );
+}
+
+/// A task status change in the event log, which is where `since` comes from.
+async fn put_status_event(fx: &Fx, channel: &str, task: TaskId, at: i64, to: TaskStatus) {
+    let event = SwarmEvent::hub(
+        Timestamp(at),
+        Severity::Info,
+        SwarmEventBody::TaskStatus {
+            from: TaskStatus::Open,
+            to,
+            claimed_by: None,
+            attention_msg: None,
+        },
+    )
+    .about_channel(chan(channel))
+    .about_task(task);
+    fx.events.publish(&event).await.expect("a status event");
+}
+
+#[tokio::test]
+async fn board_task_lines_carry_the_start_state_the_since_and_the_pr() {
+    let fx = Fx::with(personal_cfg());
+    fx.host("h1", &[Harness::Fake]).await;
+    put_project(&fx, &project("mirror", Some("personal"))).await;
+    put_channel(
+        &fx,
+        &channel(
+            "mirror-api",
+            ChannelKind::Project,
+            Some("mirror"),
+            Some("personal"),
+        ),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &task(1, "the guide", TaskStatus::Open, 1_000),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            blocked_by: vec![id(1)],
+            ..task(2, "the skills", TaskStatus::Open, 1_100)
+        },
+    )
+    .await;
+    // A task that carries a change request, whose status last changed after
+    // its own update.
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            status: TaskStatus::InProgress,
+            claimed_by: Some("w1".parse().unwrap()),
+            properties: serde_json::from_value(json!({
+                "pr_url": "https://github.com/x/y/pull/1",
+            }))
+            .unwrap(),
+            updated: Timestamp(3_000),
+            ..task(3, "the client", TaskStatus::InProgress, 1_200)
+        },
+    )
+    .await;
+    put_status_event(&fx, "mirror-api", id(3), 4_000, TaskStatus::InProgress).await;
+    put_change(
+        &fx,
+        "mirror-api",
+        id(3),
+        json!({
+            "state": "open",
+            "head": "abc123",
+            "checks": {"fail": {"failed": ["ci"]}},
+            "review": "none",
+            "checks_passed": 1,
+            "checks_total": 3,
+            "review_requested": true,
+        }),
+    );
+    // Two tasks of the project closed as done: one inside the default day,
+    // one long before it.
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(999_000),
+            ..closed(4, "the last one", CloseReason::Done)
+        },
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(-100_000_000),
+            ..closed(5, "the old one", CloseReason::Done)
+        },
+    )
+    .await;
+
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let project = &v["collections"][0]["projects"][0];
+    let lines = project["task_lines"].as_array().expect("the task lines");
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0]["title"], "the guide");
+    assert_eq!(lines[0]["start"], "ready");
+    assert!(lines[0]["waits_on"].is_null());
+    assert_eq!(lines[1]["title"], "the skills");
+    assert_eq!(lines[1]["start"], "later");
+    assert_eq!(lines[1]["waits_on"], "the guide");
+    assert_eq!(lines[2]["status"], "in_progress");
+    assert!(lines[2]["start"].is_null());
+    assert_eq!(lines[2]["since"], 4_000);
+    assert_eq!(lines[2]["version"], 3_000);
+    let pr = &lines[2]["pr"];
+    assert_eq!(pr["url"], "https://github.com/x/y/pull/1");
+    assert_eq!(pr["state"], "open");
+    assert_eq!(pr["checks_passed"], 1);
+    assert_eq!(pr["checks_total"], 3);
+    assert_eq!(pr["review_requested"], true);
+
+    // The default cutoff is one day before the read.
+    assert_eq!(project["done_since"], 1);
+    let recent = project["recent_done"].as_array().expect("the done lines");
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0]["title"], "the last one");
+    assert_eq!(recent[1]["title"], "the old one");
+}
+
+#[tokio::test]
+async fn board_without_tasks_is_the_counts_alone() {
+    let fx = personal_hub();
+    put_project(&fx, &project("mirror", Some("personal"))).await;
+    put_channel(
+        &fx,
+        &channel(
+            "mirror-api",
+            ChannelKind::Project,
+            Some("mirror"),
+            Some("personal"),
+        ),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &task(1, "the guide", TaskStatus::Open, 1_000),
+    )
+    .await;
+
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let project = &v["collections"][0]["projects"][0];
+    // An older reader gets exactly the keys that it knows.
+    assert!(project.get("task_lines").is_none(), "{project}");
+    assert!(project.get("done_since").is_none(), "{project}");
+    assert!(project.get("recent_done").is_none(), "{project}");
+    assert_eq!(project["tasks"]["open"], 1);
+}
+
+#[tokio::test]
+async fn board_done_since_takes_the_time_of_the_call() {
+    let fx = personal_hub();
+    put_project(&fx, &project("mirror", Some("personal"))).await;
+    put_channel(
+        &fx,
+        &channel(
+            "mirror-api",
+            ChannelKind::Project,
+            Some("mirror"),
+            Some("personal"),
+        ),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(999_000),
+            ..closed(1, "the last one", CloseReason::Done)
+        },
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(-100_000_000),
+            ..closed(2, "the old one", CloseReason::Done)
+        },
+    )
+    .await;
+
+    // A cutoff before both counts both.
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: Some(Timestamp(-200_000_000)),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v["collections"][0]["projects"][0]["done_since"], 2);
+
+    // The default day counts the newer one alone.
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v["collections"][0]["projects"][0]["done_since"], 1);
+}
+
+/// The event log of a hub that records what each read asked for and returned,
+/// so a test sees that a board pass scans only the newer status events.
+#[derive(Debug)]
+struct CountingLog {
+    inner: MemoryEventLog,
+    /// The filter of each read, and the number of events that it returned.
+    reads: Mutex<Vec<(EventFilter, Arc<AtomicUsize>)>>,
+}
+
+impl CountingLog {
+    fn new() -> Self {
+        Self {
+            inner: MemoryEventLog::new(),
+            reads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The filter and the event count of each read so far, oldest first.
+    fn reads(&self) -> Vec<(EventFilter, usize)> {
+        self.reads
+            .lock()
+            .expect("the reads")
+            .iter()
+            .map(|(filter, count)| (filter.clone(), count.load(Ordering::SeqCst)))
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl EventLog for CountingLog {
+    async fn publish(&self, event: &SwarmEvent) -> PortResult<()> {
+        self.inner.publish(event).await
+    }
+
+    async fn read(
+        &self,
+        filter: &EventFilter,
+        follow: bool,
+    ) -> PortResult<BoxStream<'static, SwarmEvent>> {
+        let count = Arc::new(AtomicUsize::new(0));
+        self.reads
+            .lock()
+            .expect("the reads")
+            .push((filter.clone(), count.clone()));
+        let stream = self.inner.read(filter, follow).await?;
+        Ok(stream
+            .map(move |event| {
+                count.fetch_add(1, Ordering::SeqCst);
+                event
+            })
+            .boxed())
+    }
+}
+
+#[tokio::test]
+async fn board_task_lines_read_only_the_newer_status_events() {
+    let log = Arc::new(CountingLog::new());
+    let fx = Fx::with_log(personal_cfg(), log.clone());
+    put_project(&fx, &project("mirror", Some("personal"))).await;
+    put_channel(
+        &fx,
+        &channel(
+            "mirror-api",
+            ChannelKind::Project,
+            Some("mirror"),
+            Some("personal"),
+        ),
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            status: TaskStatus::InProgress,
+            updated: Timestamp(500_000),
+            ..task(1, "the guide", TaskStatus::InProgress, 1_000)
+        },
+    )
+    .await;
+    put_task(
+        &fx,
+        "mirror-api",
+        &Task {
+            updated: Timestamp(600_000),
+            ..task(2, "the skills", TaskStatus::Open, 1_100)
+        },
+    )
+    .await;
+    // One status change before the first pass.
+    put_status_event(&fx, "mirror-api", id(1), 900_000, TaskStatus::InProgress).await;
+
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let lines = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(lines[0]["since"], 900_000);
+    // The first pass reads the whole log.
+    assert_eq!(
+        log.reads(),
+        [(
+            EventFilter {
+                kinds: vec!["task.status".to_owned()],
+                ..EventFilter::default()
+            },
+            1
+        )]
+    );
+
+    // One more status change, stamped after the first pass as a real publish
+    // is. The hub's clock moves with it.
+    fx.clock.advance(Duration::from_millis(5_000));
+    put_status_event(&fx, "mirror-api", id(2), 1_005_000, TaskStatus::Open).await;
+    let v = fx
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        )
+        .await
+        .unwrap();
+    let cached = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(cached[0]["since"], 900_000);
+    assert_eq!(cached[1]["since"], 1_005_000);
+    // The second pass asks for the events from a millisecond before the
+    // first one ran, and the log holds only the new one of them.
+    let reads = log.reads();
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[1].0.since, Some(Timestamp(999_999)));
+    assert_eq!(reads[1].1, 1);
+
+    // A hub that reads the whole log once answers with the same lines.
+    let fresh = Hub::new(
+        Arc::new(fx.state.clone()),
+        Arc::new(fx.bus.clone()),
+        Arc::new(fx.sessions.clone()),
+        fx.clock.clone(),
+        personal_cfg(),
+    )
+    .with_events(log.clone());
+    let v = fresh
+        .handle(CtlRequest::Call {
+            actor: None,
+            key: None,
+            call: ToolCall::Board {
+                collection: None,
+                tasks: true,
+                done_since: None,
+            },
+        })
+        .await
+        .into_result()
+        .unwrap();
+    let full = v["collections"][0]["projects"][0]["task_lines"]
+        .as_array()
+        .expect("the task lines")
+        .clone();
+    assert_eq!(cached, full);
+    // The fresh hub read both events.
+    let reads = log.reads();
+    assert_eq!(reads.len(), 3);
+    assert_eq!(reads[2].0.since, None);
+    assert_eq!(reads[2].1, 2);
 }

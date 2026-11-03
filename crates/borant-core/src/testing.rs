@@ -581,7 +581,10 @@ impl SecretStore for FakeSecretStore {
 
 /// The change-request contract: a known URL reports the seeded status, and an
 /// unknown URL is `NotFound`. The adapter seeds the URL before the call, so
-/// the suite needs no write path.
+/// the suite needs no write path. The counts and the requested review follow
+/// the seeded status: an adapter that cannot see them leaves
+/// `checks_passed`, `checks_total`, and `review_requested` empty, and one
+/// that can repeats them.
 pub async fn change_requests_contract(
     changes: &dyn ChangeRequests,
     url: &str,
@@ -589,6 +592,12 @@ pub async fn change_requests_contract(
 ) {
     let got = changes.status(url).await.expect("a known change");
     assert_eq!(got, expected, "a known change reports its status");
+    if let (Some(passed), Some(total)) = (got.checks_passed, got.checks_total) {
+        assert!(
+            passed <= total,
+            "the passed checks are a part of the total: {got:?}"
+        );
+    }
     let err = changes
         .status("https://example.invalid/no-such-change/1")
         .await

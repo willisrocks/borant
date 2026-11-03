@@ -52,6 +52,9 @@ async fn changes_contract() {
             failed: vec!["ci".to_owned()],
         },
         review: ReviewState::None,
+        checks_passed: Some(3),
+        checks_total: Some(4),
+        review_requested: true,
     };
     changes.set(url, status.clone());
     testing::change_requests_contract(&changes, url, status).await;

@@ -582,6 +582,16 @@ pub enum ToolCall {
         /// the caller may see.
         #[serde(default)]
         collection: Option<CollectionName>,
+        /// List each task that is not closed, with its start state, what it
+        /// waits on, and its change request, and count the tasks that the
+        /// project closed lately. Without it the reply is the counts alone,
+        /// as an older reader knows it (spec: board task lines).
+        #[serde(default)]
+        tasks: bool,
+        /// A task closed as done at or after this time counts in
+        /// `done_since`. `None` is one day before the read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        done_since: Option<Timestamp>,
     },
     /// The latest usage report of one bundle member, from a human.
     UsageReport {

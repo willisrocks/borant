@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use borant_core::board::{BoardView, EpicLine, SagaState};
+use borant_core::board::{BoardView, EpicLine, SagaState, StartState};
 use borant_core::model::{
     CloseReason, ContinuePolicy, Harness, Project, Target, TaskBinding, TaskPatch, TaskStatus,
     UsageWindow,
 };
+use borant_core::ports::ChangeState;
 use borant_core::proto::{LocalSession, MoveSelector, MoveTarget, PauseSelector, ToolCall};
 use borant_core::rules::blocked;
 use borant_core::{
@@ -248,6 +249,14 @@ pub enum Command {
         /// Print the board as JSON.
         #[arg(long)]
         json: bool,
+        /// List each task that is not closed, with its start state, what it
+        /// waits on, and its change request.
+        #[arg(long)]
+        tasks: bool,
+        /// How far back a task that closed as done counts: a duration such as
+        /// `24h`, or an RFC 3339 time. Default 24 hours. Needs `--tasks`.
+        #[arg(long, requires = "tasks")]
+        done_since: Option<String>,
     },
     /// Answer the question of a task. The claimer gets the text, or the
     /// channel owner when nobody holds it.
@@ -1225,6 +1234,34 @@ fn render_board(v: &BoardView) -> String {
                 counts.needs_human,
                 counts.done,
             );
+            // `--tasks`: each task that is not closed, and how many the
+            // project closed as done lately.
+            if let Some(done) = project.done_since {
+                let _ = writeln!(out, "  done since: {done}");
+            }
+            for task in &project.task_lines {
+                let mut extra = String::new();
+                if let Some(who) = &task.claimed_by {
+                    let _ = write!(extra, "  {who}");
+                }
+                if let Some(start) = task.start {
+                    let _ = write!(extra, "  {}", start_word(start));
+                    if let Some(reason) = &task.waits_on {
+                        let _ = write!(extra, " ({reason})");
+                    }
+                }
+                if let Some(pr) = &task.pr {
+                    let _ = write!(extra, "  PR {} {}", pr_word(pr.state), pr.url);
+                }
+                let _ = writeln!(
+                    out,
+                    "  task #{}/{}  {}  {}{extra}",
+                    task.channel,
+                    task.task,
+                    task.title,
+                    status_word(task.status),
+                );
+            }
         }
         if board.needs_you.is_empty() && board.blocked.is_empty() {
             out.push_str("  Needs you: nothing\n");
@@ -1285,6 +1322,25 @@ fn saga_state_word(state: SagaState) -> &'static str {
         SagaState::Proposed => "proposed",
         SagaState::Approved => "approved",
         SagaState::Closed => "closed",
+    }
+}
+
+/// Whether a task of `--tasks` can start now, later, or not until a person
+/// acts.
+fn start_word(start: StartState) -> &'static str {
+    match start {
+        StartState::Ready => "ready",
+        StartState::Later => "later",
+        StartState::Blocked => "blocked",
+    }
+}
+
+/// The state of the change request of a task of `--tasks`.
+fn pr_word(state: ChangeState) -> &'static str {
+    match state {
+        ChangeState::Open => "open",
+        ChangeState::Merged => "merged",
+        ChangeState::Closed => "closed",
     }
 }
 
@@ -1761,8 +1817,25 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 print!("{}", render_inbox(&v));
             }
         }
-        Command::Board { collection, json } => {
-            let v = call_in_session(&c, ToolCall::Board { collection }).await?;
+        Command::Board {
+            collection,
+            json,
+            tasks,
+            done_since,
+        } => {
+            let done_since = match done_since {
+                Some(text) => Some(crate::events::parse_since(&text, crate::events::now())?),
+                None => None,
+            };
+            let v = call_in_session(
+                &c,
+                ToolCall::Board {
+                    collection,
+                    tasks,
+                    done_since,
+                },
+            )
+            .await?;
             if json {
                 pretty(&v);
             } else {
@@ -2837,19 +2910,51 @@ mod tests {
     fn board_parses_its_flags() {
         let cli =
             Cli::try_parse_from(["borant", "board", "--collection", "personal", "--json"]).unwrap();
-        let Command::Board { collection, json } = cli.command else {
+        let Command::Board {
+            collection, json, ..
+        } = cli.command
+        else {
             panic!("not a board");
         };
         assert_eq!(collection, Some("personal".parse().unwrap()));
         assert!(json);
 
         let cli = Cli::try_parse_from(["borant", "board"]).unwrap();
-        let Command::Board { collection, json } = cli.command else {
+        let Command::Board {
+            collection,
+            json,
+            tasks,
+            done_since,
+        } = cli.command
+        else {
             panic!("not a board");
         };
         assert_eq!(collection, None);
         assert!(!json);
+        assert!(!tasks);
+        assert_eq!(done_since, None);
 
+        // The task lines and their cutoff.
+        let cli = Cli::try_parse_from([
+            "borant",
+            "board",
+            "--json",
+            "--tasks",
+            "--done-since",
+            "48h",
+        ])
+        .unwrap();
+        let Command::Board {
+            tasks, done_since, ..
+        } = cli.command
+        else {
+            panic!("not a board");
+        };
+        assert!(tasks);
+        assert_eq!(done_since.as_deref(), Some("48h"));
+
+        // The cutoff names a part of `--tasks`.
+        assert!(Cli::try_parse_from(["borant", "board", "--done-since", "2h"]).is_err());
         // A collection is a name of `hub.toml`.
         assert!(Cli::try_parse_from(["borant", "board", "--collection", "Bad.Name"]).is_err());
     }
@@ -2857,7 +2962,8 @@ mod tests {
     /// One board of every part that the text shows.
     fn board_view() -> BoardView {
         use borant_core::board::{
-            AgentLine, BlockedSpawn, CollectionBoard, Counts, ProjectBoard, Question, SagaLine,
+            AgentLine, BlockedSpawn, CollectionBoard, Counts, PrLine, ProjectBoard, Question,
+            SagaLine, TaskLine,
         };
 
         let at = Timestamp(1_000_000);
@@ -2940,6 +3046,30 @@ mod tests {
                         needs_human: 0,
                         done: 4,
                     },
+                    task_lines: vec![TaskLine {
+                        channel: "elastic".parse().unwrap(),
+                        task: stuck,
+                        title: "the migration".into(),
+                        kind: borant_core::model::TaskKind::Task,
+                        status: TaskStatus::Stuck,
+                        start: None,
+                        waits_on: None,
+                        claimed_by: Some("helper".parse().unwrap()),
+                        since: Timestamp(at.0 - 60_000),
+                        attention_msg: None,
+                        pr: Some(PrLine {
+                            url: "https://github.com/x/y/pull/7".into(),
+                            state: ChangeState::Open,
+                            checks: borant_core::ports::CheckState::Pending {},
+                            checks_passed: Some(2),
+                            checks_total: Some(3),
+                            review: borant_core::ports::ReviewState::None,
+                            review_requested: false,
+                        }),
+                        version: Timestamp(at.0 - 60_000),
+                    }],
+                    done_since: Some(2),
+                    recent_done: Vec::new(),
                 }],
                 needs_you: vec![
                     Question {
@@ -2995,6 +3125,9 @@ mod tests {
                  \x20   the client  open  0 ready, 0 running, 0 done\n\
                  \x20 epic #metrics  Metrics  open  1 ready, 0 running, 0 done\n\
                  \x20 tasks: 2 open, 1 ready, 1 running, 1 blocked, 1 stuck, 0 needs_human, 4 done\n\
+                 \x20 done since: 2\n\
+                 \x20 task #elastic/{stuck}  the migration  stuck  helper  \
+                 PR open https://github.com/x/y/pull/7\n\
                  \x20 Needs you:\n\
                  \x20   [gate] elastic/{gate}  Approve the scope and the epics: waiting on Chris (3m)\n\
                  \x20   roadmap/{stuck}  the migration (1m)\n\

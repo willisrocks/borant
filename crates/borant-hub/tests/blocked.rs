@@ -285,7 +285,14 @@ async fn a_blocked_spawn_tells_the_person_the_spawner_and_the_chief() {
     // The board lists the unbound spawn only: the bound one shows through
     // its task.
     let board = fx
-        .call(None, ToolCall::Board { collection: None })
+        .call(
+            None,
+            ToolCall::Board {
+                collection: None,
+                tasks: false,
+                done_since: None,
+            },
+        )
         .await
         .unwrap();
     let blocked = board["collections"][0]["blocked"]

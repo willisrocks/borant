@@ -11,10 +11,21 @@ use crate::model::{
     AgentStatus, Channel, ChannelKind, CloseReason, LeaseState, Project, SpawnRecord, Task,
     TaskKind, TaskStatus,
 };
+use crate::ports::{ChangeState, ChangeStatus, CheckState, ReviewState};
 use crate::rules::blocked;
 use crate::rules::roles::{self, CollectionConfig};
-use crate::rules::saga;
+use crate::rules::{saga, tasks as task_rules};
 use crate::time::Timestamp;
+
+/// How far back a task that closed as done counts, when the caller names no
+/// time: one day.
+pub const DEFAULT_DONE_SINCE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// What an open task waits for when its channel has no orchestrator online.
+pub const ORCHESTRATOR_OFFLINE: &str = "orchestrator offline";
+
+/// What the tasks of a saga wait for before its gate closes.
+pub const YOUR_APPROVAL: &str = "your approval";
 
 /// The whole board: one board per collection that the caller may see.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +81,19 @@ pub struct ProjectBoard {
     pub epics: Vec<EpicLine>,
     /// The plain tasks of the project's open project channels.
     pub tasks: Counts,
+    /// One line for each task of the project that is not closed, by channel
+    /// and then by age. Only with `--tasks`, which is why it is not `tasks`:
+    /// that name holds the counts, and old readers keep it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_lines: Vec<TaskLine>,
+    /// How many tasks the project closed as done at or after the cutoff of
+    /// the read. Only with `--tasks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_since: Option<u32>,
+    /// The last ten tasks of the project that closed as done, newest first.
+    /// Only with `--tasks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_done: Vec<DoneLine>,
 }
 
 /// One orchestrator of a project.
@@ -137,6 +161,80 @@ pub struct Counts {
     pub done: u32,
 }
 
+/// One task of a project that is not closed, as the chief mod draws it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskLine {
+    pub channel: ChannelName,
+    pub task: TaskId,
+    pub title: String,
+    pub kind: TaskKind,
+    /// The status of the record: open, in progress, needs a person, or stuck.
+    pub status: TaskStatus,
+    /// Derived, for an open plain task: whether it can start now, later, or
+    /// not until a person acts. An epic is not work, so its line has none.
+    pub start: Option<StartState>,
+    /// What it waits on: the titles of its open `blocked_by` tasks, the
+    /// reason of the blocked spawn that is bound to it, your approval, or
+    /// [`ORCHESTRATOR_OFFLINE`].
+    pub waits_on: Option<String>,
+    pub claimed_by: Option<AgentId>,
+    /// When the task entered its current status: the time of its last
+    /// `task.status` event, or its `updated` time when it has no event.
+    pub since: Timestamp,
+    pub attention_msg: Option<String>,
+    pub pr: Option<PrLine>,
+    /// The task's `updated` time. An action sends it back as
+    /// `expect_updated`, so a task that changed after the draw is a
+    /// conflict and not a silent overwrite.
+    pub version: Timestamp,
+}
+
+/// Whether an open task can start, per the rules of the task graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartState {
+    /// Nothing open in `blocked_by`, no blocked spawn bound to it, and its
+    /// owner has a session.
+    Ready,
+    /// A task in `blocked_by` is open: it waits for that one.
+    Later,
+    /// A spawn bound to it is blocked, its channel waits for a person, or
+    /// its owner has no session.
+    Blocked,
+}
+
+/// The last state of a task's change request, as the PR watch read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrLine {
+    pub url: String,
+    pub state: ChangeState,
+    pub checks: CheckState,
+    /// The checks that passed and the checks that reported, when the adapter
+    /// counts them. A reader without them shows the state alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_passed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_total: Option<u32>,
+    pub review: ReviewState,
+    #[serde(default)]
+    pub review_requested: bool,
+}
+
+/// One task of the project that closed as done.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoneLine {
+    pub channel: ChannelName,
+    pub task: TaskId,
+    pub title: String,
+    /// The agent that held the task when it closed, or the owner of its
+    /// channel when nobody held it: the rules let only those, and a person,
+    /// close a task as done.
+    pub closer: Option<AgentId>,
+    /// When it closed, which is its `updated` time.
+    pub at: Timestamp,
+    pub pr_url: Option<String>,
+}
+
 /// One task that waits for a person.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Question {
@@ -171,6 +269,23 @@ pub struct BoardInput<'a> {
     pub agents: &'a [AgentStatus],
     /// The `[collections.<name>]` of `hub.toml`.
     pub collections: &'a BTreeMap<CollectionName, CollectionConfig>,
+    /// The task lines, the done count, and the last done tasks of each
+    /// project. `None` is the board without them, the reply that an older
+    /// reader gets.
+    pub lines: Option<TaskLines<'a>>,
+}
+
+/// What the task lines read beyond the records: the time of each task's last
+/// status change, and the PR watch's last read (spec: board task lines,
+/// "Cost").
+#[derive(Debug)]
+pub struct TaskLines<'a> {
+    /// A task closed as done at or after this time counts in `done_since`.
+    pub done_since: Timestamp,
+    /// The time of the last `task.status` event of a task, by task id.
+    pub status_since: &'a [(TaskId, Timestamp)],
+    /// The state that the PR watch last read, by channel and task.
+    pub prs: &'a [(ChannelName, TaskId, ChangeStatus)],
 }
 
 /// Builds the board of each wanted collection, in that order. `None` is the
@@ -372,6 +487,10 @@ fn project_board(
         .collection
         .as_ref()
         .and_then(|name| input.collections.get(name));
+    let (task_lines, done_since, recent_done) = match &input.lines {
+        Some(lines) => project_lines(&mine, input, lines, tasks_of, agent_of),
+        None => (Vec::new(), None, Vec::new()),
+    };
     ProjectBoard {
         project: project.name.clone(),
         mirror_issues: roles::mirror_issues(project, collection),
@@ -382,6 +501,9 @@ fn project_board(
         sagas: sagas.into_iter().map(|(_, line)| line).collect(),
         epics: epics.into_iter().map(|(_, line)| line).collect(),
         tasks,
+        task_lines,
+        done_since,
+        recent_done,
     }
 }
 
@@ -507,6 +629,200 @@ fn agent_line(agent: &AgentId, agent_of: &HashMap<&AgentId, &AgentStatus>) -> Ag
     }
 }
 
+/// The agent holds its lease.
+fn online(agent: &AgentId, agent_of: &HashMap<&AgentId, &AgentStatus>) -> bool {
+    agent_of
+        .get(agent)
+        .is_some_and(|status| matches!(status.lease, Some(LeaseState::Held { .. })))
+}
+
+/// How many of the last done tasks of a project the board lists.
+const RECENT_DONE: usize = 10;
+
+/// The task lines of a project, the count of the tasks that it closed as done
+/// at or after the cutoff, and the last ten of them: the `--tasks` part of
+/// the board.
+fn project_lines(
+    channels: &[&Channel],
+    input: &BoardInput,
+    lines: &TaskLines,
+    tasks_of: &HashMap<&ChannelName, Vec<Task>>,
+    agent_of: &HashMap<&AgentId, &AgentStatus>,
+) -> (Vec<TaskLine>, Option<u32>, Vec<DoneLine>) {
+    let since_of: HashMap<TaskId, Timestamp> = lines.status_since.iter().copied().collect();
+    let pr_of: HashMap<(&ChannelName, TaskId), &ChangeStatus> = lines
+        .prs
+        .iter()
+        .map(|(channel, task, status)| ((channel, *task), status))
+        .collect();
+    let mut open: Vec<(&Channel, &Task)> = Vec::new();
+    let mut done: u32 = 0;
+    let mut recent: Vec<DoneLine> = Vec::new();
+    for channel in channels {
+        let all = channel_tasks(tasks_of, &channel.name);
+        // Rule 9: a closed channel holds only closed history, and the spec
+        // leaves the tasks of a closed saga or epic out.
+        let listed = channel.closed.is_none() || channel.kind == ChannelKind::Project;
+        for task in all {
+            if task.status == TaskStatus::Closed {
+                // C13: an epic is not work, and a gate is a question, so
+                // neither one is a task that the project closed.
+                if task.close_reason != Some(CloseReason::Done)
+                    || task.kind == TaskKind::Epic
+                    || channel.gate == Some(task.id)
+                {
+                    continue;
+                }
+                if task.updated >= lines.done_since {
+                    done = done.saturating_add(1);
+                }
+                recent.push(DoneLine {
+                    channel: channel.name.clone(),
+                    task: task.id,
+                    title: task.title.clone(),
+                    closer: closer(channel, task),
+                    at: task.updated,
+                    pr_url: property(task, "pr_url"),
+                });
+                continue;
+            }
+            if listed {
+                open.push((channel, task));
+            }
+        }
+    }
+    // By channel and then by age, so the tasks of one epic stay together.
+    open.sort_by(|(ca, a), (cb, b)| {
+        ca.name
+            .cmp(&cb.name)
+            .then_with(|| a.created.cmp(&b.created))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let task_lines = open
+        .into_iter()
+        .map(|(channel, task)| {
+            task_line(channel, task, input, tasks_of, agent_of, &since_of, &pr_of)
+        })
+        .collect();
+    // The newest close first, as the project view lists them.
+    recent.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.task.cmp(&b.task)));
+    recent.truncate(RECENT_DONE);
+    (task_lines, Some(done), recent)
+}
+
+/// One line of a task of `channel`.
+fn task_line(
+    channel: &Channel,
+    task: &Task,
+    input: &BoardInput,
+    tasks_of: &HashMap<&ChannelName, Vec<Task>>,
+    agent_of: &HashMap<&AgentId, &AgentStatus>,
+    since_of: &HashMap<TaskId, Timestamp>,
+    pr_of: &HashMap<(&ChannelName, TaskId), &ChangeStatus>,
+) -> TaskLine {
+    let all = channel_tasks(tasks_of, &channel.name);
+    let (start, waits_on) = start_state(channel, all, task, input, agent_of);
+    let pr = property(task, "pr_url").and_then(|url| {
+        let status = pr_of.get(&(&channel.name, task.id))?;
+        Some(PrLine {
+            url,
+            state: status.state,
+            checks: status.checks.clone(),
+            checks_passed: status.checks_passed,
+            checks_total: status.checks_total,
+            review: status.review,
+            review_requested: status.review_requested,
+        })
+    });
+    TaskLine {
+        channel: channel.name.clone(),
+        task: task.id,
+        title: task.title.clone(),
+        kind: task.kind,
+        status: task.status,
+        start,
+        waits_on,
+        claimed_by: task.claimed_by.clone(),
+        // A task that the event log does not hold predates the record of
+        // status changes, and its own update is the best time it has.
+        since: since_of.get(&task.id).copied().unwrap_or(task.updated),
+        attention_msg: task.attention_msg.clone(),
+        pr,
+        version: task.updated,
+    }
+}
+
+/// Whether `task` can start, and what it waits on, per the rules of the task
+/// graph: `tasks` are the tasks of `channel`.
+///
+/// A blocked spawn wins over a wait in the graph: a person must act either
+/// way, and the spawn's reason is the one to act on.
+fn start_state(
+    channel: &Channel,
+    tasks: &[Task],
+    task: &Task,
+    input: &BoardInput,
+    agent_of: &HashMap<&AgentId, &AgentStatus>,
+) -> (Option<StartState>, Option<String>) {
+    // Only an open plain task starts: an epic is not work, and a task that
+    // runs or waits for a person is not open.
+    if task.status != TaskStatus::Open || task.kind == TaskKind::Epic {
+        return (None, None);
+    }
+    // A spawn that is bound to the task and blocked waits on a person, even
+    // when the graph would let the task start.
+    let bound = input
+        .spawns
+        .iter()
+        .find(|record| record.spec.task.as_ref().is_some_and(|b| b.id == task.id));
+    if let Some(blocked) = bound.and_then(|record| blocked::blocked(record, input.at)) {
+        return (Some(StartState::Blocked), Some(blocked.reason));
+    }
+    // The gate of a saga is the question that a person answers.
+    if channel.gate == Some(task.id) && !saga::approved(channel, tasks) {
+        return (Some(StartState::Blocked), Some(YOUR_APPROVAL.to_owned()));
+    }
+    // An owner without a lease cannot pick the task up.
+    if let Some(owner) = &channel.owner
+        && !online(owner, agent_of)
+    {
+        return (
+            Some(StartState::Blocked),
+            Some(ORCHESTRATOR_OFFLINE.to_owned()),
+        );
+    }
+    if saga::ready_in(channel, tasks).contains(&task.id) {
+        return (Some(StartState::Ready), None);
+    }
+    // The rules found a reason, and no spawn named it: name the tasks that
+    // are still open, or the gate.
+    let waits: Vec<String> = task_rules::open_blockers(tasks, task.id)
+        .into_iter()
+        .map(|id| blocker_title(tasks, id))
+        .collect();
+    if !waits.is_empty() {
+        return (Some(StartState::Later), Some(waits.join(", ")));
+    }
+    let waits_on = (!saga::approved(channel, tasks)).then(|| YOUR_APPROVAL.to_owned());
+    (Some(StartState::Later), waits_on)
+}
+
+/// The title of a task that holds another one back, or its id when the
+/// channel no longer holds it.
+fn blocker_title(tasks: &[Task], id: TaskId) -> String {
+    tasks
+        .iter()
+        .find(|task| task.id == id)
+        .map(|task| task.title.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Who closed a task as done, as the record names it: the agent that held it,
+/// or the owner of the channel when nobody held it.
+fn closer(channel: &Channel, task: &Task) -> Option<AgentId> {
+    task.claimed_by.clone().or_else(|| channel.owner.clone())
+}
+
 /// The tasks of one channel.
 fn channel_tasks<'a>(
     tasks_of: &'a HashMap<&ChannelName, Vec<Task>>,
@@ -528,7 +844,7 @@ fn property(task: &Task, name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::{Sender, SpawnSpec, SpawnState, TaskRef};
-    use serde_json::json;
+    use serde_json::{Map, Value, json};
 
     fn ts(n: i64) -> Timestamp {
         Timestamp(n)
@@ -560,6 +876,14 @@ mod tests {
         collections: BTreeMap<CollectionName, CollectionConfig>,
         /// The board's clock, in milliseconds.
         now: i64,
+        /// The board carries the task lines of `--tasks`.
+        lines: bool,
+        /// The cutoff of `done_since`.
+        done_since: i64,
+        /// The time of each task's last status change.
+        status_since: Vec<(TaskId, Timestamp)>,
+        /// The last state that the PR watch read.
+        prs: Vec<(ChannelName, TaskId, ChangeStatus)>,
     }
 
     impl Fixture {
@@ -572,7 +896,60 @@ mod tests {
                 agents: Vec::new(),
                 collections: BTreeMap::new(),
                 now: 9_000,
+                lines: false,
+                done_since: 0,
+                status_since: Vec::new(),
+                prs: Vec::new(),
             }
+        }
+
+        /// A board with the task lines of `--tasks` and this done cutoff.
+        fn with_lines(&mut self, done_since: i64) -> &mut Self {
+            self.lines = true;
+            self.done_since = done_since;
+            self
+        }
+
+        /// The time of the last status change of `task`.
+        fn status_at(&mut self, task: TaskId, at: i64) -> &mut Self {
+            self.status_since.push((task, ts(at)));
+            self
+        }
+
+        /// The state that the PR watch read for `task` of `channel`.
+        fn pr(&mut self, channel: &str, task: TaskId, status: ChangeStatus) -> &mut Self {
+            self.prs.push((chan(channel), task, status));
+            self
+        }
+
+        /// An agent that holds its lease on `h1`, or one that has none.
+        fn agent(&mut self, name: &str, online: bool) -> &mut Self {
+            let now = self.now;
+            let host: HostName = "h1".parse().unwrap();
+            self.agents.push(AgentStatus {
+                agent: name.parse().unwrap(),
+                harness: None,
+                host: online.then(|| host.clone()),
+                lease: online.then(|| LeaseState::Held {
+                    session: crate::SessionId::new(),
+                    host,
+                    expires: ts(now),
+                }),
+                session: None,
+                busy: false,
+                claim: None,
+                role: None,
+                collection: None,
+                pinned: false,
+                retired: false,
+                model: None,
+                last_tool_at: None,
+                last_tool: None,
+                last_text_at: None,
+                last_text: None,
+                tool_running_since: None,
+            });
+            self
         }
 
         /// A queued spawn of `channel` since `since` that `reason` blocks, or
@@ -669,6 +1046,11 @@ mod tests {
         }
 
         fn build(&self, wanted: &[Option<CollectionName>]) -> BoardView {
+            let lines = self.lines.then(|| TaskLines {
+                done_since: ts(self.done_since),
+                status_since: &self.status_since,
+                prs: &self.prs,
+            });
             build(
                 &BoardInput {
                     at: ts(self.now),
@@ -678,6 +1060,7 @@ mod tests {
                     spawns: &self.spawns,
                     agents: &self.agents,
                     collections: &self.collections,
+                    lines,
                 },
                 wanted,
             )
@@ -731,6 +1114,32 @@ mod tests {
             attention_msg: Some(msg.into()),
             updated: ts(updated),
             ..task(n, title, TaskStatus::NeedsHuman, 1_000)
+        }
+    }
+
+    /// A task closed as done at `at`, which is its `updated` time.
+    fn closed_at(n: u8, title: &str, at: i64) -> Task {
+        Task {
+            updated: ts(at),
+            ..closed(n, title, CloseReason::Done)
+        }
+    }
+
+    /// The properties of a task that names its change request.
+    fn props(url: &str) -> Map<String, Value> {
+        serde_json::from_value(json!({ "pr_url": url })).unwrap()
+    }
+
+    /// The status that the PR watch records.
+    fn watched(state: ChangeState) -> ChangeStatus {
+        ChangeStatus {
+            state,
+            head: "abc123".into(),
+            checks: CheckState::Pass {},
+            review: ReviewState::None,
+            checks_passed: Some(4),
+            checks_total: Some(4),
+            review_requested: false,
         }
     }
 
@@ -1038,5 +1447,390 @@ mod tests {
         fx.projects[0].collection = None;
         fx.projects[0].mirror_issues = None;
         assert!(!fx.build(&[None]).collections[0].projects[0].mirror_issues);
+    }
+
+    #[test]
+    fn board_task_lines_read_the_start_state() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.task("api", task(1, "the guide", TaskStatus::Open, 1_000));
+        fx.task(
+            "api",
+            Task {
+                blocked_by: vec![id(1)],
+                ..task(2, "the skills", TaskStatus::Open, 1_100)
+            },
+        );
+        // A blocker that the channel does not hold counts as open.
+        fx.task(
+            "api",
+            Task {
+                blocked_by: vec![id(9)],
+                ..task(3, "the notes", TaskStatus::Open, 1_200)
+            },
+        );
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let project = &board.collections[0].projects[0];
+        let lines = &project.task_lines;
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].title, "the guide");
+        assert_eq!(lines[0].start, Some(StartState::Ready));
+        assert_eq!(lines[0].waits_on, None);
+        assert_eq!(lines[1].start, Some(StartState::Later));
+        assert_eq!(lines[1].waits_on.as_deref(), Some("the guide"));
+        assert_eq!(lines[2].start, Some(StartState::Later));
+        assert_eq!(
+            lines[2].waits_on.as_deref(),
+            Some(id(9).to_string().as_str())
+        );
+        // A project that closed nothing yet.
+        assert_eq!(project.done_since, Some(0));
+        assert!(project.recent_done.is_empty());
+    }
+
+    #[test]
+    fn board_task_lines_a_blocked_spawn_wins_over_a_later_task() {
+        let mut fx = Fixture::new();
+        fx.now = 10_000_000;
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.task("api", task(1, "the guide", TaskStatus::Open, 1_000));
+        // "the skills" waits for "the guide" in the graph, and the spawn
+        // that is bound to it waits on a bundle: the person acts on the
+        // spawn.
+        fx.task(
+            "api",
+            Task {
+                blocked_by: vec![id(1)],
+                ..task(2, "the skills", TaskStatus::Open, 1_100)
+            },
+        );
+        fx.spawn(
+            "w1",
+            "api",
+            2_000_000,
+            "missing bundle github-work",
+            Some(id(2)),
+        );
+        // A task that the graph lets start is blocked by its spawn too.
+        fx.task("api", task(3, "the release notes", TaskStatus::Open, 1_200));
+        fx.spawn(
+            "w2",
+            "api",
+            2_000_000,
+            "missing bundle github-work",
+            Some(id(3)),
+        );
+        // A spawn inside the wait window explains nothing.
+        fx.task("api", task(4, "the smoke test", TaskStatus::Open, 1_300));
+        fx.spawn(
+            "w3",
+            "api",
+            9_940_000,
+            "missing bundle github-work",
+            Some(id(4)),
+        );
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        assert_eq!(lines[1].start, Some(StartState::Blocked));
+        assert_eq!(
+            lines[1].waits_on.as_deref(),
+            Some("missing bundle github-work")
+        );
+        assert_eq!(lines[2].start, Some(StartState::Blocked));
+        assert_eq!(lines[3].start, Some(StartState::Ready));
+    }
+
+    #[test]
+    fn board_task_lines_block_when_the_owner_has_no_session() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.at("api", |c| c.owner = Some("orchestrator".parse().unwrap()));
+        // An open blocker and an offline owner: the owner must come back.
+        fx.task("api", task(1, "the guide", TaskStatus::Open, 1_000));
+        fx.task(
+            "api",
+            Task {
+                blocked_by: vec![id(1)],
+                ..task(2, "the skills", TaskStatus::Open, 1_100)
+            },
+        );
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        assert_eq!(lines[0].start, Some(StartState::Blocked));
+        assert_eq!(lines[0].waits_on.as_deref(), Some(ORCHESTRATOR_OFFLINE));
+        assert_eq!(lines[1].start, Some(StartState::Blocked));
+
+        // A held lease is a session, and then the graph decides.
+        fx.agent("orchestrator", true);
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        assert_eq!(lines[0].start, Some(StartState::Ready));
+        assert_eq!(lines[1].start, Some(StartState::Later));
+
+        // A lease that is not held is no session either.
+        fx.agents[0].lease = None;
+        let board = fx.build(&[None]);
+        assert_eq!(
+            board.collections[0].projects[0].task_lines[0].start,
+            Some(StartState::Blocked)
+        );
+    }
+
+    #[test]
+    fn board_task_lines_wait_on_the_gate_of_a_saga() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("elastic", ChannelKind::Saga, Some("mirror"));
+        fx.at("elastic", |c| c.gate = Some(id(1)));
+        fx.task(
+            "elastic",
+            task(1, saga::GATE_TITLE, TaskStatus::Open, 1_000),
+        );
+        fx.task("elastic", epic(2, "the provisioner", 1_100));
+        fx.task("elastic", child(3, "the adapter", id(2), TaskStatus::Open));
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        // The gate is the question that a person answers.
+        assert_eq!(lines[0].task, id(1));
+        assert_eq!(lines[0].start, Some(StartState::Blocked));
+        assert_eq!(lines[0].waits_on.as_deref(), Some(YOUR_APPROVAL));
+        // An epic is not work, so its line has no start state.
+        assert_eq!(lines[1].task, id(2));
+        assert_eq!(lines[1].kind, TaskKind::Epic);
+        assert_eq!(lines[1].start, None);
+        // The task below the epic waits for the gate.
+        assert_eq!(lines[2].task, id(3));
+        assert_eq!(lines[2].start, Some(StartState::Later));
+        assert_eq!(lines[2].waits_on.as_deref(), Some(YOUR_APPROVAL));
+
+        // The gate closed as done approves the saga, and the task starts.
+        fx.tasks.retain(|(_, task)| task.id != id(1));
+        fx.task("elastic", closed(1, saga::GATE_TITLE, CloseReason::Done));
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        assert_eq!(lines[0].task, id(2));
+        assert_eq!(lines[1].task, id(3));
+        assert_eq!(lines[1].start, Some(StartState::Ready));
+    }
+
+    #[test]
+    fn board_task_lines_leave_out_a_closed_saga_or_epic() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("old-saga", ChannelKind::Saga, Some("mirror"));
+        fx.at("old-saga", |c| c.closed = Some(ts(5_000)));
+        fx.task("old-saga", task(1, "the leftover", TaskStatus::Open, 1_000));
+        fx.channel("old-epic", ChannelKind::Epic, Some("mirror"));
+        fx.at("old-epic", |c| c.closed = Some(ts(5_000)));
+        fx.task("old-epic", epic(2, "the old epic", 1_100));
+        // A closed project channel holds closed history: no line, and its
+        // task is one of the done tasks.
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.at("api", |c| c.closed = Some(ts(5_000)));
+        fx.task("api", closed(3, "the last one", CloseReason::Done));
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let project = &board.collections[0].projects[0];
+        assert!(project.task_lines.is_empty());
+        assert_eq!(project.done_since, Some(1));
+        assert_eq!(project.recent_done.len(), 1);
+    }
+
+    #[test]
+    fn board_task_lines_count_the_done_tasks_since_the_cutoff() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.at("api", |c| c.owner = Some("orchestrator".parse().unwrap()));
+        fx.task("api", closed_at(4, "a while ago", 1_000));
+        fx.task("api", closed_at(5, "yesterday", 2_000));
+        fx.task(
+            "api",
+            Task {
+                claimed_by: Some("w1".parse().unwrap()),
+                ..closed_at(6, "just now", 3_000)
+            },
+        );
+        // A wontfix close is not done, and an epic is not work.
+        fx.task(
+            "api",
+            Task {
+                close_reason: Some(CloseReason::Wontfix),
+                ..closed_at(7, "dropped", 3_500)
+            },
+        );
+        fx.task(
+            "api",
+            Task {
+                kind: TaskKind::Epic,
+                ..closed_at(8, "the old epic", 3_600)
+            },
+        );
+        // Two closed at or after the cutoff: "just now" and 3_500 is a
+        // wontfix, so one. The newest close comes first.
+        let project = &fx.with_lines(2_500).build(&[None]).collections[0].projects[0];
+        assert_eq!(project.done_since, Some(1));
+        let titles: Vec<&str> = project
+            .recent_done
+            .iter()
+            .map(|line| line.title.as_str())
+            .collect();
+        assert_eq!(titles, ["just now", "yesterday", "a while ago"]);
+        // The claimer when one held the task, the channel's owner otherwise.
+        assert_eq!(
+            project.recent_done[0].closer.as_ref().map(|a| a.as_str()),
+            Some("w1")
+        );
+        assert_eq!(
+            project.recent_done[1].closer.as_ref().map(|a| a.as_str()),
+            Some("orchestrator")
+        );
+        assert_eq!(project.recent_done[1].at, ts(2_000));
+    }
+
+    #[test]
+    fn board_task_lines_keep_the_last_ten_done_tasks() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        for n in 1..=12 {
+            let at = 1_000 * i64::from(n);
+            fx.task("api", closed_at(n, &format!("the task {n}"), at));
+        }
+        let project = &fx.with_lines(0).build(&[None]).collections[0].projects[0];
+        assert_eq!(project.done_since, Some(12));
+        assert_eq!(project.recent_done.len(), 10);
+        assert_eq!(project.recent_done[0].title, "the task 12");
+        assert_eq!(project.recent_done[9].title, "the task 3");
+    }
+
+    #[test]
+    fn board_task_lines_read_since_from_the_status_event() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        // The record says 5_000; its last status change was at 6_000.
+        fx.task(
+            "api",
+            Task {
+                updated: ts(5_000),
+                ..needs_human(1, "the migration", "a person must pick a host", 5_000)
+            },
+        );
+        // No status event: the record's own time stands in.
+        fx.task(
+            "api",
+            Task {
+                claimed_by: Some("w1".parse().unwrap()),
+                updated: ts(4_000),
+                ..task(2, "the guide", TaskStatus::InProgress, 1_000)
+            },
+        );
+        fx.status_at(id(1), 6_000);
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        assert_eq!(lines[0].since, ts(6_000));
+        assert_eq!(lines[0].version, ts(5_000));
+        // Only an open task starts.
+        assert_eq!(lines[0].start, None);
+        assert_eq!(
+            lines[0].attention_msg.as_deref(),
+            Some("a person must pick a host")
+        );
+        assert_eq!(lines[1].since, ts(4_000));
+        assert_eq!(lines[1].version, ts(4_000));
+        assert_eq!(lines[1].claimed_by.as_ref().map(|a| a.as_str()), Some("w1"));
+    }
+
+    #[test]
+    fn board_task_lines_read_the_pr_watch() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.task(
+            "api",
+            Task {
+                properties: props("https://github.com/x/y/pull/1"),
+                ..task(1, "the guide", TaskStatus::Open, 1_000)
+            },
+        );
+        // A pr_url that the watch has not read yet.
+        fx.task(
+            "api",
+            Task {
+                properties: props("https://github.com/x/y/pull/2"),
+                ..task(2, "the skills", TaskStatus::Open, 1_100)
+            },
+        );
+        // A watch read for a task that names no change request.
+        fx.task("api", task(3, "the notes", TaskStatus::Open, 1_200));
+        fx.pr("api", id(1), watched(ChangeState::Open));
+        fx.pr("api", id(3), watched(ChangeState::Merged));
+        fx.with_lines(0);
+
+        let board = fx.build(&[None]);
+        let lines = &board.collections[0].projects[0].task_lines;
+        let pr = lines[0].pr.as_ref().expect("the line of the PR");
+        assert_eq!(pr.url, "https://github.com/x/y/pull/1");
+        assert_eq!(pr.state, ChangeState::Open);
+        assert_eq!(pr.checks, CheckState::Pass {});
+        assert_eq!((pr.checks_passed, pr.checks_total), (Some(4), Some(4)));
+        assert_eq!(pr.review, ReviewState::None);
+        assert!(!pr.review_requested);
+        assert!(lines[1].pr.is_none());
+        assert!(lines[2].pr.is_none());
+    }
+
+    #[test]
+    fn board_without_task_lines_is_todays_reply() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.task("api", task(1, "the guide", TaskStatus::Open, 1_000));
+        fx.task("api", closed(2, "the old one", CloseReason::Done));
+        // An older reader reads a project with these keys only.
+        let json = serde_json::to_value(fx.build(&[None])).unwrap();
+        let mut keys: Vec<&str> = json["collections"][0]["projects"][0]
+            .as_object()
+            .expect("the project")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "epics",
+                "mirror_issues",
+                "orchestrators",
+                "project",
+                "sagas",
+                "tasks",
+            ]
+        );
+
+        // With `--tasks` the project carries the lines, the count, and the
+        // last done tasks.
+        fx.with_lines(0);
+        let json = serde_json::to_value(fx.build(&[None])).unwrap();
+        let project = &json["collections"][0]["projects"][0];
+        assert_eq!(project["task_lines"][0]["title"], "the guide");
+        assert_eq!(project["task_lines"][0]["start"], "ready");
+        assert_eq!(project["done_since"], 1);
+        assert!(project["recent_done"].is_array());
     }
 }
