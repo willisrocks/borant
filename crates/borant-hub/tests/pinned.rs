@@ -646,3 +646,97 @@ async fn pinned_session_report_from_before_the_expiry_keeps_the_pin() {
 
     assert!(err.message.contains("pinned"), "{err}");
 }
+
+/// A hub whose `chief` role is pinned, as a person-started chief is.
+fn chief_hub() -> Fx {
+    let mut chief = borant_core::rules::roles::RoleConfig::default();
+    chief.pinned = true;
+    Fx::with(borant_hub::HubConfig {
+        roles: std::collections::BTreeMap::from([("chief".parse().unwrap(), chief)]),
+        ..Default::default()
+    })
+}
+
+/// Registers `c1` on `h1` as a chief, as the person's own session.
+async fn chief_agent(fx: &Fx) -> borant_core::proto::Registered {
+    fx.host("h1", &[Harness::Fake]).await;
+    let who = fx.register("h1", Some("c1"), None).await;
+    fx.req(CtlRequest::RegisterSession(session_req(
+        &who,
+        Some("chief"),
+    )))
+    .await
+    .unwrap();
+    who
+}
+
+#[tokio::test]
+async fn a_chief_with_a_dead_session_is_never_launched() {
+    let fx = chief_hub();
+    let who = chief_agent(&fx).await;
+    assert!(
+        agent(&fx, &who.agent).await.pinned,
+        "the role pins the chief"
+    );
+    expire(&fx).await;
+    let mut cmds = fx.commands("h1").await;
+    // No session held the chief for the claim timeout: a worker is relaunched
+    // now (pinned_dead_agent_comes_back_on_its_host), a chief is not.
+    fx.clock.advance(CLAIM_TIMEOUT * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+
+    fx.hub.tick().await.unwrap();
+    fx.hub.tick().await.unwrap();
+
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "the hub must not launch a chief"
+    );
+    assert!(
+        !matches!(
+            lease(&fx, &who.agent).await.state,
+            LeaseState::Reserved { .. }
+        ),
+        "no launch reserves the chief's lease"
+    );
+}
+
+#[tokio::test]
+async fn a_chief_after_a_clean_end_is_never_launched() {
+    let fx = chief_hub();
+    let who = chief_agent(&fx).await;
+    fx.req(CtlRequest::EndSession {
+        session: who.session,
+        agent: who.agent.clone(),
+        token: who.token,
+        reason: "exit".into(),
+    })
+    .await
+    .unwrap();
+    let mut cmds = fx.commands("h1").await;
+    fx.clock.advance(GRACE * 2);
+    fx.host("h1", &[Harness::Fake]).await;
+
+    fx.hub.tick().await.unwrap();
+
+    assert!(next_cmd(&mut cmds).await.is_none());
+    // Not even a move launches it.
+    let _ = fx
+        .call(
+            None,
+            ToolCall::Move {
+                selector: MoveSelector::Agent(who.agent.clone()),
+                to: MoveTarget {
+                    host: Some(host()),
+                    harness: None,
+                },
+                member: None,
+            },
+        )
+        .await;
+    fx.hub.tick().await.unwrap();
+    assert!(
+        next_cmd(&mut cmds).await.is_none(),
+        "not even a move launches it"
+    );
+}

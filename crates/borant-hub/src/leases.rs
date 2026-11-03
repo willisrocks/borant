@@ -1157,6 +1157,12 @@ impl Hub {
         if agent.retired || agent.paused.is_some() {
             return Ok(());
         }
+        // A chief is started by a person: the hub never recovers it, not on
+        // a dead session and not after a clean end.
+        if self.person_started(&agent) {
+            mem.pending_moves.remove(&agent_id);
+            return Ok(());
+        }
 
         // Claims return to open when no session held the agent for the
         // claim timeout, measured from the first expiry. A pinned agent keeps
