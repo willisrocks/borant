@@ -407,6 +407,7 @@ names the session and the sandbox directly).
 | Approval | A person's yes to an `approve` Ask, recorded from a `verified` Trigger. | Gated tools check for an Approval row. A model cannot create one. Section 27 binds it to one action on one revision. |
 | Channel | The write side of a Thread: a GitHub comment, a PR review reply, a web chat message. | A Ticket holds a set of Channels. |
 | Outbox message | One pending Channel write. | Fixed message ID, chosen before the first attempt. Delivered in order per conversation. |
+| Engine ID | The ID of a Ticket, Assignment, sandbox, or outbox message. | A ULID, not a counter, because a restore rewinds counters and a repeated ID can match an old branch, volume, or GitHub marker. (My call) |
 | Effect | One unit of work that runs after a commit: submit an Input, run an Eval, write a Channel, start a sandbox, and the others in section 8. | Written in the same transaction as the state change that needs it. Idempotent by its key. |
 | Router | The chief of staff: a long-lived pi-durable conversation per Profile that talks with Chris. | Reads the board, adds notes, and proposes briefs. Grants nothing. Owns the Profile's chat Thread (section 8). |
 | Sandbox | The Fly Machine where a Ticket's tools run. | One per live Assignment. `sandboxd` does not store injected values (section 13). |
@@ -644,6 +645,12 @@ GitHub Triggers go to the Eval directly. The router gets them as no Input. It ha
 tools: read the board, read a Ticket with its Thread as untrusted data, `note`, and
 `propose`. It has no sandbox, no GitHub write, and no secret. (My call)
 
+The router runs only when Chris writes in the chat or presses `a`. It does not wake on a new
+Ask or a failed Ticket, and it cannot answer an Ask, so each Ask reaches him directly. The
+worker prompt limits Asks to what only he can answer. A wake costs a model turn at a limit of
+2, and the first Project is small enough to measure first. Stage 4 counts the Asks, and a wake
+path is a later decision. (My call)
+
 On a Profile chat Thread, the batch of an Eval is the proposal's `fromTrigger` and nothing
 else. One message can back several proposals within the hour, so "do A and B" can give two
 Tickets. Each Decision stores the exact text, and the assessment checks that the brief
@@ -715,7 +722,7 @@ cut, because this path covers the same gap. (My call)
 | Trigger to Eval | Each Trigger reaches one final Decision. An `unavailable` Decision returns its batch for later. A chat message can back several proposals (section 8). | `claim_eval` stores the batch. A discarded Eval returns its batch. |
 | Trigger to a Ticket's session | Exactly once in the transcript of each subscribed Ticket | `requestId` = Trigger ID, per conversation (spike Q2). |
 | Report to Engine | Exactly once | Outbox key = tool task ID, unique key in `reports` (spike Q7). |
-| Sandbox job | Started at most once per task ID. After a crash: reattach, the stored result, or `uncertain`. | The job protocol of section 15. |
+| Sandbox job | Started at most once per Assignment and task ID. After a crash: reattach, the stored result, or `uncertain`. | The job protocol of section 15. |
 | Other tools | An `interrupted` result after a crash. | The pi-durable default (spike Q9). |
 | Engine to outside Channel | Effectively once, in order per conversation | At-least-once attempts. Before a retry after an unknown result, the handler looks for the message ID, a hidden `<!-- borant:<id> -->` marker in GitHub comments. The next message in a conversation waits until the one before it is `done`. |
 | Effects | At least once | Idempotent handlers by `key`. |
@@ -895,6 +902,12 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 | `x` | Mark the listed changes seen. |
 | `/` | Focus the chat. |
 
+### Phone
+
+The page works at phone width, and each key action also has a button. So Chris can answer,
+approve, or stop from a push notification. An approval shows the same SHA and diff link there.
+(My call, because a push that he cannot act on delays each Ask until he is at his laptop.)
+
 ### Notifications
 
 Chris must not have to look at the screen to learn that something needs him. The
@@ -1046,16 +1059,22 @@ A tool call for `bash`, `write`, or `edit` does this:
 
 1. Read the durable marker: `api.memo("job_sent", context)`.
 2. If there is no marker, commit it with `api.memo("job_sent", true, context)`, then
-   send `POST /jobs/<task id>` with the command.
-3. If there is a marker, this is a rerun. Send `GET /jobs/<task id>` only.
-4. Poll `GET /jobs/<task id>` until the job ends, with short requests, because the path
+   send `POST /jobs/<assignment id>/<task id>` with the command.
+3. If there is a marker, this is a rerun. Send `GET /jobs/<assignment id>/<task id>` only.
+4. Poll the same `GET` until the job ends, with short requests, because the path
    goes through Fly Proxy.
 
 `api.memo` is in the public types (`dist/harness/types.d.ts:227`), and pi-durable uses it
 the same way (`dist/harness/tool.js:367`). The README does not describe it, so the
 contract suite tests it.
 
-`sandboxd` writes a record to `/work/.jobs/<task id>` and calls `fsync` before it
+The key holds the Assignment ID because a task ID alone can repeat. pi-durable takes its IDs
+from a counter in the file (`dist/storage/sqlite/migrations.js:10`). A restore rewinds that
+counter, but a sandbox volume keeps its records, so a new call can get an old task ID. Every
+Ticket gets a new Assignment after a restore (section 25). A plain crash keeps the same
+Assignment, so reattach still works. (My call)
+
+`sandboxd` writes a record to `/work/.jobs/<assignment id>/<task id>` and calls `fsync` before it
 starts the command, and again when the command ends. The answers to `GET`:
 
 | Record | What it means | The tool result |
@@ -1354,6 +1373,7 @@ $20. The 4 GB control plane stays, because section 28 shows that 2 GB is not pro
 What this estimate leaves out:
 
 - Savings. Current Borant keeps running, so its bill does not change.
+- The test apps of the build, up to $25 a month while it runs (section 21).
 - A separate Claude account (section 24). It adds that plan's price: Max is $100 a month, and
   Ultra is $200 (https://claude.com/pricing, read on 2026-11-03).
 - Model cost at API rates, if Anthropic moves `claude -p` (section 17).
@@ -1366,9 +1386,8 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
 
 ### Build stages
 
-0. Change the settings of `boopmark` below, if Chris agrees (section 24).
-1. Prove the unproven points, in this order. Each one can change the design, and any failure
-   stops the build until Chris hears about it:
+1. Prove the outside unknowns, with small throwaway scripts on test apps. Each one can change
+   the design, and a failure stops the build until Chris hears about it:
    - The Claude test on the account from section 24: one real turn from a Fly Machine, other
      logins intact, and the memory of one `claude -p` process (section 17). Record the
      usage-credit setting of the account (section 17).
@@ -1376,19 +1395,23 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
    - The network: Flycast between the two custom networks, the force header on a running and
      a stopped Machine, `worker` cannot reach another sandbox or use `/.fly/api`, `/metrics`
      on a custom network, and a duplicate Machine name (sections 5 and 15).
-   - Process kills inside each crash window of section 7, and the startup order.
-   - A real `sandboxd` restart during a job, and a replaced volume, through the job protocol
-     (section 15). The `api.memo` contract.
-   - A Litestream restore of one shared file, after a normal close and after a crash, and
-     then restore mode (section 25).
-   - A wait at the model-request limit that uses no stream timeout or retry (section 28).
+   - A Litestream restore of a file that pi-durable wrote, after a normal close and after a
+     crash (section 25).
+   - A wait at the model-request limit that uses no stream timeout or retry, with a faux
+     provider (section 28).
    - A GitHub redelivery keeps its `guid` (section 8).
    - A long transcript: a session with 5000 entries, its reopen time, and its heap.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
    git proxy, the web chat and GitHub Sources, Evals with stored Decisions, the chief-of-staff
-   screen, Ticket detail, notifications, and the admin page.
-3. Run the first Project, `boopmark`, in the `personal` Profile. Chris starts
-   Tickets from the web chat only.
+   screen, Ticket detail, notifications, and the admin page. The real code must then pass the
+   proofs that need it. A failure here is a bug to fix:
+   - Process kills inside each crash window of section 7, and the startup order.
+   - A real `sandboxd` restart during a job, and a replaced volume, through the job protocol
+     (section 15). The `api.memo` contract.
+   - Restore mode (section 25).
+3. Change the `boopmark` settings below, if Chris agrees (section 24). Make sure that a PR job
+   on a `cloud/` branch has a read-only token. Then run the first Project, `boopmark`, in the
+   `personal` Profile. Chris starts Tickets from the web chat only.
 4. Measure for two weeks: lost Triggers, duplicate Tickets, reconcile repairs, cost, sandbox
    hours, waits at each limit, and how often a usage limit stops a run.
 
@@ -1401,6 +1424,21 @@ personal agents (section 22). (Chief default, for Chris to check)
 The first Project is `boopmark`. (My call) It is the only Project in the personal
 collection that is not current Borant's own code. `borant` and `borant-infra` stay
 off the new system, because a change to them can change the running system.
+
+### Who holds what during the build
+
+Agents of current Borant can write the code (section 5), so they must hold nothing that
+production uses. (My call)
+
+- Stages 1 and 2 use test apps, a test GitHub App, and a test repo, all new. They do not touch
+  `boopmark`. Agents can hold the test Fly and GitHub tokens, and they must destroy Machines
+  after each test.
+- Chris creates the Claude token and sets it with `fly secrets set` on a test app, and he
+  completes the Codex login. So those two steps need him, and the agents never read the
+  values. The rest runs unattended.
+- Approval of this document allows up to $25 a month for test apps. Nothing else is spent
+  before stage 3.
+- Chris creates the production apps, their tokens, and the App on `boopmark` at stage 3.
 
 ### One repo, two systems
 
@@ -1443,8 +1481,7 @@ The fix is three settings, and it is the smallest one:
 3. Limit the `production` environment to the `main` branch.
 
 These change a repo that current Borant also works on, so they need Chris's yes (section 24).
-They change no workflow file, but a release of `boopmark` then waits for his review. Stage 1
-makes sure that a PR job on a `cloud/` branch has a read-only token.
+They change no workflow file, but a release of `boopmark` then waits for his review.
 
 ### Shared Claude usage limit
 
@@ -1589,6 +1626,7 @@ None of these is Chris's decision yet. The document uses each one until Chris an
 | Roger work | Stays on Steve and Steve personal agents. The first Profile is `personal`. | Chief default, for Chris to check | 21, 22 |
 | Naming | "Profile" applies to the new system only. Current Borant keeps "collection". | Chief default, for Chris to check | 5, 6 |
 | `claude -p` fallback | Every role moves to Codex if the Codex test passes. No Anthropic API key. | Recommendation | 17 |
+| Router wake | The router runs only when Chris asks. It does not screen Asks in the first version. | Recommendation | 8 |
 
 ### Open questions for Chris
 
