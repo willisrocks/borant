@@ -349,6 +349,7 @@ The control plane has only these routes, and all of them are on its public addre
 | `/auth/*`, `/`, `/api/*` | Chris's browser | GitHub OAuth, the allowed list of user IDs, and a `SameSite=Strict` session cookie (section 12) |
 | `/admin/*` | Chris's browser | The same login |
 | `/git/*` | Git in a sandbox | The Assignment's git token, the Assignment's Project repo, and the ref check of section 11. A revoked token fails at once. |
+| `/healthz` | CI, as a readiness probe. Fly's own check stays on `/login`. | Nothing. It says that the process answers, and nothing else. |
 
 `/metrics` has no public route. It listens on a second port with no `services` entry,
 and Fly reads it through the `[metrics]` configuration. Stage 1 makes sure that this
@@ -879,6 +880,22 @@ band height) do not apply. The keys keep the same meaning.
 Login: GitHub OAuth, with an allowed list of GitHub user IDs in the Policy.
 The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 
+### Operator break-glass
+
+`mint-session --login <login>` prints one person session with no GitHub OAuth. It is for a
+rehearsal before the OAuth app exists, or for a screen that will not load. It runs only inside
+the control-plane Machine, through `fly ssh console`, because it needs the app's session secret.
+Only Chris holds the production deploy tokens (section 11), so only Chris can run it on
+production. It refuses a login that is not on the Policy's allowed list. It writes a
+`session_minted` audit row before it prints the cookie. The session lasts 30 minutes by default
+and 12 hours at most, and it has no revocation list.
+
+It is a person session, and it can approve. It is never an agent path. A cookie value in the
+agent header gets `401`, and an agent token beside the cookie gets `403`. But these checks do not
+stop a holder of the value who calls the browser routes with no agent token. So on production
+the value goes only to Chris's browser. Its check for Fly's Machine variables catches a run in
+the wrong place, and the session secret is the guard.
+
 ### The chief-of-staff screen
 
 | Area | Shows |
@@ -950,7 +967,7 @@ the chief)
 | Claude credential | `CLAUDE_CODE_OAUTH_TOKEN`, a one-year token from `claude setup-token`, as a Fly secret on the control-plane app (section 17) | pi-claude-code |
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in the SQLite file, AES-256-GCM under the master key | The control plane, and injected tool calls |
 | GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
-| Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, stays in a root-only file on the Machine, and is stored encrypted in the `secrets` table, because the control plane presents it after a restart. The git token opens only the `/git/*` route, and `worker` can read it. The control plane stores its hash. Section 26 deletes both. | The control plane, `sandboxd`, and the git credential helper in the sandbox |
+| Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, and the git token opens only the `/git/*` route. On the Machine, each stays in a root-only file, and `worker` gets the git token only through the git credential helper. The control plane stores both in plaintext in the `assignments` table of the Engine, because it must present them again after a restart, so a hash of the git token is not enough. Anyone who can read the SQLite file or its replica in the private bucket can present a live token. The stop commit deletes both (section 26), and restore mode revokes them (section 25). | The control plane, `sandboxd`, and the git credential helper in the sandbox |
 | Config repo deploy key | Read-only. A Fly secret. | Reading the Policy (section 11) |
 
 Rules:
@@ -1177,7 +1194,7 @@ anything returns, a design must answer:
 
 | Provider | How | State |
 |---|---|---|
-| Claude | pi-claude-code `createClaudeCodeProvider()`, which runs `claude -p` on the control plane with a subscription token. Install it from the `earendil-works/pi-claude-code` git repo at a pinned commit, not from npm. Call `models.getAvailable("claude-code")` at startup (spike Q8). | One real Haiku turn ran from a Fly Machine in stage 1 (section 21). |
+| Claude | pi-claude-code `createClaudeCodeProvider()`, which runs `claude -p` on the control plane with a subscription token. Install it from the `earendil-works/pi-claude-code` git repo at a pinned commit, not from npm. Call `models.refresh` for `claude-code` at startup, because `models.getAvailable` answers from the built-in list of the package and not from the CLI's discovery. | One real Haiku turn ran from a Fly Machine in stage 1 (section 21). |
 | Codex | pi-ai `openaiProvider()` "Sign in with ChatGPT" OAuth, with a `CredentialStore` on the `secrets` table. | The Codex test passed in stage 1 (section 21). |
 | LunaRoute | A provider of about 20 lines with `createProvider()` and `openAIResponsesApi()` (spike Q8). | Registered, no real turn yet. |
 
@@ -1419,7 +1436,10 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
      of the other logins has only the report of the saga orchestrator, not a recorded result.
 
    The Codex model alias in Policy is `gpt-5.6-luna`, because Chris's account rejects
-   `gpt-5.3-codex` and older models.
+   `gpt-5.3-codex` and older models. The Claude model aliases are `claude-sonnet-5-5` for the
+   router, the assessor, and the worker, and `claude-haiku-5-5` for observe mode and summaries.
+   These are the IDs from the CLI's discovery. The first Policy lives in
+   `willisrocks/borant-config`.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
    git proxy, the web chat and GitHub Sources, Evals with stored Decisions, the chief-of-staff
    screen, Ticket detail, notifications, and the admin page. The real code must then pass the
