@@ -257,6 +257,22 @@ fn reject(
     Ok(harness)
 }
 
+/// Whether `h` would take the agent if its slots were free: every rule of
+/// `reject` except fullness. The pool counts only the free slots that can
+/// serve a queued spawn, so a host without the spawn's bundle is not
+/// mistaken for capacity.
+pub fn accepts_except_full(
+    h: &HostView,
+    preferred: Harness,
+    forced_harness: Option<Harness>,
+    req: &PlacementReq,
+    bundles: &[BundleName],
+) -> Option<Reject> {
+    let mut free = h.clone();
+    free.active_agents = 0;
+    reject(&free, req, bundles, preferred, forced_harness).err()
+}
+
 /// Picks a host and a harness. A host qualifies when no rule of `reject`
 /// fails, that is: it is online, not draining, below its limit, can reach the
 /// repository, was not recently failed, has the forced harness, every

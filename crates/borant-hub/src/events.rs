@@ -690,6 +690,7 @@ mod tests {
                     last_busy: NOW.minus(Duration::from_secs(1800)),
                     billing_step_end: NOW.minus(Duration::from_secs(60)),
                     last_seen: NOW,
+                    growth_for: None,
                 },
             )
             .await
