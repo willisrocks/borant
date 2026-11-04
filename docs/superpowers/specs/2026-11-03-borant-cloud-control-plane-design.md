@@ -1,9 +1,8 @@
 # Borant cloud control plane design
 
-> Work in progress. Sections 1 to 19 hold the revision that applies Chris's cuts and
-> Astra's review. Sections 20 to 26 below are still the text of commit d3f3ccb, and they
-> still describe Postgres, slots, and Browserbase. References in sections 1 to 19 to
-> sections 25 to 29 name the five contract sections that are not written yet.
+> Work in progress. Sections 20 to 24 below are still the text of commit d3f3ccb, and
+> they still describe Postgres, slots, and Browserbase. All other sections hold the
+> revision that applies Chris's cuts and Astra's review.
 
 Date: 2026-11-03. Status: draft for Chris to review. Nothing is built, and no
 cloud money is spent. This revision applies Chris's cuts and Astra's review of
@@ -1652,24 +1651,430 @@ builder read this document, and the designer settled its other points as calls.
 Closed: the subscription terms. Chris decided on 2026-11-03 that the terms are fine for
 this use. Section 23 holds the read and the build constraints that stay.
 
-## 25. Left to the builder
+## 25. Contract: recovery and acceptable data loss
+
+This section states what each failure loses, what stops, and who acts. One SQLite file
+holds the Engine and the sessions, so the two cannot disagree after a restore. The
+outside world can still disagree with the file, because a merge or a push does not
+rewind. (Astra's finding, confirmed. The contract is my call, inside Chris's decision to
+use SQLite.)
+
+| Failure | What survives | What is lost | Recovery |
+|---|---|---|---|
+| The control-plane process crashes | Every committed record. SQLite transactions "are durable across application crashes regardless of the synchronous setting" (https://www.sqlite.org/pragma.html). | The tool calls that were running. Each returns `interrupted` or `uncertain` (section 15). A model request in flight counts as a failed attempt under `settings.retry`. | Automatic: the startup order of section 7. |
+| The control-plane Machine or its OS crashes, and the volume survives | The file is consistent. | The newest commits can roll back, because the adapter sets `synchronous = NORMAL` and SQLite says that such a commit "might roll back following a power loss or system crash". An acknowledged answer can vanish. | Automatic, the same startup order. Effects and reports that rolled back run again by key. Chris repeats a lost answer, and the screen shows that the Ask is still open. |
+| The control-plane volume is lost or corrupt | The Litestream replica in object storage. | Each record after the last sync (the backup-loss window below). | Restore mode below. Chris acts. |
+| A sandbox Machine restarts | The volume: the clone, unpushed work, and job records. | The commands that were running. Each returns `uncertain`. | Automatic. |
+| A sandbox is lost | The conversation, and the branch as last pushed. | Every unpushed commit and file, and the job records. | Section 29. |
+| Object storage is unreachable | The control plane keeps running. | Nothing yet, but the backup-loss window grows until storage returns. | Backup lag is a metric. Over 5 minutes, a "needs you" item appears. |
+
+### The backup-loss window
+
+Litestream runs as a second process on the control-plane Machine, with the default
+`sync-interval` of 1 s (https://litestream.io/reference/config/). So the window is
+normally 1 s plus the upload time. It has no upper limit while object storage is
+unreachable. The default snapshot retention is 24 hours, so a restore can go back
+about one day and no further. (Decided on 2026-11-03 for the risk. The numbers are my
+call.)
+
+| Record lost in the window | What happens |
+|---|---|
+| A GitHub event | `recover_source` reads it again from the delivery log, if the event is less than 3 days old (section 8). |
+| A web chat message, an answer, or an Approval | Lost for good. Chris repeats it. A restored Ask shows as open. |
+| A Ticket, Mandate, or Decision | Lost for good, and the audit log loses it too. Its branch and PR remain on GitHub, and the recovery report lists them. |
+| A report, a transcript entry, or a tool result | Lost for good. The worker of that Ticket does not remember the work, but the repo holds what it pushed. |
+| A rotated Codex token | The restored token can fail. A login item appears (section 17). |
+
+`litestream` needs one setting from the adapter. Litestream recommends "autocheckpointing
+disabled" (https://litestream.io/tips/), so the control plane opens the file with
+`walAutoCheckpointPages: 0`. The adapter also runs `wal_checkpoint(TRUNCATE)` when it
+closes. The Litestream docs say that a checkpoint from the application can force a new
+full snapshot. Stage 1 runs a restore after a normal close and after a crash.
+
+### Restore mode
+
+A restored file is older than the world. The Harness holds tool results and task
+identities from before the restore point, so a rerun of a task can repeat work that
+already happened. So nothing resumes by itself after a restore.
+
+1. The operator starts a new Machine with an empty volume, runs `litestream restore`,
+   and starts the control plane with the restore flag.
+2. In one transaction, the control plane revokes every Assignment token and writes the
+   `restore` event. `authorize` returns "authorization unavailable" (section 11).
+3. The control plane does not call `harness.resume()`, and it starts no effect runner.
+   Webhooks return 503, so the delivery log holds them for step 6. Only the login, the
+   admin page, and the read routes work.
+4. The fleet manager stops every running sandbox.
+5. The control plane writes a recovery report on the admin page. It reads GitHub for
+   the `cloud/` branches, the PRs and merges of those branches, and the comments of the
+   App since the restore point. It reads Fly for Machines and volumes. It lists each
+   item that the file does not know, and each Ticket whose file state differs from
+   GitHub, for example a Ticket that waits for an approval on a PR that is already
+   merged.
+6. Chris presses "leave restore mode". One transaction stops every live Ticket through
+   the path of section 26, which also withdraws every unused Approval. The control plane
+   then follows the startup order of section 7, with `abort_session` first. A
+   `recover_source` effect walks the delivery log. Evals run on what it recovers.
+7. Chris resumes each Ticket that must continue (section 29), and the Input tells the
+   worker the restore time. He closes the others.
+
+The report is for a person, because no code can decide what a merged PR means for a Ticket
+with a lost memory. This is one person and one Project, so the cost is a short review
+after a rare event. (My call)
+
+### Goal 3 and unpushed work
+
+Goal 3 covers a process crash. It does not cover a lost sandbox. The conversation can
+hold many completed tool calls whose files no longer exist. So the worker prompt says
+to commit and push to the Ticket's branch after each working step, and the
+replacement Input tells the worker what is gone (section 29). That reduces the loss, but
+nothing enforces it. A push also costs little: the branch is the worker's own. (Astra's
+finding, confirmed.)
+
+## 26. Contract: cancellation and revocation
+
+A stop is not a message. It removes authority first, in one Engine commit, and then
+ends the work. A stop needs no model request and passes through no limit. (Astra's
+finding, confirmed against the README, line 714, and `dist/harness/types.d.ts:793`.)
+
+### What `stop(person, ticket)` commits
+
+The command comes only from a logged-in web session. One transaction does all of this:
+
+- The Ticket's state becomes `stopped`, and the Assignment ends with the reason `stopped`.
+- The hash of the Assignment token is deleted. The `/git/*` route and the fleet manager
+  refuse that token from this commit on.
+- Pending effects with this `ticket_id` become `cancelled`, including outbox messages
+  that no attempt started. The kinds `abort_session`, `stop_sandbox`, `destroy_sandbox`,
+  and `notify` stay.
+- Running effects with this `ticket_id` become `cancelled`, and their abort signals fire
+  after the commit.
+- Unused Approvals of the Ticket get `withdrawn_at`. Open Asks close.
+- It writes the effects `abort_session` and `stop_sandbox`, and a `stopped` event.
+
+### What runs after the commit
+
+1. `abort_session` waits until the running handlers of this Ticket settle, so that a
+   late `submit_input` cannot land after the abort. The timeout of section 8 bounds the
+   wait.
+2. It calls `root.abort(context, { background: true })`. pi-durable withdraws queued
+   inputs and aborts every task of the conversation, also tasks that a background flag
+   would protect from a plain abort. A subagent is a conversation that a tool task owns,
+   so aborting the tool task aborts it, bottom-up (README, line 752).
+3. Each aborted model request closes its stream. A request that waits at the
+   model-request limit leaves the queue. A model request that already reached the
+   provider can still bill.
+4. `stop_sandbox` stops the Machine even if a command runs, because a person asked for
+   this. That kills the command. The volume stays for 24 hours (section 15).
+
+### Who enforces a stop
+
+| Path | Refused by | When |
+|---|---|---|
+| A gated tool | `authorize`, which requires a live Ticket and an unrevoked Mandate | At the commit |
+| A control-plane write tool (open a PR, comment) | The tool itself. It reads the Assignment state before it calls GitHub. | At the commit |
+| Git from the sandbox | The `/git/*` route | At the commit |
+| A sandbox tool that wants to start the Machine | The fleet manager | At the commit |
+| A command that already runs | The Machine stop | When `stop_sandbox` succeeds |
+
+A stop survives a crash at any point, because the commit holds the state and the
+effects, and the startup order runs `abort_session` first. Between `harness.resume()`
+and that effect, a stopped Ticket can run for a moment, but the table shows that it
+cannot write anything. If the Fly API fails, `stop_sandbox` retries, and the Machine keeps
+running and counting against the cap. A dead effect shows on the admin page. The command
+can still reach the open internet until then. It holds only test values (section 13).
+
+The screen shows "stopping" until the conversation is idle and the Machine is stopped.
+
+### What a stop does not undo
+
+Commits that the worker pushed, PRs that it opened, comments that it posted, and merges
+stay. An outbox message that already went out stays. The Ticket detail lists them.
+
+### Other revocations
+
+- `publish_policy` revokes a Mandate when the new allowed list no longer holds its
+  sender. It runs the same commit and effects, with the Assignment reason `revoked`. A
+  revoked Ticket cannot resume. New work needs a new Ticket.
+- Restore mode runs the same commit for every live Ticket (section 25).
+- Removing a standing permission takes effect at once, because `authorize` reads the
+  current Policy version (section 11). It needs no stop.
+
+## 27. Contract: approval binding
+
+An Approval allows one action on one revision. A later change to that revision needs a
+new Approval. On the first Project, the only gated action is `merge_pr`, so this section
+uses it as the case. (Astra's finding, confirmed. The contract is my call.)
+
+### The binding
+
+`report_ready` and `ask_person` with kind `approve` run in the control plane. For a
+`merge_pr` Ask, the tool reads the PR's head SHA from GitHub with an App token. The worker
+does not supply it. The Ask stores the action, the repo, the PR number, and that SHA.
+
+The screen shows those values with a link to the diff at that SHA. `y` sends
+`approve(person, ask, revision)` with the SHA that the page showed. The Engine refuses it
+if the SHA differs from the Ask's, and the page reloads. Otherwise, the Engine writes a
+`verified` Trigger and an Approval row:
+
+| Column | Meaning |
+|---|---|
+| `ticket_id`, `ask_id`, `trigger_id` | Where it comes from |
+| `action`, `repo`, `pr`, `revision` | What it allows |
+| `approved_by` | The GitHub user ID of the login |
+| `created_at`, `expires_at` | 24 hours apart |
+| `used_at`, `withdrawn_at` | Empty until that happens |
+
+### How `merge_pr` uses it
+
+1. The tool reads the current head SHA from GitHub. It does not take the SHA from the model.
+2. It calls `authorize(ticket, "merge_pr", { repo, pr, revision })`. A usable Approval
+   must match all fields.
+3. It calls `PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge` with `sha` set to the
+   approved revision. GitHub returns 409 if the head changed after step 1, and 405 if
+   the merge cannot be performed (https://docs.github.com/en/rest/pulls/pulls). So a push
+   between steps 1 and 3 cannot merge unreviewed code.
+4. On success, it sets `used_at` and records the merge SHA in the `events` table.
+
+The approved SHA fixes the head. It does not fix the base branch, so a base that
+moved can change the merge result, and GitHub's own required checks are what guard that.
+
+### The cases
+
+| Case | Rule |
+|---|---|
+| Reuse | One success uses the Approval. A later `merge_pr` on another revision needs a new one. |
+| A failed attempt | A 405 or a network error keeps the Approval usable, because merging the same SHA twice cannot merge new code. |
+| A crash during the merge | The tool keeps the default replay policy, so the model gets an `interrupted` result. When the model calls the tool again, step 1 finds the PR merged, and the tool returns that and sets `used_at`. |
+| A new push after the approval | The revision no longer matches. The tool returns "needs approval", the model raises a new Ask, and the old row expires unused. |
+| Expiry | After 24 hours, the Approval is unusable. The Ask reopens, and it says why. |
+| Withdrawal | Chris can withdraw an unused Approval from the Ticket detail. A used one cannot be withdrawn. |
+| A stop, an end, or a revocation | The Approval is withdrawn or unusable. Resume does not bring it back (section 26). |
+| A restore | Every unused Approval is withdrawn, because the file can be older than the merge (section 25). |
+| `authorize` cannot read its state | Fail closed (section 11). |
+| A GitHub review from Chris's account | Not an Approval (section 11). |
+
+A Policy can later add an action with no natural guard, such as `deploy`. Before it does,
+that action must state its own rule for a crash between the call and `used_at`. Merging
+has one in GitHub's `sha` check.
+
+The boundary holds only if no worker can act as a logged-in Chris. The first version
+holds no credential that acts as him and no logged-in browser (sections 11 and 16).
+
+## 28. Contract: resource limits
+
+No Ticket slot, extra slot, or held Input exists. Every Input goes to its session at
+once, and every accepted Ticket starts at once. Two limits apply below that, and work that
+meets a limit waits. Waiting requests are a queue, and this section says so plainly.
+(Decided on 2026-11-03. The values are my call.)
+
+| Limit | Value at the start | Where | What it protects |
+|---|---|---|---|
+| Model requests in flight | 2 | A wrapper around every provider | Control-plane memory, the Claude usage limit, and the Codex limit |
+| Running sandboxes | 2, a hard cap | Fleet manager | Fly spend |
+| Sandbox volumes alive | 10, a hard cap | Fleet manager | Fly spend |
+
+The values are Policy data. Section 20 gives the bill that each value allows.
+
+### The model-request limit
+
+The wrapper wraps each provider that the control plane registers, so it holds when roles
+move from Claude to Codex. It counts every request from the router, the assessor, the
+workers, subagents, and compaction. The assessment passes through it too, although it
+calls pi-ai directly (section 8).
+
+- A request over the limit waits in memory. It leaves the queue when its abort signal
+  fires. After a crash, the queue is gone, and pi-durable sends the request again.
+- A wait must not use up `settings.stream.timeoutMs` or a retry attempt. The wrapper takes
+  its place before the timed request starts. Stage 1 tests this with a faux provider.
+- The priority order is: a person's request, then all others in arrival order. A person's
+  request is the next request of the router after a chat message, of an Eval on a
+  `verified` Trigger, or of a Ticket after `answer`, identified by the conversation's
+  stable provider `sessionId` (`dist/harness/provider.d.ts`).
+- Chris can still wait. A person's request goes first in the queue, but it cannot take
+  the place of a running request. At a limit of 2, he waits until one of them ends, which
+  can take minutes. The board shows the wait (section 10). No code gives him more
+  than this unless the limit rises.
+
+The limit caps requests, not processes. `claude` processes can exceed it. pi-claude-code
+keeps up to 2 idle processes for reuse (`MAX_CACHED_CLAUDE_PROCESSES`,
+`src/claude-cli.ts:677`). It closes one only when a new request can be retained
+(`src/claude-cli.ts:1118`). A request with no `sessionId`, or a concurrent request on a
+busy session, gets a one-shot process and closes nothing. So the ceiling is the limit plus
+2, or 4 processes at the start. (Astra's finding, confirmed. It corrects an earlier
+draft.) Interactive `claude` used 433 MB to 999 MB on the Mac on 2026-11-03, and nobody
+measured `claude -p`. Four at the high end is 4 GB, the whole Machine.
+
+So:
+
+- The control plane is `shared-cpu-2x` with 4 GB. Stage 1 measures one `claude -p`
+  process. A 2 GB Machine saves $12 if the measurement allows it (section 20).
+- If memory is short, the wrapper calls `closeClaudeProcesses(sessionId)` after a request.
+  That removes the 2 idle processes, and the next request starts cold.
+- `PI_CLAUDE_CODE_COMMAND` names a script that runs `claude` with `nice` 10 and a high
+  `oom_score_adj`. The Engine wins the CPU, and the kernel kills `claude` before Node. A
+  killed process is a failed attempt under `settings.retry`. On 2026-11-03, CPU weights
+  and fewer agents fixed the overload of `borant-1`.
+
+### A provider's usage limit
+
+A usage limit is not the model-request limit, and it resets after hours. pi-ai does not
+retry quota errors. The Claude `rate_limit_event` carries `resetsAt`. The wrapper starts no
+request for that provider before that time. `run_ended` sets the Ticket to `idle`, with
+the reason "Claude limit until <time>", and writes a `submit_input` effect with `run_after`
+at that time. No test hit a real limit, so the builder uses a faux provider and records
+the first real error text.
+
+The router and the assessor stop too, on the same account, also for Chris's chat. A Policy
+commit moves a role to Codex, if the Codex test passes (section 17).
+
+### The sandbox caps
+
+A cap is a refusal, not an alert. Before each create or start, the fleet manager counts
+in one Engine transaction: Machines in `started` or `starting` state, plus the starts in
+progress. A count at the cap means no call to Fly.
+
+- A tool call that needs a Machine waits, and the Ticket shows "waiting for a sandbox",
+  with the time. A Ticket that waits for a sandbox is not silent.
+- The next free place goes to a Ticket with a person's answer, then in arrival order. A
+  place frees when a Machine stops. That can take up to the job limit of 2 hours, so a
+  person can wait that long at a cap of 2. Chris can stop a Ticket, or raise the cap with
+  a Policy commit.
+- A wait holds no model request, because the worker waits inside a tool call.
+- The fleet manager reads the real state from the Machines API every 60 s, at startup,
+  and before each decision that a stale count can change. A started Machine with no row
+  stops at once (section 15).
+- The caps count sandboxes of the new system only. A separate Fly organization or a Fly
+  spending limit is not part of this design.
+
+### The idle stop
+
+Only these things end a running command: the job limit (section 15), a person's stop, a
+revocation, and a restore. The idle stop and the caps do not.
+
+A Machine stops when both are true for 10 minutes:
+
+- `sandboxd` reports no running job.
+- The control plane sent no tool call to it.
+
+`sandboxd` reports its job count to the fleet manager on each poll. A Ticket that waits for
+a model request can therefore lose its Machine, and the next tool call starts it again, in
+about 1 s on the docs' numbers, or waits at the cap. A 20-minute test keeps its Machine,
+because a job runs.
+
+## 29. Contract: Assignment and run lifecycle
+
+### The objects
+
+A Ticket has one conversation for its whole life. It has one or more Assignments, and at
+most one is running. An Assignment names the conversation, the sandbox, and the token.
+(Decided on 2026-11-03 for one conversation. The rest is my call.)
+
+| Assignment ends with | Set by | What follows |
+|---|---|---|
+| `done` | `consume_report` of a current `report_done` | The Ticket ends. |
+| `stopped`, `revoked` | Section 26 | The Ticket stops. |
+| `sandbox_lost` | The fleet manager | The replacement below. |
+
+A new Assignment comes from `decide` (a new Ticket, or an accept with `resumes`), from
+`resume`, or from the replacement. It gets a new token. If the old sandbox still exists,
+the new Assignment adopts it. The fleet manager writes the new token to the stopped
+Machine's configuration before it starts it, so the old token no longer opens it.
+
+### Runs
+
+A run starts when an idle conversation places an Input. It ends with a report that
+terminates, an answer in text, or a failure. The run key is `LiveRun.first`, the entry ID of
+the run's first entry (`dist/harness/live.d.ts:123`), which stays the same while the
+generation task changes. Each report stores the Assignment ID and the run key, and the
+tool reads them from `pi.live` and from the Ticket's document.
+
+A subagent is a foreground tool call, in a conversation that the tool task owns. It shares
+the Assignment and the sandbox, it has no report tools, and its requests count at the
+limit. The worker gets no background tasks in this version. A run ends only after its
+subagents end.
+
+### Stale reports
+
+The runner consumes the entries of a conversation in order. Before `consume_report`, the
+handler reads `pi.live`. A report is current when all of these are true:
+
+- The Ticket is live.
+- The report's Assignment is the running one.
+- The conversation has no run, or its run has the report's run key.
+
+A stale report changes no stage and opens no Ask. It writes a `stale_report` event, and the
+Ticket detail shows it. For example, a worker ends a run with `report_ready`, the process
+crashes, and Chris's answer starts a new run before the runner reads the entry. The stage
+stays `working`, and the worker has already seen the answer. (Astra's finding, confirmed.)
+
+`run_ended` uses the same key, so that a late call for an old run changes nothing.
+
+### Ended and stopped Tickets
+
+An allowed comment does not restart anything by itself. Only these two paths give an ended
+or stopped Ticket a new run. (Decided on 2026-11-03 for the rule. The paths are my call.)
+
+| Path | Rules |
+|---|---|
+| Chris presses Resume on the Ticket detail, with an optional text. | A `verified` Trigger. It works on an ended or a stopped Ticket if the Mandate is not revoked. The Mandate stays the same row, so the scope stays the same, and the Trigger is the record that he lifted the stop. |
+| An Eval accepts with `resumes`. | The Thread's Tickets all ended. The Source is in live mode. The assessment names exactly one ended Ticket on that Thread, and the Mandate covers the work. The gate holds it to `inferred` unless the Trigger is `verified`. A stopped Ticket cannot resume this way, because a stop is a person's order. |
+
+Everything else on an ended Thread goes to the Eval, which ignores it, starts a new Ticket,
+or asks. Work that needs a wider scope is a new Ticket. On the first Project, the GitHub
+Source is in observe mode (section 21), so such an accept stores "would resume", and only
+Resume restarts work.
+
+An ended Ticket's conversation stays for the transcript. A new Input continues the same
+conversation, so the worker keeps its memory.
+
+### A lost sandbox
+
+The fleet manager calls a sandbox lost when the Machines API reports it `destroyed` or
+`failed`, when its volume is gone, or when `sandboxd` does not answer for 5 minutes on a
+started Machine. A Machine on a host that returns later is already a stale row, and the sweep
+of section 15 removes it.
+
+1. `sandbox_lost` commits: the Assignment ends, its token is revoked, a `sandbox_lost`
+   event is written, and a new Assignment starts, once per Ticket in 24 hours.
+2. A second loss in 24 hours stops there, with the stage `blocked/failed`, and Chris decides.
+3. The new sandbox clones the Ticket's branch as last pushed.
+4. An Input with `whenBusy: "steer"` says that the sandbox is new, the last pushed commit,
+   and that unpushed work is gone.
+5. Tool calls that were running return `uncertain`, because the new volume has no job
+   records (section 15).
+
+## 30. Left to the builder
 
 - The HTTP framework, the UI framework, the migration tool, and the test
   runner.
 - Exact table columns beyond what this document names.
 - Retry and timeout values that this document does not set.
 - The sandbox image build and the toolchains in it.
-- The Fly app layout (one app for the control plane, one for sandboxes, or
-  one app for both), inside the rule that they are new apps.
 - The schema of each report tool and of the assessment output, inside the
   fields named here.
 - The prompts of the router, the assessor, and the worker, in the config repo.
-- The login probe for each site.
 
-## 26. What this design cut
+## 31. What this design cut
+
+Cut on 2026-11-03 by Chris:
+
+- Fly Managed Postgres, and with it the two-store restore and four failure windows
+  (section 4)
+- Ticket slots, the extra slot, held Inputs, and the `queued` stage (section 28)
+- Logged-in browser access, Browserbase, the broker, and login probes (section 16)
+- The automatic restart of ended Tickets from an allowed comment (section 29)
+- Generic Connections, the MCP adapter, Cron, Linear, and Slack Sources (section 14)
+- The replay run, `replay_decisions`, labels, scores, and the Loops page (section 18)
+
+Cut by the designer:
 
 - Correlation and Executor from the prototype (section 6)
-- A webhook spool file for Postgres outages (section 8)
+- A webhook spool file (section 8)
+- Rebuilding a conversation from its Inputs after a restore (section 25)
+- Hetzner options. They save $7 to $16 a month, and every plan showed as unavailable on
+  2026-11-03.
+- A contract suite for each port, other than `SessionPort` (section 5)
 - Sharding sessions across machines
 - Account pools, placement, moves, checkpoints, and WIP refs from today's
   Borant
@@ -1680,6 +2085,5 @@ this use. Section 23 holds the read and the build constraints that stay.
 - The work Profile, and a view of Roger work on the board through the steve-agents
   MCP (section 22)
 - Any link between the new system and current Borant
-- Cron, Linear, and Slack Sources from the first build (section 14)
 - An egress filter for sandboxes (section 11)
 - The platform names of Steve in this public document (section 22)
