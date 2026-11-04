@@ -710,12 +710,13 @@ cut, because this path covers the same gap. (My call)
 
 | Part | Rule |
 |---|---|
-| API | `GET /app/hook/deliveries` lists deliveries, with `per_page` and `cursor`, and a JWT of the App. `GET /app/hook/deliveries/{delivery_id}` returns `request.payload` (https://docs.github.com/en/rest/apps/webhooks). |
-| No redelivery | The handler ingests the payload it reads. It does not call the `attempts` endpoint, because the API call is already authenticated, and the webhook path adds nothing. |
-| Retention | GitHub lists deliveries of the past 3 days (https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/viewing-webhook-deliveries). |
-| Cursor | The read position is the `delivered_at` of the newest delivery in the last complete walk. A walk goes from the newest delivery to the read position minus 15 minutes. The position advances only when the whole walk commits. The handler reads every status, not only failures, because a restored file (section 25) lost deliveries that returned 2xx. |
-| Identity | Event ID = `guid`, which is `X-GitHub-Delivery` on the webhook path. Actor = `sender.id`. Actor kind = `ci` for `check_run`, `check_suite`, `status`, and `workflow_run` events, else `bot` when `sender.type` is `Bot`, else `person`. Trigger kind = `event` and `action`. The handler drops a delivery whose `installation_id` or `repository_id` is not the Source instance's. Stage 1 makes sure that a redelivery keeps its `guid`, because the docs do not say. |
-| Gap | If the read position is older than 3 days, the handler cannot prove that it has every event. It writes a `source_gap` event, raises a "needs you" item, and sets the read position to now. A read of the current PR state does not recover the events in between, so the item says which time range is lost. |
+| API | `GET /app/hook/deliveries` lists deliveries, newest first, with `per_page` and `cursor`, and a JWT of the App. It has no `since` filter. The cursor is `v1_<id>`, and it is inclusive, so the row with that ID comes first. `GET /app/hook/deliveries/{delivery_id}` returns `request.payload`, and the proof read it from a delivery 50 minutes old (https://docs.github.com/en/rest/apps/webhooks). |
+| Delivery ID | A delivery `id` has 19 digits. `JSON.parse` rounds most of them: 88 of 93 in the proof. A rounded ID answers `404` on `GET` and on `attempts`, which looks like a deleted delivery. So the handler parses the `id` as a string and stores it as text. |
+| No redelivery | The handler ingests the payload it reads. It does not call the `attempts` endpoint, because the log holds the payload, and the API call is already authenticated. |
+| Retention | GitHub documents that it lists deliveries of the past 3 days (https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/viewing-webhook-deliveries). This number is not measured, because the proof ran for about 1 hour. |
+| Cursor | The read position is the `id` of the newest delivery that the Source consumed. It is not `delivered_at`, because a time cannot start a read. The Source also keeps the `delivered_at` of that delivery, for the overlap and the gap report. A walk goes from the newest delivery to 15 minutes before that `delivered_at`. The position advances only when the whole walk commits. The handler reads every status, not only failures, because a restored file (section 25) lost deliveries that returned 2xx. |
+| Identity | Event ID = `guid`, which equals `X-GitHub-Delivery`. A redelivery is a new delivery with a new `id` and the same `guid`, so it gives the same Trigger ID. Actor = `sender.id`. Actor kind = `ci` for `check_run`, `check_suite`, `status`, and `workflow_run` events, else `bot` when `sender.type` is `Bot`, else `person`. Trigger kind = `event` and `action`. The log is App-wide, and its rows carry other `repository_id` values and null. So the handler drops a delivery whose `installation_id` or `repository_id` is null or is not the Source instance's. |
+| Gap | The handler cannot prove that it has every event in two cases. In the first, the read position is older than 3 days. In the second, a read with the read position as the cursor answers `200` with 0 rows. An unknown cursor gets this answer, and it looks like the end of the log, so a walk makes this read first. In both cases, the handler writes a `source_gap` event, raises a "needs you" item, and sets the read position to the newest delivery in the log. A read of the current PR state does not recover the events in between, so the item says which time range is lost. |
 
 ## 9. Delivery guarantees
 
@@ -1176,8 +1177,8 @@ anything returns, a design must answer:
 
 | Provider | How | State |
 |---|---|---|
-| Claude | pi-claude-code `createClaudeCodeProvider()`, which runs `claude -p` on the control plane with a subscription token. Install it from the `earendil-works/pi-claude-code` git repo at a pinned commit, not from npm. Call `models.getAvailable("claude-code")` at startup (spike Q8). | One real Haiku turn ran in the spike, with a login on the Mac. |
-| Codex | pi-ai `openaiProvider()` "Sign in with ChatGPT" OAuth, with a `CredentialStore` on the `secrets` table. | Registered, no real turn yet. |
+| Claude | pi-claude-code `createClaudeCodeProvider()`, which runs `claude -p` on the control plane with a subscription token. Install it from the `earendil-works/pi-claude-code` git repo at a pinned commit, not from npm. Call `models.getAvailable("claude-code")` at startup (spike Q8). | One real Haiku turn ran from a Fly Machine in stage 1 (section 21). |
+| Codex | pi-ai `openaiProvider()` "Sign in with ChatGPT" OAuth, with a `CredentialStore` on the `secrets` table. | The Codex test passed in stage 1 (section 21). |
 | LunaRoute | A provider of about 20 lines with `createProvider()` and `openAIResponsesApi()` (spike Q8). | Registered, no real turn yet. |
 
 (Decided)
@@ -1400,13 +1401,25 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
    - A GitHub redelivery keeps its `guid` (section 8).
    - A long transcript: a session with 5000 entries, its reopen time, and its heap.
 
-   Results on 2026-11-04: the network, Litestream, and long-transcript proofs passed
-   (`proofs/` in the `borant-cloud` repo). Litestream had a median lag of 1.21 s. It lost no rows,
-   except the last 0.2 to 0.5 s of commits when the writer and Litestream die together. A
-   session with 5000 entries opens in 6 to 9 ms. The saga also reports that the Claude proof
-   passed: six concurrent `claude -p` processes fit 2 GB, with a peak of 1.65 GB.
-   `proofs/RESULTS.md` has no row for Claude yet. It also has no row for the Codex test or the
-   GitHub redelivery.
+   Results on 2026-11-04, from `proofs/` in the `borant-cloud` repo. All six proofs passed:
+   - The network passed, with the changes that sections 5 and 15 now hold.
+   - Litestream had a median lag of 1.21 s. It lost no rows, except the last 0.2 to 0.5 s of
+     commits when the writer and Litestream die together.
+   - A session with 5000 entries opens in 6 to 9 ms.
+   - The GitHub redelivery keeps its `guid`. Section 8 now holds what the proof found.
+   - The Codex test passed on `gpt-5.6-luna`. Two concurrent requests across a forced refresh
+     made one token POST. The rotated token survived a restart. An old token, with its expiry
+     set back 24 h, still refreshed. The browser step of the login ran on the Mac, not on the
+     Machine.
+   - One real Claude turn ran from a Fly Machine. Six concurrent `claude -p` turns finished on a
+     2 GB Machine with no OOM. Their summed peak was 1555 MB, plus 147 MB for Node, and the
+     Machine has 1971 MB. So 2 GB holds, but the margin is thin, and long tool-heavy sessions
+     are not tested.
+   - The Claude usage-credit setting stays unknown, because Chris did not report it. The check
+     of the other logins has only the report of the saga orchestrator, not a recorded result.
+
+   The Codex model alias in Policy is `gpt-5.6-luna`, because Chris's account rejects
+   `gpt-5.3-codex` and older models.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
    git proxy, the web chat and GitHub Sources, Evals with stored Decisions, the chief-of-staff
    screen, Ticket detail, notifications, and the admin page. The real code must then pass the
@@ -1874,8 +1887,8 @@ a change needs no deploy. (Decided on 2026-11-03. It replaces the model-request 
 sandbox caps of the earlier draft.)
 
 The start value is 6, on a `shared-cpu-4x` control plane with 8 GB. Six `claude` processes at
-the highest size seen on the Mac (999 MB, interactive), plus Node, fit in 8 GB. The saga reports a
-peak of 1.65 GB for six concurrent `claude -p` processes (section 21). (My call)
+the highest size seen on the Mac (999 MB, interactive), plus Node, fit in 8 GB. Stage 1 measured
+a summed peak of about 1700 MB for six concurrent `claude -p` turns and Node (section 21). (My call)
 
 - A Ticket with no slot keeps its `submit_input` effects pending. They run in ID order when a
   slot frees, and the Ticket shows as waiting. This applies to every Input, also a person's
