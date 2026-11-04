@@ -17,8 +17,10 @@ Chris. He found out by asking why his fix was not in prod.
 
 A spawn is *blocked* when it has been `Queued` for at least 15 minutes and
 its queue reason is not about capacity. Capacity means that every reject is
-`full`, the channel is at its cap, or there is low memory or a full disk; a
-drain fixes those.
+`full`, the channel is at its cap, there is low memory or a full disk, or the
+pool is ordering the host of the spawn, waiting for it to boot, or waiting
+for `create_backoff` to retry a failed create; a drain, a boot, or a wait
+fixes those.
 
 Every other reason is blocked:
 - missing bundle
@@ -29,6 +31,12 @@ Every other reason is blocked:
 - cannot reach the repo
 - failed recently
 - offline (when no host is online)
+- `pool image lacks bundle <bundle>`, `pool image lacks member bundle
+  <bundle>`, or `pool image lacks tag <tag>`: the host that the pool ordered
+  for the spawn refuses it for the same reason, so the pool stopped growing
+  and a person changes the image. The cause is the bundle or the tag that the
+  note names, so the action is the one for that rule.
+- the pool is at its host limit: a person raises `max_hosts` or frees a host.
 
 A new hub tick step, checked every 60 s, does this on the first sighting and
 then at most every 4 hours while the spawn stays blocked:

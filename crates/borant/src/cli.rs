@@ -1172,11 +1172,21 @@ fn render_queue_reason(rec: &Value) -> String {
         (Some(host), Some(text)) => Some(format!("last error ({host}): {text}")),
         _ => None,
     };
-    match (reject.as_str(), error) {
-        ("-", None) => "-".to_owned(),
-        ("-", Some(error)) => error,
-        (reject, Some(error)) => format!("{reject} | {error}"),
-        (reject, None) => reject.to_owned(),
+    let pool = rec["queue_reason"].as_str().map(str::to_owned);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(pool) = pool {
+        parts.push(pool);
+    }
+    if reject != "-" {
+        parts.push(reject);
+    }
+    if let Some(error) = error {
+        parts.push(error);
+    }
+    if parts.is_empty() {
+        "-".to_owned()
+    } else {
+        parts.join(" | ")
     }
 }
 
@@ -2895,6 +2905,31 @@ mod tests {
         let out = render_queue(&v, true);
         assert!(
             out.contains("borant-1: full (6/6), borant-2: low memory (700 MB free, 1024 reserved)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn cli_render_queue_prints_the_pool_decision_first() {
+        let v = json!([
+            {"agent": "w1", "state": "queued", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"},
+             "queue_reason": "pool: creating a host for this spawn",
+             "last_reject": [["borant-1", "missing bundle fly-cloud-test"]]},
+            {"agent": "w2", "state": "queued", "priority": 0, "queued_at": 1_792_929_600_000i64,
+             "spec": {"channel": "api"},
+             "queue_reason": "pool image lacks bundle fly-cloud-test"},
+        ]);
+        let out = render_queue(&v, true);
+        assert!(
+            out.contains(
+                "pool: creating a host for this spawn | \
+                 borant-1: missing bundle fly-cloud-test"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("pool image lacks bundle fly-cloud-test"),
             "{out}"
         );
     }

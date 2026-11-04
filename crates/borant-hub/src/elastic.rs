@@ -16,12 +16,16 @@ use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
 };
 use borant_core::ports::{PortError, PortErrorKind};
-use borant_core::proto::ApiError;
+use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::alerts::Refusal;
+use borant_core::rules::blocked::{
+    POOL_ALSO_REFUSES, POOL_AT_LIMIT, POOL_BOOTING, POOL_CREATING, POOL_IMAGE_LACKS,
+    POOL_ON_ITS_WAY, POOL_RETRIES,
+};
 use borant_core::rules::pool::{
     self, Action, ElasticHost, Phase, PlacementNeed, PoolConfig, Spend,
 };
-use borant_core::rules::schedule::{self, HostView};
+use borant_core::rules::schedule::{self, HostView, Reject};
 use borant_core::{AgentId, HostName, PoolName, Timestamp, keys};
 
 use crate::join::JoinToken;
@@ -54,6 +58,19 @@ struct Pass {
     unplaced: Vec<PlacementNeed>,
     records: BTreeMap<PoolName, Vec<borant_core::ports::provision::HostRecord>>,
     spend: Spend,
+}
+
+/// Why the pool stopped growing for a queued spawn: the host that it ordered
+/// also refuses the spawn. A bundle or a tag that the image lacks is named as
+/// such, because a person can change the image; any other rule is the host's
+/// own state and is printed as it is.
+fn pool_refusal(reason: &Reject) -> String {
+    match reason {
+        Reject::MissingBundle(bundle) => format!("{POOL_IMAGE_LACKS}bundle {bundle}"),
+        Reject::NoMemberBundle(bundle) => format!("{POOL_IMAGE_LACKS}member bundle {bundle}"),
+        Reject::MissingTag(tag) => format!("{POOL_IMAGE_LACKS}tag {tag}"),
+        other => format!("{POOL_ALSO_REFUSES}{other})"),
+    }
 }
 
 impl Hub {
@@ -99,6 +116,15 @@ impl Hub {
         if !actions.is_empty() {
             tracing::debug!(n = actions.len(), "elastic actions");
         }
+        // Why the pool keeps a queued spawn waiting, for the REASON column of
+        // `borant ps`. Before the actions, so a host that this pass orders
+        // gets its note from the create below.
+        if let Err(e) = self
+            .note_pool_waits(&pass.pools, &pass.unplaced, &pass.live, now)
+            .await
+        {
+            tracing::warn!("the pool note failed: {e}");
+        }
         for action in actions {
             self.execute(elastic, &mut pass, &caps, action, now).await?;
         }
@@ -118,6 +144,101 @@ impl Hub {
             }
         }
         Ok(())
+    }
+
+    /// Writes the pool's decision for each queued spawn that waits, so the
+    /// REASON column of `borant ps` says why: a host is being created, one is
+    /// booting, or the host that the pool made for the spawn refuses it too
+    /// and the pool has stopped growing for it.
+    async fn note_pool_waits(
+        &self,
+        pools: &[PoolConfig],
+        needs: &[PlacementNeed],
+        live: &[HostView],
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        if needs.is_empty() {
+            return Ok(());
+        }
+        let hosts: Vec<ElasticHost> = self
+            .store
+            .list::<ElasticHost>(keys::ELASTIC_PREFIX)
+            .await?
+            .into_iter()
+            .map(|d| d.value)
+            .collect();
+        for need in needs {
+            let Some(host) = hosts
+                .iter()
+                .find(|h| h.growth_for.as_ref() == Some(&need.agent))
+            else {
+                // No host was ordered: the pool itself may be the wait.
+                let Some(pool) = pools.iter().find(|p| p.harnesses.contains(&need.harness)) else {
+                    continue;
+                };
+                let note = if pool.backoff_until.is_some_and(|until| until > now) {
+                    Some(POOL_RETRIES)
+                } else if hosts.iter().filter(|h| h.pool == pool.name).count() >= pool.max_hosts {
+                    Some(POOL_AT_LIMIT)
+                } else {
+                    None
+                };
+                if let Some(note) = note {
+                    self.set_queue_reason(&need.agent, note).await?;
+                }
+                continue;
+            };
+            let view = live.iter().find(|v| v.info.name == host.name);
+            let note = match (host.phase, view) {
+                (Phase::Requested, _) => Some(POOL_CREATING.to_owned()),
+                (Phase::Booting, _) => Some(POOL_BOOTING.to_owned()),
+                (Phase::Ready, Some(view)) if view.online => schedule::accepts_except_full(
+                    view,
+                    need.harness,
+                    Some(need.harness),
+                    &need.req,
+                    &need.bundles,
+                )
+                .map(|reason| pool_refusal(&reason)),
+                // A host that is on its way out leaves the next tick free to
+                // order another one; a note would only be stale.
+                (Phase::Failed | Phase::Lost | Phase::Deleting, _) => None,
+                _ => Some(POOL_ON_ITS_WAY.to_owned()),
+            };
+            if let Some(note) = note {
+                self.set_queue_reason(&need.agent, &note).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the queue reason of a spawn that still waits, and writes nothing
+    /// when it is already the same text. The write carries the revision that
+    /// the read saw, as `note_reject` does: a placement that flips the record
+    /// to `Launching` between the two must not be overwritten by a note.
+    async fn set_queue_reason(&self, agent: &AgentId, note: &str) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        if doc.value.state != SpawnState::Queued {
+            return Ok(());
+        }
+        let current = doc.value.queue_reason.as_deref();
+        // The reason of a channel at its cap is not the pool's to replace.
+        if current.is_some_and(|reason| !reason.starts_with("pool")) {
+            return Ok(());
+        }
+        if current == Some(note) {
+            return Ok(());
+        }
+        let mut record = doc.value;
+        record.queue_reason = Some(note.to_owned());
+        match self.store.put(&key, &record, Some(doc.revision)).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// The capability of each provisioner, read once and kept in memory.
@@ -284,13 +405,16 @@ impl Hub {
         paused: &HashSet<AgentId>,
     ) -> Result<Vec<PlacementNeed>, ApiError> {
         let mut needs = Vec::new();
+        let mut seen: HashSet<AgentId> = HashSet::new();
         for (id, move_) in pending {
             // A move that names its host stays there; a pool host would not
             // help it.
             if move_.target.host.is_some() {
                 continue;
             }
-            if let Some(need) = self.need_of(id, move_.target.harness, live, paused).await? {
+            if let Some(need) = self.need_of(id, move_.target.harness, live, paused).await?
+                && seen.insert(id.clone())
+            {
                 needs.push(need);
             }
         }
@@ -303,6 +427,7 @@ impl Hub {
             if let Some(need) = self
                 .need_of(&record.agent, record.spec.harness, live, paused)
                 .await?
+                && seen.insert(record.agent.clone())
             {
                 needs.push(need);
             }
@@ -347,6 +472,8 @@ impl Hub {
         Ok(Some(PlacementNeed {
             agent: id.clone(),
             harness,
+            req,
+            bundles,
         }))
     }
 
@@ -380,6 +507,7 @@ impl Hub {
                     last_busy: now,
                     billing_step_end: now.plus(step(config, caps)),
                     last_seen: now,
+                    growth_for: None,
                 };
                 self.store.upsert(&keys::elastic(&host.name), &host).await?;
             }
@@ -465,8 +593,19 @@ impl Hub {
                     self.publish(event).await;
                 }
             }
-            Action::Create { pool, name } => {
-                self.create(elastic, pass, caps, &pool, &name, now).await?;
+            Action::Create {
+                pool,
+                name,
+                for_agent,
+            } => {
+                if self
+                    .create(elastic, pass, caps, &pool, &name, for_agent.clone(), now)
+                    .await?
+                    && let Some(agent) = for_agent
+                    && let Err(e) = self.set_queue_reason(&agent, POOL_CREATING).await
+                {
+                    tracing::warn!(%agent, "the pool note failed: {e}");
+                }
             }
         }
         Ok(())
@@ -489,6 +628,7 @@ impl Hub {
 
     /// Orders one host. The key is written first, in `Requested`, so the next
     /// tick counts it and does not order it again.
+    #[allow(clippy::too_many_arguments)]
     async fn create(
         &self,
         elastic: &ElasticConfig,
@@ -496,14 +636,15 @@ impl Hub {
         caps: &BTreeMap<String, ProvisionerCapabilities>,
         pool: &PoolName,
         name: &HostName,
+        for_agent: Option<AgentId>,
         now: Timestamp,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let Some(config) = pass.pools.iter().find(|p| p.name == *pool) else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(provisioner) = elastic.provisioners.get(&config.provisioner) else {
             tracing::warn!(pool = %pool, "no provisioner for the create");
-            return Ok(());
+            return Ok(false);
         };
         let key = keys::elastic(name);
         let requested = ElasticHost {
@@ -516,6 +657,7 @@ impl Hub {
             last_busy: now,
             billing_step_end: now.plus(step(config, caps)),
             last_seen: now,
+            growth_for: for_agent,
         };
         self.store.upsert(&key, &requested).await?;
         // The boot values carry the vars of bundle `host-boot` and one join
@@ -532,7 +674,7 @@ impl Hub {
             tags: config.tags.clone(),
             boot,
         };
-        match provisioner.create(&spec).await {
+        let ordered = match provisioner.create(&spec).await {
             Ok(record) => {
                 let booting = ElasticHost {
                     provider_id: record.id,
@@ -550,6 +692,7 @@ impl Hub {
                     )
                     .about_host(name.clone());
                 self.publish(event).await;
+                true
             }
             Err(e) => {
                 // No host, no key: the name is free for the next try, and the
@@ -571,9 +714,10 @@ impl Hub {
                 };
                 self.note_refusal(pool, "create", &clean).await;
                 tracing::warn!(pool = %pool, "create failed: {clean}");
+                false
             }
-        }
-        Ok(())
+        };
+        Ok(ordered)
     }
 
     /// The boot values of a create: its name, pool, and tags, the vars of
@@ -817,9 +961,11 @@ fn civil_month(days: i64) -> (i64, u32) {
 mod tests {
     use super::*;
     use borant_core::model::{
-        Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskKind, TaskStatus,
+        Harness, HostInfo, HostStats, MoveReason, Sender, SessionStats, SpawnSpec, Task, TaskKind,
+        TaskStatus,
     };
     use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
+    use borant_core::rules::roles::Resolved;
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
@@ -906,6 +1052,11 @@ mod tests {
     /// An agent that waits for a host, with a released lease so the lease
     /// tick looks at it.
     async fn pending(fx: &Fx, agent: &str) {
+        pending_with_bundles(fx, agent, &[]).await;
+    }
+
+    /// A waiting agent whose launch carries `bundles`.
+    async fn pending_with_bundles(fx: &Fx, agent: &str, bundles: &[&str]) {
         let id: AgentId = agent.parse().unwrap();
         let a = Agent {
             id: id.clone(),
@@ -929,7 +1080,7 @@ mod tests {
             pinned: false,
             role: None,
             collection: None,
-            bundles: Vec::new(),
+            bundles: bundles.iter().map(|b| b.parse().unwrap()).collect(),
             parent: None,
             paused: None,
         };
@@ -1341,6 +1492,121 @@ mod tests {
         }
     }
 
+    /// The `elastic.*` key of a live host of the `workers` pool, with the id
+    /// that the provisioner gave it, so the reconcile keeps it.
+    async fn pool_key(fx: &Fx, host: &str, phase: Phase, id: ProviderHostId) {
+        let elastic = ElasticHost {
+            name: name(host),
+            pool: "workers".parse().unwrap(),
+            provider_id: id,
+            phase,
+            created: NOW.minus(Duration::from_secs(3600)),
+            last_busy: NOW,
+            billing_step_end: NOW.plus(Duration::from_secs(3600)),
+            last_seen: NOW,
+            growth_for: None,
+        };
+        fx.hub
+            .store
+            .upsert(&keys::elastic(&elastic.name), &elastic)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn elastic_grows_the_pool_for_a_bundle_that_the_live_host_lacks() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        // The one pool host is idle but holds no bundle: its free slot is not
+        // capacity for a spawn whose launch needs `fly-cloud-test`.
+        register(&fx, "e1", 2).await;
+        let record = prov.create(&provider_spec("e1")).await.unwrap();
+        pool_key(&fx, "e1", Phase::Ready, record.id).await;
+        pending_with_bundles(&fx, "a1", &["fly-cloud-test"]).await;
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let ordered = fx
+            .hub
+            .store
+            .get::<ElasticHost>(&keys::elastic(&name("e2")))
+            .await
+            .unwrap()
+            .expect("a host for the spawn")
+            .value;
+        assert_eq!(ordered.growth_for, Some("a1".parse().unwrap()));
+
+        // The next tick sees the host that it ordered for this spawn and does
+        // not order another.
+        fx.clock.advance(Duration::from_secs(6));
+        fx.hub.tick_elastic().await.unwrap();
+        let mut keys: Vec<HostName> = fx
+            .hub
+            .store
+            .list::<ElasticHost>(keys::ELASTIC_PREFIX)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.value.name)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec![name("e1"), name("e2")]);
+    }
+
+    #[tokio::test]
+    async fn elastic_ps_says_the_pool_is_creating_a_host() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        register(&fx, "e1", 2).await;
+        let record = prov.create(&provider_spec("e1")).await.unwrap();
+        pool_key(&fx, "e1", Phase::Ready, record.id).await;
+        let id: AgentId = "a1".parse().unwrap();
+        pending_with_bundles(&fx, "a1", &["fly-cloud-test"]).await;
+        let queued = SpawnRecord {
+            agent: id.clone(),
+            spec: SpawnSpec {
+                channel: "api".parse().unwrap(),
+                prompt: "work".into(),
+                harness: None,
+                host: None,
+                name: Some(id.clone()),
+                model: None,
+                role: None,
+                task: None,
+                stop_on_close: None,
+                continues: None,
+                priority: None,
+                bundles: vec!["fly-cloud-test".parse().unwrap()],
+            },
+            resolved: Resolved::default(),
+            by: Sender::Agent("boss".parse().unwrap()),
+            queued_at: NOW,
+            priority: 0,
+            state: SpawnState::Queued,
+            attempts: 0,
+            last_reject: Vec::new(),
+            queue_reason: None,
+            launch_failures: Vec::new(),
+            recoveries: 0,
+        };
+        fx.hub
+            .store
+            .upsert(&keys::spawn(&id), &queued)
+            .await
+            .unwrap();
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let queue = fx.hub.spawn_queue().await.unwrap();
+        let row = queue
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["agent"].as_str() == Some("a1"))
+            .expect("the queued spawn");
+        assert_eq!(row["queue_reason"].as_str(), Some(POOL_CREATING), "{row}");
+    }
+
     #[tokio::test]
     async fn elastic_a_failed_create_leaves_no_join_key() {
         let prov = Arc::new(MemoryProvisioner::new());
@@ -1440,6 +1706,7 @@ mod tests {
             last_busy: NOW.minus(Duration::from_secs(21 * 60)),
             billing_step_end: NOW.plus(Duration::from_secs(60)),
             last_seen: NOW,
+            growth_for: None,
         };
         fx.hub
             .store
@@ -1708,6 +1975,7 @@ mod tests {
             last_busy: NOW.minus(Duration::from_secs(21 * 60)),
             billing_step_end: NOW.plus(Duration::from_secs(60)),
             last_seen: NOW,
+            growth_for: None,
         };
         fx.hub
             .store
@@ -1822,6 +2090,7 @@ mod tests {
             last_busy: NOW,
             billing_step_end: NOW.plus(Duration::from_secs(3600)),
             last_seen: NOW,
+            growth_for: None,
         };
         fx.hub
             .store

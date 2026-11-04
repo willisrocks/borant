@@ -123,26 +123,89 @@ impl Blocked {
 }
 
 /// True when a wait or a drain alone clears the refusal: a host at its
-/// limit, a channel at its cap, a host low on memory, or a full disk. The
-/// texts are the ones that [`super::schedule::Reject`] prints, so the alarm
-/// reads the same text that `borant ps --queued` shows.
+/// limit, a channel at its cap, a host low on memory, a full disk, or a pool
+/// that is ordering the host of the spawn. The texts are the ones that
+/// [`super::schedule::Reject`] prints and the ones that the hub writes to
+/// `SpawnRecord::queue_reason`, so the alarm reads the same text that
+/// `borant ps --queued` shows.
 pub fn is_capacity(reason: &str) -> bool {
     reason.starts_with("full (")
         || reason.starts_with("channel full (")
         || reason.starts_with("low memory (")
         || reason.starts_with("disk full (")
+        // The pool ordered the host of this spawn, that host boots, or a
+        // create failed and the pool retries: the wait clears each, and the
+        // pool reports a failed create as a refusal of its own.
+        || matches!(
+            reason,
+            POOL_CREATING | POOL_BOOTING | POOL_ON_ITS_WAY | POOL_RETRIES
+        )
+}
+
+/// The pool's note while it orders the host of a spawn.
+pub const POOL_CREATING: &str = "pool: creating a host for this spawn";
+
+/// The pool's note while the host that it ordered for a spawn boots.
+pub const POOL_BOOTING: &str = "pool: waits (a host is booting)";
+
+/// The pool's note for a spawn whose ordered host is on its way out.
+pub const POOL_ON_ITS_WAY: &str = "pool: waits (a host is on its way)";
+
+/// The pool's note while `[elastic] create_backoff` keeps a failed create
+/// from retrying.
+pub const POOL_RETRIES: &str = "pool: waits (a create failed; the pool retries soon)";
+
+/// The pool's note for a spawn that waits because the pool holds
+/// `max_hosts`: a person raises the cap or frees a host.
+pub const POOL_AT_LIMIT: &str = "pool: waits (the pool is at its host limit)";
+
+/// The prefix of the note for a spawn whose ordered host refuses it too, with
+/// the refusal of that host after it.
+pub const POOL_ALSO_REFUSES: &str = "pool: waits (the new host also refuses it: ";
+
+/// The prefix of the notes that name what the pool image lacks: no new host
+/// of that image serves the spawn, so a person changes the image. The rest
+/// names it as `bundle X`, `member bundle X`, or `tag X`.
+pub const POOL_IMAGE_LACKS: &str = "pool image lacks ";
+
+/// The bundle that `text` names after `prefix`, when it parses as one.
+fn bundle_after(text: &str, prefix: &str) -> Option<BundleName> {
+    text.strip_prefix(prefix).and_then(|rest| rest.parse().ok())
+}
+
+/// The tag that `text` names after `prefix`, when it parses as one.
+fn tag_after(text: &str, prefix: &str) -> Option<Tag> {
+    text.strip_prefix(prefix).and_then(|rest| rest.parse().ok())
 }
 
 /// The cause of one refusal text.
 pub fn cause_of(reason: &str) -> Cause {
-    let named = |prefix: &str| reason.strip_prefix(prefix);
-    if let Some(bundle) = named("missing bundle ").and_then(|b| b.parse().ok()) {
+    // A note of the pool carries the refusal that a host gave it: the alarm
+    // gives the action of that refusal, not of the note.
+    if let Some(rest) = reason.strip_prefix(POOL_ALSO_REFUSES)
+        && let Some(inner) = rest.strip_suffix(')')
+    {
+        return cause_of(inner);
+    }
+    if let Some(lacks) = reason.strip_prefix(POOL_IMAGE_LACKS) {
+        // The longer prefix first: `member bundle X` also names `bundle X`.
+        if let Some(bundle) = bundle_after(lacks, "member bundle ") {
+            return Cause::NoMemberBundle(bundle);
+        }
+        if let Some(bundle) = bundle_after(lacks, "bundle ") {
+            return Cause::MissingBundle(bundle);
+        }
+        if let Some(tag) = tag_after(lacks, "tag ") {
+            return Cause::MissingTag(tag);
+        }
+    }
+    if let Some(bundle) = bundle_after(reason, "missing bundle ") {
         return Cause::MissingBundle(bundle);
     }
-    if let Some(bundle) = named("no member bundle ").and_then(|b| b.parse().ok()) {
+    if let Some(bundle) = bundle_after(reason, "no member bundle ") {
         return Cause::NoMemberBundle(bundle);
     }
-    if let Some(tag) = named("missing tag ").and_then(|t| t.parse().ok()) {
+    if let Some(tag) = tag_after(reason, "missing tag ") {
         return Cause::MissingTag(tag);
     }
     match reason {
@@ -333,6 +396,66 @@ mod tests {
         let mut capped = record(SpawnState::Queued, 3_600, &[]);
         capped.queue_reason = Some("channel full (2/2)".to_owned());
         assert_eq!(blocked(&capped, Timestamp(1_000_000)), None);
+    }
+
+    #[test]
+    fn a_pool_that_is_ordering_the_host_is_not_a_block() {
+        // The pool counts the free slots that can serve the spawn, so it
+        // orders a host for it and says so in the queue reason. The wait
+        // clears: a person has nothing to do, and the alarm must not fire.
+        for note in [POOL_CREATING, POOL_BOOTING, POOL_ON_ITS_WAY, POOL_RETRIES] {
+            let mut r = record(SpawnState::Queued, 3_600, &["full (5/5)"]);
+            r.queue_reason = Some(note.to_owned());
+            assert!(is_capacity(note), "{note}");
+            assert_eq!(blocked(&r, Timestamp(1_000_000)), None, "{note}");
+        }
+    }
+
+    #[test]
+    fn a_pool_image_that_lacks_the_bundle_blocks_the_spawn() {
+        let mut r = record(
+            SpawnState::Queued,
+            3_600,
+            &["missing bundle fly-cloud-test"],
+        );
+        r.queue_reason = Some(format!("{POOL_IMAGE_LACKS}bundle fly-cloud-test"));
+        let b = blocked(&r, Timestamp(1_000_000)).expect("blocked");
+        assert_eq!(
+            b.cause,
+            Cause::MissingBundle("fly-cloud-test".parse().unwrap())
+        );
+        assert_eq!(b.reason, "pool image lacks bundle fly-cloud-test");
+        assert_eq!(
+            b.action(&agent()),
+            "add bundle fly-cloud-test to a host that the spawn may use, \
+             or spawn without fly-cloud-test"
+        );
+    }
+
+    #[test]
+    fn the_cause_of_a_pool_note_is_the_refusal_inside_it() {
+        assert_eq!(
+            cause_of("pool image lacks member bundle claude-auth"),
+            Cause::NoMemberBundle("claude-auth".parse().unwrap())
+        );
+        assert_eq!(
+            cause_of("pool image lacks tag vps"),
+            Cause::MissingTag("vps".parse().unwrap())
+        );
+        assert_eq!(
+            cause_of(&format!("{POOL_ALSO_REFUSES}missing tag vps)")),
+            Cause::MissingTag("vps".parse().unwrap())
+        );
+        assert_eq!(
+            cause_of(&format!("{POOL_ALSO_REFUSES}offline)")),
+            Cause::Offline
+        );
+        // A pool at its cap needs a person: the cap or a new pool.
+        assert_eq!(
+            cause_of(POOL_AT_LIMIT),
+            Cause::Other(POOL_AT_LIMIT.to_owned())
+        );
+        assert!(!is_capacity(POOL_AT_LIMIT));
     }
 
     #[test]

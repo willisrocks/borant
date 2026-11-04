@@ -15,10 +15,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AgentId, HostName, PoolName, Tag};
+use crate::ids::{AgentId, BundleName, HostName, PoolName, Tag};
 use crate::model::Harness;
 use crate::ports::provision::{HostRecord, ProviderHostId};
-use crate::rules::schedule::{HostView, low_memory};
+use crate::rules::schedule::{self, HostView, PlacementReq, Reject};
 use crate::time::Timestamp;
 
 /// How close to the end of its billing step an idle host must be before the
@@ -63,11 +63,16 @@ pub struct PoolConfig {
     pub price_hour_usd: Option<f64>,
 }
 
-/// One agent that `place` did not put on a host.
+/// One agent that `place` did not put on a host, with everything that a host
+/// is judged by, so the pool counts only the slots that can serve this spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementNeed {
     pub agent: AgentId,
     pub harness: Harness,
+    /// The tags, sandbox, members, and named host of the spawn.
+    pub req: PlacementReq,
+    /// The bundles of the launch.
+    pub bundles: Vec<BundleName>,
 }
 
 /// The hub's view of one pool host, at the key `elastic.<name>`. Written only
@@ -90,6 +95,12 @@ pub struct ElasticHost {
     /// heartbeat, so the rules can find a lost host without a clock of their
     /// own.
     pub last_seen: Timestamp,
+    /// The queued spawn that made the hub order this host. The pool grows at
+    /// most once for a spawn: while this host boots the spawn waits, and when
+    /// the host also refuses it the pool stops ordering hosts for it, so an
+    /// image that lacks a bundle cannot fill the pool.
+    #[serde(default)]
+    pub growth_for: Option<AgentId>,
 }
 
 /// The phase of one pool host.
@@ -137,14 +148,35 @@ impl Spend {
 /// One step that the hub executes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    Create { pool: PoolName, name: HostName },
-    Drain { host: HostName },
-    Undrain { host: HostName },
-    Delete { host: HostName, id: ProviderHostId },
-    Adopt { pool: PoolName, record: HostRecord },
-    Forget { host: HostName },
-    MarkLost { host: HostName },
-    MarkFailed { host: HostName },
+    Create {
+        pool: PoolName,
+        name: HostName,
+        /// The queued spawn that demands the host, recorded on the key.
+        for_agent: Option<AgentId>,
+    },
+    Drain {
+        host: HostName,
+    },
+    Undrain {
+        host: HostName,
+    },
+    Delete {
+        host: HostName,
+        id: ProviderHostId,
+    },
+    Adopt {
+        pool: PoolName,
+        record: HostRecord,
+    },
+    Forget {
+        host: HostName,
+    },
+    MarkLost {
+        host: HostName,
+    },
+    MarkFailed {
+        host: HostName,
+    },
 }
 
 /// Picks the pool for one unplaced agent: the cheapest slot-hour among the
@@ -306,7 +338,11 @@ fn is_idle(host: &ElasticHost, view: Option<&HostView>, pool: &PoolConfig, now: 
         && host.billing_step_end.since(now) <= BILLING_SLACK
 }
 
-/// Creates one host for each unplaced agent that no free slot covers.
+/// Creates one host for each unplaced agent that no free slot covers, counting
+/// only the free slots that the spawn could actually use. A pool host without
+/// the spawn's bundle, tag, or sandbox is not capacity for it: without that
+/// rule a pool with an idle host of an old image never grows to an image that
+/// carries the bundle.
 fn creates(
     pools: &[PoolConfig],
     hosts: &[ElasticHost],
@@ -316,27 +352,15 @@ fn creates(
     spend: &Spend,
     now: Timestamp,
 ) -> Vec<Action> {
-    // The free slots of the online pool hosts, plus the slots that the hosts
-    // in Requested or Booting will offer.
-    let mut free: BTreeMap<PoolName, u32> = pools.iter().map(|p| (p.name.clone(), 0)).collect();
-    for view in views.values() {
-        let Some(pool) = view.info.pool.as_ref() else {
-            // A static host: `place` already put an agent there.
-            continue;
-        };
-        // A host that refuses for low memory is full: the pool must grow.
-        if !view.online || view.info.draining || low_memory(view).is_some() {
-            continue;
-        }
-        if let Some(slots) = free.get_mut(pool) {
-            *slots += view.info.max_agents.saturating_sub(view.active_agents);
-        }
-    }
+    // The slots that the hosts in Requested or Booting will offer. The pool
+    // cannot know the bundles of an image that is not live, so it waits for
+    // the host instead of ordering another one.
+    let mut pending: BTreeMap<PoolName, u32> = pools.iter().map(|p| (p.name.clone(), 0)).collect();
     for host in hosts {
         if matches!(host.phase, Phase::Requested | Phase::Booting)
             && !views.contains_key(&host.name)
             && let Some(pool) = by_name.get(&host.pool)
-            && let Some(slots) = free.get_mut(&host.pool)
+            && let Some(slots) = pending.get_mut(&host.pool)
         {
             *slots += pool.agents_per_host;
         }
@@ -344,16 +368,56 @@ fn creates(
 
     let mut counts = count_hosts(hosts);
     let mut taken: BTreeSet<HostName> = hosts.iter().map(|h| h.name.clone()).collect();
+    let mut used: BTreeMap<PoolName, u32> = BTreeMap::new();
     let mut actions = Vec::new();
     for need in unplaced {
+        // A host that this spawn already made: while it boots the spawn
+        // waits, and when it also refuses the spawn the pool stops ordering
+        // hosts for it. Without this, a pool image without the bundle would
+        // order one host at every tick.
+        if hosts
+            .iter()
+            .any(|h| h.growth_for.as_ref() == Some(&need.agent))
+        {
+            continue;
+        }
         let served = pools.iter().position(|p| {
-            p.harnesses.contains(&need.harness) && free.get(&p.name).copied().unwrap_or(0) > 0
+            p.harnesses.contains(&need.harness)
+                && serving_slots(views, p, need) + pending.get(&p.name).copied().unwrap_or(0)
+                    > used.get(&p.name).copied().unwrap_or(0)
         });
         if let Some(at) = served {
-            let name = pools[at].name.clone();
-            if let Some(slots) = free.get_mut(&name) {
-                *slots -= 1;
+            *used.entry(pools[at].name.clone()).or_default() += 1;
+            continue;
+        }
+        // A reason that a new host cannot fix (a draining host, a host bound
+        // to another repo) must not grow the pool: the next host would refuse
+        // the same way. A pool with no live host grows, and a full host that
+        // otherwise serves is exactly the case where a host is needed.
+        let fixable = pools.iter().any(|p| {
+            if !p.harnesses.contains(&need.harness) {
+                return false;
             }
+            let peers: Vec<&&HostView> = views
+                .values()
+                .filter(|v| v.info.pool.as_ref() == Some(&p.name))
+                .collect();
+            peers.is_empty()
+                || peers.iter().any(|v| {
+                    match schedule::accepts_except_full(
+                        v,
+                        need.harness,
+                        Some(need.harness),
+                        &need.req,
+                        &need.bundles,
+                    ) {
+                        // It serves but has no slot: grow.
+                        None => true,
+                        Some(reason) => fixable_reason(&reason),
+                    }
+                })
+        });
+        if !fixable {
             continue;
         }
         let Some(pool) = pick(pools, &counts, spend, need, now) else {
@@ -363,14 +427,58 @@ fn creates(
         let name = next_name(&pool.name_prefix, &taken, count + 1);
         taken.insert(name.clone());
         *counts.entry(pool.name.clone()).or_default() += 1;
-        // The new host takes this agent; its other slots are free.
-        *free.entry(pool.name.clone()).or_default() += pool.agents_per_host.saturating_sub(1);
+        // The new host takes this agent; its other slots are free. Its image
+        // may serve the next need too, so count those slots as pending.
+        *pending.entry(pool.name.clone()).or_default() += pool.agents_per_host.saturating_sub(1);
         actions.push(Action::Create {
             pool: pool.name.clone(),
             name,
+            for_agent: Some(need.agent.clone()),
         });
     }
     actions
+}
+
+/// The free slots of the online hosts of `pool` that would take `need` if
+/// their slots were free. A host that refuses for a reason other than
+/// fullness contributes nothing: it is not capacity for this spawn.
+fn serving_slots(
+    views: &BTreeMap<&HostName, &HostView>,
+    pool: &PoolConfig,
+    need: &PlacementNeed,
+) -> u32 {
+    views
+        .values()
+        .filter(|v| v.info.pool.as_ref() == Some(&pool.name))
+        .filter(|v| {
+            schedule::accepts_except_full(
+                v,
+                need.harness,
+                Some(need.harness),
+                &need.req,
+                &need.bundles,
+            )
+            .is_none()
+        })
+        .map(|v| v.info.max_agents.saturating_sub(v.active_agents))
+        .sum()
+}
+
+/// A refusal that a new host of the pool image may not repeat: the image can
+/// carry a bundle or a tag that the live hosts lack, and a fresh host has free
+/// memory and a full disk. A draining host, a host that cannot reach the repo,
+/// and a lost host are the host's own state, not the image's.
+fn fixable_reason(reason: &Reject) -> bool {
+    matches!(
+        reason,
+        Reject::MissingBundle(_)
+            | Reject::NoMemberBundle(_)
+            | Reject::MissingTag(_)
+            | Reject::NoHarness
+            | Reject::LowMemory { .. }
+            | Reject::LowDisk { .. }
+            | Reject::Offline
+    )
 }
 
 fn count_hosts(hosts: &[ElasticHost]) -> BTreeMap<PoolName, usize> {
@@ -484,9 +592,16 @@ mod tests {
     }
 
     fn need(agent: &str) -> PlacementNeed {
+        need_with(agent, &[])
+    }
+
+    /// A need of an agent whose launch carries `bundles`.
+    fn need_with(agent: &str, bundles: &[&str]) -> PlacementNeed {
         PlacementNeed {
             agent: agent.parse().unwrap(),
             harness: Harness::ClaudeCode,
+            req: PlacementReq::default(),
+            bundles: bundles.iter().map(|b| b.parse().unwrap()).collect(),
         }
     }
 
@@ -502,6 +617,7 @@ mod tests {
             last_busy: ago,
             billing_step_end: ago,
             last_seen: NOW,
+            growth_for: None,
         }
     }
 
@@ -535,6 +651,12 @@ mod tests {
             mem_avail_mb: None,
             disk_used_pct: None,
         }
+    }
+
+    /// The view of a host that holds `bundles`.
+    fn holding(mut h: HostView, bundles: &[&str]) -> HostView {
+        h.info.bundles = bundles.iter().map(|b| b.parse().unwrap()).collect();
+        h
     }
 
     fn records(hosts: &[&str]) -> BTreeMap<PoolName, Vec<HostRecord>> {
@@ -574,6 +696,7 @@ mod tests {
             vec![Action::Create {
                 pool: "workers".parse().unwrap(),
                 name: name("e1"),
+                for_agent: Some("a".parse::<AgentId>().unwrap()),
             }]
         );
     }
@@ -602,6 +725,236 @@ mod tests {
         assert!(
             !actions.iter().any(|a| matches!(a, Action::Create { .. })),
             "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_spawn_missing_a_bundle_on_every_host_creates_one_host() {
+        let pools = [pool("workers")];
+        let hosts = [ElasticHost {
+            phase: Phase::Ready,
+            last_busy: NOW,
+            ..key("e1", Phase::Ready)
+        }];
+        // The one live host is idle but does not hold the bundle, so it is
+        // not capacity for this spawn: the pool must grow.
+        let live = [view("e1", 0, true)];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &live,
+            &[need_with("a", &["fly-cloud-test"])],
+            &records(&["e1"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Create {
+                pool: "workers".parse().unwrap(),
+                name: name("e2"),
+                for_agent: Some("a".parse::<AgentId>().unwrap()),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_host_ordered_for_a_spawn_is_not_ordered_again() {
+        let pools = [pool("workers")];
+        // The first tick ordered `e2` for agent a; while it boots, the spawn
+        // waits instead of ordering another host.
+        let hosts = [ElasticHost {
+            phase: Phase::Booting,
+            growth_for: Some("a".parse().unwrap()),
+            ..key("e2", Phase::Booting)
+        }];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &[],
+            &[need_with("a", &["fly-cloud-test"])],
+            &records(&[]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_growth_host_that_also_refuses_the_spawn_ends_the_growth() {
+        let pools = [pool("workers")];
+        let hosts = [
+            ElasticHost {
+                phase: Phase::Ready,
+                last_busy: NOW,
+                ..key("e1", Phase::Ready)
+            },
+            ElasticHost {
+                phase: Phase::Ready,
+                growth_for: Some("a".parse().unwrap()),
+                ..key("e2", Phase::Ready)
+            },
+        ];
+        // The new host also refuses this spawn: the pool stops growing for
+        // it instead of ordering one host per tick.
+        let live = [view("e1", 0, true), view("e2", 0, true)];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &live,
+            &[need_with("a", &["fly-cloud-test"])],
+            &records(&["e1", "e2"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "a growth host that also refuses the spawn ends the growth: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_that_holds_the_bundle_serves_the_spawn() {
+        let pools = [pool("workers")];
+        let hosts = [ElasticHost {
+            phase: Phase::Ready,
+            last_busy: NOW,
+            ..key("e1", Phase::Ready)
+        }];
+        // Its slots are free and it holds the bundle: no new host.
+        let live = [holding(view("e1", 0, true), &["fly-cloud-test"])];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &live,
+            &[need_with("a", &["fly-cloud-test"])],
+            &records(&["e1"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_host_with_the_bundle_does_not_hide_a_bundle_less_host() {
+        let mut workers = pool("workers");
+        workers.max_hosts = 3;
+        let hosts = [
+            ElasticHost {
+                phase: Phase::Ready,
+                last_busy: NOW,
+                ..key("e1", Phase::Ready)
+            },
+            ElasticHost {
+                phase: Phase::Ready,
+                last_busy: NOW,
+                ..key("e2", Phase::Ready)
+            },
+        ];
+        // e1 has the bundle but no free slot; e2 has slots but no bundle.
+        let live = [
+            holding(view("e1", 2, true), &["fly-cloud-test"]),
+            view("e2", 0, true),
+        ];
+        let actions = plan(
+            &[workers],
+            &hosts,
+            &live,
+            &[need_with("a", &["fly-cloud-test"])],
+            &records(&["e1", "e2"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "the empty host without the bundle is not capacity: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_draining_host_does_not_grow_the_pool() {
+        let pools = [pool("workers")];
+        let hosts = [ElasticHost {
+            phase: Phase::Draining,
+            last_busy: NOW,
+            ..key("e1", Phase::Draining)
+        }];
+        let live = [HostView {
+            info: HostInfo {
+                draining: true,
+                ..view("e1", 0, true).info
+            },
+            ..view("e1", 0, true)
+        }];
+        let actions = plan(
+            &pools,
+            &hosts,
+            &live,
+            &[need("a")],
+            &records(&["e1"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "a draining host is the host's own state: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_disk_full_pool_grows_once_and_then_stops() {
+        let pools = [pool("workers")];
+        let full = |host: &str| HostView {
+            disk_used_pct: Some(96.0),
+            ..view(host, 0, true)
+        };
+        let first = plan(
+            &pools,
+            &[ElasticHost {
+                phase: Phase::Ready,
+                last_busy: NOW,
+                ..key("e1", Phase::Ready)
+            }],
+            &[full("e1")],
+            &[need("a")],
+            &records(&["e1"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            first.iter().any(|a| matches!(a, Action::Create { .. })),
+            "a fresh disk may fix it once: {first:?}"
+        );
+        // The new host fills its disk too: no second order.
+        let second = plan(
+            &pools,
+            &[
+                ElasticHost {
+                    phase: Phase::Ready,
+                    last_busy: NOW,
+                    ..key("e1", Phase::Ready)
+                },
+                ElasticHost {
+                    phase: Phase::Ready,
+                    growth_for: Some("a".parse().unwrap()),
+                    ..key("e2", Phase::Ready)
+                },
+            ],
+            &[full("e1"), full("e2")],
+            &[need("a")],
+            &records(&["e1", "e2"]),
+            &Spend::default(),
+            NOW,
+        );
+        assert!(
+            !second.iter().any(|a| matches!(a, Action::Create { .. })),
+            "{second:?}"
         );
     }
 

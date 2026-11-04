@@ -315,7 +315,13 @@ keys, unplaced agents, and time to a list of actions. The hub runs it every
 1. Demand: the agents that `place` did not place. These are pending spawns,
    takeovers after a laptop sleeps, and parked agents that a message woke.
 2. Supply: free slots on online hosts, plus `agents_per_host` for each pool
-   host in `Requested` or `Booting`.
+   host in `Requested` or `Booting`. A free slot counts for a given spawn only
+   when that host would take the spawn on every other rule: a host without the
+   spawn's bundle, tag, or sandbox is not capacity, so the pool grows to an
+   image that has it. The host that a spawn made is marked with
+   `growth_for`: one host per spawn, and when that host refuses the spawn too
+   the pool stops growing for it and `borant ps` says why (`pool image lacks
+   bundle X`).
 3. If demand is more than supply, start stopped hosts first, then create
    hosts in the pool that `choose` returns. Never go above `max_hosts` or a
    budget, and never create in a pool during `create_backoff`.

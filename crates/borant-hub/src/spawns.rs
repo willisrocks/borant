@@ -626,6 +626,7 @@ impl Hub {
         if placed {
             next.state = SpawnState::Launching;
             next.last_reject.clear();
+            next.queue_reason = None;
         } else {
             // The watchdog may have failed the record between the list and
             // this try; a failed spawn waits for a person.
