@@ -1,6 +1,6 @@
 # Borant cloud control plane design
 
-Date: 2026-11-03. Status: draft for Chris to review. Nothing is built, and no
+Date: 2026-11-03. Status: approved by Chris on 2026-11-03. Nothing is built, and no
 cloud money is spent. This revision applies Chris's cuts and Astra's review of
 commit d3f3ccb (conversation codex-312).
 
@@ -26,8 +26,7 @@ Marks in this document:
 - "(Recommendation)" means that the designer answers a question that Chris
   left open, and gives the reason. Chris can overrule it.
 
-Section 24 lists every default and recommendation in one table, and the open
-question.
+Section 24 lists every default and recommendation in one table.
 
 Inputs:
 
@@ -1399,7 +1398,7 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
    - A real `sandboxd` restart during a job, and a replaced volume, through the job protocol
      (section 15). The `api.memo` contract.
    - Restore mode (section 25).
-3. Change the `boopmark` settings below, if Chris agrees (section 24). Make sure that a PR job
+3. Make sure that `boopmark` has the two settings below, and that a PR job
    on a `cloud/` branch has a read-only token. Then run the first Project, `boopmark`, in the
    `personal` Profile. Chris starts Tickets from the web chat only.
 4. Measure for two weeks: lost Triggers, duplicate Tickets, reconcile repairs, cost, sandbox
@@ -1462,15 +1461,29 @@ this token starts no new run, but `workflow_dispatch` is an exception
 does not list their current values. Nobody tested the path. (Found by the builder check. My
 call on the fix.)
 
-The fix is three settings, and it is the smallest one:
+The fix is two settings. (Decided on 2026-11-03) They change no workflow file:
 
 1. Set the default workflow permission to read. Of the four workflows, only `ci.yml` declares
    no `permissions`, and it needs no write.
-2. Give the `production` environment a required reviewer, Chris.
-3. Limit the `production` environment to the `main` branch.
+2. Limit the `production` environment to the `main` branch.
 
-These change a repo that current Borant also works on, so they need Chris's yes (section 24).
-They change no workflow file, but a release of `boopmark` then waits for his review.
+Chris decided against a required reviewer on `production`, so a release does not wait for him.
+
+What the approval rule still guards, for code from a Ticket:
+
+- A script in a PR job has a read token, so it cannot merge, push, or dispatch a workflow.
+- A job from a `cloud/` branch cannot use the `production` environment or its secrets.
+- The worker holds no GitHub credential, and the App cannot write workflows or dispatch them. So
+  a Ticket's code reaches `main` only through `merge_pr`, with an Approval of that SHA.
+
+What it does not guard:
+
+- Nothing stands between `main` and production. A release can deploy any merged code with no
+  review, so `y` on the merge is the last check by a person.
+- An Approval proves that Chris approved a SHA. It does not prove that he read the diff.
+- The rule covers the tools of the new system only. Anything with write access through another
+  path, such as his login or an agent of current Borant, can merge or start a release, as it
+  can today.
 
 ### Shared Claude usage limit
 
@@ -1604,7 +1617,7 @@ Build constraints that follow from this read:
 4. Test whether a new login or "log out of all" revokes a setup-token on other
    machines. The docs do not say.
 
-## 24. Defaults and the open question
+## 24. Defaults
 
 None of these is Chris's decision yet. The document uses each one until Chris answers.
 
@@ -1615,17 +1628,8 @@ None of these is Chris's decision yet. The document uses each one until Chris an
 | `claude -p` fallback | Every role moves to Codex if the Codex test passes. No Anthropic API key. | Recommendation | 17 |
 | Router wake | The router runs only when Chris asks. It does not screen Asks in the first version. | Recommendation | 8 |
 
-### Open question for Chris
-
-Can the build change three repo settings of `boopmark` before the first Ticket (section 21)?
-Without them, the approval rule does not hold against a hijacked worker. With them, a release of
-`boopmark` waits for his review of the `production` environment, also for work from current
-Borant. The other choice is a different first Project, which has the same check to pass.
-
-(Recommendation) Change the settings.
-
-Closed by Chris: the accounts (section 21), the subscription terms (section 23), and the five
-cuts of section 2.
+Closed by Chris: the accounts and the `boopmark` settings (section 21), the subscription terms
+(section 23), and the five cuts of section 2.
 
 ## 25. Contract: recovery and acceptable data loss
 
