@@ -1197,6 +1197,11 @@ pub struct AgentStatus {
     pub session: Option<SessionId>,
     #[serde(default)]
     pub busy: bool,
+    /// The session looks hung: it is busy, with no tool call and no text for
+    /// `[alerts] hung_minutes`, or its host slept and its turn did not move
+    /// since. A flag only: a person restarts the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hung: Option<crate::rules::hung::Hung>,
     /// The open task that it claimed.
     #[serde(default)]
     pub claim: Option<TaskId>,

@@ -171,19 +171,16 @@ impl Launcher for TmuxLauncher {
 
     async fn stop(&self, handle: &LaunchHandle) -> PortResult<()> {
         check_kind(handle, KIND)?;
-        let on_borant = self.is_running_on(Some(&self.socket), &handle.id).await?;
-        let socket = if on_borant {
-            Some(self.socket.as_str())
-        } else if self.is_running_on(None, &handle.id).await? {
-            // A launcher of an older version started it on the default server.
-            None
-        } else {
-            return Ok(());
-        };
-        let mut args = socket_args(socket);
-        args.push("kill-session".to_owned());
-        args.extend(target(&handle.id));
-        run_ok("tmux", &args).await.map(drop)
+        self.end_session_named(&handle.id).await.map(drop)
+    }
+
+    /// Ends `agent`'s session, whatever handle a caller has for it: the host
+    /// calls this before a launch, because `new-session` refuses a name that
+    /// exists and a session of a daemon that restarted, of a lost order, or of
+    /// an older attempt would block every launch of the agent (a leftover
+    /// `borant-<agent>` after a Mac sleep, for one).
+    async fn release(&self, agent: &AgentId) -> PortResult<bool> {
+        self.end_session_named(&session_name(agent)).await
     }
 
     async fn is_running(&self, handle: &LaunchHandle) -> PortResult<bool> {
@@ -232,6 +229,25 @@ impl TmuxLauncher {
     /// server.
     async fn is_running_on(&self, socket: Option<&str>, name: &str) -> PortResult<bool> {
         has_session(socket, name).await
+    }
+
+    /// Kills the session named `name` on the server that holds it, the
+    /// launcher's own first. A name that no server holds is not an error, and
+    /// the answer says whether there was one.
+    async fn end_session_named(&self, name: &str) -> PortResult<bool> {
+        let socket = if self.is_running_on(Some(&self.socket), name).await? {
+            Some(self.socket.as_str())
+        } else if self.is_running_on(None, name).await? {
+            // A launcher of an older version started it on the default server.
+            None
+        } else {
+            return Ok(false);
+        };
+        let mut args = socket_args(socket);
+        args.push("kill-session".to_owned());
+        args.extend(target(name));
+        run_ok("tmux", &args).await?;
+        Ok(true)
     }
 }
 
@@ -441,6 +457,59 @@ mod tests {
         launcher.stop(&handle).await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!launcher.is_running(&handle).await.unwrap());
+    }
+
+    /// A leftover session of the agent's name blocks every launch, so the host
+    /// releases it before the launch: exactly that one session goes, never the
+    /// server and never another agent's session.
+    #[tokio::test]
+    async fn release_ends_the_leftover_session_of_one_agent() {
+        if !tmux_available() {
+            return;
+        }
+        let socket = unique("test-release");
+        let agent = unique("rl");
+        let other = unique("ro");
+        let name = format!("borant-{agent}");
+        let _guard = KillOnDrop {
+            socket: socket.clone(),
+            name: name.clone(),
+        };
+        let _other = KillOnDrop {
+            socket: socket.clone(),
+            name: format!("borant-{other}"),
+        };
+        let launcher = TmuxLauncher::new(TmuxConfig {
+            socket: socket.clone(),
+        });
+        // A session that a restart or a lost order left behind.
+        let new = std::process::Command::new("tmux")
+            .args(["-L", &socket, "new-session", "-d", "-s", &name])
+            .args(["--", "sleep", "30"])
+            .output()
+            .unwrap();
+        assert!(new.status.success(), "tmux new-session failed: {new:?}");
+        let new = std::process::Command::new("tmux")
+            .args(["-L", &socket, "new-session", "-d", "-s"])
+            .arg(format!("borant-{other}"))
+            .args(["--", "sleep", "30"])
+            .output()
+            .unwrap();
+        assert!(new.status.success(), "tmux new-session failed: {new:?}");
+
+        let agent_id: AgentId = agent.parse().unwrap();
+        assert!(launcher.release(&agent_id).await.unwrap());
+        // The name is free again, and the same call now ends nothing.
+        assert!(!launcher.release(&agent_id).await.unwrap());
+        let handle = launcher.launch(&spec(&agent)).await.unwrap();
+        assert!(launcher.is_running(&handle).await.unwrap());
+        // The other agent's session stayed.
+        let other_handle = LaunchHandle {
+            kind: KIND.to_owned(),
+            id: format!("borant-{other}"),
+        };
+        assert!(launcher.is_running(&other_handle).await.unwrap());
+        launcher.stop(&handle).await.unwrap();
     }
 
     /// An agent's own `tmux kill-server` must not end the Borant server: the

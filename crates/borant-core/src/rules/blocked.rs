@@ -199,6 +199,9 @@ pub enum ClaimerState {
     Queued(Blocked),
     /// Its stopped session was fenced, so its turn cannot end.
     Fenced,
+    /// Its session looks hung: a busy turn with no tool call and no text for
+    /// `[alerts] hung_minutes`, or one that lost its turn when its host slept.
+    Hung(crate::rules::hung::Hung),
 }
 
 impl fmt::Display for ClaimerState {
@@ -206,14 +209,19 @@ impl fmt::Display for ClaimerState {
         match self {
             Self::Queued(blocked) => write!(f, "queued and blocked ({})", blocked.reason),
             Self::Fenced => f.write_str("fenced"),
+            Self::Hung(hung) => write!(f, "hung ({})", hung.why()),
         }
     }
 }
 
 /// The `attention_msg` of a stalled task: its claimer and state, and the
-/// tasks that wait on it through `blocked_by`.
+/// tasks that wait on it through `blocked_by`. A hung claimer also gets the
+/// one command that ends it.
 pub fn stalled_text(claimer: &AgentId, state: &ClaimerState, holds: &[String]) -> String {
     let mut out = format!("its claimer {claimer} is {state}");
+    if matches!(state, ClaimerState::Hung(_)) {
+        out.push_str(&format!("; run `borant restart {claimer}`"));
+    }
     if !holds.is_empty() {
         out.push_str(&format!("; holds: {}", holds.join(", ")));
     }

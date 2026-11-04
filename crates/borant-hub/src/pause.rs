@@ -214,16 +214,33 @@ impl Hub {
         tracing::info!(agent = %agent.id, "agent paused");
         // A session that already ended its turn stops at once; one that is
         // still in a turn stops at its turn end, and is fenced when that
-        // outlives the grace.
+        // outlives the grace. A session that looks hung stops at once too: its
+        // turn will never end by itself, which is the stop that a person gives
+        // a harness after a sleep.
         let idle = mem
             .idle
             .get(&agent.id)
             .filter(|report| report.since.is_some())
-            .cloned();
-        if let Some(report) = idle {
-            self.stop_session(mem, &agent.id, report.session, &report.host)
-                .await?;
-        } else if let Some((session, host)) = self.held_session(&agent.id).await? {
+            .map(|report| (report.session, report.host.clone()));
+        let held = self.held_session(&agent.id).await?;
+        if let Some((session, host)) = idle {
+            self.stop_session(mem, &agent.id, session, &host).await?;
+        } else if let Some(hung) = self.hung_of(
+            mem,
+            &agent.id,
+            held.as_ref().map(|(session, _)| *session),
+            now,
+        ) {
+            let Some((session, host)) = held else {
+                return Ok(());
+            };
+            tracing::warn!(
+                agent = %agent.id,
+                "a stopped agent looks hung, stopping its session now: {}",
+                hung.why()
+            );
+            self.stop_session(mem, &agent.id, session, &host).await?;
+        } else if let Some((session, host)) = held {
             mem.pause_fences
                 .insert(session, (agent.id.clone(), host.clone(), now.plus(grace)));
         }

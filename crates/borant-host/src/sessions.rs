@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint;
 use crate::outbox::OutboxKind;
-use crate::{Host, LocalSess, Queued, activity, terminate};
+use crate::{Host, LocalSess, Queued, activity, terminate_hard};
 
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
 /// How long a registration call waits for the first attach attempt.
@@ -719,7 +719,7 @@ impl Host {
                 return;
             };
             (
-                s.reg.as_ref().map(|r| r.agent.clone()),
+                s.agent(),
                 s.repo.clone(),
                 s.pid,
                 s.launch.clone(),
@@ -749,7 +749,8 @@ impl Host {
         }
         // The session stays known, so its hooks keep blocking tools until
         // the harness process exits.
-        self.stop_process(pid, launch.as_ref()).await;
+        self.stop_process(agent.as_ref(), pid, launch.as_ref())
+            .await;
     }
 
     /// Fences a session. With `kill`, it also saves the stale work and stops
@@ -761,8 +762,14 @@ impl Host {
         }
     }
 
+    /// Ends the process and the launched session of a stopped agent. A handle
+    /// that this daemon still holds goes first; then the launcher ends any
+    /// session that it still has of the agent under its name, which a restart
+    /// or a lost handle leaves behind; then the process itself, which a hung
+    /// harness may not stop for SIGTERM alone.
     pub(crate) async fn stop_process(
         &self,
+        agent: Option<&AgentId>,
         pid: Option<u32>,
         launch: Option<&borant_core::ports::LaunchHandle>,
     ) {
@@ -770,8 +777,18 @@ impl Host {
             if let Err(e) = self.inner.launcher.stop(h).await {
                 tracing::warn!("launcher stop failed: {e}");
             }
-        } else if let Some(p) = pid {
-            terminate(p);
+        }
+        if let Some(agent) = agent {
+            match self.inner.launcher.release(agent).await {
+                Ok(true) => {
+                    tracing::info!(%agent, "ended a leftover session of the stopped agent")
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(%agent, "cannot end a leftover session: {e}"),
+            }
+        }
+        if let Some(p) = pid {
+            terminate_hard(p).await;
         }
     }
 
@@ -910,7 +927,8 @@ impl Host {
             },
         )
         .await;
-        self.stop_process(s.pid, s.launch.as_ref()).await;
+        self.stop_process(s.agent().as_ref(), s.pid, s.launch.as_ref())
+            .await;
         let req = CtlRequest::MoveReady {
             agent: reg.agent.clone(),
             session: id,
@@ -972,7 +990,8 @@ impl Host {
             },
         )
         .await;
-        self.stop_process(pid, launch.as_ref()).await;
+        self.stop_process(Some(&reg.agent), pid, launch.as_ref())
+            .await;
         let req = CtlRequest::EndSession {
             session: id,
             agent: reg.agent.clone(),

@@ -25,12 +25,13 @@ impl Hub {
     /// shares one of its channels, and no other caller sees it.
     pub(crate) async fn view_for(&self, caller: Option<&AgentId>) -> Result<SwarmView, ApiError> {
         let now = self.now();
-        let (seen, stats, activity) = {
+        let (seen, stats, activity, hung) = {
             let mem = self.mem.lock().await;
             (
                 mem.hosts_seen.clone(),
                 mem.host_stats.clone(),
                 mem.activity.clone(),
+                self.hung_sessions(&mem, now),
             )
         };
         let hosts = self.store.list::<HostInfo>(keys::HOST_PREFIX).await?;
@@ -120,6 +121,11 @@ impl Hub {
                 lease: lease.map(|lease| lease.state.clone()),
                 session: agent.session,
                 busy,
+                // The hung flag of the live session only: a report of an
+                // ended session says nothing about the one that runs now.
+                hung: agent
+                    .session
+                    .and_then(|session| hung.get(&(agent.id.clone(), session)).copied()),
                 // The claim needs a scan of every channel's tasks; the top
                 // task adds it with its own query.
                 claim: None,

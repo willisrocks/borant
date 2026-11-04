@@ -77,9 +77,10 @@ impl Host {
                     .state()
                     .sessions
                     .get(&session)
-                    .map(|s| (s.pid, s.launch.clone()));
-                if let Some((pid, launch)) = info {
-                    self.stop_process(pid, launch.as_ref()).await;
+                    .map(|s| (s.agent(), s.pid, s.launch.clone()));
+                if let Some((agent, pid, launch)) = info {
+                    self.stop_process(agent.as_ref(), pid, launch.as_ref())
+                        .await;
                 }
                 self.end_session(session, "stopped by the hub").await;
             }
@@ -242,12 +243,25 @@ impl Host {
         // A session of this agent that is still around is stale: the hub
         // relaunches an agent only after its session ended or did not
         // register. tmux refuses a second session of the same name, so the
-        // old one goes first.
+        // old one goes first: the handle of this daemon's last launch, and the
+        // named session that a restart, a lost order, or an older attempt left
+        // behind.
         let stale = self.state().last_launch.remove(&o.agent);
         if let Some(stale) = stale
             && let Err(e) = self.inner.launcher.stop(&stale).await
         {
             tracing::debug!(agent = %o.agent, "cannot stop the stale launch: {e}");
+        }
+        match self.inner.launcher.release(&o.agent).await {
+            Ok(true) => tracing::info!(
+                agent = %o.agent,
+                "ended a leftover session of the agent before the launch"
+            ),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                agent = %o.agent,
+                "cannot end a leftover session of the agent: {e}"
+            ),
         }
         // Claude Code asks whether it trusts a directory that it does not
         // know, and a git repository root is never covered by the trust of its

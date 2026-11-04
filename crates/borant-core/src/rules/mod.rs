@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod blocked;
 pub mod continuation;
 pub mod graph;
+pub mod hung;
 pub mod lease;
 pub mod members;
 pub mod mirror;

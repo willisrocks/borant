@@ -1081,11 +1081,43 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
     }
 }
 
-pub(crate) fn terminate(pid: u32) {
-    use nix::sys::signal::{Signal, kill};
+/// The time between SIGTERM and SIGKILL of a harness that a stop ends.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// Ends the harness process of a stopped session, and the group that it leads.
+/// A hung harness may never handle SIGTERM (a lid close can freeze the process,
+/// or a tool waits on a socket that the sleep broke), so a process that is
+/// still there after the grace gets SIGKILL: `borant stop` must end the
+/// session, not only pause the agent.
+pub(crate) async fn terminate_hard(pid: u32) {
+    use nix::sys::signal::{Signal, kill, killpg};
     use nix::unistd::Pid;
-    if let Ok(raw) = i32::try_from(pid) {
-        let _ = kill(Pid::from_raw(raw), Signal::SIGTERM);
+    let Ok(raw) = i32::try_from(pid) else {
+        return;
+    };
+    let target = Pid::from_raw(raw);
+    // A process that leads a group, as the process launcher starts it, takes
+    // its tools with it; another process gets its own signal only, so a signal
+    // never reaches the daemon's group.
+    let group = matches!(nix::unistd::getpgid(Some(target)), Ok(pgid) if pgid == target);
+    let signal = |s: Signal| {
+        if group {
+            let _ = killpg(target, s);
+        } else {
+            let _ = kill(target, s);
+        }
+    };
+    signal(Signal::SIGTERM);
+    let deadline = std::time::Instant::now() + STOP_GRACE;
+    while std::time::Instant::now() < deadline {
+        if !pid_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if pid_alive(pid) {
+        tracing::warn!(pid, "the harness ignored SIGTERM, sending SIGKILL");
+        signal(Signal::SIGKILL);
     }
 }
 

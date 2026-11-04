@@ -661,6 +661,9 @@ message.
 | `borant spawn --channel C --prompt-file F [--harness H] [--model M] [--role R] [--host H] [--task C/ID \| --task-title T] [--stop-on-close] [--continue N [--continue-hours H]] [--priority N] [--name N] [--key K] [--bundle B] [--json]` | Start an agent in a channel |
 | `borant wait <agent> \| --task C/ID [--timeout 2h]` | Wait for work: exit 0 done, 1 closed otherwise, 2 at the timeout |
 | `borant cancel <agent> [--close-task REASON]` | Stop an agent and cancel its queued spawn |
+| `borant stop <agent\|#channel> [--grace SECS]` | Stop an agent: pause it, and end its session at its turn end or after the grace. A session that already ended its turn, or that looks hung, ends at once, whatever the harness does with a message |
+| `borant resume <agent\|#channel>` | Resume a stopped agent and place it again. A leftover session of its name ends first, so a resume after a sleep is not `conflict` |
+| `borant restart <agent>` | Stop an agent now and resume it: the way out of a hung session, whose turn never ends |
 | `borant ps [--queued] [--json]` | The spawns that wait for a host |
 | `borant logs <agent> [--follow]` | The session log of an agent |
 | `borant inbox [--json]` | What waits for a person: the tasks that need one, and the paused agents |
@@ -697,6 +700,12 @@ message.
 - **Old host returns:** its daemon saves the work of the lost turn to
   `refs/borant/<agent>/stale/<time>`, blocks the tools of the old session, and
   stops it. Run `borant move <agent> --here` to take the agent back.
+- **Sleep:** a host that sends no heartbeat for `[alerts] hung_minutes` (20 by
+  default) slept, and the sessions that say nothing after it lost their turn.
+  The hub flags them `hung?` on the board and by the `agent_hung` alert, and
+  `borant stop` ends such a session at once. `borant restart <agent>` stops the
+  frozen session and starts the agent again. Nothing is killed on a guess: the
+  flag is a flag.
 
 Checkpoints go to `refs/borant/<agent>/wip` on the `origin` remote of the
 repository. Set `checkpoint_remote` if the origin does not accept custom refs.

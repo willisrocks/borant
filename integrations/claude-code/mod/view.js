@@ -485,7 +485,14 @@ export function changeDetail(c, w) {
 
 /** A project's detail: every task by state (as taskEntries, without the selection). */
 export function projectDetail(p, w) {
-  const orch = p.orchestrators.map((o) => o.agent + ' ' + (o.online ? (o.busy ? 'online, busy' : 'online') : 'offline')).join(', ')
+  // A hung orchestrator took no tool call and no text for the hub's
+  // `hung_minutes`, or came back from a sleep with its turn frozen: the line
+  // says so, and `borant restart <agent>` is the way out.
+  const orchs = p.orchestrators.map((o) => {
+    if (!o.online) return o.agent + ' offline'
+    return o.agent + ' ' + (o.busy ? 'online, busy' : 'online') + (o.hung ? ', hung?' : '')
+  })
+  const orch = orchs.join(', ')
   const out = [text(fit([S(p.name, 'head'), S('  ' + p.collection + ' · ' + (orch || 'no orchestrator'), 'dim')], w))]
   if (p.saga) out.push(text(fit([S('saga ' + (p.saga.title || p.saga.channel) + ': ' + p.saga.done + ' of ' + p.saga.total + ' epics done', 'dim')], w)))
   out.push(text([]))
