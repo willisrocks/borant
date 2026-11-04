@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::config::{
-    AlertsConfig, ChangesConfig, ChannelConfig, MirrorConfig, ScheduleConfig,
+    AlertsConfig, ChangesConfig, ChannelConfig, MirrorConfig, ScheduleConfig, Span,
 };
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
@@ -77,78 +77,6 @@ where
         .split(',')
         .map(|s| s.trim().parse::<T>().map_err(anyhow::Error::from))
         .collect()
-}
-
-/// A duration of `hub.toml`: `"10s"`, `"20m"`, `"1h"`, `"1h30m"`, or a plain
-/// number of seconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span(pub Duration);
-
-impl<'de> Deserialize<'de> for Span {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct V;
-
-        impl serde::de::Visitor<'_> for V {
-            type Value = Span;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a duration such as \"20m\", or a number of seconds")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Span, E> {
-                parse_span(v).map(Span).map_err(E::custom)
-            }
-
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Span, E> {
-                Ok(Span(Duration::from_secs(v)))
-            }
-
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Span, E> {
-                Ok(Span(Duration::from_secs(u64::try_from(v).unwrap_or(0))))
-            }
-
-            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Span, E> {
-                Ok(Span(Duration::from_secs_f64(v.max(0.0))))
-            }
-        }
-
-        d.deserialize_any(V)
-    }
-}
-
-/// Parses `"10s"`, `"20m"`, `"1h"`, `"2d"`, `"1h30m"`, or a number of seconds.
-fn parse_span(text: &str) -> anyhow::Result<Duration> {
-    let mut total = 0.0;
-    let mut number = String::new();
-    for c in text.chars() {
-        if c.is_ascii_digit() || c == '.' {
-            number.push(c);
-            continue;
-        }
-        if c == ' ' {
-            continue;
-        }
-        let value: f64 = number
-            .parse()
-            .with_context(|| format!("{text:?} is not a duration"))?;
-        number.clear();
-        let unit = match c {
-            's' => 1.0,
-            'm' => 60.0,
-            'h' => 3600.0,
-            'd' => 86_400.0,
-            _ => anyhow::bail!("{text:?}: the unit {c:?} is not s, m, h, or d"),
-        };
-        total += value * unit;
-    }
-    if !number.is_empty() {
-        let value: f64 = number
-            .parse()
-            .with_context(|| format!("{text:?} is not a duration"))?;
-        total += value;
-    }
-    anyhow::ensure!(total > 0.0, "{text:?} is not a duration");
-    Ok(Duration::from_secs_f64(total))
 }
 
 /// Resolves the pool and the tags of a host. `BORANT_POOL` and `BORANT_TAGS`
@@ -1656,6 +1584,40 @@ omp = ["lunaroute"]
     }
 
     #[test]
+    fn hub_file_parses_idle_release_after() {
+        let f: HubFile = toml::from_str(
+            r#"
+            [roles.helper]
+            idle_release_after = "30m"
+
+            [roles.worker]
+            idle_release_after = "1h30m"
+            "#,
+        )
+        .unwrap();
+        let helper = f.roles.get(&"helper".parse().unwrap()).unwrap();
+        assert_eq!(
+            helper.idle_release_after,
+            Some(Span(Duration::from_secs(1800)))
+        );
+        let worker = f.roles.get(&"worker".parse().unwrap()).unwrap();
+        assert_eq!(
+            worker.idle_release_after,
+            Some(Span(Duration::from_secs(5400)))
+        );
+        // A role without the key releases nobody, as every role did before.
+        let chief: HubFile = toml::from_str("[roles.chief]\napproves = true\n").unwrap();
+        assert_eq!(
+            chief
+                .roles
+                .get(&"chief".parse().unwrap())
+                .unwrap()
+                .idle_release_after,
+            None
+        );
+    }
+
+    #[test]
     fn hub_file_parses_caps_channels_and_changes() {
         let f: HubFile = toml::from_str(
             r#"
@@ -1942,6 +1904,8 @@ max_hosts = 1
 
     #[test]
     fn spans_parse_human_durations() {
+        use borant_core::config::parse_span;
+
         for (text, secs) in [
             ("10s", 10),
             ("20m", 1200),

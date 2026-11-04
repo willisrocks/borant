@@ -3,9 +3,11 @@
 //! collection names the bundles and the git author of its agents.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::Span;
 use crate::ids::{BundleName, CollectionName, RoleName, Tag};
 use crate::model::{Agent, GitAuthor, Harness, Project, SandboxKind};
 
@@ -54,6 +56,12 @@ pub struct RoleConfig {
     /// The cap of one session, in hours. At the cap the hub stops the agent.
     #[serde(default)]
     pub max_session_hours: Option<u32>,
+    /// Release the slot of an agent of this role that stays idle this long,
+    /// on any host. Only a `helper` or `worker` role is released, and never a
+    /// pinned one or one that approves; unset releases nobody (spec
+    /// "Parking").
+    #[serde(default)]
+    pub idle_release_after: Option<Span>,
     /// Close a saga gate as `done` or `wontfix`. Only a role with this flag
     /// approves a saga, besides a person.
     #[serde(default)]
@@ -315,6 +323,25 @@ pub fn mirror_issues(project: &Project, collection: Option<&CollectionConfig>) -
         .unwrap_or(false)
 }
 
+/// The idle time after which the hub gives back the slot of an idle agent of
+/// this role, if the hub releases it at all (spec "Parking"). Only a `helper`
+/// or a `worker` is released, never a pinned role and never one that
+/// approves, and only when its `idle_release_after` names the time.
+pub fn idle_release(
+    role: Option<&RoleName>,
+    roles: &BTreeMap<RoleName, RoleConfig>,
+) -> Option<Duration> {
+    let role = role?;
+    if !matches!(role.as_str(), "helper" | "worker") {
+        return None;
+    }
+    let config = roles.get(role)?;
+    if config.pinned || config.approves {
+        return None;
+    }
+    config.idle_release_after.map(|span| span.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +474,7 @@ Standing permissions from the person:\n\
             sandbox: None,
             max_turns_per_day: None,
             max_session_hours: None,
+            idle_release_after: None,
             approves: false,
         };
         let table = roles(&[("worker", worker.clone())]);
@@ -593,6 +621,65 @@ Standing permissions from the person:\n\
             !approves(Some(&"missing".parse().unwrap()), &table),
             "a role that hub.toml does not define approves nothing"
         );
+    }
+
+    /// Rule: only an idle `helper` or `worker` with `idle_release_after` set
+    /// gives its slot back, and never a pinned role or one that approves.
+    #[test]
+    fn roles_idle_release_reads_the_role_and_the_key() {
+        let idle = |secs: u64| RoleConfig {
+            idle_release_after: Some(Span(Duration::from_secs(secs))),
+            ..RoleConfig::default()
+        };
+        let table = roles(&[
+            ("helper", idle(1800)),
+            ("worker", idle(1800)),
+            ("chief", idle(1800)),
+            ("orchestrator", idle(1800)),
+            (
+                "pinned-worker",
+                RoleConfig {
+                    pinned: true,
+                    ..idle(1800)
+                },
+            ),
+            (
+                "approving-worker",
+                RoleConfig {
+                    approves: true,
+                    ..idle(1800)
+                },
+            ),
+            ("plain-worker", RoleConfig::default()),
+        ]);
+        let release = |name: &str| idle_release(Some(&name.parse().unwrap()), &table);
+        assert_eq!(release("helper"), Some(Duration::from_secs(1800)));
+        assert_eq!(release("worker"), Some(Duration::from_secs(1800)));
+        assert_eq!(release("chief"), None);
+        assert_eq!(release("orchestrator"), None);
+        assert_eq!(release("pinned-worker"), None, "a pinned role stays");
+        assert_eq!(release("approving-worker"), None, "an approval waits");
+        assert_eq!(release("plain-worker"), None, "unset releases nobody");
+        assert_eq!(release("missing"), None);
+        assert_eq!(idle_release(None, &table), None);
+    }
+
+    /// The key of `hub.toml` is a span, and unset stays off.
+    #[test]
+    fn roles_idle_release_after_parses_a_span() {
+        let text: RoleConfig = serde_json::from_str(r#"{"idle_release_after":"30m"}"#).unwrap();
+        assert_eq!(
+            text.idle_release_after,
+            Some(Span(Duration::from_secs(1800)))
+        );
+        let secs: RoleConfig = serde_json::from_str(r#"{"idle_release_after":600}"#).unwrap();
+        assert_eq!(
+            secs.idle_release_after,
+            Some(Span(Duration::from_secs(600)))
+        );
+        let off: RoleConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(off.idle_release_after, None, "unset releases nobody");
+        assert!(serde_json::from_str::<RoleConfig>(r#"{"idle_release_after":"soon"}"#).is_err());
     }
 
     /// The project's `mirror_issues` wins over the collection's, and both
