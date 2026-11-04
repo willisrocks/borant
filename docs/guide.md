@@ -108,6 +108,31 @@ at birth. `project_get` returns the merged list in `standing_permissions`, so
 an orchestrator reads it again after a compaction. An older hub refuses a
 `hub.toml` with the key, so the deployment adds it after the hub that has it.
 
+### Idle helpers and workers give their slot back
+
+A helper or a worker that finishes and then stays idle gives its host slot
+back on its own, so a laptop that ran it is free for the next spawn without a
+`borant cancel`. Its role in `hub.toml` names the time:
+
+```toml
+[roles.helper]
+idle_release_after = "30m"
+
+[roles.worker]
+idle_release_after = "30m"
+```
+
+After that long with no turn in flight, no running tool, no open bound task,
+no claim, and no unacked message, the hub parks the session on any host, pool
+or not: the host writes the final checkpoint, stops the harness, and the lease
+becomes a parked release that a message or a claim wakes again, on the same
+host or another one. Only a `helper` or a `worker` role is released: a pinned
+role, a chief, an orchestrator, and any role with `approves = true` keep their
+slots. The final checkpoint must succeed, so a session whose checkpoint fails
+stays up. The key is unset by default and releases nobody; an older hub
+refuses a `hub.toml` that has it, so the deployment adds it after the hub that
+reads it.
+
 ### Secrets of a host that the hub creates
 
 A fresh box that the hub creates carries only two secrets: a single-use join
