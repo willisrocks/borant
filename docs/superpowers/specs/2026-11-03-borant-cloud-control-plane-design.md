@@ -321,17 +321,25 @@ fly ips allocate-v6 --private --network borant-cp -a borant-cloud-sandbox
 |---|---|---|
 | Sandbox to control plane, over 6PN | No path. Fly does not forward packets between different 6PNs. | The two networks. |
 | Sandbox to control plane, over the internet | Public HTTPS, the same as anyone. | The route table below. |
-| Control plane to `sandboxd` | Flycast address of the sandbox app, allocated for the `borant-cp` network, with the `fly-force-instance-id` header for one Machine. | The `sandboxd` token of the Assignment. The sandbox app has no public address. A sandbox cannot use this address, because Flycast does not serve an app's own network. |
+| Control plane to `sandboxd` | Flycast address of the sandbox app, allocated for the `borant-cp` network, with the `fly-force-instance-id` header for one Machine. | The `sandboxd` token of the Assignment. The sandbox app has no public address, and it has no Flycast address on its own network. A sandbox cannot use this address, because the address serves only the network that it was allocated for. |
 | Control plane to the Machines API | `https://api.machines.dev`, with a deploy token for the sandbox app only. | The token cannot touch the control-plane app. |
-| Sandbox to another sandbox | One 6PN, so the network allows it. | `sandboxd` runs as root and each command runs as the user `worker`. An `ip6tables` owner rule drops traffic from `worker` to `fdaa::/16`, except DNS. |
-| Sandbox to the Machines API | No token in the sandbox. A forum reply says that the `/.fly/api` socket needs no token for "privileged processes" (https://community.fly.io/t/suspend-machine-from-application-code/26406). This is not official documentation. | `worker` is not root. Stage 1 makes sure that `worker` cannot use the socket, because a start through it runs outside the fleet manager. |
+| Sandbox to another sandbox | One 6PN, so the network allows it. | `sandboxd` runs as root and each command runs as the user `worker`. An nftables `meta skuid` rule drops traffic from `worker` to `fdaa::/16`, except DNS. The guest kernel has no `ip6tables` owner match. |
+| Sandbox to the Machines API | No token in the sandbox. The `/.fly/api` socket answers `403` to a request with no token, also from root. A forum reply says that privileged processes need no token, but stage 1 did not reproduce this. | `worker` cannot connect to the socket, because root owns it and its mode is 0755. |
 | Sandbox to the internet | Open, for package registries and public pages. No egress filter (section 11). | Sandboxes hold only test values. |
 
-Flycast requires `sandboxd` to listen on `0.0.0.0` with a `services` entry in the
-Machine configuration. That entry sets autostart and autostop off, because only the
-fleet manager starts a Machine. The docs do not say how the force header behaves
-through Flycast or with a stopped Machine. Stage 1 tests this. If the test fails,
-`sandboxd` makes an outbound long poll to a token route on the control plane.
+Flycast requires `sandboxd` to listen on `0.0.0.0` with an HTTP `services` entry in the
+Machine configuration: port 80, `handlers: ["http"]`, and `internal_port` 8080. A raw TCP
+service ignores `fly-force-instance-id`.
+
+That entry sets autostart and autostop off, but a request with the force header still
+starts a stopped Machine. The Fly Proxy holds the request until the app listens: 1.2 s in
+the test, and 17.1 s when the app binds late. If the app never listens, the proxy answers
+`502` after 45 s and leaves the Machine started.
+
+So the fleet manager starts a Machine and waits for health before a tool call. If the
+health wait fails, the fleet manager stops the Machine. The control plane sends a request
+only to a Machine that it knows is started, because any other request can start a Machine
+for an Assignment that is not running (section 26).
 
 The control plane has only these routes, and all of them are on its public address:
 
@@ -1027,7 +1035,7 @@ plane. (Decided)
 
 ### Image and daemon
 
-- One image, `borant-sandbox`, with git, Node, the toolchains of the
+- One image, `borant-sandbox`, with git, Node, nftables, the toolchains of the
   Projects, Chromium for Playwright, and `sandboxd`. Projects that need more
   install it in their setup command. (My call)
 - `sandboxd` is a small TypeScript HTTP daemon. It runs as root, and it runs each
@@ -1037,7 +1045,8 @@ plane. (Decided)
   records, so that the work survives a stop and a restart. (My call)
 - Size comes from the Project. Default: `shared-cpu-2x`, 4 GB. A Project that needs
   more sets its own size. (My call)
-- The Machine's restart policy is `no`, so only the fleet manager starts it. (My call)
+- The Machine's restart policy is `no`, so Fly does not restart it after an exit. A request
+  with the force header can still start it (section 5). (My call)
 
 ### The job protocol
 
@@ -1136,10 +1145,10 @@ Machine (https://docs.fly.io/machines/api/machines-resource/). (My call)
 2. List Machines with `GET /v1/apps/<app>/machines?metadata.sandbox=<id>`. Reuse a
    match. Otherwise create it with that metadata and the name `s<sandbox id>`, then
    commit its ID.
-3. If the create call returns a conflict, go back to step 2.
+3. A duplicate name returns `409 already_exists`, and the error message holds the ID of the
+   existing Machine. Adopt that Machine, then commit its ID.
 
-The docs call a Machine name unique, but they do not say what a duplicate returns. Stage
-1 tests this. An hourly sweep lists Machines and volumes of the sandbox app, and
+An hourly sweep lists Machines and volumes of the sandbox app, and
 compares them with the `sandboxes` table. It destroys a stopped Machine or a volume with
 no live Assignment, after 24 hours. It stops a started Machine with no row at once.
 
@@ -1390,6 +1399,14 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
      crash (section 25).
    - A GitHub redelivery keeps its `guid` (section 8).
    - A long transcript: a session with 5000 entries, its reopen time, and its heap.
+
+   Results on 2026-11-04: the network, Litestream, and long-transcript proofs passed
+   (`proofs/` in the `borant-cloud` repo). Litestream had a median lag of 1.21 s. It lost no rows,
+   except the last 0.2 to 0.5 s of commits when the writer and Litestream die together. A
+   session with 5000 entries opens in 6 to 9 ms. The saga also reports that the Claude proof
+   passed: six concurrent `claude -p` processes fit 2 GB, with a peak of 1.65 GB.
+   `proofs/RESULTS.md` has no row for Claude yet. It also has no row for the Codex test or the
+   GitHub redelivery.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
    git proxy, the web chat and GitHub Sources, Evals with stored Decisions, the chief-of-staff
    screen, Ticket detail, notifications, and the admin page. The real code must then pass the
@@ -1580,7 +1597,7 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | Crossing bugs | A lost or doubled Input or report. | Every crossing is keyed. The reconcile runs at every startup. Crossing lag is a metric. Tests kill the process inside each window of section 7. |
 | `claude` processes on one Machine | Memory pressure. A kill of Node stops every session for a moment. | Section 28 sets the slots, and `oom_score_adj` makes the kernel kill `claude` first. The Machine can grow with one command. |
 | A wait for a slot | With all slots taken, a new Ticket or an answer to a Ticket with no slot waits. | The "Waiting" area of the screen. Chris can raise the setting or stop a Ticket (section 28). |
-| A worker starts a Machine through `/.fly/api` | A Machine outside the fleet manager, and the bill rises. The only source is a forum reply. | Stage 1 tests it. The fleet manager stops a started Machine with no row (section 15). |
+| A worker starts a Machine through `/.fly/api` | A Machine outside the fleet manager, and the bill rises. | Stage 1 showed that `worker` cannot connect to the socket, and that root gets `403` with no token. The fleet manager stops a started Machine with no row (section 15). |
 | A lost sandbox | Unpushed work is gone. | The worker pushes after each step. Nothing enforces this (section 25). |
 | A shared Claude account | Current Borant's agents slow down, or a new login logs them out. | Accepted by Chris (section 21). The first token is created at a time that he picks. |
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21. |
@@ -1857,8 +1874,8 @@ a change needs no deploy. (Decided on 2026-11-03. It replaces the model-request 
 sandbox caps of the earlier draft.)
 
 The start value is 6, on a `shared-cpu-4x` control plane with 8 GB. Six `claude` processes at
-the highest size seen on the Mac (999 MB, interactive), plus Node, fit in 8 GB. Stage 1 measures
-one `claude -p` process. (My call)
+the highest size seen on the Mac (999 MB, interactive), plus Node, fit in 8 GB. The saga reports a
+peak of 1.65 GB for six concurrent `claude -p` processes (section 21). (My call)
 
 - A Ticket with no slot keeps its `submit_input` effects pending. They run in ID order when a
   slot frees, and the Ticket shows as waiting. This applies to every Input, also a person's
