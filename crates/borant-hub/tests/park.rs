@@ -567,3 +567,21 @@ async fn idle_release_is_off_without_the_key() {
     );
     assert!(next_cmd(&mut s2).await.is_none());
 }
+
+#[tokio::test]
+async fn idle_release_runs_in_the_hub_tick() {
+    let fx = Fx::with(roles(Some(600)));
+    let (owner, w) = on_a_static_host(&fx, "worker").await;
+    let mut s2 = fx.commands("s2").await;
+    let idle = fx.clock.now();
+    for _ in 0..=(600 + BEAT) / BEAT {
+        fx.advance(BEAT);
+        fx.heartbeat_idle("s2", &[(&w, Some(idle))]).await;
+        fx.heartbeat_idle("s1", &[(&owner, None)]).await;
+        fx.hub.tick().await.unwrap();
+    }
+    match next_cmd(&mut s2).await {
+        Some(HostCommand::Park { session }) => assert_eq!(session, w.session),
+        other => panic!("the tick never released the idle worker: {other:?}"),
+    }
+}
