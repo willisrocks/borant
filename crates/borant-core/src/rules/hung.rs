@@ -89,7 +89,7 @@ pub fn hung_at(
     Some(Hung {
         last_alive,
         host_slept: slept,
-        quiet_secs: u64::try_from(quiet.as_secs()).unwrap_or(u64::MAX),
+        quiet_secs: quiet.as_secs(),
     })
 }
 

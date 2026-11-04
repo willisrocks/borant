@@ -773,10 +773,10 @@ impl Host {
         pid: Option<u32>,
         launch: Option<&borant_core::ports::LaunchHandle>,
     ) {
-        if let Some(h) = launch {
-            if let Err(e) = self.inner.launcher.stop(h).await {
-                tracing::warn!("launcher stop failed: {e}");
-            }
+        if let Some(h) = launch
+            && let Err(e) = self.inner.launcher.stop(h).await
+        {
+            tracing::warn!("launcher stop failed: {e}");
         }
         if let Some(agent) = agent {
             match self.inner.launcher.release(agent).await {
