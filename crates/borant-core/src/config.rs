@@ -4,12 +4,88 @@
 //! "Interfaces"; phase 9 spec, "Schedules").
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::BundleName;
 use crate::ids::{AgentId, ChannelName};
 use crate::rules::schedules::Overlap;
+
+/// A duration of `hub.toml` or `host.toml`: `"10s"`, `"20m"`, `"1h"`,
+/// `"1h30m"`, `"2d"`, or a plain number of seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span(pub Duration);
+
+impl<'de> Deserialize<'de> for Span {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl serde::de::Visitor<'_> for V {
+            type Value = Span;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a duration such as \"20m\", or a number of seconds")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Span, E> {
+                parse_span(v).map(Span).map_err(E::custom)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs(v)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs(u64::try_from(v).unwrap_or(0))))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Span, E> {
+                Ok(Span(Duration::from_secs_f64(v.max(0.0))))
+            }
+        }
+
+        d.deserialize_any(V)
+    }
+}
+
+/// Parses the text of a [`Span`]: `"10s"`, `"20m"`, `"1h"`, `"2d"`, `"1h30m"`,
+/// or a number of seconds.
+pub fn parse_span(text: &str) -> Result<Duration, String> {
+    let mut total = 0.0;
+    let mut number = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            number.push(c);
+            continue;
+        }
+        if c == ' ' {
+            continue;
+        }
+        let value: f64 = number
+            .parse()
+            .map_err(|_| format!("{text:?} is not a duration"))?;
+        number.clear();
+        let unit = match c {
+            's' => 1.0,
+            'm' => 60.0,
+            'h' => 3600.0,
+            'd' => 86_400.0,
+            _ => return Err(format!("{text:?}: the unit {c:?} is not s, m, h, or d")),
+        };
+        total += value * unit;
+    }
+    if !number.is_empty() {
+        let value: f64 = number
+            .parse()
+            .map_err(|_| format!("{text:?} is not a duration"))?;
+        total += value;
+    }
+    if total <= 0.0 {
+        return Err(format!("{text:?} is not a duration"));
+    }
+    Ok(Duration::from_secs_f64(total))
+}
 
 fn five_minutes() -> u64 {
     5
