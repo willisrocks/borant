@@ -16,8 +16,12 @@ use borant_core::ports::provision::{
     HostSpec, ProviderHostId, Provisioner, ProvisionerCapabilities,
 };
 use borant_core::ports::{PortError, PortErrorKind};
-use borant_core::proto::ApiError;
+use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::alerts::Refusal;
+use borant_core::rules::blocked::{
+    POOL_ALSO_REFUSES, POOL_AT_LIMIT, POOL_BOOTING, POOL_CREATING, POOL_IMAGE_LACKS,
+    POOL_ON_ITS_WAY, POOL_RETRIES,
+};
 use borant_core::rules::pool::{
     self, Action, ElasticHost, Phase, PlacementNeed, PoolConfig, Spend,
 };
@@ -62,10 +66,10 @@ struct Pass {
 /// own state and is printed as it is.
 fn pool_refusal(reason: &Reject) -> String {
     match reason {
-        Reject::MissingBundle(bundle) => format!("pool image lacks bundle {bundle}"),
-        Reject::NoMemberBundle(bundle) => format!("pool image lacks member bundle {bundle}"),
-        Reject::MissingTag(tag) => format!("pool image lacks tag {tag}"),
-        other => format!("pool: waits (the new host also refuses it: {other})"),
+        Reject::MissingBundle(bundle) => format!("{POOL_IMAGE_LACKS}bundle {bundle}"),
+        Reject::NoMemberBundle(bundle) => format!("{POOL_IMAGE_LACKS}member bundle {bundle}"),
+        Reject::MissingTag(tag) => format!("{POOL_IMAGE_LACKS}tag {tag}"),
+        other => format!("{POOL_ALSO_REFUSES}{other})"),
     }
 }
 
@@ -173,9 +177,9 @@ impl Hub {
                     continue;
                 };
                 let note = if pool.backoff_until.is_some_and(|until| until > now) {
-                    Some("pool: waits (a create failed; the pool retries soon)")
+                    Some(POOL_RETRIES)
                 } else if hosts.iter().filter(|h| h.pool == pool.name).count() >= pool.max_hosts {
-                    Some("pool: waits (the pool is at its host limit)")
+                    Some(POOL_AT_LIMIT)
                 } else {
                     None
                 };
@@ -186,8 +190,8 @@ impl Hub {
             };
             let view = live.iter().find(|v| v.info.name == host.name);
             let note = match (host.phase, view) {
-                (Phase::Requested, _) => Some("pool: creating a host for this spawn".to_owned()),
-                (Phase::Booting, _) => Some("pool: waits (a host is booting)".to_owned()),
+                (Phase::Requested, _) => Some(POOL_CREATING.to_owned()),
+                (Phase::Booting, _) => Some(POOL_BOOTING.to_owned()),
                 (Phase::Ready, Some(view)) if view.online => schedule::accepts_except_full(
                     view,
                     need.harness,
@@ -199,7 +203,7 @@ impl Hub {
                 // A host that is on its way out leaves the next tick free to
                 // order another one; a note would only be stale.
                 (Phase::Failed | Phase::Lost | Phase::Deleting, _) => None,
-                _ => Some("pool: waits (a host is on its way)".to_owned()),
+                _ => Some(POOL_ON_ITS_WAY.to_owned()),
             };
             if let Some(note) = note {
                 self.set_queue_reason(&need.agent, &note).await?;
@@ -209,10 +213,12 @@ impl Hub {
     }
 
     /// Sets the queue reason of a spawn that still waits, and writes nothing
-    /// when it is already the same text.
+    /// when it is already the same text. The write carries the revision that
+    /// the read saw, as `note_reject` does: a placement that flips the record
+    /// to `Launching` between the two must not be overwritten by a note.
     async fn set_queue_reason(&self, agent: &AgentId, note: &str) -> Result<(), ApiError> {
         let key = keys::spawn(agent);
-        let Some(mut doc) = self.store.get::<SpawnRecord>(&key).await? else {
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
             return Ok(());
         };
         if doc.value.state != SpawnState::Queued {
@@ -226,9 +232,13 @@ impl Hub {
         if current == Some(note) {
             return Ok(());
         }
-        doc.value.queue_reason = Some(note.to_owned());
-        self.store.upsert(&key, &doc.value).await?;
-        Ok(())
+        let mut record = doc.value;
+        record.queue_reason = Some(note.to_owned());
+        match self.store.put(&key, &record, Some(doc.revision)).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// The capability of each provisioner, read once and kept in memory.
@@ -592,9 +602,7 @@ impl Hub {
                     .create(elastic, pass, caps, &pool, &name, for_agent.clone(), now)
                     .await?
                     && let Some(agent) = for_agent
-                    && let Err(e) = self
-                        .set_queue_reason(&agent, "pool: creating a host for this spawn")
-                        .await
+                    && let Err(e) = self.set_queue_reason(&agent, POOL_CREATING).await
                 {
                     tracing::warn!(%agent, "the pool note failed: {e}");
                 }
@@ -1596,11 +1604,7 @@ mod tests {
             .iter()
             .find(|row| row["agent"].as_str() == Some("a1"))
             .expect("the queued spawn");
-        assert_eq!(
-            row["queue_reason"].as_str(),
-            Some("pool: creating a host for this spawn"),
-            "{row}"
-        );
+        assert_eq!(row["queue_reason"].as_str(), Some(POOL_CREATING), "{row}");
     }
 
     #[tokio::test]
