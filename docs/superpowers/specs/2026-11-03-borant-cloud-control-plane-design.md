@@ -1617,7 +1617,7 @@ Build constraints that follow from this read:
 4. Test whether a new login or "log out of all" revokes a setup-token on other
    machines. The docs do not say.
 
-## 24. Defaults and the open question
+## 24. Defaults and open questions
 
 None of these is Chris's decision yet. The document uses each one until Chris answers.
 
@@ -1649,8 +1649,9 @@ None of these is Chris's decision yet. The document uses each one until Chris an
    time that he picks, so that he can watch current Borant.
 
 2. Can the build change three repo settings of `boopmark` before the first Ticket (section
-   21)? Without them, the approval rule does not hold against a hijacked worker. With them, a release of `boopmark` waits for his review of the `production`
-   environment, also for work from current Borant. The other choice is a different first
+   21)? Without them, the approval rule does not hold against a hijacked worker. With them, a
+   release of `boopmark` waits for his review of the `production` environment, also for work
+   from current Borant. The other choice is a different first
    Project, which has the same check to pass.
 
    (Recommendation) Change the settings.
