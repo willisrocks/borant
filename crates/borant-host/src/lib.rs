@@ -5,6 +5,7 @@
 mod activity;
 pub mod api;
 pub mod checkpoint;
+pub mod cleanup;
 pub mod client;
 mod commands;
 mod delivery;
@@ -29,6 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use borant_core::config::CleanupConfig;
 use borant_core::model::{
     Activity, Envelope, Harness, HostInfo, HostStats, MemberBundle, SessionStats,
 };
@@ -57,6 +59,15 @@ use crate::secrets::{LaunchSecrets, LaunchVars, Redactor};
 
 pub use client::LocalClient;
 pub use commands::DesktopNotifier;
+
+/// How often the janitor looks at the disk.
+const JANITOR_TICK: Duration = Duration::from_secs(10 * 60);
+/// The interval of a full cleanup pass below the warn line of the disk.
+const JANITOR_FULL: Duration = Duration::from_secs(60 * 60);
+/// The interval of the log of the largest consumers.
+const JANITOR_CONSUMERS: Duration = Duration::from_secs(60 * 60);
+/// The interval of the list of work trees that kept their output.
+const JANITOR_SKIP_LOG: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -107,6 +118,11 @@ pub struct HostConfig {
     /// Where the secret directories go: `/run/borant/agents` on Linux and
     /// `$TMPDIR/borant/agents` on macOS. Tests set it.
     pub secrets_root: Option<PathBuf>,
+    /// `[cleanup]`: the rebuildable output that the janitor removes from the
+    /// work trees of agents that ended.
+    pub cleanup: CleanupConfig,
+    /// `[alerts] disk_warn_pct`: the disk guard runs an early pass here.
+    pub disk_warn_pct: u8,
 }
 
 impl HostConfig {
@@ -139,6 +155,8 @@ impl HostConfig {
             sandbox: None,
             secrets: None,
             secrets_root: None,
+            cleanup: CleanupConfig::default(),
+            disk_warn_pct: 85,
         }
     }
 
@@ -437,6 +455,18 @@ pub(crate) struct State {
     pub launched: HashMap<AgentId, Arc<LaunchSecrets>>,
     /// The exact values of each agent, for the redactor of the session log.
     pub redactors: HashMap<AgentId, Arc<Redactor>>,
+    /// When the host saw the session of each agent end: the cleanup counts
+    /// the grace from here, or from the tree when the two differ. Memory
+    /// only; after a restart the times of the tree remain.
+    pub ended: HashMap<AgentId, Timestamp>,
+    /// The clock time of the last full cleanup pass.
+    pub cleanup_full_at: Option<Timestamp>,
+    /// The clock time of the last log of the work trees that kept their
+    /// output, at most once a day.
+    pub cleanup_skip_log_at: Option<Timestamp>,
+    /// The clock time of the last log of the largest consumers, at most once
+    /// an hour.
+    pub cleanup_consumers_at: Option<Timestamp>,
 }
 
 /// The free space of the disk that holds `dir`, in megabytes.
@@ -536,6 +566,10 @@ impl Host {
                     event_limited: HashMap::new(),
                     launched: HashMap::new(),
                     redactors: HashMap::new(),
+                    ended: HashMap::new(),
+                    cleanup_full_at: None,
+                    cleanup_skip_log_at: None,
+                    cleanup_consumers_at: None,
                 }),
                 last_ok: Mutex::new(Instant::now()),
                 started,
@@ -622,6 +656,7 @@ impl Host {
             tokio::spawn(self.clone().liveness_loop(shutdown.clone())),
             tokio::spawn(self.clone().outbox_loop(shutdown.clone())),
             tokio::spawn(self.clone().command_loop(shutdown.clone())),
+            tokio::spawn(self.clone().janitor_loop(shutdown.clone())),
         ];
         if self.inner.cfg.notify && self.inner.notifier.is_some() {
             tasks.push(tokio::spawn(self.clone().notify_loop(shutdown.clone())));
@@ -640,6 +675,149 @@ impl Host {
                 _ = every.tick() => self.heartbeat_once().await,
             }
         }
+    }
+
+    async fn janitor_loop(self, shutdown: CancellationToken) {
+        let mut every = tokio::time::interval(JANITOR_TICK);
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = every.tick() => self.janitor_tick().await,
+            }
+        }
+    }
+
+    /// One tick of the janitor. At the warn line of the disk it runs a pass
+    /// with a zero age for the ended agents, at the stop line it also logs the
+    /// largest consumers, and below the line it runs a full pass at most
+    /// hourly. Public for tests.
+    pub async fn janitor_tick(&self) {
+        let now = self.inner.clock.now();
+        let used = disk_used_pct(&self.inner.cfg.home);
+        match cleanup::guard_action(used, self.inner.cfg.disk_warn_pct) {
+            cleanup::Guard::Idle => {
+                let due = {
+                    let st = self.state();
+                    st.cleanup_full_at
+                        .is_none_or(|at| now.since(at) >= JANITOR_FULL)
+                };
+                if !due {
+                    return;
+                }
+            }
+            cleanup::Guard::Early => {}
+            cleanup::Guard::Emergency => self.log_consumers(now).await,
+        }
+        let min_age = match cleanup::guard_action(used, self.inner.cfg.disk_warn_pct) {
+            cleanup::Guard::Idle => self.inner.cfg.cleanup.min_age.0,
+            cleanup::Guard::Early | cleanup::Guard::Emergency => Duration::ZERO,
+        };
+        self.cleanup_pass(min_age).await;
+        self.state().cleanup_full_at = Some(now);
+    }
+
+    /// Removes the build output of every agent whose session ended, whose
+    /// work tree is clean and pushed, and whose grace passed. A live agent, a
+    /// dirty tree, and an unpushed commit keep everything. Public for tests.
+    pub async fn cleanup_pass(&self, min_age: Duration) -> cleanup::Report {
+        let cfg = &self.inner.cfg;
+        if !cfg.cleanup.enabled {
+            return cleanup::Report::default();
+        }
+        let root = cfg.home.join("work");
+        if !root.is_dir() {
+            return cleanup::Report::default();
+        }
+        let (live, ended) = {
+            let st = self.state();
+            let live: HashSet<AgentId> = st
+                .sessions
+                .values()
+                .filter_map(|s| s.agent())
+                .chain(st.pending_launch.keys().cloned())
+                .chain(st.launching.iter().cloned())
+                .collect();
+            (live, st.ended.clone())
+        };
+        let now = self.inner.clock.now();
+        let live = |a: &AgentId| live.contains(a);
+        let ended = |a: &AgentId| ended.get(a).copied();
+        let pass = cleanup::Pass {
+            root: &root,
+            dirs: &cfg.cleanup.dirs,
+            min_age,
+            now,
+            live: &live,
+            ended: &ended,
+        };
+        let report = cleanup::sweep(&pass).await;
+        if !report.cleaned.is_empty() {
+            tracing::info!(
+                freed_mb = report.freed_bytes / (1024 * 1024),
+                agents = report.cleaned.len(),
+                "removed the build output of ended agents"
+            );
+        }
+        self.log_skips(now, &report);
+        report
+    }
+
+    /// The work trees that kept their output, once a day: a dirty tree and an
+    /// unpushed commit are what a person has to look at.
+    fn log_skips(&self, now: Timestamp, report: &cleanup::Report) {
+        if report.skipped.is_empty() {
+            return;
+        }
+        let due = {
+            let st = self.state();
+            st.cleanup_skip_log_at
+                .is_none_or(|at| now.since(at) >= JANITOR_SKIP_LOG)
+        };
+        if !due {
+            return;
+        }
+        let mut seen: HashSet<(AgentId, cleanup::SkipReason)> = HashSet::new();
+        for skip in &report.skipped {
+            if seen.insert((skip.agent.clone(), skip.reason)) {
+                tracing::info!(
+                    agent = %skip.agent,
+                    repo = %skip.repo.display(),
+                    reason = %skip.reason,
+                    "the work tree keeps its build output"
+                );
+            }
+        }
+        self.state().cleanup_skip_log_at = Some(now);
+    }
+
+    /// The largest build output under the work root, at most hourly, for a
+    /// disk at the stop line. Only paths and sizes, never a file.
+    async fn log_consumers(&self, now: Timestamp) {
+        let due = {
+            let st = self.state();
+            st.cleanup_consumers_at
+                .is_none_or(|at| now.since(at) >= JANITOR_CONSUMERS)
+        };
+        if !due {
+            return;
+        }
+        let root = self.inner.cfg.home.join("work");
+        for (path, bytes) in cleanup::consumers(&root, &self.inner.cfg.cleanup.dirs, 10) {
+            tracing::warn!(
+                path = %path.display(),
+                size_mb = bytes / (1024 * 1024),
+                "the disk is nearly full: this build output is the largest"
+            );
+        }
+        self.state().cleanup_consumers_at = Some(now);
+    }
+
+    /// Records that the session of `agent` ended, so its grace starts here
+    /// even when the tree itself is older.
+    pub(crate) fn note_ended(&self, agent: &AgentId) {
+        self.state()
+            .ended
+            .insert(agent.clone(), self.inner.clock.now());
     }
 
     /// The load and counters of this host, for the heartbeat and the live

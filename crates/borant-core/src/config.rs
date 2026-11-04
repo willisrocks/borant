@@ -158,6 +158,49 @@ impl Default for AlertsConfig {
     }
 }
 
+fn six_hours() -> Span {
+    Span(Duration::from_secs(6 * 60 * 60))
+}
+
+fn build_dirs() -> Vec<String> {
+    ["target", "node_modules", ".next", "dist", ".turbo"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+/// `[cleanup]` of `host.toml`: the rebuildable output that the host removes
+/// from the work trees of agents that ended, so a host's disk does not fill.
+/// A work tree with an uncommitted change or an unpushed commit keeps its
+/// output.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupConfig {
+    /// Whether the janitor removes output. On by default: the output is
+    /// rebuildable, and a hidden timer on a server is not the rule.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// How long after the end of the agent its output may go, `6h` by
+    /// default. The disk guard runs a pass with a zero age when the disk
+    /// passes the warn line, for ended agents only.
+    #[serde(default = "six_hours")]
+    pub min_age: Span,
+    /// The directory names to remove below a checkout, ignoring the ones that
+    /// git does not ignore.
+    #[serde(default = "build_dirs")]
+    pub dirs: Vec<String>,
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_age: six_hours(),
+            dirs: build_dirs(),
+        }
+    }
+}
+
 /// One `[notifiers.<name>]` entry: how to reach a person.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -308,4 +351,35 @@ pub struct ScheduleMessageConfig {
     pub to: AgentId,
     /// The text, where `{date}` is the fire date in the schedule's zone.
     pub text: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[cleanup]` of `host.toml`: every key has its default, and a file may
+    /// override each one. The record reads the same shapes in TOML and JSON.
+    #[test]
+    fn cleanup_config_has_defaults_and_reads_the_file() {
+        let empty: CleanupConfig = serde_json::from_str("{}").unwrap();
+        let default = CleanupConfig::default();
+        assert!(default.enabled);
+        assert_eq!(default.min_age, Span(Duration::from_secs(6 * 3600)));
+        assert_eq!(
+            default.dirs,
+            ["target", "node_modules", ".next", "dist", ".turbo"]
+        );
+        assert_eq!(empty, default);
+
+        let set: CleanupConfig = serde_json::from_str(
+            r#"{"enabled": false, "min_age": "2h", "dirs": ["out", "build"]}"#,
+        )
+        .unwrap();
+        assert!(!set.enabled);
+        assert_eq!(set.min_age, Span(Duration::from_secs(2 * 3600)));
+        assert_eq!(set.dirs, ["out", "build"]);
+
+        let bad = serde_json::from_str::<CleanupConfig>(r#"{"mins": "1h"}"#);
+        assert!(bad.is_err(), "an unknown key is refused");
+    }
 }
