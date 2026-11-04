@@ -112,6 +112,15 @@ impl Hub {
         if !actions.is_empty() {
             tracing::debug!(n = actions.len(), "elastic actions");
         }
+        // Why the pool keeps a queued spawn waiting, for the REASON column of
+        // `borant ps`. Before the actions, so a host that this pass orders
+        // gets its note from the create below.
+        if let Err(e) = self
+            .note_pool_waits(&pass.pools, &pass.unplaced, &pass.live, now)
+            .await
+        {
+            tracing::warn!("the pool note failed: {e}");
+        }
         for action in actions {
             self.execute(elastic, &mut pass, &caps, action, now).await?;
         }
@@ -124,14 +133,6 @@ impl Hub {
         // The drain and the park of a pool host queue events while they take
         // `mem`; publish them now that no lock is held.
         self.flush().await;
-        // Why the pool keeps a queued spawn waiting, for the REASON column of
-        // `borant ps`.
-        if let Err(e) = self
-            .note_pool_waits(&pass.pools, &pass.unplaced, &pass.live, now)
-            .await
-        {
-            tracing::warn!("the pool note failed: {e}");
-        }
         // Free the pool hosts first: an idle host goes only with no agent.
         for pool in &pass.pools {
             if let Err(e) = self.park_idle(Some(&pool.name), pool.idle_timeout).await {
@@ -587,8 +588,16 @@ impl Hub {
                 name,
                 for_agent,
             } => {
-                self.create(elastic, pass, caps, &pool, &name, for_agent, now)
-                    .await?;
+                if self
+                    .create(elastic, pass, caps, &pool, &name, for_agent.clone(), now)
+                    .await?
+                    && let Some(agent) = for_agent
+                    && let Err(e) = self
+                        .set_queue_reason(&agent, "pool: creating a host for this spawn")
+                        .await
+                {
+                    tracing::warn!(%agent, "the pool note failed: {e}");
+                }
             }
         }
         Ok(())
@@ -621,13 +630,13 @@ impl Hub {
         name: &HostName,
         for_agent: Option<AgentId>,
         now: Timestamp,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let Some(config) = pass.pools.iter().find(|p| p.name == *pool) else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(provisioner) = elastic.provisioners.get(&config.provisioner) else {
             tracing::warn!(pool = %pool, "no provisioner for the create");
-            return Ok(());
+            return Ok(false);
         };
         let key = keys::elastic(name);
         let requested = ElasticHost {
@@ -657,7 +666,7 @@ impl Hub {
             tags: config.tags.clone(),
             boot,
         };
-        match provisioner.create(&spec).await {
+        let ordered = match provisioner.create(&spec).await {
             Ok(record) => {
                 let booting = ElasticHost {
                     provider_id: record.id,
@@ -675,6 +684,7 @@ impl Hub {
                     )
                     .about_host(name.clone());
                 self.publish(event).await;
+                true
             }
             Err(e) => {
                 // No host, no key: the name is free for the next try, and the
@@ -696,9 +706,10 @@ impl Hub {
                 };
                 self.note_refusal(pool, "create", &clean).await;
                 tracing::warn!(pool = %pool, "create failed: {clean}");
+                false
             }
-        }
-        Ok(())
+        };
+        Ok(ordered)
     }
 
     /// The boot values of a create: its name, pool, and tags, the vars of
@@ -942,9 +953,11 @@ fn civil_month(days: i64) -> (i64, u32) {
 mod tests {
     use super::*;
     use borant_core::model::{
-        Harness, HostInfo, HostStats, MoveReason, SessionStats, Task, TaskKind, TaskStatus,
+        Harness, HostInfo, HostStats, MoveReason, Sender, SessionStats, SpawnSpec, Task, TaskKind,
+        TaskStatus,
     };
     use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
+    use borant_core::rules::roles::Resolved;
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
 
@@ -1530,6 +1543,64 @@ mod tests {
             .collect();
         keys.sort();
         assert_eq!(keys, vec![name("e1"), name("e2")]);
+    }
+
+    #[tokio::test]
+    async fn elastic_ps_says_the_pool_is_creating_a_host() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_joined(Some(elastic(vec![pool()], &prov)), prov.clone());
+        register(&fx, "e1", 2).await;
+        let record = prov.create(&provider_spec("e1")).await.unwrap();
+        pool_key(&fx, "e1", Phase::Ready, record.id).await;
+        let id: AgentId = "a1".parse().unwrap();
+        pending_with_bundles(&fx, "a1", &["fly-cloud-test"]).await;
+        let queued = SpawnRecord {
+            agent: id.clone(),
+            spec: SpawnSpec {
+                channel: "api".parse().unwrap(),
+                prompt: "work".into(),
+                harness: None,
+                host: None,
+                name: Some(id.clone()),
+                model: None,
+                role: None,
+                task: None,
+                stop_on_close: None,
+                continues: None,
+                priority: None,
+                bundles: vec!["fly-cloud-test".parse().unwrap()],
+            },
+            resolved: Resolved::default(),
+            by: Sender::Agent("boss".parse().unwrap()),
+            queued_at: NOW,
+            priority: 0,
+            state: SpawnState::Queued,
+            attempts: 0,
+            last_reject: Vec::new(),
+            queue_reason: None,
+            launch_failures: Vec::new(),
+            recoveries: 0,
+        };
+        fx.hub
+            .store
+            .upsert(&keys::spawn(&id), &queued)
+            .await
+            .unwrap();
+
+        fx.hub.tick_elastic().await.unwrap();
+
+        let queue = fx.hub.spawn_queue().await.unwrap();
+        let row = queue
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["agent"].as_str() == Some("a1"))
+            .expect("the queued spawn");
+        assert_eq!(
+            row["queue_reason"].as_str(),
+            Some("pool: creating a host for this spawn"),
+            "{row}"
+        );
     }
 
     #[tokio::test]
