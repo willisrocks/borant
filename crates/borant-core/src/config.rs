@@ -99,6 +99,10 @@ fn thirty_minutes() -> u64 {
     30
 }
 
+fn twenty_minutes() -> u64 {
+    crate::rules::hung::DEFAULT_HUNG_MINUTES
+}
+
 fn eighty_five() -> u8 {
     85
 }
@@ -123,6 +127,11 @@ pub struct AlertsConfig {
     /// A busy session with no event for this long is stalled.
     #[serde(default = "thirty_minutes")]
     pub stall_minutes: u64,
+    /// A busy session with no tool call and no text for this long is hung: its
+    /// turn will not end by itself. A host that slept this long flags its
+    /// sessions the same way, whatever they sent before the sleep.
+    #[serde(default = "twenty_minutes")]
+    pub hung_minutes: u64,
     /// An always-on host with no heartbeat for this long is offline.
     #[serde(default = "five_minutes")]
     pub host_offline_minutes: u64,
@@ -141,6 +150,7 @@ impl Default for AlertsConfig {
             watch_hub: false,
             needs_human: true,
             stall_minutes: thirty_minutes(),
+            hung_minutes: twenty_minutes(),
             host_offline_minutes: five_minutes(),
             hub_down_minutes: two_minutes(),
             disk_warn_pct: eighty_five(),

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use borant_core::events::{EventFilter, SwarmEventBody};
 use borant_core::model::{
-    ChannelKind, Harness, HostInfo, HostStats, RepoInfo, SessionStats, Task, TaskStatus,
+    Activity, ChannelKind, Harness, HostInfo, HostStats, RepoInfo, SessionStats, Task, TaskStatus,
 };
 use borant_core::ports::{EventLog, Notice, Notifier, PortResult, StateStore};
 use borant_core::proto::{
@@ -126,6 +126,12 @@ impl Fx {
 
     /// A heartbeat that says the session is busy and last wrote at `last`.
     async fn heartbeat(&self, reg: &Registered, last: Timestamp) {
+        self.beat(reg, last, None).await;
+    }
+
+    /// A heartbeat with the activity of the session, for the rules that read
+    /// a tool call: `Ok(())`.
+    async fn beat(&self, reg: &Registered, last: Timestamp, activity: Option<Activity>) {
         self.req(CtlRequest::HostHeartbeat {
             host: name(),
             sessions: vec![SessionLeaseRef {
@@ -135,7 +141,7 @@ impl Fx {
                 idle_since: None,
                 last_event_at: Some(last),
                 pinned: false,
-                activity: None,
+                activity,
             }],
             launching: Vec::new(),
             stats: Some(HostStats {
@@ -272,9 +278,22 @@ async fn alerts_a_stalled_agent_fires_once_sets_stuck_and_resolves() {
     let task = task(&fx, &reg).await;
     assert_eq!(task.status, TaskStatus::InProgress);
 
-    // A busy session whose last event is older than the 30 minute stall.
+    // A busy session whose last event is older than the 30 minute stall, and
+    // whose tool still runs: a build that takes 31 minutes is a stall, not a
+    // hang, so `agent_hung` (20 minutes with no tool call and no text) stays
+    // quiet and the stall rule owns it. A session with no running tool is hung
+    // instead; tests/hung.rs has that case.
     let old = fx.clock.now().minus(Duration::from_secs(31 * 60));
-    fx.heartbeat(&reg, old).await;
+    fx.beat(
+        &reg,
+        old,
+        Some(Activity {
+            last_tool_at: Some(old),
+            tool_running_since: Some(old),
+            ..Activity::default()
+        }),
+    )
+    .await;
     fx.hub.tick().await.unwrap();
 
     let keys = alert_keys(&fx).await;

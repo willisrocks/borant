@@ -139,6 +139,7 @@ fn agent_line(name: &str, on: Option<&str>) -> AgentStatus {
         lease: Some(lease),
         session: None,
         busy: false,
+        hung: None,
         claim: None,
         role: None,
         collection: Some(col("personal")),
@@ -151,6 +152,17 @@ fn agent_line(name: &str, on: Option<&str>) -> AgentStatus {
         last_text: None,
         tool_running_since: None,
     }
+}
+
+/// An orchestrator whose turn froze when its host slept.
+fn hung(mut status: AgentStatus) -> AgentStatus {
+    status.busy = true;
+    status.hung = Some(borant_core::rules::hung::Hung {
+        last_alive: Some(AT.minus(std::time::Duration::from_secs(48 * 60))),
+        host_slept: true,
+        quiet_secs: 48 * 60,
+    });
+    status
 }
 
 fn project(name: &str, mirror_issues: Option<bool>) -> Project {
@@ -399,7 +411,9 @@ fn mockup() -> Records {
     let agents = vec![
         agent_line("orchestrator", Some("macbook")),
         agent_line("orch-boopmark-2", None),
-        agent_line("orch-notes", Some("borant-1")),
+        // One orchestrator came back from a lid close with its turn frozen:
+        // the board marks it "hung?".
+        hung(agent_line("orch-notes", Some("borant-1"))),
     ];
     Records {
         projects,

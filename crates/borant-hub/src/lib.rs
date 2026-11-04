@@ -16,6 +16,7 @@ mod events;
 pub mod export;
 mod feed;
 pub mod http;
+mod hung;
 mod inbox;
 mod join;
 mod leases;
@@ -178,6 +179,11 @@ pub(crate) struct HostSessions {
 pub(crate) struct Memory {
     /// The last heartbeat of each host, on the hub clock.
     pub hosts_seen: HashMap<HostName, Timestamp>,
+    /// When a host came back from a gap in its heartbeats of at least
+    /// `[alerts] hung_minutes`, from the heartbeat that closed the gap. A
+    /// session that said nothing after that time lost its turn to a sleep, so
+    /// the hung rule flags it until it moves again.
+    pub hosts_slept: HashMap<HostName, Timestamp>,
     /// The idle signal of each agent, from its host's latest heartbeat.
     pub idle: HashMap<AgentId, IdleReport>,
     /// The last activity of each agent, from the heartbeat that carried it.

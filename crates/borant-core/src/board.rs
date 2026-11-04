@@ -103,6 +103,11 @@ pub struct AgentLine {
     /// The agent holds its lease.
     pub online: bool,
     pub busy: bool,
+    /// The session looks hung: busy with no tool call and no text for
+    /// `[alerts] hung_minutes`, or its host slept and the turn did not move
+    /// since.
+    #[serde(default)]
+    pub hung: bool,
     pub host: Option<HostName>,
 }
 
@@ -618,12 +623,14 @@ fn agent_line(agent: &AgentId, agent_of: &HashMap<&AgentId, &AgentStatus>) -> Ag
             agent: agent.clone(),
             online: matches!(status.lease, Some(LeaseState::Held { .. })),
             busy: status.busy,
+            hung: status.hung.is_some(),
             host: status.host.clone(),
         },
         None => AgentLine {
             agent: agent.clone(),
             online: false,
             busy: false,
+            hung: false,
             host: None,
         },
     }
@@ -937,6 +944,7 @@ mod tests {
                 }),
                 session: None,
                 busy: false,
+                hung: None,
                 claim: None,
                 role: None,
                 collection: None,
@@ -1583,6 +1591,27 @@ mod tests {
             board.collections[0].projects[0].task_lines[0].start,
             Some(StartState::Blocked)
         );
+    }
+
+    /// The board repeats the hung flag of the live view: a chief sees "hung?"
+    /// on the orchestrator line and restarts it.
+    #[test]
+    fn board_marks_a_hung_orchestrator() {
+        let mut fx = Fixture::new();
+        fx.project("mirror");
+        fx.channel("api", ChannelKind::Project, Some("mirror"));
+        fx.at("api", |c| c.owner = Some("orchestrator".parse().unwrap()));
+        fx.agent("orchestrator", true);
+        let board = fx.build(&[None]);
+        assert!(!board.collections[0].projects[0].orchestrators[0].hung);
+
+        fx.agents[0].hung = Some(crate::rules::hung::Hung {
+            last_alive: None,
+            host_slept: true,
+            quiet_secs: 0,
+        });
+        let board = fx.build(&[None]);
+        assert!(board.collections[0].projects[0].orchestrators[0].hung);
     }
 
     #[test]

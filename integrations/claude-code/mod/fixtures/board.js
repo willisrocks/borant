@@ -22,6 +22,7 @@ export const board = {
               "agent": "orch-boopmark-2",
               "online": true,
               "busy": false,
+              "hung": false,
               "host": null
             }
           ],
@@ -64,6 +65,7 @@ export const board = {
               "agent": "orchestrator",
               "online": true,
               "busy": false,
+              "hung": false,
               "host": "macbook"
             }
           ],
@@ -188,7 +190,8 @@ export const board = {
             {
               "agent": "orch-notes",
               "online": true,
-              "busy": false,
+              "busy": true,
+              "hung": true,
               "host": "borant-1"
             }
           ],

@@ -62,7 +62,9 @@ for (const p of PROJECTS) {
   collections[p.coll].projects.push({
     project: p.name,
     mirror_issues: false,
-    orchestrators: [{ agent: p.orch, online: !p.orchState.startsWith('offline'), busy: true, host: 'macbook' }],
+    // `orch-roger-emr` came back from a lid close with its turn frozen: the
+    // hub's `agent_hung` rule flags it, and the board line says so.
+    orchestrators: [{ agent: p.orch, online: !p.orchState.startsWith('offline'), busy: true, hung: p.name === 'roger-emr', host: 'macbook' }],
     sagas: [],
     epics: [],
     tasks: counts(),

@@ -270,6 +270,7 @@ fn metrics_view() -> SwarmView {
             stats: Some(stats),
         }],
         agents: vec![AgentStatus {
+            hung: None,
             agent: "w1".parse().unwrap(),
             harness: None,
             host: Some("h1".parse().unwrap()),

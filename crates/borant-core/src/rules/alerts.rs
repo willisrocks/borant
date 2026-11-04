@@ -15,6 +15,9 @@ use crate::time::Timestamp;
 /// The rule names. They are the prefix of each alert key.
 pub const NEEDS_HUMAN: &str = "needs_human";
 pub const AGENT_STALLED: &str = "agent_stalled";
+/// A busy session with no tool call and no text for `[alerts] hung_minutes`,
+/// or one that lost its turn when its host slept.
+pub const AGENT_HUNG: &str = "agent_hung";
 pub const HOST_OFFLINE: &str = "host_offline";
 pub const HOST_DISK: &str = "host_disk";
 pub const MEMBERS_LIMITED: &str = "members_limited";
@@ -140,6 +143,37 @@ pub fn active_alerts(
         .filter(|a| a.pinned)
         .map(|a| &a.agent)
         .collect();
+    // An agent that the view flags as hung is not also stalled: the hung alert
+    // names the reason and the restart, and the blocked-work alarm sticks its
+    // claim at the stall threshold. A paused agent runs no turn, and a pinned
+    // one is never replaced, so neither gets the hung alert.
+    let hung: BTreeSet<&AgentId> = view
+        .swarm
+        .agents
+        .iter()
+        .filter(|status| status.hung.is_some())
+        .map(|status| &status.agent)
+        .collect();
+    let restartable: BTreeSet<&AgentId> = view
+        .agents
+        .iter()
+        .filter(|a| !a.pinned)
+        .map(|a| &a.agent)
+        .collect();
+    for status in &view.swarm.agents {
+        let Some(reason) = &status.hung else {
+            continue;
+        };
+        if !restartable.contains(&status.agent) {
+            continue;
+        }
+        active.insert(
+            key(AGENT_HUNG, status.agent.as_str()),
+            Notice::new("An agent looks hung", reason.line(&status.agent))
+                .with_priority(Priority::High)
+                .with_tags([AGENT_HUNG.to_owned()]),
+        );
+    }
     for host in &view.swarm.hosts {
         let Some(stats) = &host.stats else {
             continue;
@@ -151,7 +185,10 @@ pub fn active_alerts(
             if !session.busy || now.since(last) < stall {
                 continue;
             }
-            if pinned.contains(&session.agent) || is_parked(&view.swarm, &session.agent) {
+            if pinned.contains(&session.agent)
+                || hung.contains(&session.agent)
+                || is_parked(&view.swarm, &session.agent)
+            {
                 continue;
             }
             active.insert(
@@ -285,6 +322,30 @@ mod tests {
 
     fn cfg() -> AlertsConfig {
         AlertsConfig::default()
+    }
+
+    /// A busy agent of the live view, with no hung flag.
+    fn status(name: &str) -> AgentStatus {
+        AgentStatus {
+            agent: agent(name),
+            harness: None,
+            host: None,
+            lease: None,
+            session: None,
+            busy: true,
+            hung: None,
+            claim: None,
+            role: None,
+            collection: None,
+            pinned: false,
+            retired: false,
+            model: None,
+            last_tool_at: None,
+            last_tool: None,
+            last_text_at: None,
+            last_text: None,
+            tool_running_since: None,
+        }
     }
 
     fn agent(name: &str) -> AgentId {
@@ -495,6 +556,7 @@ mod tests {
             }),
             session: None,
             busy: true,
+            hung: None,
             claim: None,
             role: None,
             collection: None,
@@ -506,6 +568,100 @@ mod tests {
             last_text_at: None,
             last_text: None,
             tool_running_since: None,
+        });
+        assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
+    }
+
+    #[test]
+    fn agent_hung_fires_once_with_the_restart_and_resolves() {
+        let mut view = view_with(vec![host_status(
+            "h1",
+            false,
+            None,
+            Some(NOW),
+            vec![session("w1", true, Some(minutes(25)))],
+        )]);
+        view.agents.push(AgentAlert {
+            agent: agent("w1"),
+            pinned: false,
+        });
+        let mut w1 = status("w1");
+        w1.hung = Some(crate::rules::hung::Hung {
+            last_alive: Some(minutes(25)),
+            host_slept: false,
+            quiet_secs: 25 * 60,
+        });
+        view.swarm.agents.push(w1);
+
+        let actions = evaluate(&view, &BTreeSet::new(), &cfg(), NOW);
+        assert_eq!(fired(&actions), vec!["agent_hung:w1"]);
+        let AlertAction::Fire { notice, .. } = &actions[0] else {
+            panic!("a fire")
+        };
+        assert_eq!(notice.priority, Priority::High);
+        assert!(
+            notice.body.ends_with("run `borant restart w1`"),
+            "{}",
+            notice.body
+        );
+
+        // The same state again fires nothing.
+        let open = BTreeSet::from(["agent_hung:w1".to_owned()]);
+        assert!(evaluate(&view, &open, &cfg(), NOW).is_empty());
+
+        // The session moves again: one resolve.
+        view.swarm.agents.clear();
+        assert_eq!(
+            resolved(&evaluate(&view, &open, &cfg(), NOW)),
+            vec!["agent_hung:w1"]
+        );
+    }
+
+    /// A session that is quiet past the stall as well gets the hung alert only:
+    /// the hung one names the reason and the restart.
+    #[test]
+    fn a_hung_agent_is_not_also_stalled() {
+        let mut view = view_with(vec![host_status(
+            "h1",
+            false,
+            None,
+            Some(NOW),
+            vec![session("w1", true, Some(minutes(40)))],
+        )]);
+        view.agents.push(AgentAlert {
+            agent: agent("w1"),
+            pinned: false,
+        });
+        let mut w1 = status("w1");
+        w1.hung = Some(crate::rules::hung::Hung {
+            last_alive: Some(minutes(40)),
+            host_slept: true,
+            quiet_secs: 40 * 60,
+        });
+        view.swarm.agents.push(w1);
+        assert_eq!(
+            fired(&evaluate(&view, &BTreeSet::new(), &cfg(), NOW)),
+            vec!["agent_hung:w1"]
+        );
+    }
+
+    /// A paused agent runs no turn, so it is not in the alert view's agents; a
+    /// pinned one is never replaced by a restart.
+    #[test]
+    fn agent_hung_skips_a_paused_agent_and_a_pinned_one() {
+        let mut view = view_with(Vec::new());
+        let mut w1 = status("w1");
+        w1.hung = Some(crate::rules::hung::Hung {
+            last_alive: Some(minutes(25)),
+            host_slept: false,
+            quiet_secs: 25 * 60,
+        });
+        view.swarm.agents.push(w1);
+        assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
+
+        view.agents.push(AgentAlert {
+            agent: agent("w1"),
+            pinned: true,
         });
         assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
     }

@@ -138,7 +138,19 @@ impl Hub {
         launching: &[AgentId],
     ) -> Result<HeartbeatReply, ApiError> {
         let now = self.now();
-        mem.hosts_seen.insert(host.clone(), now);
+        // A gap of `hung_minutes` in the beats of a host is a sleep, not a slow
+        // beat: the host and its sessions lost that time, and the ones that say
+        // nothing after it are hung until they move again.
+        let slept_gap =
+            std::time::Duration::from_secs(self.cfg.alerts.hung_minutes.saturating_mul(60));
+        if mem
+            .hosts_seen
+            .insert(host.clone(), now)
+            .is_some_and(|last| now.since(last) >= slept_gap)
+        {
+            mem.hosts_slept.insert(host.clone(), now);
+            tracing::info!(%host, "the host slept and its sessions lost that time");
+        }
         mem.host_sessions.insert(
             host.clone(),
             HostSessions {

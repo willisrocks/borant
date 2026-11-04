@@ -369,6 +369,12 @@ pub enum Command {
         #[arg(long)]
         without_bundle: Option<BundleName>,
     },
+    /// Restart an agent: stop it now, then resume it. A hung session has no
+    /// turn end to wait for, so this is the one command that ends it.
+    Restart {
+        /// The agent to restart.
+        agent: AgentId,
+    },
     /// Attach this terminal to the session of an agent.
     Attach {
         agent: AgentId,
@@ -1285,7 +1291,10 @@ fn render_board(v: &BoardView) -> String {
                     .iter()
                     .map(|line| {
                         let state = if line.online { "online" } else { "offline" };
-                        format!("{} ({state})", line.agent)
+                        // An agent whose turn lost its sign of life: a person
+                        // restarts it.
+                        let hung = if line.hung { ", hung?" } else { "" };
+                        format!("{} ({state}{hung})", line.agent)
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -2028,6 +2037,34 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
                 .await?,
             );
         }
+        Command::Restart { agent } => {
+            // A stop with no grace ends a session that already ended its turn,
+            // or one that looks hung, at once, and fences a turn that is still
+            // running. The resume then places the agent again; while the old
+            // session still holds its lease, the pending move starts it when
+            // the lease goes.
+            let stopped = call(
+                &c,
+                ToolCall::Stop {
+                    selector: PauseSelector::Agent(agent.clone()),
+                    grace_secs: Some(0),
+                },
+            )
+            .await?;
+            let resumed = call(
+                &c,
+                ToolCall::Resume {
+                    selector: PauseSelector::Agent(agent.clone()),
+                    without_bundle: None,
+                },
+            )
+            .await?;
+            pretty(&json!({
+                "agent": agent,
+                "stopped": stopped,
+                "resumed": resumed,
+            }));
+        }
         Command::Attach { agent, window } => attach(&c, &agent, window).await?,
         Command::Top => crate::top::run().await?,
         Command::Hub { .. }
@@ -2426,6 +2463,15 @@ mod tests {
             without_bundle,
             Some("github-work".parse::<BundleName>().unwrap())
         );
+    }
+
+    #[test]
+    fn restart_names_one_agent() {
+        let cmd = cli_command("borant restart w1");
+        let Command::Restart { agent } = cmd else {
+            panic!("not a restart");
+        };
+        assert_eq!(agent, "w1".parse::<AgentId>().unwrap());
     }
 
     #[test]
@@ -3152,6 +3198,7 @@ mod tests {
             agent: agent.parse().unwrap(),
             online,
             busy: online,
+            hung: false,
             host: online.then(|| "h1".parse().unwrap()),
         };
         BoardView {

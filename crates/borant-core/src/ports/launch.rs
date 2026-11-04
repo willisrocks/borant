@@ -32,6 +32,15 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
     fn kind(&self) -> &'static str;
     async fn launch(&self, spec: &LaunchSpec) -> PortResult<LaunchHandle>;
     async fn stop(&self, handle: &LaunchHandle) -> PortResult<()>;
+    /// Ends any session that this launcher holds for `agent`, even one whose
+    /// handle the caller lost: a daemon that restarted, a launch order that
+    /// never arrived, or a session of an older attempt. It ends that one named
+    /// session, never a server or another agent's session, and returns whether
+    /// it ended one. A launcher that cannot name the session of an agent ends
+    /// nothing and answers `false`.
+    async fn release(&self, _agent: &AgentId) -> PortResult<bool> {
+        Ok(false)
+    }
     async fn is_running(&self, handle: &LaunchHandle) -> PortResult<bool>;
     /// The command that attaches a terminal to the session, if any.
     fn attach_command(&self, handle: &LaunchHandle) -> Option<Vec<String>>;

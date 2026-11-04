@@ -706,6 +706,8 @@ pub struct AlertsFile {
     pub needs_human: Option<bool>,
     /// Minutes without an event before an agent counts as stalled.
     pub stall_minutes: Option<u64>,
+    /// Minutes without a tool call or text before a busy agent counts as hung.
+    pub hung_minutes: Option<u64>,
     /// Minutes without a heartbeat before a host counts as offline.
     pub host_offline_minutes: Option<u64>,
     /// Minutes without a heartbeat before the hub counts as down.
@@ -720,10 +722,12 @@ impl AlertsFile {
     pub fn summary(&self) -> String {
         let flag = |v: Option<bool>, default: bool| if v.unwrap_or(default) { "on" } else { "off" };
         format!(
-            "notifier={} needs_human={} stall_minutes={} host_offline_minutes={} hub_down_minutes={} watch_hub={}",
+            "notifier={} needs_human={} stall_minutes={} hung_minutes={} host_offline_minutes={} hub_down_minutes={} watch_hub={}",
             self.notifier.as_deref().unwrap_or("desktop"),
             flag(self.needs_human, true),
             self.stall_minutes.unwrap_or(30),
+            self.hung_minutes
+                .unwrap_or(borant_core::rules::hung::DEFAULT_HUNG_MINUTES),
             self.host_offline_minutes.unwrap_or(5),
             self.hub_down_minutes.unwrap_or(2),
             flag(self.watch_hub, false),
@@ -739,6 +743,7 @@ impl AlertsFile {
             watch_hub: self.watch_hub.unwrap_or(d.watch_hub),
             needs_human: self.needs_human.unwrap_or(d.needs_human),
             stall_minutes: self.stall_minutes.unwrap_or(d.stall_minutes),
+            hung_minutes: self.hung_minutes.unwrap_or(d.hung_minutes),
             host_offline_minutes: self.host_offline_minutes.unwrap_or(d.host_offline_minutes),
             hub_down_minutes: self.hub_down_minutes.unwrap_or(d.hub_down_minutes),
             disk_warn_pct: self.disk_warn_pct.unwrap_or(d.disk_warn_pct),
@@ -1316,19 +1321,24 @@ mod tests {
         let host: HostFile = toml::from_str(ALERTS).unwrap();
         assert_eq!(host.alerts.notifier.as_deref(), Some("phone"));
         assert_eq!(host.notifiers.len(), 1);
-        assert_eq!(
-            host.alerts.summary(),
-            "notifier=phone needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
-        );
+        let rules = host.alerts.to_config();
+        assert_eq!(rules.stall_minutes, 30);
+        assert_eq!(rules.hung_minutes, 20);
+        assert_eq!(rules.host_offline_minutes, 5);
+        assert_eq!(rules.hub_down_minutes, 2);
+        assert!(!rules.watch_hub);
         let plain: HostFile = toml::from_str("[host]\nname = \"laptop\"\n").unwrap();
         assert_eq!(plain.alerts.notifier, None);
         assert!(plain.notifiers.is_empty());
         assert!(plain.notifier().unwrap().is_none());
         // The defaults of a daemon that says nothing about alerts.
-        assert_eq!(
-            plain.alerts.summary(),
-            "notifier=desktop needs_human=on stall_minutes=30 host_offline_minutes=5 hub_down_minutes=2 watch_hub=off"
-        );
+        let rules = plain.alerts.to_config();
+        assert!(rules.needs_human);
+        assert_eq!(rules.stall_minutes, 30);
+        assert_eq!(rules.hung_minutes, 20);
+        assert_eq!(rules.host_offline_minutes, 5);
+        assert_eq!(rules.hub_down_minutes, 2);
+        assert!(!rules.watch_hub);
     }
 
     #[test]

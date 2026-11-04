@@ -302,6 +302,7 @@ mod tests {
                 }),
                 session: Some(SessionId::new()),
                 busy: true,
+                hung: None,
                 claim: None,
                 role: Some("chief".parse().unwrap()),
                 collection: Some("personal".parse().unwrap()),

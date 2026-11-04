@@ -483,7 +483,16 @@ impl Hub {
             Some(LeaseState::Held { session, .. }) => {
                 let fenced =
                     agent.paused.is_some() && self.mem.lock().await.stopped.contains(session);
-                fenced.then_some(blocked::ClaimerState::Fenced)
+                if fenced {
+                    return Some(blocked::ClaimerState::Fenced);
+                }
+                // A hung session cannot end its claim by itself either: its
+                // hooks never run, so it reads no message about the task.
+                let hung = {
+                    let mem = self.mem.lock().await;
+                    self.hung_of(&mem, &agent.id, Some(*session), now)
+                };
+                hung.map(blocked::ClaimerState::Hung)
             }
             // Nothing holds it, or the hub is launching it again.
             _ => None,
