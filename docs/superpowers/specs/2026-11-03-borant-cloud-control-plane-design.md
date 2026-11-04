@@ -1465,7 +1465,8 @@ The fix is two settings. (Decided on 2026-11-03) They change no workflow file:
 
 1. Set the default workflow permission to read. Of the four workflows, only `ci.yml` declares
    no `permissions`, and it needs no write.
-2. Limit the `production` environment to the `main` branch.
+2. Limit the `production` environment to `release/v*` branches, because deploys run from
+   `release/vX.Y.Z` branches.
 
 Chris decided against a required reviewer on `production`, so a release does not wait for him.
 
@@ -1475,15 +1476,20 @@ What the approval rule still guards, for code from a Ticket:
 - A job from a `cloud/` branch cannot use the `production` environment or its secrets.
 - The worker holds no GitHub credential, and the App cannot write workflows or dispatch them. So
   a Ticket's code reaches `main` only through `merge_pr`, with an Approval of that SHA.
+- A merge to `main` does not reach production by itself. A deploy needs a `release/v*` branch
+  and a dispatch of the release workflows. The git proxy refuses that ref from a Ticket, and no
+  Ticket credential can dispatch.
 
 What it does not guard:
 
-- Nothing stands between `main` and production. A release can deploy any merged code with no
-  review, so `y` on the merge is the last check by a person.
+- A release carries everything on `main`. Once something with write access starts it, approved
+  code deploys with no further review, so `y` on the merge is the last check of that code by a
+  person.
+- The `production` limit matches a branch name only. Write access through another path can
+  create a `release/v*` branch with any code and deploy from it.
 - An Approval proves that Chris approved a SHA. It does not prove that he read the diff.
 - The rule covers the tools of the new system only. Anything with write access through another
-  path, such as his login or an agent of current Borant, can merge or start a release, as it
-  can today.
+  path, such as his login or an agent of current Borant, can merge or start a release.
 
 ### Shared Claude usage limit
 
