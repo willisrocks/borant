@@ -27,7 +27,7 @@ Marks in this document:
   left open, and gives the reason. Chris can overrule it.
 
 Section 24 lists every default and recommendation in one table, and the open
-questions.
+question.
 
 Inputs:
 
@@ -1174,10 +1174,11 @@ anything returns, a design must answer:
 
 (Decided)
 
-Model choice per role is Policy data: the router, the assessor, the worker
-per Project, and summaries. The configuration names a provider and a model
-alias. The control plane resolves the alias from discovery at startup. (My
-call)
+The provider and the model of every role come from configuration: the chief of staff (the
+router), the assessor, the worker per Project, and summaries. Chris changes them at will in
+the config repo and presses Publish (section 11). Nothing is hardcoded, and a change needs no
+code change and no deploy. (Decided on 2026-11-03) The configuration names a provider and a
+model alias. The control plane resolves the alias from discovery. (My call)
 
 Every session records usage and list-price cost (pi-durable reports both).
 The Ticket detail and a monthly total show it. This number is also the
@@ -1196,12 +1197,12 @@ pi-claude-code refuses `ANTHROPIC_AUTH_TOKEN`, and this is a different variable
 (`src/claude-cli.ts:414`). Bare mode does not read this token, and pi-claude-code does
 not pass `--bare` today (`src/claude-cli.ts:781`).
 
-The first task of the build tests this credential, before any other work, on the account
-that Chris picks (section 24):
+The first task of the build tests this credential, before any other work, on Chris's
+subscription, at a time that he picks:
 
 1. One real turn from a Fly Machine through pi-claude-code.
 2. Whether a new token leaves the other logins of that account alone. The docs do not
-   say. A logout stops the agents of current Borant, if the account is shared.
+   say. A logout stops the agents of current Borant.
 3. The memory of one `claude -p` process (section 28).
 
 A second turn after 24 hours is not a test of refresh, because this token does not
@@ -1331,7 +1332,7 @@ Nothing here is spent yet. The designer read each list price on 2026-11-03. A mo
 
 `shared-cpu-2x` with 4 GB costs $25.39 a month, or $0.0353 per hour. `shared-cpu-4x` with
 8 GB costs $51 a month. The stopped rootfs assumes an image of 2 GB per Machine. Models
-stay at $0 more on a subscription that Chris already pays for (section 24).
+stay at $0 more, because the system uses the subscriptions that Chris already pays for.
 
 | Line | First Project | Busy |
 |---|---|---|
@@ -1367,8 +1368,6 @@ What this estimate leaves out:
 
 - Savings. Current Borant keeps running, so its bill does not change.
 - The test apps of the build, up to $25 a month while it runs (section 21).
-- A separate Claude account (section 24). It adds that plan's price: Max is $100 a month, and
-  Ultra is $200 (https://claude.com/pricing, read on 2026-11-03).
 - Model cost at API rates, if Anthropic moves `claude -p` (section 17).
 - A charge that the billing guard detects after the fact (section 17).
 
@@ -1381,7 +1380,7 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
 
 1. Prove the outside unknowns, with small throwaway scripts on test apps. Each one can change
    the design, and a failure stops the build until Chris hears about it:
-   - The Claude test on the account from section 24: one real turn from a Fly Machine, other
+   - The Claude test on Chris's subscription, at a time that he picks: one real turn from a Fly Machine, other
      logins intact, and the memory of one `claude -p` process (section 17). Record the
      usage-credit setting of the account (section 17).
    - The Codex test (section 17).
@@ -1475,11 +1474,9 @@ They change no workflow file, but a release of `boopmark` then waits for his rev
 
 ### Shared Claude usage limit
 
-Subscription usage limits apply to all processes of one account together (spike
-Q8). If both systems use one account, the new system's work uses the limit that current
-Borant needs. The slot limit slows this, but it does not isolate the two. A shared
-account breaks the rule that the new system costs current Borant nothing. Only a
-separate account keeps that rule. Section 24 asks Chris to pick.
+The system uses Chris's existing Claude and ChatGPT subscriptions. (Decided on 2026-11-03) The
+known effect: it shares the Claude usage limit with current Borant (spike Q8), and a new token
+can log those agents out. Stage 1 creates the token at a time that he picks.
 
 ### How a Profile moves later
 
@@ -1566,7 +1563,7 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | A wait for a slot | With all slots taken, a new Ticket or an answer to a Ticket with no slot waits. | The "Waiting" area of the screen. Chris can raise the setting or stop a Ticket (section 28). |
 | A worker starts a Machine through `/.fly/api` | A Machine outside the fleet manager, and the bill rises. The only source is a forum reply. | Stage 1 tests it. The fleet manager stops a started Machine with no row (section 15). |
 | A lost sandbox | Unpushed work is gone. | The worker pushes after each step. Nothing enforces this (section 25). |
-| A shared Claude account | Current Borant's agents slow down, or a new login logs them out. | A separate account removes this. Section 24 asks. |
+| A shared Claude account | Current Borant's agents slow down, or a new login logs them out. | Accepted by Chris (section 21). The first token is created at a time that he picks. |
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21. |
 | Two screens during the parallel run | More attention from Chris, which is an anti-goal. | Accepted while the new system has one Project. The measurements in section 21 feed the later decision. |
 | Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | Chris decided that the terms are fine for this use. A provider can still change its terms. The check below this table sets build constraints. |
@@ -1607,7 +1604,7 @@ Build constraints that follow from this read:
 4. Test whether a new login or "log out of all" revokes a setup-token on other
    machines. The docs do not say.
 
-## 24. Defaults and open questions
+## 24. Defaults and the open question
 
 None of these is Chris's decision yet. The document uses each one until Chris answers.
 
@@ -1618,35 +1615,17 @@ None of these is Chris's decision yet. The document uses each one until Chris an
 | `claude -p` fallback | Every role moves to Codex if the Codex test passes. No Anthropic API key. | Recommendation | 17 |
 | Router wake | The router runs only when Chris asks. It does not screen Asks in the first version. | Recommendation | 8 |
 
-### Open questions for Chris
+### Open question for Chris
 
-1. Which Claude account does the new system use, and which ChatGPT account does the Codex
-   fallback use? The first build task runs a real `claude` turn on the Claude account from a
-   Fly Machine, and all Claude work then counts against that account's usage limit.
+Can the build change three repo settings of `boopmark` before the first Ticket (section 21)?
+Without them, the approval rule does not hold against a hijacked worker. With them, a release of
+`boopmark` waits for his review of the `production` environment, also for work from current
+Borant. The other choice is a different first Project, which has the same check to pass.
 
-   - A shared account breaks the rule that the new system costs current Borant nothing. Its
-     work uses the limit of current Borant's agents, and the slot limit only slows
-     that. A new token can also log those agents out, and nothing tests that yet.
-   - A separate Claude account keeps the rule, and it adds that plan's price: $100 a month
-     for Max, or $200 for Ultra, unless he already pays for a second account.
-   - The same limit rule applies to ChatGPT. If current Borant or his CLI use that
-     subscription, a move of every role to Codex moves the shared-limit problem there.
+(Recommendation) Change the settings.
 
-   (Recommendation) A separate Claude account, because the parallel rule is Chris's order.
-   That makes the first-Project bill about $165 a month with Max. The fallback can stay on his
-   ChatGPT subscription, because it is rare and he hears when it starts. If he picks a shared
-   Claude account, the build accepts the interference. The first token is then created at a
-   time that he picks, so that he can watch current Borant.
-
-2. Can the build change three repo settings of `boopmark` before the first Ticket (section
-   21)? Without them, the approval rule does not hold against a hijacked worker. With them, a
-   release of `boopmark` waits for his review of the `production` environment, also for work
-   from current Borant. The other choice is a different first
-   Project, which has the same check to pass.
-
-   (Recommendation) Change the settings.
-
-Closed: the subscription terms (section 23), and the five cuts of section 2.
+Closed by Chris: the accounts (section 21), the subscription terms (section 23), and the five
+cuts of section 2.
 
 ## 25. Contract: recovery and acceptable data loss
 
