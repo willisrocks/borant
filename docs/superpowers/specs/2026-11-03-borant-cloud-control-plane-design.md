@@ -244,7 +244,6 @@ flowchart LR
     ENG[Engine]
     EFF[Effects runner]
     HAR[pi-durable Harness]
-    LIM[Model-request limit]
     CC[claude -p processes]
     FM[Fleet manager]
     SEC[Secrets]
@@ -261,7 +260,7 @@ flowchart LR
   EFF -->|keyed submit| HAR
   HAR --> SQ
   SQ -->|Litestream| OBJ
-  HAR --> LIM --> CC
+  HAR --> CC
   HAR -->|sandboxd over Flycast| SB
   FM -->|Machines API| SB
   SB -->|git over public HTTPS| HTTP
@@ -275,9 +274,8 @@ flowchart LR
 | Engine | Owns every domain rule: Triggers, Threads, Evals, Decisions, Tickets, Mandates, Assignments, Subscriptions, Channels, approvals, stages. |
 | Effects runner | Takes effect rows and runs each effect after the commit that wrote it. It makes the keyed crossings of section 7. |
 | Harness | pi-durable 1.5.0 behind our own `SessionPort`. One conversation per Ticket, one router conversation per Profile. |
-| Model-request limit | One wrapper around every model provider. Every role and every child task passes through it (section 28). |
 | `claude -p` processes | Started by pi-claude-code for each Claude model request. They run on the control plane, not in sandboxes. |
-| Fleet manager | Creates, starts, stops, and destroys sandbox Machines through the Fly Machines API. It enforces the sandbox cap (section 28). |
+| Fleet manager | Creates, starts, stops, and destroys sandbox Machines through the Fly Machines API. |
 | Secrets | Holds credentials and injects them into one tool call at a time. Section 13. |
 | Git proxy | Forwards git from sandboxes to GitHub with an App token, and refuses a push outside the Ticket's branch prefix. Section 11. |
 
@@ -327,7 +325,7 @@ fly ips allocate-v6 --private --network borant-cp -a borant-cloud-sandbox
 | Control plane to `sandboxd` | Flycast address of the sandbox app, allocated for the `borant-cp` network, with the `fly-force-instance-id` header for one Machine. | The `sandboxd` token of the Assignment. The sandbox app has no public address. A sandbox cannot use this address, because Flycast does not serve an app's own network. |
 | Control plane to the Machines API | `https://api.machines.dev`, with a deploy token for the sandbox app only. | The token cannot touch the control-plane app. |
 | Sandbox to another sandbox | One 6PN, so the network allows it. | `sandboxd` runs as root and each command runs as the user `worker`. An `ip6tables` owner rule drops traffic from `worker` to `fdaa::/16`, except DNS. |
-| Sandbox to the Machines API | No token in the sandbox. A forum reply says that the `/.fly/api` socket needs no token for "privileged processes" (https://community.fly.io/t/suspend-machine-from-application-code/26406). This is not official documentation. | `worker` is not root. Stage 1 makes sure that `worker` cannot use the socket, because a start through it bypasses the sandbox cap. |
+| Sandbox to the Machines API | No token in the sandbox. A forum reply says that the `/.fly/api` socket needs no token for "privileged processes" (https://community.fly.io/t/suspend-machine-from-application-code/26406). This is not official documentation. | `worker` is not root. Stage 1 makes sure that `worker` cannot use the socket, because a start through it runs outside the fleet manager. |
 | Sandbox to the internet | Open, for package registries and public pages. No egress filter (section 11). | Sandboxes hold only test values. |
 
 Flycast requires `sandboxd` to listen on `0.0.0.0` with a `services` entry in the
@@ -584,8 +582,7 @@ An Eval runs in two steps between `claim_eval` and `decide`:
    project, brief, scope, strength, resumes, reasons. (Decided)
 
 The assessment calls pi-ai directly, not through a pi-durable conversation,
-because an Eval holds no state and runs again in full after a crash. (My call) It
-passes through the model-request limit (section 28).
+because an Eval holds no state and runs again in full after a crash. (My call)
 
 A crash after `claim_eval` leaves the claim in place. The `run_eval` effect returns to
 `pending`, and its key holds the `evalId`, so the rerun adopts the claim and runs the
@@ -666,8 +663,7 @@ or with `r`. (My call)
 
 ### Effects and the queue
 
-The `effects` table is the only durable queue. (Decided) Requests that wait in memory
-for a model or a sandbox are section 28.
+The `effects` table is the only durable queue. (Decided)
 
 | Column | Meaning |
 |---|---|
@@ -749,9 +745,8 @@ leaves the board and shows in "changes".
 Two views read a `working` Ticket. Neither is a stage:
 
 - Silent: no tool call in 30 minutes, from `session_activity`. This follows the agent
-  activity spec. A Ticket that waits for a model request or a sandbox is not silent.
-- Waiting: the Ticket waits for a model request or a sandbox, with the reason and the
-  time (section 28).
+  activity spec. A Ticket that waits for a slot is not silent.
+- Waiting: the Ticket waits for a slot, with the time (section 28).
 
 The "Waiting" area of the screen also shows `idle` Tickets that a provider's usage limit
 holds, with the reset time.
@@ -882,7 +877,7 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 |---|---|
 | Needs you | Each open Ask and each `person/review` and `blocked/failed` Ticket: the full question, why now, who asked, the Project, how long it waits, the router's note if any. An `approve` Ask shows the exact revision (section 27). Order: decide, approve, answer, unblock, then age. System items also show here: a lost source range, a login to repeat, a token near its end, backup lag, a detected charge, and a Ticket idle for 7 days. |
 | Silent and failed | Working Tickets with no tool call in 30 minutes, with the last tool call shown. Failed sessions and lost sandboxes. |
-| Waiting | Tickets that wait for a model request, a sandbox, or a provider limit (section 28). |
+| Waiting | Tickets that wait for a slot or a provider limit (section 28). |
 | Changes since your last look | New Tickets, done Tickets, merged and approved PRs, releases, answered Asks, Policy versions. "Mark seen" sets the seen position. Nothing else does. |
 | Projects | Every Project with its Tickets by name: who works on each, for how long, its stage, what it waits on. Idle Projects on one line. |
 | PRs closest to merge | Open PRs from Tickets, ordered by how close to merge: ready to merge, approved, review requested, CI running, CI failed. |
@@ -931,7 +926,7 @@ stopped, `blocked/failed`, or `idle` Ticket has a Resume action (section 29).
 
 Dead effects, the reconcile button, restore mode (section 25), crossing lag (oldest
 pending Input and oldest unconsumed report), backup lag, the count of `claude`
-processes, running sandboxes against the cap, stored Decisions with filters, and
+processes, slots in use with the setting, running sandboxes, stored Decisions with filters, and
 the Decisions of observe mode ("would accept").
 
 ## 13. Secrets
@@ -1109,7 +1104,7 @@ stateDiagram-v2
   Creating --> SettingUp: volume and Machine exist
   SettingUp --> Running: setup command done (marker in /work)
   Running --> Stopped: no job and no tool call for 10 min
-  Stopped --> Running: next tool call, if under the cap
+  Stopped --> Running: next tool call
   Running --> Lost: Machine or host failed
   Lost --> Creating: new Assignment, from the pushed branch
   Running --> Stopped: Ticket ended or stopped
@@ -1118,7 +1113,7 @@ stateDiagram-v2
 ```
 
 1. `ensure_sandbox` creates the volume and the Machine if the Assignment has none, or
-   starts the stopped Machine. The cap of section 28 applies to both.
+   starts the stopped Machine.
 2. The setup command (clone, install) runs once. A marker file in `/work`
    records its success, so a rerun skips it.
 3. A tool call to a stopped sandbox starts it first. The fleet manager waits
@@ -1266,8 +1261,8 @@ Two controls exist, and they do different jobs. (Astra's finding, confirmed.)
 | The reaction in pi-claude-code | After a response, it reads `isUsingOverage`. If that is true, and `PI_CLAUDE_CODE_ALLOW_USAGE_CREDITS` is not set, it fails the turn. The builder does not set the variable. | It cannot prevent the charge it detects. The source says: "The response is already charged at this point" (`src/claude-cli.ts:1005`). Requests in flight also complete. |
 
 So a bill can arrive: at most the responses that were in flight when the first charge
-showed. The model-request limit (section 28) bounds that number. After a detected charge,
-the wrapper holds all Claude requests, and each affected Ticket goes to `blocked/failed`.
+showed. After a detected charge,
+the control plane holds all Claude requests, and each affected Ticket goes to `blocked/failed`.
 A "needs you" item shows the measured list-price cost, and Chris decides.
 
 ## 18. Decisions and later replay
@@ -1305,9 +1300,9 @@ call for the start state.)
 - Logs: structured JSON lines to Fly's log stream, with Ticket, Thread,
   Trigger, and effect IDs on each line. Never secret values.
 - Metrics: a `/metrics` endpoint for Fly's managed Prometheus (section 5). Effects
-  pending and dead, Eval latency, crossing lag, backup lag, model requests running and
-  waiting by priority, provider limit hits, sessions, `claude` processes, sandbox count
-  by state against the cap.
+  pending and dead, Eval latency, crossing lag, backup lag, slots in use and Tickets
+  waiting, provider limit hits, sessions, `claude` processes, sandbox count
+  by state.
 - Events: an append-only `events` table for every domain change (Trigger
   received, Decision, Ticket stage change, Ask, Approval, Channel write,
   Policy version, sandbox state, stop, restore). The changes feed and the audit view
@@ -1338,23 +1333,21 @@ Nothing here is spent yet. The designer read each list price on 2026-11-03. A mo
 8 GB costs $51 a month. The stopped rootfs assumes an image of 2 GB per Machine. Models
 stay at $0 more on a subscription that Chris already pays for (section 24).
 
-| Line | First Project | Busy | At the caps |
-|---|---|---|---|
-| What it assumes | `boopmark`, 1 sandbox for 6 hours a day (180 hours), 3 volumes alive | Today's load: 4 sandboxes for 10 hours a day (1200 hours), 15 volumes alive. Needs caps of 4 and 15. | 2 sandboxes always running, 10 volumes alive |
-| Control plane, 4 GB (section 28) | $25.39 | $25.39 | $25.39 |
-| Control-plane volume, 5 GB | $0.75 | $0.75 | $0.75 |
-| Sandbox compute, 4 GB | $6.35 | $42.32 | $50.78 |
-| Sandbox volumes, 10 GB each | $4.50 | $22.50 | $15.00 |
-| Stopped rootfs | $0.90 | $4.50 | $3.00 |
-| Litestream object storage | $1.00 | $1.00 | $8.00 |
-| Outbound transfer, 10 GB, 50 GB, and 50 GB | $0.20 | $1.00 | $1.00 |
-| Total | $39 | $97 | $104 |
+| Line | First Project | Busy |
+|---|---|---|
+| What it assumes | `boopmark`, 1 sandbox for 6 hours a day (180 hours), 3 volumes alive | Today's load: 4 sandboxes for 10 hours a day (1200 hours), 15 volumes alive |
+| Control plane, 8 GB (section 28) | $51.00 | $51.00 |
+| Control-plane volume, 5 GB | $0.75 | $0.75 |
+| Sandbox compute, 4 GB | $6.35 | $42.32 |
+| Sandbox volumes, 10 GB each | $4.50 | $22.50 |
+| Stopped rootfs | $0.90 | $4.50 |
+| Litestream object storage | $1.00 | $1.00 |
+| Outbound transfer, 10 GB and 50 GB | $0.20 | $1.00 |
+| Total | $65 | $123 |
 
-So the bill for the first Project is about $39 a month. A 2 GB control plane makes it $27,
-if stage 1 proves that 2 GB holds the processes of section 28. A busy load that needs a
-limit above 2 likely needs 8 GB, and that makes it $123. The caps hold the Fly and R2 bill to
-about $104 a month at the start values, except for outbound transfer, which has no cap. A
-worker with internet access can raise that line at $0.02 per GB.
+So the bill for the first Project is about $65 a month at 6 slots. Six slots always full of
+running sandboxes add at most $152 a month of sandbox compute. Outbound transfer and volumes
+have no limit.
 
 The object storage line is an estimate. Litestream writes at most once a second, and only
 when the file changed. That is at most 648,000 writes a month at the first load, inside
@@ -1368,7 +1361,7 @@ one.
 
 This replaces the estimates of the earlier drafts ($110 for the design with Postgres and
 Browserbase, and $27 to $39 for the SQLite option). Postgres cost $39, and Browserbase cost
-$20. The 4 GB control plane stays, because section 28 shows that 2 GB is not proven.
+$20. The 8 GB control plane adds $26 to the 4 GB one, for 6 slots.
 
 What this estimate leaves out:
 
@@ -1397,8 +1390,6 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
      on a custom network, and a duplicate Machine name (sections 5 and 15).
    - A Litestream restore of a file that pi-durable wrote, after a normal close and after a
      crash (section 25).
-   - A wait at the model-request limit that uses no stream timeout or retry, with a faux
-     provider (section 28).
    - A GitHub redelivery keeps its `guid` (section 8).
    - A long transcript: a session with 5000 entries, its reopen time, and its heap.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
@@ -1413,7 +1404,7 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
    on a `cloud/` branch has a read-only token. Then run the first Project, `boopmark`, in the
    `personal` Profile. Chris starts Tickets from the web chat only.
 4. Measure for two weeks: lost Triggers, duplicate Tickets, reconcile repairs, cost, sandbox
-   hours, waits at each limit, and how often a usage limit stops a run.
+   hours, waits for a slot, and how often a usage limit stops a run.
 
 The deferred features of section 2 are not a stage. Each one is its own decision after stage
 4. (Decided on 2026-11-03 for the deferral. My call on the order.)
@@ -1451,8 +1442,7 @@ production uses. (My call)
 3. The GitHub Source stays in observe mode for `boopmark`. Its Evals store "would
    accept" and create no Ticket, so a comment on a PR of current Borant cannot
    start a duplicate Ticket. Subscribed Threads still deliver Inputs, because
-   observe mode applies only to Evals. Observe-mode Evals take the lowest priority at
-   the model-request limit, and they use the cheapest model in the Policy. The build
+   observe mode applies only to Evals. Observe-mode Evals use the cheapest model in the Policy. The build
    includes the live path, tested with a faux provider. Chris ends observe mode with
    a Policy commit after stage 4. Nothing ends it by itself.
 4. Both systems merge through GitHub PRs, so GitHub handles conflicts between their
@@ -1487,7 +1477,7 @@ They change no workflow file, but a release of `boopmark` then waits for his rev
 
 Subscription usage limits apply to all processes of one account together (spike
 Q8). If both systems use one account, the new system's work uses the limit that current
-Borant needs. The model-request limit slows this, but it does not isolate the two. A shared
+Borant needs. The slot limit slows this, but it does not isolate the two. A shared
 account breaks the rule that the new system costs current Borant nothing. Only a
 separate account keeps that rule. Section 24 asks Chris to pick.
 
@@ -1572,9 +1562,9 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | The Codex path fails its test | No fallback for Claude. | The test runs before the first Project, and Chris hears the result (section 17). |
 | One machine owns all sessions | A Fly host failure stops all agents. | The dead man's switch, and section 25. |
 | Crossing bugs | A lost or doubled Input or report. | Every crossing is keyed. The reconcile runs at every startup. Crossing lag is a metric. Tests kill the process inside each window of section 7. |
-| `claude` processes on one Machine | Memory pressure. A kill of Node stops every session for a moment. | Section 28 sets the ceiling, and `oom_score_adj` makes the kernel kill `claude` first. The Machine can grow with one command. |
-| A wait at a limit | Chris's answer waits behind running requests, or up to 2 hours for a sandbox at the cap. | Priority in the queue, and the "Waiting" area of the screen. He can stop a Ticket or raise a limit (section 28). |
-| A worker starts a Machine through `/.fly/api` | A Machine outside the cap, and the bill rises. The only source is a forum reply. | Stage 1 tests it. The fleet manager stops a started Machine with no row (section 15). |
+| `claude` processes on one Machine | Memory pressure. A kill of Node stops every session for a moment. | Section 28 sets the slots, and `oom_score_adj` makes the kernel kill `claude` first. The Machine can grow with one command. |
+| A wait for a slot | With all slots taken, a new Ticket or an answer to a Ticket with no slot waits. | The "Waiting" area of the screen. Chris can raise the setting or stop a Ticket (section 28). |
+| A worker starts a Machine through `/.fly/api` | A Machine outside the fleet manager, and the bill rises. The only source is a forum reply. | Stage 1 tests it. The fleet manager stops a started Machine with no row (section 15). |
 | A lost sandbox | Unpushed work is gone. | The worker pushes after each step. Nothing enforces this (section 25). |
 | A shared Claude account | Current Borant's agents slow down, or a new login logs them out. | A separate account removes this. Section 24 asks. |
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21. |
@@ -1635,7 +1625,7 @@ None of these is Chris's decision yet. The document uses each one until Chris an
    Fly Machine, and all Claude work then counts against that account's usage limit.
 
    - A shared account breaks the rule that the new system costs current Borant nothing. Its
-     work uses the limit of current Borant's agents, and the model-request limit only slows
+     work uses the limit of current Borant's agents, and the slot limit only slows
      that. A new token can also log those agents out, and nothing tests that yet.
    - A separate Claude account keeps the rule, and it adds that plan's price: $100 a month
      for Max, or $200 for Ultra, unless he already pays for a second account.
@@ -1643,7 +1633,7 @@ None of these is Chris's decision yet. The document uses each one until Chris an
      subscription, a move of every role to Codex moves the shared-limit problem there.
 
    (Recommendation) A separate Claude account, because the parallel rule is Chris's order.
-   That makes the first-Project bill about $139 a month with Max. The fallback can stay on his
+   That makes the first-Project bill about $165 a month with Max. The fallback can stay on his
    ChatGPT subscription, because it is rare and he hears when it starts. If he picks a shared
    Claude account, the build accepts the interference. The first token is then created at a
    time that he picks, so that he can watch current Borant.
@@ -1741,7 +1731,7 @@ finding, confirmed.)
 ## 26. Contract: cancellation and revocation
 
 A stop is not a message. It removes authority first, in one Engine commit, and then
-ends the work. A stop needs no model request and passes through no limit. (Astra's
+ends the work. A stop needs no model request and takes no slot. (Astra's
 finding, confirmed against the README, line 714, and `dist/harness/types.d.ts:793`.)
 
 ### What `stop(person, ticket)` commits
@@ -1768,8 +1758,7 @@ The command comes only from a logged-in web session. One transaction does all of
    inputs and aborts every task of the conversation, also tasks that a plain abort leaves
    running because of a background flag. A subagent is a conversation that a tool task owns,
    so aborting the tool task aborts it, bottom-up (README, line 752).
-3. Each aborted model request closes its stream. A request that waits at the
-   model-request limit leaves the queue. A model request that already reached the
+3. Each aborted model request closes its stream. A model request that already reached the
    provider can still bill.
 4. `stop_sandbox` stops the Machine even if a command runs, because a person asked for
    this. That kills the command. The volume stays for 24 hours (section 15).
@@ -1788,7 +1777,7 @@ A stop survives a crash at any point, because the commit holds the state and the
 effects, and the startup order runs `abort_session` first. Between `harness.resume()`
 and that effect, a stopped Ticket can run for a moment, but the table shows that it
 cannot write anything. If the Fly API fails, `stop_sandbox` retries, and the Machine keeps
-running and counting against the cap. A dead effect shows on the admin page. The command
+running. A dead effect shows on the admin page. The command
 can still reach the open internet until then. It holds only test values (section 13).
 
 The screen shows "stopping" until the conversation is idle and the Machine is stopped.
@@ -1873,63 +1862,28 @@ holds no credential that acts as him and no logged-in browser (sections 11 and 1
 
 ## 28. Contract: resource limits
 
-No Ticket slot, extra slot, or held Input exists. Every Input goes to its session at
-once, and every accepted Ticket starts at once. Two limits apply below that, and work that
-meets a limit waits. Waiting requests are a queue, and this section says so plainly.
-(Decided on 2026-11-03. The values are my call.)
+One setting limits the system: max concurrent slots. A Ticket takes a slot to run and gives it
+back when the run ends. That is the only limit. The setting is a number on the admin page, and
+a change needs no deploy. (Decided on 2026-11-03. It replaces the model-request limit and the
+sandbox caps of the earlier draft.)
 
-| Limit | Value at the start | Where | What it protects |
-|---|---|---|---|
-| Model requests in flight | 2 | A wrapper around every provider | Control-plane memory, the Claude usage limit, and the Codex limit |
-| Running sandboxes | 2, a hard cap | Fleet manager | Fly spend |
-| Sandbox volumes alive | 10, a hard cap | Fleet manager | Fly spend |
+The start value is 6, on a `shared-cpu-4x` control plane with 8 GB. Six `claude` processes at
+the highest size seen on the Mac (999 MB, interactive), plus Node, fit in 8 GB. Stage 1 measures
+one `claude -p` process. (My call)
 
-The values are Policy data. Section 20 gives the bill that each value allows.
-
-### The model-request limit
-
-The wrapper wraps each provider that the control plane registers, so it holds when roles
-move from Claude to Codex. It counts every request from the router, the assessor, the
-workers, subagents, and compaction. The assessment passes through it too, although it
-calls pi-ai directly (section 8).
-
-- A request over the limit waits in memory. It leaves the queue when its abort signal
-  fires. After a crash, the queue is gone, and pi-durable sends the request again.
-- A wait must not use up `settings.stream.timeoutMs` or a retry attempt. The wrapper takes
-  its place before the timed request starts. Stage 1 tests this with a faux provider.
-- The priority order is: a person's request, then all others in arrival order. A person's
-  request is the next request of the router after a chat message, of an Eval on a
-  `verified` Trigger, or of a Ticket after `answer`, identified by the conversation's
-  stable provider `sessionId` (`dist/harness/provider.d.ts`).
-- Chris can still wait. A person's request goes first in the queue, but it cannot take
-  the place of a running request. At a limit of 2, he waits until one of them ends, which
-  can take minutes. The board shows the wait (section 10). No code gives him more
-  than this unless the limit rises.
-
-The limit caps requests, not processes. `claude` processes can exceed it. pi-claude-code
-keeps up to 2 idle processes for reuse (`MAX_CACHED_CLAUDE_PROCESSES`,
-`src/claude-cli.ts:677`). It closes one only when a new request can be retained
-(`src/claude-cli.ts:1118`). A request with no `sessionId`, or a concurrent request on a
-busy session, gets a one-shot process and closes nothing. So the ceiling is the limit plus
-2, or 4 processes at the start. (Astra's finding, confirmed. It corrects an earlier
-draft.) Interactive `claude` used 433 MB to 999 MB on the Mac on 2026-11-03, and nobody
-measured `claude -p`. Four at the high end is 4 GB, the whole Machine.
-
-So:
-
-- The control plane is `shared-cpu-2x` with 4 GB. Stage 1 measures one `claude -p`
-  process. A 2 GB Machine saves $12 if the measurement allows it (section 20).
-- If memory is short, the wrapper calls `closeClaudeProcesses(sessionId)` after a request.
-  That removes the 2 idle processes, and the next request starts cold.
+- A Ticket with no slot keeps its `submit_input` effects pending. They run in ID order when a
+  slot frees, and the Ticket shows as waiting. This applies to every Input, also a person's
+  answer.
+- `run_ended` gives the slot back. The router, the assessor, and a stop take no slot. Subagents
+  run under their Ticket's slot.
 - `PI_CLAUDE_CODE_COMMAND` names a script that runs `claude` with `nice` 10 and a high
-  `oom_score_adj`. The Engine wins the CPU, and the kernel kills `claude` before Node. A
-  killed process is a failed attempt under `settings.retry`. On 2026-11-03, CPU weights
-  and fewer agents fixed the overload of `borant-1`.
+  `oom_score_adj`. The Engine wins the CPU, and the kernel kills `claude` before Node. A killed
+  process is a failed attempt under `settings.retry`.
 
 ### A provider's usage limit
 
-A usage limit is not the model-request limit, and it resets after hours. pi-ai does not
-retry quota errors. The Claude `rate_limit_event` carries `resetsAt`. The wrapper starts no
+A provider's usage limit resets after hours. pi-ai does not
+retry quota errors. The Claude `rate_limit_event` carries `resetsAt`. The control plane starts no
 request for that provider before that time. `run_ended` sets the Ticket to `idle`, with
 the reason "Claude limit until <time>", and writes a `submit_input` effect with `run_after`
 at that time. No test hit a real limit, so the builder uses a faux provider and records
@@ -1938,30 +1892,10 @@ the first real error text.
 The router and the assessor stop too, on the same account, also for Chris's chat. A Policy
 commit moves a role to Codex, if the Codex test passes (section 17).
 
-### The sandbox caps
-
-A cap is a refusal, not an alert. Before each create or start, the fleet manager counts
-in one Engine transaction: Machines in `started` or `starting` state, plus the starts in
-progress. A count at the cap means no call to Fly.
-
-- A tool call that needs a Machine waits, and the Ticket shows "waiting for a sandbox",
-  with the time. A Ticket that waits for a sandbox is not silent.
-- The next free place goes to a Ticket with a person's answer, then in arrival order. A
-  place frees when a Machine stops. That can take up to the job limit of 2 hours, so a
-  person can wait that long at a cap of 2. Chris can stop a Ticket, or raise the cap with
-  a Policy commit.
-- A wait holds no model request, because the worker waits inside a tool call.
-- A volume place frees when the fleet manager destroys a volume. At the volume cap, it first
-  destroys the volume of the oldest ended or stopped Ticket, before its 24 hours end. If there
-  is none, the new Ticket waits, and a "needs you" item names the idle Tickets that hold the
-  volumes.
-- The fleet manager reads the real state from the Machines API every 60 s and at startup.
-  A started Machine with no row stops at once (section 15).
-
 ### The idle stop
 
 Only these things end a running command: the job limit (section 15), a person's stop, a
-revocation, and a restore. The idle stop and the caps do not.
+revocation, and a restore. The idle stop does not.
 
 A Machine stops when both are true for 10 minutes:
 
@@ -1970,7 +1904,7 @@ A Machine stops when both are true for 10 minutes:
 
 The fleet manager asks `sandboxd` for its job count every 60 s. A Ticket that waits for
 a model request can therefore lose its Machine, and the next tool call starts it again, in
-about 1 s, or waits at the cap. A 20-minute test keeps its Machine,
+about 1 s. A 20-minute test keeps its Machine,
 because a job runs.
 
 ## 29. Contract: Assignment and run lifecycle
@@ -2082,7 +2016,8 @@ Cut on 2026-11-03 by Chris:
 
 - Fly Managed Postgres, and with it the two-store restore and four failure windows
   (section 4)
-- Ticket slots, the extra slot, held Inputs, and the `queued` stage (section 28)
+- The extra slot, held Inputs, the `queued` stage, the model-request limit, and the sandbox and
+  volume caps. One setting remains, max concurrent slots (section 28).
 - Logged-in browser access, Browserbase, the broker, and login probes (section 16)
 - The automatic restart of ended Tickets from an allowed comment (section 29)
 - Generic Connections, the MCP adapter, Cron, Linear, and Slack Sources (section 14)
