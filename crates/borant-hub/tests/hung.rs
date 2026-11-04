@@ -6,12 +6,14 @@
 
 mod common;
 
-use borant_core::model::{Harness, HostStats, SessionStats};
+use borant_core::model::{
+    ChannelKind, Harness, HostStats, NewTask, SessionStats, Task, TaskStatus,
+};
 use borant_core::ports::StateStore;
 use borant_core::proto::{
     CtlRequest, HostCommand, PauseSelector, Registered, SessionLeaseRef, ToolCall,
 };
-use borant_core::{AgentId, Clock, Timestamp};
+use borant_core::{AgentId, ChannelName, Clock, Timestamp};
 use common::{Fx, name, next_cmd};
 use serde_json::Value;
 
@@ -80,6 +82,18 @@ async fn alert_keys(fx: &Fx) -> Vec<String> {
         .collect()
 }
 
+/// The stored task of `channel`.
+async fn stored_task(fx: &Fx, channel: &str, id: borant_core::TaskId) -> Task {
+    let channel: ChannelName = channel.parse().unwrap();
+    let e = fx
+        .state
+        .get(&borant_core::keys::task(&channel, &id))
+        .await
+        .unwrap()
+        .expect("the task");
+    serde_json::from_slice(&e.value).unwrap()
+}
+
 /// Rule: a host that comes back from a gap of `hung_minutes` and a session
 /// that said nothing since is hung; the view flags it, the alert names the
 /// restart, and both go when the session moves.
@@ -123,6 +137,80 @@ async fn a_sleep_leaves_a_hung_agent_on_the_view_and_the_alert() {
     fx.advance(31);
     fx.hub.tick().await.unwrap();
     assert!(alert_keys(&fx).await.is_empty());
+}
+
+/// Rule: the blocked-work alarm sticks the claim of a hung agent, and its
+/// `attention_msg` says why and names the restart. The alert pass leaves a hung
+/// agent to the hung alert, so this is where its claim goes `stuck`.
+#[tokio::test]
+async fn the_blocked_alarm_sticks_the_claim_of_a_hung_agent() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let reg = fx.register("h1", Some("w1"), None).await;
+    fx.call(
+        Some(&reg),
+        ToolCall::ChannelCreate {
+            name: "api".parse().unwrap(),
+            schema: None,
+            project: None,
+            branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            issue_target: None,
+        },
+    )
+    .await
+    .unwrap();
+    let created: Task = serde_json::from_value(
+        fx.call(
+            Some(&reg),
+            ToolCall::TaskCreate {
+                channel: "api".parse().unwrap(),
+                task: NewTask {
+                    title: "the work".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let claimed: Task = serde_json::from_value(
+        fx.call(
+            Some(&reg),
+            ToolCall::TaskClaim {
+                channel: "api".parse().unwrap(),
+                id: created.id,
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claimed.status, TaskStatus::InProgress);
+
+    // The session hangs after the claim: a heartbeat gap, and nothing since.
+    let start = fx.clock.now();
+    beat(&fx, &reg, start).await;
+    fx.advance(25 * 60);
+    beat(&fx, &reg, start).await;
+    assert!(hung(&fx).await.is_some());
+    // Past `stall_minutes` since the claim, with the harness still alive so
+    // no lease expiry takes the claim first.
+    fx.advance(10 * 60);
+    beat(&fx, &reg, start).await;
+    fx.hub.tick().await.unwrap();
+
+    let stuck = stored_task(&fx, "api", created.id).await;
+    assert_eq!(stuck.status, TaskStatus::Stuck);
+    let attention = stuck.attention_msg.unwrap_or_default();
+    assert!(attention.contains("is hung ("), "{attention}");
+    assert!(
+        attention.ends_with("run `borant restart w1`"),
+        "{attention}"
+    );
 }
 
 /// Rule: a stop of a hung agent ends its session now. A stop of a healthy one

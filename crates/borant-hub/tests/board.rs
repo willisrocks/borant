@@ -287,6 +287,7 @@ async fn board_shows_a_collection() {
                         "agent": "orchestrator",
                         "online": true,
                         "busy": false,
+                        "hung": false,
                         "host": "h1",
                     }],
                     "sagas": [{
