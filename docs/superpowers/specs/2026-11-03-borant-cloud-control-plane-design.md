@@ -349,11 +349,12 @@ The control plane has only these routes, and all of them are on its public addre
 | `/auth/*`, `/`, `/api/*` | Chris's browser | GitHub OAuth, the allowed list of user IDs, and a `SameSite=Strict` session cookie (section 12) |
 | `/admin/*` | Chris's browser | The same login |
 | `/git/*` | Git in a sandbox | The Assignment's git token, the Assignment's Project repo, and the ref check of section 11. A revoked token fails at once. |
-| `/healthz` | CI, as a readiness probe. Fly's own check stays on `/login`. | Nothing. It says that the process answers, and nothing else. |
+| `/healthz` | Fly's `http_service` check, and CI. | Nothing. It answers `200 {"status":"ok"}` with no session and no state. Fly passes this check only on a 2xx. `/login` answers `303`, or `503` with no OAuth app, so a check there never passes and Fly sends the Machine no traffic. |
 
-`/metrics` has no public route. It listens on a second port with no `services` entry,
-and Fly reads it through the `[metrics]` configuration. Stage 1 makes sure that this
-works on a custom network. If it does not, the route takes a bearer token.
+`/metrics` is private. It listens on a second port, 9091, and no public service maps that
+port. Fly's `[metrics]` scrape and `fly proxy` reach it over 6PN, which is IPv6. So the
+listener binds `::` with `ipv6Only` false, and one socket serves both address families.
+Stage 1 proved the scrape on a custom network.
 
 The Fly Machines do not join the Tailscale tailnet of current Borant.
 
@@ -862,8 +863,16 @@ because git gives versions, diffs, review, and rollback with no new code.)
 A push does not publish. A push can come from anything that holds Chris's login, and a
 standing permission can replace an Approval. So Chris presses Publish on the admin page, which
 shows the diff from the current version, and the page sends `publish_policy` with that SHA.
-It is a `verified` action, and it needs no webhook. The control plane reads the repo with a
-read-only deploy key. The App is not installed there. (My call)
+It is a `verified` action, and it needs no webhook.
+
+Today the Mac helper clones the repo with its own login at deploy and copies the checkout to the
+volume. So no deploy key exists, and a push cannot reach Publish without that deploy step.
+
+Planned, in the Policy refresh task (14.15): a "Check for changes" button on the admin page
+fetches the repo and shows the diff, and Publish takes that SHA. The fetch uses an App
+installation token that asks for `contents: read`. So the App must also be installed on the
+config repo. This replaces the earlier call to keep the App off that repo. The App's Contents
+permission is write, so only the token request holds this fetch to read.
 
 The same reasoning covers the code. Agents of current Borant can write
 `willisrocks/borant-cloud` through PRs, but only Chris holds the deploy tokens of the two
@@ -967,8 +976,8 @@ the chief)
 | Claude credential | `CLAUDE_CODE_OAUTH_TOKEN`, a one-year token from `claude setup-token`, as a Fly secret on the control-plane app (section 17) | pi-claude-code |
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in the SQLite file, AES-256-GCM under the master key | The control plane, and injected tool calls |
 | GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
-| Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, and the git token opens only the `/git/*` route. On the Machine, each stays in a root-only file, and `worker` gets the git token only through the git credential helper. The control plane stores both in plaintext in the `assignments` table of the Engine, because it must present them again after a restart, so a hash of the git token is not enough. Anyone who can read the SQLite file or its replica in the private bucket can present a live token. The stop commit deletes both (section 26), and restore mode revokes them (section 25). | The control plane, `sandboxd`, and the git credential helper in the sandbox |
-| Config repo deploy key | Read-only. A Fly secret. | Reading the Policy (section 11) |
+| Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, and the git token opens only the `/git/*` route. On the Machine, each stays in a root-only file, and `worker` gets the git token only through the git credential helper. The control plane must present them again after a restart, so a hash alone is not enough. The `assignments` table holds each one sealed: AES-256-GCM under the master key, with the Assignment's ID and the token's kind as authenticated data. An HMAC-SHA256 index, under a key derived from the master key, finds a presented token. So a copy of the SQLite file or its replica cannot present a live token without the master key. A bucket object from before schema 10 can still hold an old plaintext value. With no master key, the Engine mints no token and the fleet manager refuses to start a sandbox. The stop commit deletes both values and both indexes (section 26), and restore mode does the same (section 25). | The control plane, `sandboxd`, and the git credential helper in the sandbox |
+| Config repo read access | No key today: the Mac helper's own login clones the repo at deploy. Planned (Policy refresh task, 14.15): "Check for changes" refreshes the Policy checkout from the config repo through an App installation token with `contents: read`. The token is not written to disk. | Reading the Policy (section 11) |
 
 Rules:
 
@@ -1011,7 +1020,8 @@ plane (open a PR, comment, read a PR, `merge_pr`). (Decided on 2026-11-03)
 ### Who acts on GitHub
 
 Agents act on GitHub as a GitHub App, not as Chris. (Decided on 2026-11-03) Chris
-installs the App on his own account, on the `boopmark` repo only. The reasons:
+installs the App on his own account, on the `boopmark` repo only. Planned: the App is also
+installed on the config repo, to read the Policy (section 11). The reasons:
 
 - GitHub does not let an author approve their own PR. A worker with Chris's token
   opens PRs in his name, so he cannot approve them, and the review stage of the
@@ -1140,8 +1150,14 @@ stateDiagram-v2
 
 1. `ensure_sandbox` creates the volume and the Machine if the Assignment has none, or
    starts the stopped Machine.
-2. The setup command (clone, install) runs once. A marker file in `/work`
-   records its success, so a rerun skips it.
+2. A setup step runs once per Assignment, before the worker's first turn. It is a job with
+   the key `setup:<assignmentId>`, so a rerun attaches or reports and does not run it twice.
+   As `worker`, it clones the Mandate's repo through the git proxy into `/work/repo`, creates
+   the branch `cloud/<ticketId>/work`, and runs the Project's setup command, if any. The marker
+   `/work/.borant/setup-done` records success, so a restart on the same volume skips the step.
+   A lost volume runs it again. A failure puts the Ticket in `blocked/failed`, with the redacted
+   end of the output as the reason, and Resume runs the step again. Planned: the setup task
+   (14.12) is not merged, and the merged code has no setup step.
 3. A tool call to a stopped sandbox starts it first. The fleet manager waits
    for `sandboxd` health, then the call goes through. The fleet manager refuses when
    the Assignment is not running, so a stopped Ticket cannot start it (section 26).
@@ -1326,7 +1342,8 @@ call for the start state.)
 
 - Logs: structured JSON lines to Fly's log stream, with Ticket, Thread,
   Trigger, and effect IDs on each line. Never secret values.
-- Metrics: a `/metrics` endpoint for Fly's managed Prometheus (section 5). Effects
+- Metrics: a `/metrics` endpoint for Fly's managed Prometheus, on the private dual-stack port
+  9091 (section 5). Effects
   pending and dead, Eval latency, crossing lag, backup lag, slots in use and Tickets
   waiting, provider limit hits, sessions, `claude` processes, sandbox count
   by state.
@@ -1448,6 +1465,20 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
    - A real `sandboxd` restart during a job, and a replaced volume, through the job protocol
      (section 15). The `api.memo` contract.
    - Restore mode (section 25).
+
+   The dress rehearsal on the Fly test org is in progress on 2026-11-04. This is the report of
+   the saga orchestrator and the saga task records, not a recorded proof result:
+   - Reached: the real boot, the router on the real Claude token, a Ticket created, a sandbox
+     Machine with a volume for that Ticket, the firewall applied, the git token written, and
+     `sandboxd` authenticated.
+   - Not reached yet: a worker that changes the repo. The first worker session stopped at
+     `blocked/failed`, because the sandbox had no repository. The first clone through the git
+     proxy then failed with `502`.
+   - Fixed and merged in `borant-cloud`: the web app ignored `bindHost` (#30), the
+     `FLY_APP_NAME` check refused every boot (#26), the settings file wrote a null pinger (#26),
+     the Fly check was on `/login` (#31), and nothing called `fleet.start()` (#29).
+   - Found, and the fix is not merged: the double `?` in the upstream URL of the git proxy
+     (14.16), no worker prompt (14.14), and no sandbox setup step (14.12).
 3. Make sure that `boopmark` has the two settings below, and that a PR job
    on a `cloud/` branch has a read-only token. Then run the first Project, `boopmark`, in the
    `personal` Profile. Chris starts Tickets from the web chat only.
