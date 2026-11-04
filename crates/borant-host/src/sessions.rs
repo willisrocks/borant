@@ -692,6 +692,7 @@ impl Host {
         }
         if let Some(agent) = s.agent() {
             self.forget_secrets(&agent, s.secrets_dir.clone()).await;
+            self.note_ended(&agent);
         }
         tracing::info!(session = %id, reason, "session ended");
     }
@@ -919,6 +920,7 @@ impl Host {
         s.cancel.cancel();
         self.save();
         let Some(reg) = s.reg.clone() else { return };
+        self.note_ended(&reg.agent);
         self.append(
             &reg.agent,
             Some(id),
@@ -980,6 +982,7 @@ impl Host {
         let (Some(reg), pid, launch) = info else {
             return;
         };
+        self.note_ended(&reg.agent);
         // The session is gone before the harness stops, so a hook that
         // reports the end cannot label this release as an ordinary end.
         self.append(

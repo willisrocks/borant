@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use borant_core::config::{
-    AlertsConfig, ChangesConfig, ChannelConfig, MirrorConfig, ScheduleConfig, Span,
+    AlertsConfig, ChangesConfig, ChannelConfig, CleanupConfig, MirrorConfig, ScheduleConfig, Span,
 };
 use borant_core::model::Harness;
 use borant_core::ports::Notifier;
@@ -654,6 +654,10 @@ pub struct HostFile {
     /// `[sandbox]`: the bubblewrap sandbox of this host.
     #[serde(default)]
     pub sandbox: SandboxFile,
+    /// `[cleanup]`: the build output that the janitor removes from the work
+    /// trees of agents that ended.
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
 }
 
 /// `[sandbox]` of `host.toml`: whether the host offers a namespace sandbox,
@@ -966,6 +970,10 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     // The laptop watches the hub; a box with no watch_hub stays quiet.
     cfg.watch_hub = file.alerts.watch_hub.unwrap_or(false);
     cfg.hub_down = Duration::from_secs(file.alerts.hub_down_minutes.unwrap_or(2) * 60);
+    // The janitor of the work trees, and the warn line of the disk guard: a
+    // host at that line runs an early pass for the agents that ended.
+    cfg.cleanup = file.cleanup.clone();
+    cfg.disk_warn_pct = file.alerts.to_config().disk_warn_pct;
     if let Some(v) = h.wakes_per_hour {
         cfg.wakes_per_hour = v;
     }

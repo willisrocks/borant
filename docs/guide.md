@@ -224,6 +224,32 @@ daemon runs is offered without a restart, and one whose program goes away is
 dropped. A launch whose program is gone fails at once with the program named,
 instead of waiting for the launch timeout.
 
+### The build output of ended agents
+
+A host removes the rebuildable output of the agents that ended, so a laptop's
+disk does not fill with the `target` and `node_modules` folders of work trees
+that nobody will build again. The janitor runs every ten minutes and looks at
+each directory under the host's work root whose agent has no live session:
+when the work tree has no uncommitted change and no unpushed commit, and the
+agent ended at least `min_age` ago, it removes the directories that `dirs`
+names and that git ignores (`target`, `node_modules`, `.next`, `dist`,
+`.turbo` by default). A dirty tree and an unpushed commit keep their output;
+the host logs those once a day, so a person can look at them. Nothing outside
+the work root is ever touched, and a symlink is never followed.
+
+```toml
+[cleanup]
+enabled = true
+min_age = "6h"
+dirs = ["target", "node_modules", ".next", "dist", ".turbo"]
+```
+
+When the disk of `BORANT_HOME` reaches `[alerts] disk_warn_pct` (85 by
+default), every pass treats an ended agent as old enough at once; at 95 the
+host also logs the ten largest build outputs by path and size and refuses new
+launches. Both lines are read by the same pass, so a disk that fills during
+the night frees its rebuildable output before a person wakes.
+
 Environment variables override the files: `BORANT_HOME`, `BORANT_SOCKET`,
 `BORANT_NATS_URL` (a comma-separated list), `BORANT_HOST_NAME`,
 `BORANT_LAUNCHER`, `BORANT_HARNESSES`, `BORANT_CHECKPOINT_REMOTE`,
