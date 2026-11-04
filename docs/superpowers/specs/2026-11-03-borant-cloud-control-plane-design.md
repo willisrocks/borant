@@ -862,8 +862,15 @@ because git gives versions, diffs, review, and rollback with no new code.)
 A push does not publish. A push can come from anything that holds Chris's login, and a
 standing permission can replace an Approval. So Chris presses Publish on the admin page, which
 shows the diff from the current version, and the page sends `publish_policy` with that SHA.
-It is a `verified` action, and it needs no webhook. The control plane reads the repo with a
-read-only deploy key. The App is not installed there. (My call)
+It is a `verified` action, and it needs no webhook. The control plane reads the repo itself:
+one fetch at start and one when a person presses Check for changes, into the checkout on its
+own volume, with the App's installation token scoped to `willisrocks/borant-config` and
+narrowed to `contents: read`. The App is installed on the config repo too, so the second
+repository joins the same install click and there is one fewer long-lived secret than a deploy
+key. The App's own Contents permission stays `write` for the Project repos: only the token
+request holds this read to `read`. (Chief's call, 2026-11-04, for Chris to overrule. This
+replaces "the control plane reads the repo with a read-only deploy key; the App is not
+installed there".)
 
 The same reasoning covers the code. Agents of current Borant can write
 `willisrocks/borant-cloud` through PRs, but only Chris holds the deploy tokens of the two
@@ -968,7 +975,7 @@ the chief)
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in the SQLite file, AES-256-GCM under the master key | The control plane, and injected tool calls |
 | GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
 | Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, and the git token opens only the `/git/*` route. On the Machine, each stays in a root-only file, and `worker` gets the git token only through the git credential helper. The control plane stores both in plaintext in the `assignments` table of the Engine, because it must present them again after a restart, so a hash of the git token is not enough. Anyone who can read the SQLite file or its replica in the private bucket can present a live token. The stop commit deletes both (section 26), and restore mode revokes them (section 25). | The control plane, `sandboxd`, and the git credential helper in the sandbox |
-| Config repo deploy key | Read-only. A Fly secret. | Reading the Policy (section 11) |
+| Config repo read | No secret of its own: the control plane mints an installation token for `willisrocks/borant-config`, scoped to it and narrowed to `contents: read` (section 11); the App is installed there, and the preflight names the install when it is missing. | Reading the Policy (section 11) |
 
 Rules:
 
