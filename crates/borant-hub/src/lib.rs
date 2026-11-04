@@ -561,6 +561,11 @@ impl Hub {
                 .map(|_| ()),
         };
         parked?;
+        // A helper or a worker that stays idle gives its slot back on any
+        // host, pool or not, after the `idle_release_after` of its role.
+        if let Err(e) = self.park_idle_roles().await {
+            tracing::warn!("the idle release pass failed: {e}");
+        }
         // A passed deadline puts the task in front of its owner before the
         // waits and the alerts see it.
         self.tick_deadlines().await?;

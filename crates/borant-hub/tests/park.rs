@@ -7,13 +7,19 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use borant_core::model::{ChannelKind, Harness, Lease, LeaseState, NewTask, Target, Task};
+use borant_core::config::Span;
+use borant_core::model::{
+    Activity, Agent, ChannelKind, Harness, Lease, LeaseState, NewTask, Target, Task, TaskRef,
+};
 use borant_core::ports::{MessageBus, StateStore};
-use borant_core::proto::{CtlRequest, HostCommand, Registered, ToolCall};
+use borant_core::proto::{CtlRequest, HostCommand, Registered, SessionLeaseRef, ToolCall};
+use borant_core::rules::roles::RoleConfig;
 use borant_core::{AgentId, ChannelName, Clock, Timestamp, keys, subjects, testing};
-use common::{Fx, next_cmd};
+use borant_hub::HubConfig;
+use common::{Fx, name, next_cmd};
 use futures::stream::BoxStream;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
@@ -300,4 +306,264 @@ async fn a_plain_release_does_not_wake_like_a_park() {
         wake(&fx, &owner, 200).await.is_none(),
         "a plain release stays asleep"
     );
+}
+
+// The idle release of a helper or a worker (spec "Parking"): a role that
+// names `idle_release_after` gives the slot back on any host, pool or not,
+// once the agent has no work in progress.
+
+/// A `hub.toml` whose `helper` and `worker` release after `secs`, or never
+/// when it is `None`.
+fn roles(secs: Option<u64>) -> HubConfig {
+    let release = || RoleConfig {
+        idle_release_after: secs.map(|s| Span(Duration::from_secs(s))),
+        ..RoleConfig::default()
+    };
+    HubConfig {
+        roles: BTreeMap::from([
+            ("helper".parse().unwrap(), release()),
+            ("worker".parse().unwrap(), release()),
+        ]),
+        ..HubConfig::default()
+    }
+}
+
+/// An owner on static host `s1` with channel `api`, and an agent of `role` on
+/// the static host `s2`, which belongs to no pool.
+async fn on_a_static_host(fx: &Fx, role: &str) -> (Registered, Registered) {
+    fx.host("s1", &[Harness::Fake]).await;
+    fx.host("s2", &[Harness::Fake]).await;
+    let owner = fx.register("s1", Some("boss"), None).await;
+    fx.call(
+        Some(&owner),
+        ToolCall::ChannelCreate {
+            name: api(),
+            schema: None,
+            project: None,
+            branch: None,
+            kind: ChannelKind::Project,
+            title: None,
+            issue: None,
+            issue_target: None,
+        },
+    )
+    .await
+    .unwrap();
+    let h = fx.register_roled("s2", "h1", None, role).await;
+    fx.call(Some(&h), ToolCall::ChannelJoin { name: api() })
+        .await
+        .unwrap();
+    (owner, h)
+}
+
+/// Heartbeats of `host` for `secs` that report the end of the agent's last
+/// turn, or a turn in flight with `None`.
+async fn beat(fx: &Fx, host: &str, h: &Registered, idle: Option<Timestamp>, secs: u64) {
+    let mut left = secs;
+    while left > 0 {
+        let step = left.min(BEAT);
+        fx.advance(step);
+        fx.heartbeat_idle(host, &[(h, idle)]).await;
+        left -= step;
+    }
+}
+
+#[tokio::test]
+async fn idle_release_parks_an_idle_helper_on_a_static_host() {
+    let fx = Fx::with(roles(Some(600)));
+    let (_owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &h, Some(idle), 600).await;
+    assert!(
+        fx.hub.park_idle_roles().await.unwrap().is_empty(),
+        "at the timeout the slot stays"
+    );
+    beat(&fx, "s2", &h, Some(idle), BEAT).await;
+    assert_eq!(
+        fx.hub.park_idle_roles().await.unwrap(),
+        vec![h.agent.clone()]
+    );
+    match next_cmd(&mut s2).await {
+        Some(HostCommand::Park { session }) => assert_eq!(session, h.session),
+        other => panic!("expected a park, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn idle_release_parks_an_unbound_worker_on_a_static_host() {
+    let fx = Fx::with(roles(Some(600)));
+    let (_owner, w) = on_a_static_host(&fx, "worker").await;
+    let mut s2 = fx.commands("s2").await;
+    let doc = fx.state.get(&keys::agent(&w.agent)).await.unwrap().unwrap();
+    let agent: Agent = serde_json::from_slice(&doc.value).unwrap();
+    assert!(agent.task.is_none(), "an unbound worker");
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &w, Some(idle), 600 + BEAT).await;
+    assert_eq!(
+        fx.hub.park_idle_roles().await.unwrap(),
+        vec![w.agent.clone()],
+        "a worker that holds no task gives its slot back"
+    );
+    match next_cmd(&mut s2).await {
+        Some(HostCommand::Park { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a park, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_helper_with_an_open_claim() {
+    let fx = Fx::with(roles(Some(600)));
+    let (owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    claim_a_task(&fx, &owner, &h).await;
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &h, Some(idle), 600 + BEAT).await;
+    assert!(fx.hub.park_idle_roles().await.unwrap().is_empty());
+    assert!(next_cmd(&mut s2).await.is_none());
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_helper_with_an_unacked_message() {
+    let fx = Fx::with(roles(Some(600)));
+    let (_owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    let env = testing::envelope(Target::Agent(h.agent.clone()), "one more thing");
+    fx.bus
+        .publish(&subjects::agent(&h.agent), &env)
+        .await
+        .unwrap();
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &h, Some(idle), 600 + BEAT).await;
+    assert!(fx.hub.park_idle_roles().await.unwrap().is_empty());
+    assert!(next_cmd(&mut s2).await.is_none());
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_busy_helper() {
+    let fx = Fx::with(roles(Some(600)));
+    let (_owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    beat(&fx, "s2", &h, None, 600 + BEAT).await;
+    assert!(
+        fx.hub.park_idle_roles().await.unwrap().is_empty(),
+        "a session in a turn keeps its slot"
+    );
+    assert!(next_cmd(&mut s2).await.is_none());
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_session_with_a_running_tool() {
+    let fx = Fx::with(roles(Some(600)));
+    let (_owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    let idle = fx.clock.now();
+    fx.advance(600 + BEAT);
+    // The turn ended, and the host still reports a tool in flight.
+    fx.req(CtlRequest::HostHeartbeat {
+        host: name("s2"),
+        sessions: vec![SessionLeaseRef {
+            session: h.session,
+            agent: h.agent.clone(),
+            token: h.token,
+            idle_since: Some(idle),
+            last_event_at: None,
+            pinned: false,
+            activity: Some(Activity {
+                tool_running_since: Some(idle),
+                ..Activity::default()
+            }),
+        }],
+        stats: None,
+        launching: Vec::new(),
+    })
+    .await
+    .unwrap();
+    assert!(fx.hub.park_idle_roles().await.unwrap().is_empty());
+    assert!(next_cmd(&mut s2).await.is_none());
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_helper_bound_to_an_open_task() {
+    let fx = Fx::with(roles(Some(600)));
+    let (owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    let t: Task = serde_json::from_value(
+        fx.call(
+            Some(&owner),
+            ToolCall::TaskCreate {
+                channel: api(),
+                task: NewTask {
+                    title: "still mine".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    // Bound the way a spawn binds, without a claim: the task is still open.
+    let key = keys::agent(&h.agent);
+    let doc = fx.state.get(&key).await.unwrap().unwrap();
+    let mut bound: Agent = serde_json::from_slice(&doc.value).unwrap();
+    bound.task = Some(TaskRef {
+        channel: api(),
+        id: t.id,
+    });
+    fx.state
+        .update(
+            &key,
+            serde_json::to_vec(&bound).unwrap().into(),
+            doc.revision,
+        )
+        .await
+        .unwrap();
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &h, Some(idle), 600 + BEAT).await;
+    assert!(fx.hub.park_idle_roles().await.unwrap().is_empty());
+    assert!(next_cmd(&mut s2).await.is_none());
+}
+
+#[tokio::test]
+async fn idle_release_keeps_a_pinned_or_approving_role() {
+    let pinned = RoleConfig {
+        pinned: true,
+        idle_release_after: Some(Span(Duration::from_secs(600))),
+        ..RoleConfig::default()
+    };
+    let approving = RoleConfig {
+        approves: true,
+        idle_release_after: Some(Span(Duration::from_secs(600))),
+        ..RoleConfig::default()
+    };
+    for (role, config) in [("helper", &pinned), ("chief", &approving)] {
+        let fx = Fx::with(HubConfig {
+            roles: BTreeMap::from([(role.parse().unwrap(), (*config).clone())]),
+            ..HubConfig::default()
+        });
+        let (_owner, h) = on_a_static_host(&fx, role).await;
+        let mut s2 = fx.commands("s2").await;
+        let idle = fx.clock.now();
+        beat(&fx, "s2", &h, Some(idle), 600 + BEAT).await;
+        assert!(
+            fx.hub.park_idle_roles().await.unwrap().is_empty(),
+            "a {role} role keeps its slot"
+        );
+        assert!(next_cmd(&mut s2).await.is_none());
+    }
+}
+
+#[tokio::test]
+async fn idle_release_is_off_without_the_key() {
+    let fx = Fx::with(roles(None));
+    let (_owner, h) = on_a_static_host(&fx, "helper").await;
+    let mut s2 = fx.commands("s2").await;
+    let idle = fx.clock.now();
+    beat(&fx, "s2", &h, Some(idle), 2 * 60 * 60).await;
+    assert!(
+        fx.hub.park_idle_roles().await.unwrap().is_empty(),
+        "unset releases nobody"
+    );
+    assert!(next_cmd(&mut s2).await.is_none());
 }
