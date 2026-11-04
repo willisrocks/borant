@@ -26,8 +26,8 @@ Marks in this document:
 - "(Recommendation)" means that the designer answers a question that Chris
   left open, and gives the reason. Chris can overrule it.
 
-Section 24 lists every default and recommendation in one table, and the one open
-question.
+Section 24 lists every default and recommendation in one table, and the open
+questions.
 
 Inputs:
 
@@ -72,8 +72,8 @@ store that one service owns. A process crash then costs one tool call, not a
 session.
 
 The second reason is attention. Chris wants the system to take as little of
-his attention as possible. In the first version, work comes from GitHub and his
-own chat (section 14). The system decides which of it is work, asks him only when only
+his attention as possible. In the first version, work starts from his own chat, and GitHub
+feeds Tickets that already exist (section 21). The system decides which of it is work, asks him only when only
 he can answer, and shows him one screen with what needs him.
 
 The new system runs beside current Borant, not in place of it. Current Borant
@@ -118,8 +118,7 @@ through the chief)
   machines. One machine owns the sessions. (Decided)
 - Logged-in browser access. A worker with a logged-in browser can act on a site
   with no call to `authorize` (section 16). (Decided on 2026-11-03)
-- Generic Connections, Sources other than web chat, GitHub, and internal events,
-  and the replay run with its page. (Decided on 2026-11-03)
+- Generic Connections, Sources other than web chat and GitHub, and the replay run with its page. (Decided on 2026-11-03)
 - Several people as users. The Policy holds an allowed list per Source, and
   only Chris is on it. (My call)
 - Mapping one person's identities across Sources. As in the prototype, a
@@ -239,7 +238,6 @@ flowchart LR
   subgraph Sources
     GH[GitHub webhooks + delivery recovery]
     WC[Web chat]
-    IE[Internal events]
   end
   subgraph CP["Control plane app: one Fly Machine, one Node process"]
     HTTP[HTTP server: UI, API, webhooks, git proxy]
@@ -326,7 +324,7 @@ fly ips allocate-v6 --private --network borant-cp -a borant-cloud-sandbox
 |---|---|---|
 | Sandbox to control plane, over 6PN | No path. Fly does not forward packets between different 6PNs. | The two networks. |
 | Sandbox to control plane, over the internet | Public HTTPS, the same as anyone. | The route table below. |
-| Control plane to `sandboxd` | Flycast address of the sandbox app, allocated for the `borant-cp` network, with the `fly-force-instance-id` header for one Machine. | A bearer token per Assignment. The sandbox app has no public address. A sandbox cannot use this address, because Flycast does not serve an app's own network. |
+| Control plane to `sandboxd` | Flycast address of the sandbox app, allocated for the `borant-cp` network, with the `fly-force-instance-id` header for one Machine. | The `sandboxd` token of the Assignment. The sandbox app has no public address. A sandbox cannot use this address, because Flycast does not serve an app's own network. |
 | Control plane to the Machines API | `https://api.machines.dev`, with a deploy token for the sandbox app only. | The token cannot touch the control-plane app. |
 | Sandbox to another sandbox | One 6PN, so the network allows it. | `sandboxd` runs as root and each command runs as the user `worker`. An `ip6tables` owner rule drops traffic from `worker` to `fdaa::/16`, except DNS. |
 | Sandbox to the Machines API | No token in the sandbox. A forum reply says that the `/.fly/api` socket needs no token for "privileged processes" (https://community.fly.io/t/suspend-machine-from-application-code/26406). This is not official documentation. | `worker` is not root. Stage 1 makes sure that `worker` cannot use the socket, because a start through it bypasses the sandbox cap. |
@@ -345,7 +343,7 @@ The control plane has only these routes, and all of them are on its public addre
 | `/webhooks/github` | GitHub | HMAC signature on the raw body, and the expected installation and repo |
 | `/auth/*`, `/`, `/api/*` | Chris's browser | GitHub OAuth, the allowed list of user IDs, and a `SameSite=Strict` session cookie (section 12) |
 | `/admin/*` | Chris's browser | The same login |
-| `/git/*` | Git in a sandbox | The Assignment's token, the Assignment's Project repo, and the ref check of section 11. A revoked token fails at once. |
+| `/git/*` | Git in a sandbox | The Assignment's git token, the Assignment's Project repo, and the ref check of section 11. A revoked token fails at once. |
 
 `/metrics` has no public route. It listens on a second port with no `services` entry,
 and Fly reads it through the `[metrics]` configuration. Stage 1 makes sure that this
@@ -375,7 +373,7 @@ chief, with the details as my call):
    this document.
 3. Agents of current Borant can write the new code, as normal tasks in the new
    repo. That is use of a tool, not a runtime link.
-4. Only two outside things touch both systems: a Claude subscription's usage
+4. Only two outside things touch both systems: a model subscription's usage
    limit, and a GitHub repo that both work on. Section 21 sets the rules for
    each.
 
@@ -391,16 +389,16 @@ names the session and the sandbox directly).
 |---|---|---|
 | Profile | A group of Projects with one router. The first and only Profile is `personal`. The word applies to the new system only. Current Borant keeps "collection". (Chief default, for Chris to check) | Each Profile has its own router session, Policy part, and Source instances. |
 | Project | Configuration: a repo, a setup command, a sandbox size, secret bundles, models, and its Policy part. | Configuration, not state. Versioned with the Policy (section 11). |
-| Source | A stream of outside events. A Source kind is code (GitHub, web chat, internal). A Source instance is one configuration of a kind. | Holds its read position. Drops its own bot's messages before they enter the domain. Says which Threads and Channel addresses an event belongs to. |
+| Source | A stream of outside events. A Source kind is code (GitHub, web chat). A Source instance is one configuration of a kind. | Holds its read position. Drops the comments of its own bot before they enter the domain. It keeps the bot's PR and check events, because an opened PR creates a Subscription. Says which Threads and Channel addresses an event belongs to. |
 | Trigger | One immutable event from a Source, with the actor as the Source gives it, an actor kind (`person`, `bot`, or `ci`), and a `verified` flag. | ID = hash of Source instance ID and the Source's own event ID. A second insert is a no-op. `verified = true` only for an action in a logged-in web session (section 11). |
 | Thread | Triggers in time order. The Source defines which Triggers form one Thread: a PR, an issue, a chat conversation, a Ticket's own chat. | At most one Eval runs on a Thread at a time. Triggers that arrive meanwhile wait for the next batch. |
 | Subscription | A link between a Ticket and a Thread. | A Trigger from an allowed sender goes to every live subscribed Ticket as an Input, with no Eval. Allowed senders are the Source's allowed list and the CI and bot events that the Policy names. A Trigger from anyone else is recorded and does nothing else. A Trigger that a live Ticket took never goes to an Eval. A Trigger on a Thread whose Tickets all ended goes to an Eval. It restarts nothing by itself (section 29). |
 | Eval | The judgment on a batch of Triggers on one Thread: a deterministic gate, then a model assessment with a schema. | Holds no state of its own. Its output is one Decision. |
-| Decision | The stored result of one Eval: accept, ignore, stop, or unavailable. | Stores the candidate, the context snapshot, the gate result, the prompt revision, the model, and the raw model output (section 18). |
+| Decision | The stored result of one Eval: accept, ignore, or unavailable. | Stores the candidate, the context snapshot, the gate result, the prompt revision, the model, and the raw model output (section 18). |
 | Candidate | What the Eval judges: the Trigger batch, plus a proposed brief when the router or an allowed bot proposed one. | Stored with its Decision. |
 | Policy | Versioned rules as data: who can originate work through each Source, the gate rules, standing permissions, accept mode (live or observe), and model choices. | Every Decision and Mandate records the Policy version. A change goes to each live Ticket as a notice. It revokes a Mandate only when the new allowed list no longer holds the Mandate's sender (section 8, `publish_policy`). |
-| Mandate | What an accept grants: strength (`explicit` or `inferred`), scope, Policy version, basis (the Trigger IDs and the exact text that asked), and sender. | Immutable. A wider scope needs a new Ticket. Only a person's stop or a revocation by `publish_policy` withdraws it. |
-| Scope | The structured part of a Mandate that code enforces: Project, repo, branch prefix, allowed gated actions, and secret bundles. The brief is free text next to it. | `authorize` and secret injection read the structured fields. The assessor writes them, inside what the gate allows. (My call) |
+| Mandate | What an accept grants: strength (`explicit` or `inferred`), scope, Policy version, basis (the Trigger IDs and the exact text that asked), and sender. | Immutable. A wider scope needs a new Ticket. A revocation by `publish_policy` is a separate row. A stop is a state of the Ticket and does not change the Mandate. |
+| Scope | The structured part of a Mandate that code enforces: Project, repo, branch prefix, allowed gated actions, and secret bundles. The brief is free text next to it. | `authorize` and secret injection read the structured fields. Code fills them from the Project's Policy part: the repo, the prefix `cloud/<ticket id>/`, and the gated actions. The assessor only picks which of the Project's secret bundles the work needs. `decide` rejects a bundle outside the Policy. So a model cannot widen a scope or leave out `merge_pr`. (My call) |
 | Ticket | A unit of authorized work. | Only an Eval creates one. It holds its Mandate, Subscriptions, Channels, Inputs, Assignments, and stage. |
 | Assignment | The binding of a Ticket to one sandbox, under the Ticket's one conversation. | A Ticket has one live Assignment at a time and can have several over its life. States: running, ended. Section 29. |
 | Input | One message for a Ticket's session: the brief, a person's answer, a note, a CI result, a Policy notice. | Has a `requestId`, unique per conversation: the Trigger ID or the Engine's own key. Submitted to pi-durable once. |
@@ -454,7 +452,8 @@ and the HTTP server. (My call)
 `engine:<ticket>:<kind>:<n>` for the Engine's own Inputs (the brief, a Policy
 notice). One Trigger can feed several Tickets, so the Input row is unique on Ticket
 and `request_id`, and the effect key names the Ticket (section 8). `when_busy` is
-`steer` for a person's answer, and `followUp` for everything else. A stop is not an
+`steer` for a person's answer and for the notice of a lost sandbox (section 29), and
+`followUp` for everything else. A stop is not an
 Input (section 26). (My call)
 
 Every Input wakes the Ticket: pi-durable starts a run as soon as an idle conversation
@@ -548,20 +547,21 @@ model or an outside API inside a transaction.
 
 | Command | Writes | Effects |
 |---|---|---|
-| `ingest(sourceInstance, event)` | Trigger (`ON CONFLICT DO NOTHING`), Thread links, Source read position. A Subscription when the Trigger is a PR on a `cloud/<ticket id>/` branch of a live Ticket. On a Profile chat Thread: an Input for the router, and nothing else. On other Threads, if the sender is allowed: an Input for each live subscribed Ticket, and stage `working` for an idle one. If the Thread has no live subscribed Ticket: `threads.eval_pending = true`. | `submit_input` per Input. `run_eval` for the Thread. |
+| `ingest(sourceInstance, event)` | Trigger (`ON CONFLICT DO NOTHING`), Thread links, Source read position. A Subscription when the Trigger is a PR on a `cloud/<ticket id>/` branch of a live Ticket. On a Profile chat Thread: an Input for the router, and nothing else. On other Threads, if the sender is allowed: an Input for each live subscribed Ticket, and stage `working` for each. If the Thread has no live subscribed Ticket: `threads.eval_pending = true`. | `submit_input` per Input. `run_eval` for the Thread. |
 | `claim_eval(thread, evalId)` | If no claim exists: an `evals` row with the batch of pending Trigger IDs and the Policy version, and `eval_running = evalId`. If the claim is this `evalId`: nothing, and the rerun adopts the stored batch. If another claim exists: nothing, and the effect ends. | none |
-| `decide(evalId, gateResult, assessment)` | If the claim or the Policy version changed: nothing, and a new `run_eval`. Else the Decision. On accept: Ticket, Mandate, its own chat Thread, Subscriptions to that Thread and to each Thread of the batch except a Profile chat Thread, Channels, Assignment (running), brief Input, stage `working`. On accept with `resumes`: section 29. Clear `eval_running`. | `channel_write` (acknowledgment). `ensure_sandbox`. `submit_input`. `run_eval` again if Triggers arrived meanwhile. |
+| `decide(evalId, gateResult, assessment)` | If the claim or the Policy version changed: nothing, and a new `run_eval`. Else the Decision. On accept: Ticket, Mandate, its own chat Thread, Subscriptions to that Thread and to each Thread of the batch except a Profile chat Thread, Channels, Assignment (running), brief Input, stage `working`. On accept with `resumes`: section 29. Clear `eval_running`. | `channel_write`: the acknowledgment of an accept, and for a router proposal the result of any Decision, written to the Profile's chat. `ensure_sandbox`. `submit_input`. `run_eval` again if Triggers arrived meanwhile. |
 | `consume_report(entry)` | Report (unique outbox key). If the report is current (section 29): stage change, Ask, changes-feed event. If stale: an event only. | `channel_write` per Channel the report names. `stop_sandbox` after `done`. |
-| `run_ended(assignment, runKey, outcome)` | Stage: kept if a report already set it, `blocked/failed` for a run failure or `restart_limit`, else `idle`. Idempotent: a second call for the same run does nothing. | none. The idle stop applies (section 28). |
+| `run_ended(assignment, runKey, outcome)` | Stage: kept if a report already set it, `blocked/failed` for a run failure or `restart_limit`, `idle` with a reason for a provider's usage limit (section 28), else `idle`. Idempotent: a second call for the same run does nothing. | `submit_input` with `run_after` at the reset time, for a usage limit only. The idle stop applies (section 28). |
 | `answer(person, ask, text)` | Through `ingest` on the Ticket's chat Thread, as a `verified` Trigger. | `submit_input` with `whenBusy: "steer"`. |
 | `approve(person, ask, revision)` | Trigger, then an Approval row (section 27). | `submit_input`. |
 | `withdraw(person, approval)` | Approval `withdrawn_at`, if not consumed. | none |
 | `stop(person, ticket)` | Section 26. | `abort_session`. `stop_sandbox`. |
 | `resume(person, ticket, text)` | Section 29. | `ensure_sandbox`. `submit_input`. |
+| `close(person, ticket)` | Section 29. | `abort_session`. `stop_sandbox`. |
 | `sandbox_lost(assignment)` | Section 29. | `ensure_sandbox`. `submit_input`. |
 | `note(router, ticket, text)` | An Input with `actor = router`, `verified = false`. | `submit_input`. |
-| `propose(router, fromTrigger, project, brief)` | A candidate on the Thread of `fromTrigger`, and `eval_pending = true`. | `run_eval`. |
-| `publish_policy(commitSha)` | New Policy version. For each live Ticket: if the new allowed list no longer holds the Mandate's sender, revoke the Mandate and stop the Ticket (section 26). Else, if a rule it used changed, a notice Input. | `submit_input` per notice. `abort_session` and `stop_sandbox` per stop. `channel_write` for each revocation. |
+| `propose(router, fromTrigger, project, brief)` | A candidate on the Thread of `fromTrigger`, and `eval_pending = true`. Refused if `fromTrigger` is older than 1 hour. | `run_eval`. |
+| `publish_policy(person, commitSha)` | New Policy version, from a logged-in session (section 11). For each live Ticket: if the new allowed list no longer holds the Mandate's sender, revoke the Mandate and stop the Ticket (section 26). Else, if a rule it used changed, a notice Input. | `submit_input` per notice. `abort_session` and `stop_sandbox` per stop. `channel_write` for each revocation. |
 | `mark_seen(person, upToEventId)` | Seen position. | none |
 
 ### Eval
@@ -640,8 +640,16 @@ asked for. The Mandate's basis stores his exact text. (My call, because the
 router has the conversation context to write a good brief, and this keeps the
 router unable to grant anything.)
 
-GitHub Triggers go to the Eval directly. The router does not see them except through
-the board.
+GitHub Triggers go to the Eval directly. The router gets them as no Input. It has these
+tools: read the board, read a Ticket with its Thread as untrusted data, `note`, and
+`propose`. It has no sandbox, no GitHub write, and no secret. (My call)
+
+On a Profile chat Thread, the batch of an Eval is the proposal's `fromTrigger` and nothing
+else. One message can back several proposals within the hour, so "do A and B" can give two
+Tickets. Each Decision stores the exact text, and the assessment checks that the brief
+stays inside it. A hijacked router can repeat a recent request, but it cannot use an old
+one. Each result goes to the chat, so an `ignore` or an `unavailable` does not stay silent.
+(My call)
 
 The Profile's chat Thread belongs to the router alone. `ingest` gives each message
 to the router conversation and never sets `eval_pending` there, so only `propose`
@@ -696,7 +704,7 @@ cut, because this path covers the same gap. (My call)
 | No redelivery | The handler ingests the payload it reads. It does not call the `attempts` endpoint, because the API call is already authenticated, and the webhook path adds nothing. |
 | Retention | GitHub lists deliveries of the past 3 days (https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/viewing-webhook-deliveries). |
 | Cursor | The read position is the `delivered_at` of the newest delivery in the last complete walk. A walk goes from the newest delivery to the read position minus 15 minutes. The position advances only when the whole walk commits. The handler reads every status, not only failures, because a restored file (section 25) lost deliveries that returned 2xx. |
-| Identity | Event ID = `guid`, which is `X-GitHub-Delivery` on the webhook path. Actor = `sender.id`. Actor kind = `bot` when `sender.type` is `Bot`, else `person`. Trigger kind = `event` and `action`. The handler drops a delivery whose `installation_id` or `repository_id` is not the Source instance's. Stage 1 makes sure that a redelivery keeps its `guid`, because the docs do not say. |
+| Identity | Event ID = `guid`, which is `X-GitHub-Delivery` on the webhook path. Actor = `sender.id`. Actor kind = `ci` for `check_run`, `check_suite`, `status`, and `workflow_run` events, else `bot` when `sender.type` is `Bot`, else `person`. Trigger kind = `event` and `action`. The handler drops a delivery whose `installation_id` or `repository_id` is not the Source instance's. Stage 1 makes sure that a redelivery keeps its `guid`, because the docs do not say. |
 | Gap | If the read position is older than 3 days, the handler cannot prove that it has every event. It writes a `source_gap` event, raises a "needs you" item, and sets the read position to now. A read of the current PR state does not recover the events in between, so the item says which time range is lost. |
 
 ## 9. Delivery guarantees
@@ -704,7 +712,7 @@ cut, because this path covers the same gap. (My call)
 | Path | Guarantee | How |
 |---|---|---|
 | Outside event to Trigger | One Trigger per event, within the 3-day delivery log | At-least-once intake. Trigger ID is a hash of Source instance and event ID. Section 8 sets the recovery. |
-| Trigger to Eval | Each Trigger is in exactly one Decision batch | `claim_eval` stores the batch. A discarded Eval returns its batch. |
+| Trigger to Eval | Each Trigger reaches one final Decision. An `unavailable` Decision returns its batch for later. A chat message can back several proposals (section 8). | `claim_eval` stores the batch. A discarded Eval returns its batch. |
 | Trigger to a Ticket's session | Exactly once in the transcript of each subscribed Ticket | `requestId` = Trigger ID, per conversation (spike Q2). |
 | Report to Engine | Exactly once | Outbox key = tool task ID, unique key in `reports` (spike Q7). |
 | Sandbox job | Started at most once per task ID. After a crash: reattach, the stored result, or `uncertain`. | The job protocol of section 15. |
@@ -735,8 +743,11 @@ Two views read a `working` Ticket. Neither is a stage:
 
 - Silent: no tool call in 30 minutes, from `session_activity`. This follows the agent
   activity spec. A Ticket that waits for a model request or a sandbox is not silent.
-- Waiting: the Ticket waits for a model request, a sandbox, or a provider limit, with
-  the reason and the time (section 28).
+- Waiting: the Ticket waits for a model request or a sandbox, with the reason and the
+  time (section 28).
+
+The "Waiting" area of the screen also shows `idle` Tickets that a provider's usage limit
+holds, with the reset time.
 
 "Offline" from the mod v3 design becomes a `blocked/failed` Ticket with the
 reason "sandbox lost" or "session failed". (My call)
@@ -774,9 +785,13 @@ seen position.
    unavailable". `authorize` keeps no cache. (My call)
 6. The router can add notes. A note is an Input with `verified = false`. It
    grants nothing, and `authorize` never reads notes. (Decided)
-7. Standing permissions are Policy data. (Decided) The first Project has one, a worker
-   can comment on its own PR.
-8. On the first Project, no standing permission covers `merge_pr`, and the Policy
+7. Standing permissions are Policy data. (Decided) The first Project has none. Opening a
+   PR and commenting on the Ticket's own PR are not gated, because the tools stay inside
+   the Ticket's repo and Threads. (My call)
+8. `inferred` limits a Ticket in two ways. A standing permission applies to it only if the
+   Policy says so. It receives a secret bundle only if the Policy lists that bundle for
+   inferred work. (My call)
+9. On the first Project, no standing permission covers `merge_pr`, and the Policy
    grants no `deploy` or `spend`. `report_ready` names the PR and opens an
    `approve` Ask for `merge_pr`. Chris approves with `y`, which writes the Approval
    row and wakes the worker, and the worker calls `merge_pr`. If a merge runs a
@@ -818,7 +833,10 @@ anti-goal on forged approvals requires it)
    session.
 4. The network and route rules of section 5 hold if the worker is root-free. Commands
    run as `worker`, so they cannot read `sandboxd`'s files or use the root-only socket.
-5. A secret bundle is the part that stays exposed. A value in `bash` can leave
+5. CI runs what the worker pushed, so the repo's Actions settings are part of this
+   boundary (section 21). The App has no `workflows` permission, so a push that changes a
+   workflow file fails. But a changed test script runs in CI with that job's token.
+6. A secret bundle is the part that stays exposed. A value in `bash` can leave
    through the open internet. So a bundle holds only disposable test values, and
    no production secret goes into one. The first build has no egress filter,
    because workers need package registries and public pages. This is an accepted
@@ -827,9 +845,19 @@ anti-goal on forged approvals requires it)
 ### Policy as data
 
 Policy, Project configuration, and prompts live as YAML and Markdown files in
-a config repo, `willisrocks/borant-config`. A push to its main branch
-publishes a new Policy version, and the version is the commit SHA. (My call, because
-git gives versions, diffs, review, and rollback with no new code.)
+a private config repo, `willisrocks/borant-config`. The version is the commit SHA. (My call,
+because git gives versions, diffs, review, and rollback with no new code.)
+
+A push does not publish. A push can come from anything that holds Chris's login, and a
+standing permission can replace an Approval. So Chris presses Publish on the admin page, which
+shows the diff from the current version, and the page sends `publish_policy` with that SHA.
+It is a `verified` action, and it needs no webhook. The control plane reads the repo with a
+read-only deploy key. The App is not installed there. (My call)
+
+The same reasoning covers the code. Agents of current Borant can write
+`willisrocks/borant-cloud` through PRs, but only Chris holds the deploy tokens of the two
+production apps, and he runs `fly deploy`. Build tests use separate test apps with their own
+tokens. (My call)
 
 ## 12. Web UI
 
@@ -845,7 +873,7 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 
 | Area | Shows |
 |---|---|
-| Needs you | Each open Ask and each `person/review` and `blocked/failed` Ticket: the full question, why now, who asked, the Project, how long it waits, the router's note if any. An `approve` Ask shows the exact revision (section 27). Order: decide, approve, answer, unblock, then age. |
+| Needs you | Each open Ask and each `person/review` and `blocked/failed` Ticket: the full question, why now, who asked, the Project, how long it waits, the router's note if any. An `approve` Ask shows the exact revision (section 27). Order: decide, approve, answer, unblock, then age. System items also show here: a lost source range, a login to repeat, a token near its end, backup lag, a detected charge, and a Ticket idle for 7 days. |
 | Silent and failed | Working Tickets with no tool call in 30 minutes, with the last tool call shown. Failed sessions and lost sandboxes. |
 | Waiting | Tickets that wait for a model request, a sandbox, or a provider limit (section 28). |
 | Changes since your last look | New Tickets, done Tickets, merged and approved PRs, releases, answered Asks, Policy versions. "Mark seen" sets the seen position. Nothing else does. |
@@ -861,6 +889,7 @@ The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
 | `y` | Approve. A second `y` confirms when the Ask names money or a deploy. `n` cancels. |
 | `s` | Stop the selected Ticket. A second `s` confirms. |
 | `a` | Ask the router about the selected item. |
+| `c` | Close the selected Ticket. A second `c` confirms. |
 | `o` | Open the PR. |
 | `g` | Go to the Ticket detail. |
 | `x` | Mark the listed changes seen. |
@@ -882,8 +911,8 @@ The Mandate (strength, scope, basis with Chris's exact words, Policy
 version), the stage, the open Ask with the answer box, usable and used Approvals with
 a withdraw action, the Trigger history of every subscribed Thread with the Decisions
 on them, the live session transcript (`ConversationTranscript` watch), the sandbox
-state, the Channels, and the usage and list-price cost of the session. An ended or
-stopped Ticket has a Resume action (section 29).
+state, the Channels, and the usage and list-price cost of the session. An ended,
+stopped, `blocked/failed`, or `idle` Ticket has a Resume action (section 29).
 
 ### Admin
 
@@ -905,7 +934,8 @@ the chief)
 | Claude credential | `CLAUDE_CODE_OAUTH_TOKEN`, a one-year token from `claude setup-token`, as a Fly secret on the control-plane app (section 17) | pi-claude-code |
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in the SQLite file, AES-256-GCM under the master key | The control plane, and injected tool calls |
 | GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
-| Assignment token | A random value per Assignment. The control plane stores its hash. It gives `sandboxd` access and the git route for that Assignment only. Section 26 revokes it. | The control plane, `sandboxd`, and the git credential helper in the sandbox |
+| Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, stays in a root-only file on the Machine, and is stored encrypted in the `secrets` table, because the control plane presents it after a restart. The git token opens only the `/git/*` route, and `worker` can read it. The control plane stores its hash. Section 26 deletes both. | The control plane, `sandboxd`, and the git credential helper in the sandbox |
+| Config repo deploy key | Read-only. A Fly secret. | Reading the Policy (section 11) |
 
 Rules:
 
@@ -941,7 +971,7 @@ Sources and tools do different jobs:
 - A Channel writes back to the Thread that started the work.
 - A tool is what a worker uses during work.
 
-The first version has the web chat, GitHub, and internal Sources. Its tools are the
+The first version has the web chat and GitHub Sources. Its tools are the
 sandbox tools of section 15, the report tools, and the GitHub tools of the control
 plane (open a PR, comment, read a PR, `merge_pr`). (Decided on 2026-11-03)
 
@@ -960,6 +990,11 @@ installs the App on his own account, on the `boopmark` repo only. The reasons:
 
 The cost is that commits and PRs show the bot, and one more private key lives in
 Fly secrets.
+
+The App has these repository permissions and no others: Contents write, Pull requests write,
+Issues write, Checks read, Commit statuses read, Actions read, and Metadata read. It has no
+Workflows permission (https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps),
+no Administration, and no Secrets. (My call)
 
 ### Deferred, with the rules that stay
 
@@ -989,7 +1024,7 @@ plane. (Decided)
   Projects, Chromium for Playwright, and `sandboxd`. Projects that need more
   install it in their setup command. (My call)
 - `sandboxd` is a small TypeScript HTTP daemon. It runs as root, and it runs each
-  command as the user `worker`. Each request carries the Assignment's bearer token.
+  command as the user `worker`. Each request carries the `sandboxd` token.
   (My call, one protocol that we control, instead of pi-env's SSH daemon plus SSH keys.)
 - Each sandbox has a 10 GB Fly volume at `/work` for the clone, build caches, and job
   records, so that the work survives a stop and a restart. (My call)
@@ -1078,14 +1113,15 @@ stateDiagram-v2
 
 ### Machine-create retry
 
-The Machine or the volume can exist before its ID commits, so `ensure_sandbox` looks
-before it creates. Fly requires the volume to exist first, on the same host as its
+The sandbox ID is an Engine row, written with the Assignment that first needs it. An
+Assignment that adopts a sandbox keeps that ID (section 29). The Machine or the volume can
+exist before its ID commits, so `ensure_sandbox` looks before it creates. Fly requires the volume to exist first, on the same host as its
 Machine (https://docs.fly.io/machines/api/machines-resource/). (My call)
 
-1. List volumes of the sandbox app, and look for the name `work_<assignment id>`. Reuse
+1. List volumes of the sandbox app, and look for the name `work_<sandbox id>`. Reuse
    a match. Otherwise create it, then commit its ID.
-2. List Machines with `GET /v1/apps/<app>/machines?metadata.assignment=<id>`. Reuse a
-   match. Otherwise create it with that metadata and the name `a<assignment id>`, then
+2. List Machines with `GET /v1/apps/<app>/machines?metadata.sandbox=<id>`. Reuse a
+   match. Otherwise create it with that metadata and the name `s<sandbox id>`, then
    commit its ID.
 3. If the create call returns a conflict, go back to step 2.
 
@@ -1241,8 +1277,9 @@ admin page lists stored Decisions with filters. (Decided on 2026-11-03)
 ### Observe mode
 
 A Source instance or a single rule can be in observe mode. Its Evals run and
-store "would accept" Decisions, but create no Ticket. New Sources start in
-observe mode. (Decided for the mode, my call for the start state.)
+store "would accept" Decisions, but create no Ticket. A GitHub Source instance or a later
+Source starts in observe mode. The web chat is live from the start. (Decided for the mode, my
+call for the start state.)
 
 ## 19. Observability and audit
 
@@ -1329,6 +1366,7 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
 
 ### Build stages
 
+0. Change the settings of `boopmark` below, if Chris agrees (section 24).
 1. Prove the unproven points, in this order. Each one can change the design, and any failure
    stops the build until Chris hears about it:
    - The Claude test on the account from section 24: one real turn from a Fly Machine, other
@@ -1345,6 +1383,7 @@ current Borant. Nothing moves. (Decided, order from Chris through the chief)
      then restore mode (section 25).
    - A wait at the model-request limit that uses no stream timeout or retry (section 28).
    - A GitHub redelivery keeps its `guid` (section 8).
+   - A long transcript: a session with 5000 entries, its reopen time, and its heap.
 2. Build the core: the Engine, the crossings, effects, the Harness, sandboxes, the limits, the
    git proxy, the web chat and GitHub Sources, Evals with stored Decisions, the chief-of-staff
    screen, Ticket detail, notifications, and the admin page.
@@ -1374,9 +1413,38 @@ off the new system, because a change to them can change the running system.
 3. The GitHub Source stays in observe mode for `boopmark`. Its Evals store "would
    accept" and create no Ticket, so a comment on a PR of current Borant cannot
    start a duplicate Ticket. Subscribed Threads still deliver Inputs, because
-   observe mode applies only to Evals.
-4. Both systems merge through normal GitHub review, so GitHub handles conflicts
-   between their branches.
+   observe mode applies only to Evals. Observe-mode Evals take the lowest priority at
+   the model-request limit, and they use the cheapest model in the Policy. The build
+   includes the live path, tested with a faux provider. Chris ends observe mode with
+   a Policy commit after stage 4. Nothing ends it by itself.
+4. Both systems merge through GitHub PRs, so GitHub handles conflicts between their
+   branches. The `main` ruleset requires a PR, 0 approvals, and squash merges, and it
+   requires no status checks (`gh api`, 2026-11-03). So `y` on the screen is the only
+   approval that a Ticket's merge needs, and `merge_pr` checks CI itself (section 27).
+   Chris can still review on GitHub. That review grants nothing.
+
+### What `boopmark` must change first
+
+A Ticket's worker pushes to a branch inside the repo, not to a fork, so CI on its PR has more
+power than CI on a stranger's PR. If a repo's PR job holds a write token, or its deploy
+environment has no protection, a hijacked worker can push a changed test script and open a PR.
+CI then runs that script, and it can go around the git proxy and `authorize`. An event from
+this token starts no new run, but `workflow_dispatch` is an exception
+(https://docs.github.com/en/actions/concepts/security/github_token). The settings of
+`boopmark` need changes to close this (read with `gh api` on 2026-11-03). This public document
+does not list their current values. Nobody tested the path. (Found by the builder check. My
+call on the fix.)
+
+The fix is three settings, and it is the smallest one:
+
+1. Set the default workflow permission to read. Of the four workflows, only `ci.yml` declares
+   no `permissions`, and it needs no write.
+2. Give the `production` environment a required reviewer, Chris.
+3. Limit the `production` environment to the `main` branch.
+
+These change a repo that current Borant also works on, so they need Chris's yes (section 24).
+They change no workflow file, but a release of `boopmark` then waits for his review. Stage 1
+makes sure that a PR job on a `cloud/` branch has a read-only token.
 
 ### Shared Claude usage limit
 
@@ -1475,7 +1543,8 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | Both systems work on one repo | Duplicate work and branch conflicts. | The rules in section 21. |
 | Two screens during the parallel run | More attention from Chris, which is an anti-goal. | Accepted while the new system has one Project. The measurements in section 21 feed the later decision. |
 | Subscription terms for use on a server | A provider can refuse headless use of `claude -p` or of ChatGPT OAuth. | Chris decided that the terms are fine for this use. A provider can still change its terms. The check below this table sets build constraints. |
-| A hijacked worker | It can leak a value from a secret bundle. It can use its internet access. | Bundles hold only disposable test values. It cannot push outside its prefix or merge (section 11). |
+| A hijacked worker | It can leak a value from a secret bundle. It can use its internet access. Through CI, it can go around the git proxy unless the repo's settings are right. | Bundles hold only disposable test values. The git proxy, the App's permissions, and the `boopmark` settings of section 21. |
+| A deploy or a Policy publish by an agent | An agent removes a check, or grants itself a standing permission. | Only Chris publishes Policy and holds production deploy tokens (section 11). |
 
 ### Subscription terms check
 
@@ -1521,21 +1590,32 @@ None of these is Chris's decision yet. The document uses each one until Chris an
 | Naming | "Profile" applies to the new system only. Current Borant keeps "collection". | Chief default, for Chris to check | 5, 6 |
 | `claude -p` fallback | Every role moves to Codex if the Codex test passes. No Anthropic API key. | Recommendation | 17 |
 
-### Open question for Chris
+### Open questions for Chris
 
-Which Claude account does the new system use? The first build task runs a real `claude` turn
-on it from a Fly Machine, and all Claude work then counts against that account's usage limit.
+1. Which Claude account does the new system use, and which ChatGPT account does the Codex
+   fallback use? The first build task runs a real `claude` turn on the Claude account from a
+   Fly Machine, and all Claude work then counts against that account's usage limit.
 
-- A shared account breaks the rule that the new system costs current Borant nothing. Its work
-  uses the limit of current Borant's agents, and the model-request limit only slows that. A
-  new token can also log those agents out, and nothing tests that yet.
-- A separate account keeps the rule, and it adds that plan's price: $100 a month for Max, or
-  $200 for Ultra, unless he already pays for a second account.
+   - A shared account breaks the rule that the new system costs current Borant nothing. Its
+     work uses the limit of current Borant's agents, and the model-request limit only slows
+     that. A new token can also log those agents out, and nothing tests that yet.
+   - A separate Claude account keeps the rule, and it adds that plan's price: $100 a month
+     for Max, or $200 for Ultra, unless he already pays for a second account.
+   - The same limit rule applies to ChatGPT. If current Borant or his CLI use that
+     subscription, a move of every role to Codex moves the shared-limit problem there.
 
-(Recommendation) A separate account, because the parallel rule is Chris's order. That makes the
-first-Project bill about $139 a month with Max. If he picks the shared account, the build
-accepts the interference. The first token is then created at a time that he picks, so that he
-can watch current Borant.
+   (Recommendation) A separate Claude account, because the parallel rule is Chris's order.
+   That makes the first-Project bill about $139 a month with Max. The fallback can stay on his
+   ChatGPT subscription, because it is rare and he hears when it starts. If he picks a shared
+   Claude account, the build accepts the interference. The first token is then created at a
+   time that he picks, so that he can watch current Borant.
+
+2. Can the build change three repo settings of `boopmark` before the first Ticket (section
+   21)? Without them, the approval rule does not hold against a hijacked worker. With them, a release of `boopmark` waits for his review of the `production`
+   environment, also for work from current Borant. The other choice is a different first
+   Project, which has the same check to pass.
+
+   (Recommendation) Change the settings.
 
 Closed: the subscription terms (section 23), and the five cuts of section 2.
 
@@ -1630,8 +1710,8 @@ finding, confirmed against the README, line 714, and `dist/harness/types.d.ts:79
 The command comes only from a logged-in web session. One transaction does all of this:
 
 - The Ticket's state becomes `stopped`, and the Assignment ends with the reason `stopped`.
-- The hash of the Assignment token is deleted. The `/git/*` route and the fleet manager
-  refuse that token from this commit on.
+- Both Assignment tokens are deleted. The `/git/*` route and the fleet manager refuse the
+  Assignment from this commit on.
 - Pending effects with this `ticket_id` become `cancelled`, including outbox messages
   that no attempt started. The kinds `abort_session`, `stop_sandbox`, `destroy_sandbox`,
   and `notify` stay.
@@ -1724,8 +1804,11 @@ if the SHA differs from the Ask's, and the page reloads. Otherwise, the Engine w
    between steps 1 and 3 cannot merge unreviewed code.
 4. On success, it sets `used_at` and records the merge SHA in the `events` table.
 
-The approved SHA fixes the head. It does not fix the base branch, so a base that
-moved can change the merge result, and GitHub's own required checks are what guard that.
+The call uses `merge_method: squash`, because the `boopmark` ruleset allows only that. The
+ruleset requires no status checks, so `merge_pr` reads the check runs at the approved SHA
+and refuses while one failed or runs. The Ask shows the same state. The approved SHA fixes
+the head. It does not fix the base branch, so a base that moved can change the merge result.
+A first Project with one person accepts this. (My call)
 
 ### The cases
 
@@ -1734,8 +1817,8 @@ moved can change the merge result, and GitHub's own required checks are what gua
 | Reuse | One success uses the Approval. A later `merge_pr` on another revision needs a new one. |
 | A failed attempt | A 405 or a network error keeps the Approval usable, because merging the same SHA twice cannot merge new code. |
 | A crash during the merge | The tool keeps the default replay policy, so the model gets an `interrupted` result. When the model calls the tool again, step 1 finds the PR merged, and the tool returns that and sets `used_at`. |
-| A new push after the approval | The revision no longer matches. The tool returns "needs approval", the model raises a new Ask, and the old row expires unused. |
-| Expiry | After 24 hours, the Approval is unusable. The Ask reopens, and it says why. |
+| A new push after the approval | The revision no longer matches. The tool returns "needs approval", and the model raises a new Ask. A new Ask for the same action closes the old Ask, and the old row expires unused. |
+| Expiry | After 24 hours, the Approval is unusable. If the Ask is not closed and its revision is still the head of an open PR, the Ask reopens and says why. |
 | Withdrawal | Chris can withdraw an unused Approval from the Ticket detail. A used one cannot be withdrawn. |
 | A stop, an end, or a revocation | The Approval is withdrawn or unusable. Resume does not bring it back (section 26). |
 | A restore | Every unused Approval is withdrawn, because the file can be older than the merge (section 25). |
@@ -1829,6 +1912,10 @@ progress. A count at the cap means no call to Fly.
   person can wait that long at a cap of 2. Chris can stop a Ticket, or raise the cap with
   a Policy commit.
 - A wait holds no model request, because the worker waits inside a tool call.
+- A volume place frees when the fleet manager destroys a volume. At the volume cap, it first
+  destroys the volume of the oldest ended or stopped Ticket, before its 24 hours end. If there
+  is none, the new Ticket waits, and a "needs you" item names the idle Tickets that hold the
+  volumes.
 - The fleet manager reads the real state from the Machines API every 60 s and at startup.
   A started Machine with no row stops at once (section 15).
 
@@ -1859,12 +1946,13 @@ most one is running. An Assignment names the conversation, the sandbox, and the 
 |---|---|---|
 | `done` | `consume_report` of a current `report_done` | The Ticket ends. |
 | `stopped`, `revoked` | Section 26 | The Ticket stops. |
+| `closed` | `close` | The Ticket ends. |
 | `sandbox_lost` | The fleet manager | The replacement below. |
 
 A new Assignment comes from `decide` (a new Ticket, or an accept with `resumes`), from
-`resume`, or from the replacement. It gets a new token. If the old sandbox still exists,
-the new Assignment adopts it. The fleet manager writes the new token to the stopped
-Machine's configuration before it starts it, so the old token no longer opens it.
+`resume`, or from the replacement. It gets new tokens. If the old sandbox still exists,
+the new Assignment adopts its sandbox ID. The fleet manager writes the new `sandboxd` token to
+the stopped Machine's configuration before it starts it, so the old token no longer opens it.
 
 ### Runs
 
@@ -1889,9 +1977,8 @@ handler reads `pi.live`. A report is current when all of these are true:
 - The conversation has no run, or its run has the report's run key.
 
 A stale report changes no stage and opens no Ask. It writes a `stale_report` event, and the
-Ticket detail shows it. For example, a worker ends a run with `report_ready`, the process
-crashes, and Chris's answer starts a new run before the runner reads the entry. The stage
-stays `working`, and the worker has already seen the answer. (Astra's finding, confirmed.)
+Ticket detail shows it. For example, a worker ends a run with `report_ready`, and Chris's
+answer starts a new run before the runner reads the entry. The stage stays `working`. (Astra's finding, confirmed.)
 
 `run_ended` uses the same key, so that a late call for an old run changes nothing.
 
@@ -1902,16 +1989,25 @@ or stopped Ticket a new run. (Decided on 2026-11-03 for the rule. The paths are 
 
 | Path | Rules |
 |---|---|
-| Chris presses Resume on the Ticket detail, with an optional text. | A `verified` Trigger. It works on an ended or a stopped Ticket if the Mandate is not revoked. The Mandate stays the same row, so the scope stays the same, and the Trigger is the record that he lifted the stop. |
+| Chris presses Resume on the Ticket detail, with an optional text. | A `verified` Trigger. It works on an ended or a stopped Ticket, and on a live Ticket in `blocked/failed` or `idle`, if the Mandate is not revoked. The Mandate stays the same row, so the scope stays the same, and the Trigger is the record that he lifted the stop. |
 | An Eval accepts with `resumes`. | The Thread's Tickets all ended. The Source is in live mode. The assessment names exactly one ended Ticket on that Thread, and the Mandate covers the work. The gate holds it to `inferred` unless the Trigger is `verified`. A stopped Ticket cannot resume this way, because a stop is a person's order. |
 
-Everything else on an ended Thread goes to the Eval, which ignores it, starts a new Ticket,
-or asks. Work that needs a wider scope is a new Ticket. On the first Project, the GitHub
+Everything else on an ended Thread goes to the Eval, which ignores it or starts a new
+Ticket. An `ignore` of an allowed person's Trigger writes an event with the reason, so it shows
+in the changes feed. Work that needs a wider scope is a new Ticket. On the first Project, the GitHub
 Source is in observe mode (section 21), so such an accept stores "would resume", and only
 Resume restarts work.
 
 An ended Ticket's conversation stays for the transcript. A new Input continues the same
 conversation, so the worker keeps its memory.
+
+### Live Tickets that no longer move
+
+A live Ticket leaves `blocked/failed` or `idle` through an Input, Resume, or `close`. `close`
+commits the same changes as a stop, but the Ticket's state becomes `ended`. It works on a
+stopped Ticket too, and it comes only from a logged-in session. A Ticket that stays `idle`
+for 7 days raises a "needs you" item that offers `close`. Nothing closes a Ticket by itself,
+because a close can cost unpushed work. (My call)
 
 ### A lost sandbox
 
@@ -1922,7 +2018,8 @@ of section 15 removes it.
 
 1. `sandbox_lost` commits: the Assignment ends, its token is revoked, a `sandbox_lost`
    event is written, and a new Assignment starts, once per Ticket in 24 hours.
-2. A second loss in 24 hours stops there, with the stage `blocked/failed`, and Chris decides.
+2. A second loss in 24 hours stops there, with the stage `blocked/failed`. Chris uses Resume
+   or `close`.
 3. The new sandbox clones the Ticket's branch as last pushed.
 4. An Input with `whenBusy: "steer"` says that the sandbox is new, the last pushed commit,
    and that unpushed work is gone.
@@ -1955,6 +2052,8 @@ Cut on 2026-11-03 by Chris:
 Cut by the designer:
 
 - Correlation and Executor from the prototype (section 6)
+- An internal events Source. Failures and stops have their own commands, so it had no
+  events.
 - A webhook spool file (section 8)
 - Rebuilding a conversation from its Inputs after a restore (section 25)
 - Hetzner options. They save $7 to $16 a month, and every plan showed as unavailable on
