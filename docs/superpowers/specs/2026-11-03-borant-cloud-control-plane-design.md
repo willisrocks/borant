@@ -919,6 +919,12 @@ with a CSRF token, a nonce, and a CSP. A route replies with JSON only on
 `Accept: application/json`, else with a 303. `/tickets/:id` and `/admin` stay
 server-rendered.
 
+`/` serves the Console, and the server-rendered chief-of-staff screen is retired with the view
+that drew it. `/console` answers a 303 to `/` with its `?view=`, so a bookmark from before the
+cutover lands on the same conversation, and `/assets/*` serves the build. A process started
+without the one client build answers `/` with a 500 that names the build command: there is no
+second board. (Recorded by the cutover PR, 2026-11-05)
+
 | Area | Shows |
 |---|---|
 | Sidebar | The Lanes and Plans views. Lanes are In Progress, In Review, and Done, with the stage of each Ticket, and silent and waiting states. A click filters the chat with `?view=`. |
@@ -934,7 +940,11 @@ other key.
 
 The mockups have no "Changes since your last look" area and no "PRs closest to merge" area. The
 design does not say if `mark_seen` stays. The builder of the cutover PR decides and records it
-here.
+here: `mark_seen` stays, as a route and as the Console's `x` key, so the position the Engine
+keeps is unchanged, but no page draws the changes list. What changed is the lanes' rows and the
+stream, and PRs closest to merge are the In Review lane's rows and the details panel, which shows
+the head, its checks, and the approval's binding. A later area can draw the list from the same
+board JSON without a new route. (Recorded 2026-11-05)
 
 ### Phone
 
@@ -942,6 +952,14 @@ The page works at phone width: chat first, with the sidebar and the details as s
 key action also has a button. So Chris can answer,
 approve, or stop from a push notification. An approval shows the same SHA and diff link there.
 (My call, because a push that he cannot act on delays each Ask until he is at his laptop.)
+
+At phone width the decision bar is one compact card: its icon, the item, its SHA, the checks and
+the count, one button that opens the card, and the one primary action (Approve, or the answer
+field). Opening it shows the facts, the worker's line, Stop and the Chief's `@`, and its collapse
+button gives the chat back; the next item starts compact. The arrows between items stay at
+desktop width only. The composer's text is 16 px there, so a phone does not zoom on focus, its
+`@` and send buttons are 44 px targets, and the composer sits above the home indicator.
+(Recorded by the cutover PR, 2026-11-05)
 
 ### Notifications
 
@@ -956,11 +974,16 @@ plane cannot push. (My call, and another channel is one adapter.)
 ### Ticket detail
 
 The Mandate (strength, scope, basis with Chris's exact words, Policy
-version), the stage, the open Ask with the answer box, usable and used Approvals with
-a withdraw action, the Trigger history of every subscribed Thread with the Decisions
+version), the stage, the open Ask with its question, why, and its bound revision, usable and
+used Approvals, the Trigger history of every subscribed Thread with the Decisions
 on them, the live session transcript (`ConversationTranscript` watch), the sandbox
 state, the Channels, and the usage and list-price cost of the session. An ended,
 stopped, `blocked/failed`, or `idle` Ticket has a Resume action (section 29).
+
+The page writes no decision: the open Ask links to the Console at that Ticket's `?view=`,
+because the decision bar is the only Approve and Answer surface. Withdrawing an unused
+Approval is the Console's details-panel action, not this page's. (Recorded by the cutover PR,
+2026-11-05)
 
 ### Admin
 
