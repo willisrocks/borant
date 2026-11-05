@@ -3,10 +3,14 @@ name: Release
 # Publishes Borant vX.Y.Z from the green tip of main, by hand. Start it with
 # `just release`, on the Mac that holds the Depot login.
 #
-# 1. plan: requires main and the typed confirmation, requires a green `ci`
-#    run at main's tip, and computes the next version from the newest vX.Y.Z
-#    tag with the `bump` input (.github/scripts/next-version.sh). The first
-#    release is 0.1.0.
+# 1. plan: requires main and the typed confirmation, and computes the next
+#    version from the newest vX.Y.Z tag with the `bump` input
+#    (.github/scripts/next-version.sh). The first release is 0.1.0.
+#    ci: runs the jobs of ci.yml at the release commit. Every later job needs it,
+#    so a release ships only a commit that CI tested in this run. It does not
+#    read check runs, because a patched `depot ci run` posts checks on its base
+#    commit. It does not read Depot runs, because the token that Depot CI injects
+#    cannot, and no other token is stored.
 # 2. build: builds `borant` for Linux x86-64 and arm64 at that commit, with the
 #    version set at build time, and checks `borant --version`.
 # 3. darwin: Depot CI has no macOS runner, so this job dispatches the GitHub
@@ -70,7 +74,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: read
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
       version: ${{ steps.plan.outputs.version }}
@@ -88,24 +91,6 @@ jobs:
           set -euo pipefail
           [[ "$CONFIRM" == release ]] || { echo "confirm must be release" >&2; exit 1; }
           [[ "$DRY_RUN" == true || "$GITHUB_REF" == refs/heads/main ]] || { echo "release must run from main" >&2; exit 1; }
-      - name: Require a green CI run at the release commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          if [[ "$DRY_RUN" != true ]]; then
-            bash .github/scripts/require-green-ci.sh
-            exit 0
-          fi
-          # A dry run proves the gate both ways, on Depot CI's results alone.
-          tip="$(git rev-parse origin/main)"
-          SHA="$tip" CI_SOURCE=depot bash .github/scripts/require-green-ci.sh
-          if [[ "$SHA" != "$tip" ]] && CI_SOURCE=depot bash .github/scripts/require-green-ci.sh; then
-            echo "the gate accepted a commit that is not on main" >&2
-            exit 1
-          fi
       - name: Compute the version
         id: plan
         env:
@@ -132,8 +117,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Releasing v$version at \`$GITHUB_SHA\` (previous: ${previous:-none}, publish: $publish)." >> "$GITHUB_STEP_SUMMARY"
 
-  build:
+  ci:
     needs: plan
+    uses: ./.depot/workflows/ci.yml
+
+  build:
+    needs: [plan, ci]
     strategy:
       fail-fast: true
       matrix:
@@ -180,7 +169,7 @@ jobs:
           path: dist/
 
   darwin:
-    needs: plan
+    needs: [plan, ci]
     runs-on: depot-ubuntu-latest
     timeout-minutes: 60
     permissions:
