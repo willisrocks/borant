@@ -791,18 +791,22 @@ prompts off, and hosts need the same logins and tools.
 ## Releases
 
 A maintainer starts a release with `just release <patch|minor|major>
-[notes.md]`, or from the Actions tab: run the `Release` workflow on `main`,
-type `release` to confirm, and pick the bump. `just changes` prints the commits
-since the last release, as input for notes that you write with a model on your
-machine. Without a notes file, the release uses GitHub's generated notes.
+[notes.md]`, on the machine that holds the Depot login. `just changes` prints the
+commits since the last release, as input for notes that you write with a model
+on your machine. Without a notes file, the release uses GitHub's generated notes.
 
-1. The workflow requires a green `ci` run at the tip of `main`.
+The `Release` workflow runs on Depot CI. Depot CI has no macOS runner, so two
+small GitHub Actions workflows do the steps that it cannot do. No credential is
+stored in Depot.
+
+1. It runs the `ci` jobs at the tip of `main`. Every later step needs them.
 2. It computes the next version from the newest `vX.Y.Z` tag. The first
    release is `0.1.0`.
-3. It builds `borant` for Linux x86-64, Linux arm64, macOS arm64, and macOS
-   x86-64, with SHA-256 files.
-4. It pushes `ghcr.io/willisrocks/borant:X.Y.Z` and `:latest` for amd64 and
-   arm64.
+3. It builds `borant` for Linux x86-64 and Linux arm64, and `release-darwin.yml`
+   builds macOS arm64 and macOS x86-64, with SHA-256 files.
+4. It builds the image for amd64 and arm64 in a Depot project, and
+   `release-image.yml` pushes it to `ghcr.io/willisrocks/borant:X.Y.Z` and
+   `:latest`.
 5. It tags the commit and publishes a GitHub Release with GitHub's generated
    notes, plus an archive with the Claude Code plugin and the Pi extension.
 6. It writes the version into the manifests on `main` with a
