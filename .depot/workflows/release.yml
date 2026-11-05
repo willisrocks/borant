@@ -1,0 +1,360 @@
+name: Release
+
+# Publishes Borant vX.Y.Z from the green tip of main, by hand. Start it with
+# `just release`, on the Mac that holds the Depot login.
+#
+# 1. plan: requires main and the typed confirmation, requires a green `ci`
+#    run at main's tip, and computes the next version from the newest vX.Y.Z
+#    tag with the `bump` input (.github/scripts/next-version.sh). The first
+#    release is 0.1.0.
+# 2. build: builds `borant` for Linux x86-64 and arm64 at that commit, with the
+#    version set at build time, and checks `borant --version`.
+# 3. darwin: Depot CI has no macOS runner, so this job dispatches the GitHub
+#    workflow release-darwin.yml, waits for it, and collects its 2 archives.
+# 4. image: builds the image with `depot build` in the Depot project `borant`,
+#    from the release binaries for amd64 and arm64. It pushes
+#    ghcr.io/<owner>/borant:X.Y.Z and :latest with the secret GHCR_PAT.
+# 5. publish: tags the commit vX.Y.Z and publishes a GitHub Release with the
+#    archives and their SHA-256 files. The notes are the `notes` input when it
+#    is set, else GitHub's generated notes since the previous tag. It is
+#    marked Latest.
+# 6. bump: writes the version into the manifests on main with a
+#    `chore(release): vX.Y.Z` commit. A failure before publish leaves main
+#    and the tags as they were.
+#
+# With dry_run=true, every job runs from any branch, and nothing leaves the
+# runners: no image push, no tag, no release, and no push to main. The output
+# `publish` of the job `plan` is the only switch, and only a run from main with
+# no dry run sets it. The confirmation stays required.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type release to confirm.
+        required: true
+        type: string
+      bump:
+        description: Semantic version increment.
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      notes:
+        description: >-
+          Optional Markdown release notes, for example written with a model on
+          your machine (`just release patch notes.md`). Empty uses GitHub's
+          generated notes.
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: Type true to run every job and publish nothing.
+        required: false
+        default: 'false'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require main and confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == release ]] || { echo "confirm must be release" >&2; exit 1; }
+          [[ "$DRY_RUN" == true || "$GITHUB_REF" == refs/heads/main ]] || { echo "release must run from main" >&2; exit 1; }
+      - name: Require a green CI run at the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" != true ]]; then
+            bash .github/scripts/require-green-ci.sh
+            exit 0
+          fi
+          # A dry run proves the gate both ways, on Depot CI's results alone.
+          tip="$(git rev-parse origin/main)"
+          SHA="$tip" CI_SOURCE=depot bash .github/scripts/require-green-ci.sh
+          if [[ "$SHA" != "$tip" ]] && CI_SOURCE=depot bash .github/scripts/require-green-ci.sh; then
+            echo "the gate accepted a commit that is not on main" >&2
+            exit 1
+          fi
+      - name: Compute the version
+        id: plan
+        env:
+          BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          json="$(bash .github/scripts/next-version.sh)"
+          version="$(jq -r .nextVersion <<<"$json")"
+          previous="$(jq -r .currentVersion <<<"$json")"
+          if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+            echo "release_tag_exists: v$version" >&2
+            exit 1
+          fi
+          publish=false
+          if [[ "$DRY_RUN" != true && "$GITHUB_REF" == refs/heads/main ]]; then
+            publish=true
+          fi
+          {
+            echo "sha=$GITHUB_SHA"
+            echo "version=$version"
+            echo "previous=${previous:+v$previous}"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version at \`$GITHUB_SHA\` (previous: ${previous:-none}, publish: $publish)." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: depot-ubuntu-latest, arch: amd64 }
+          - { target: aarch64-unknown-linux-gnu, os: depot-ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      BORANT_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p borant --target ${{ matrix.target }}
+      - name: Check the version
+        run: |
+          set -euo pipefail
+          got="$(target/${{ matrix.target }}/release/borant --version)"
+          [[ "$got" == "borant $BORANT_RELEASE_VERSION" ]] || { echo "version mismatch: $got" >&2; exit 1; }
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="borant-v${BORANT_RELEASE_VERSION}-${{ matrix.target }}"
+          mkdir -p "$name" out
+          cp target/${{ matrix.target }}/release/borant README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar -czf "out/$name.tar.gz" "$name"
+          (cd out && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          mkdir -p "dist/${{ matrix.arch }}"
+          cp target/${{ matrix.target }}/release/borant "dist/${{ matrix.arch }}/borant"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: out/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arch }}
+          path: dist/
+
+  darwin:
+    needs: plan
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      REQUEST: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Build on macOS and collect the archives
+        run: |
+          set -euo pipefail
+          gh workflow run release-darwin.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f sha="$SHA" -f version="$VERSION" -f request="$REQUEST"
+          id=""
+          for _ in $(seq 1 24); do
+            id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-darwin.yml --event workflow_dispatch \
+              --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\"($REQUEST)\"))][0].databaseId // \"\"")"
+            [[ -n "$id" ]] && break
+            sleep 5
+          done
+          [[ -n "$id" ]] || { echo "no release-darwin run for request $REQUEST" >&2; exit 1; }
+          gh run watch "$id" --repo "$GITHUB_REPOSITORY" --interval 30 --exit-status
+          gh run download "$id" --repo "$GITHUB_REPOSITORY" --pattern 'archive-*' --dir darwin
+          mkdir -p out
+          cp darwin/*/* out/
+          cd out
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            sha256sum -c "borant-v${VERSION}-${target}.tar.gz.sha256"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-darwin
+          path: out/*
+
+  image:
+    needs: [plan, build]
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: dist
+          merge-multiple: true
+      - run: chmod +x dist/*/borant
+      - name: Log in to ghcr.io
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        run: printf '%s' "$GHCR_PAT" | docker login ghcr.io -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
+      - name: Name the image
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: depot/setup-action@v1
+      - uses: depot/build-push-action@v1
+        with:
+          project: tvg2z6xjn2
+          context: .
+          file: docker/release.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.plan.outputs.publish == 'true' }}
+          save: true
+          save-tags: |
+            ${{ needs.plan.outputs.version }}-${{ github.run_id }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ needs.plan.outputs.version }}
+            ${{ steps.name.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+
+  publish:
+    needs: [plan, build, darwin, image]
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: out
+          merge-multiple: true
+      - name: Package the integrations
+        run: |
+          set -euo pipefail
+          name="borant-integrations-v${VERSION}"
+          mkdir -p "$name"
+          cp -R integrations/claude-code "$name/claude-code"
+          # The bump job writes the version on main only after the release,
+          # so the released commit still carries the previous one. Stamp the
+          # packaged plugin with the version that it ships in.
+          plugin="$name/claude-code/.claude-plugin/plugin.json"
+          jq --arg v "$VERSION" '.version = $v' "$plugin" > "$plugin.new" && mv "$plugin.new" "$plugin"
+          [[ "$(jq -r .version "$plugin")" == "$VERSION" ]] || { echo "plugin version mismatch" >&2; exit 1; }
+          mkdir -p "$name/pi"
+          cp integrations/pi/borant.ts integrations/pi/README.md "$name/pi/"
+          tar -czf "out/$name.tar.gz" "$name"
+          (cd out && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - name: List what a release attaches
+        run: ls -l out
+      - name: Publish the release
+        if: needs.plan.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if [[ -n "$NOTES" ]]; then
+            printf '%s\n' "$NOTES" > generated.md
+          elif ! gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$tag" \
+              -f target_commitish="$SHA" ${PREVIOUS:+-f previous_tag_name="$PREVIOUS"} --jq .body > generated.md; then
+            echo "GitHub could not generate notes for this release." > generated.md
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          {
+            echo "Borant $tag, built from \`$SHA\`."
+            echo
+            echo '```bash'
+            echo "gh release download $tag --repo $GITHUB_REPOSITORY --pattern 'borant-$tag-aarch64-apple-darwin.tar.gz*'"
+            echo "shasum -a 256 -c borant-$tag-aarch64-apple-darwin.tar.gz.sha256"
+            echo "tar -xzf borant-$tag-aarch64-apple-darwin.tar.gz"
+            echo "install -m 0755 borant-$tag-aarch64-apple-darwin/borant ~/.local/bin/borant"
+            echo '```'
+            echo
+            echo "Container image for hubs and hosts: \`$image\`."
+            echo
+            cat generated.md
+          } > notes.md
+          gh release create "$tag" out/* --target "$SHA" --title "Borant $tag" --notes-file notes.md --latest
+          echo "Released [$tag](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$tag)." >> "$GITHUB_STEP_SUMMARY"
+
+  bump:
+    needs: [plan, publish]
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+      - name: Write the version on main
+        id: bump
+        run: |
+          set -euo pipefail
+          bash .github/scripts/set-version.sh
+          if git diff --quiet; then
+            echo "main already has version $VERSION."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --quiet -am "chore(release): v$VERSION"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Push the version to main
+        if: needs.plan.outputs.publish == 'true' && steps.bump.outputs.changed == 'true'
+        run: git push origin HEAD:main
