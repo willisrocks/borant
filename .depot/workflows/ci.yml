@@ -1,0 +1,118 @@
+# Depot CI Migration
+# Source: .github/workflows/ci.yml
+#
+# Changes made:
+# - Changed GitHub runs-on labels to their Depot equivalents
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@v2
+      - name: Start NATS with JetStream
+        run: |
+          docker run -d --name nats-js -p 4222:4222 nats:2.11 -js
+      - run: cargo test --workspace
+        env:
+          BORANT_NATS_URL: nats://127.0.0.1:4222
+
+  pi-extension:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    defaults:
+      run:
+        working-directory: integrations/pi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run check
+
+  # The chief-of-staff mod ships in the Claude Code plugin, so the plugin's
+  # manifest and hooks module are checked where they are built. A pinned Claude
+  # Code keeps the check on the version the mod was written for, and
+  # `claude plugin test` needs no sign-in and no network.
+  claude-plugin:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --global @anthropic-ai/claude-code@2.1.310
+      - run: claude plugin validate integrations/claude-code --strict
+      - run: claude plugin test integrations/claude-code
+
+  # The slowest job: it builds the e2e image and runs the Docker swarm. The
+  # image comes from the Docker layer cache, and on a pull request only the
+  # scenarios of the changed paths run. Nothing of `test` is needed here, so
+  # the two jobs run side by side.
+  e2e:
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `--affected` diffs against the base branch.
+          fetch-depth: 0
+      - name: Which scenarios
+        id: scenarios
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            list=$(tests/e2e/run.sh --affected "origin/${{ github.base_ref }}")
+          else
+            list=$(tests/e2e/run.sh --all)
+          fi
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+          echo "scenarios: ${list:-none}"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.scenarios.outputs.list != ''
+      - uses: docker/build-push-action@v6
+        if: steps.scenarios.outputs.list != ''
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: borant:e2e
+          # The swarm starts from this image; run.sh never builds it.
+          load: true
+          cache-from: type=gha,scope=e2e
+          cache-to: type=gha,mode=max,scope=e2e
+      - name: Run the scenarios
+        if: steps.scenarios.outputs.list != ''
+        env:
+          BUILD: "0"
+        run: tests/e2e/run.sh ${{ steps.scenarios.outputs.list }}
