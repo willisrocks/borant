@@ -2,7 +2,8 @@
 
 Date: 2026-11-03. Status: approved by Chris on 2026-11-03. Nothing is built, and no
 cloud money is spent. This revision applies Chris's cuts and Astra's review of
-commit d3f3ccb (conversation codex-312).
+commit d3f3ccb (conversation codex-312). The revision of 2026-11-04 records the one-chat
+Console that Chris approved (section 32).
 
 This document describes a new system, the Borant cloud control plane: one
 TypeScript service in the cloud. It receives work from Sources and decides what
@@ -100,9 +101,9 @@ through the chief)
 6. A loop (a Source, its Policy, and its prompts) is versioned, and every Decision
    stores its context snapshot from the first day. (Decided) The replay run and its
    page come later (section 18). (Decided on 2026-11-03)
-7. One web screen shows the new system: what needs Chris, quiet work, changes
-   since his last look, every project with tasks by name, the PRs closest to
-   merge, and one-key actions. (Decided) The chief mod stays as it is for
+7. One web screen shows the new system: what needs Chris, quiet work, every
+   project with tasks by name, and key actions. (Decided) Section 12 holds the
+   Console layout. (Decided on 2026-11-04) The chief mod stays as it is for
    current Borant.
 8. The new system runs in parallel with current Borant. It has a separate hub,
    state, credentials, and hosts, and no shared NATS. (Decided, order from
@@ -272,7 +273,7 @@ flowchart LR
 | Source adapters | Turn outside events into Triggers. Each keeps a read position for recovery. |
 | Engine | Owns every domain rule: Triggers, Threads, Evals, Decisions, Tickets, Mandates, Assignments, Subscriptions, Channels, approvals, stages. |
 | Effects runner | Takes effect rows and runs each effect after the commit that wrote it. It makes the keyed crossings of section 7. |
-| Harness | pi-durable 1.5.0 behind our own `SessionPort`. One conversation per Ticket, one router conversation per Profile. |
+| Harness | pi-durable 1.5.0 behind our own `SessionPort`. One conversation per Ticket. Each router turn opens a new conversation (section 32). |
 | `claude -p` processes | Started by pi-claude-code for each Claude model request. They run on the control plane, not in sandboxes. |
 | Fleet manager | Creates, starts, stops, and destroys sandbox Machines through the Fly Machines API. |
 | Secrets | Holds credentials and injects them into one tool call at a time. Section 13. |
@@ -346,7 +347,7 @@ The control plane has only these routes, and all of them are on its public addre
 | Route | Who calls it | Check |
 |---|---|---|
 | `/webhooks/github` | GitHub | HMAC signature on the raw body, and the expected installation and repo |
-| `/auth/*`, `/`, `/api/*` | Chris's browser | GitHub OAuth, the allowed list of user IDs, and a `SameSite=Strict` session cookie (section 12) |
+| `/auth/*`, `/`, `/api/*`, `/assets/*`, `/chat/live` | Chris's browser | GitHub OAuth, the allowed list of user IDs, and a `SameSite=Strict` session cookie (section 12) |
 | `/admin/*` | Chris's browser | The same login |
 | `/git/*` | Git in a sandbox | The Assignment's git token, the Assignment's Project repo, and the ref check of section 11. A revoked token fails at once. |
 | `/healthz` | Fly's `http_service` check, and CI. | Nothing. It answers `200 {"status":"ok"}` with no session and no state. Fly passes this check only on a 2xx. `/login` answers `303`, or `503` with no OAuth app, so a check there never passes and Fly sends the Machine no traffic. |
@@ -394,7 +395,7 @@ names the session and the sandbox directly).
 
 | Term | Definition | Rules it keeps |
 |---|---|---|
-| Profile | A group of Projects with one router. The first and only Profile is `personal`. The word applies to the new system only. Current Borant keeps "collection". (Chief default, for Chris to check) | Each Profile has its own router session, Policy part, and Source instances. |
+| Profile | A group of Projects with one router. The first and only Profile is `personal`. The word applies to the new system only. Current Borant keeps "collection". (Chief default, for Chris to check) | Each Profile has its own router turns, chat, Policy part, and Source instances. |
 | Project | Configuration: a repo, a setup command, a sandbox size, secret bundles, models, and its Policy part. | Configuration, not state. Versioned with the Policy (section 11). |
 | Source | A stream of outside events. A Source kind is code (GitHub, web chat). A Source instance is one configuration of a kind. | Holds its read position. Drops the comments of its own bot before they enter the domain. It keeps the bot's PR and check events, because an opened PR creates a Subscription. Says which Threads and Channel addresses an event belongs to. |
 | Trigger | One immutable event from a Source, with the actor as the Source gives it, an actor kind (`person`, `bot`, or `ci`), and a `verified` flag. | ID = hash of Source instance ID and the Source's own event ID. A second insert is a no-op. `verified = true` only for an action in a logged-in web session (section 11). |
@@ -408,7 +409,7 @@ names the session and the sandbox directly).
 | Scope | The structured part of a Mandate that code enforces: Project, repo, branch prefix, allowed gated actions, and secret bundles. The brief is free text next to it. | `authorize` and secret injection read the structured fields. Code fills them from the Project's Policy part: the repo, the prefix `cloud/<ticket id>/`, and the gated actions. The assessor only picks which of the Project's secret bundles the work needs. `decide` rejects a bundle outside the Policy. So a model cannot widen a scope or leave out `merge_pr`. (My call) |
 | Ticket | A unit of authorized work. | Only an Eval creates one. It holds its Mandate, Subscriptions, Channels, Inputs, Assignments, and stage. |
 | Assignment | The binding of a Ticket to one sandbox, under the Ticket's one conversation. | A Ticket has one live Assignment at a time and can have several over its life. States: running, ended. Section 29. |
-| Input | One message for a Ticket's session: the brief, a person's answer, a note, a CI result, a Policy notice. | Has a `requestId`, unique per conversation: the Trigger ID or the Engine's own key. Submitted to pi-durable once. |
+| Input | One message for a Ticket's session: the brief, a person's answer, a person's sentences from `send_to_worker`, a CI result, a Policy notice. | Has a `requestId`, unique per conversation: the Trigger ID or the Engine's own key. Submitted to pi-durable once. |
 | Report | A structured result from a session: `ready`, `blocked`, `ask_person`, `progress`, `done`. | Written by a report tool to an outbox document keyed by the tool task ID. The Engine consumes each one once. A stale report changes no stage (section 29). |
 | Ask | A question from a worker to a person, with the full question, why now, the kind (`answer` or `approve`), and the options. | Stays open until a person answers or the worker withdraws it, or the Ticket stops. |
 | Approval | A person's yes to an `approve` Ask, recorded from a `verified` Trigger. | Gated tools check for an Approval row. A model cannot create one. Section 27 binds it to one action on one revision. |
@@ -416,7 +417,8 @@ names the session and the sandbox directly).
 | Outbox message | One pending Channel write. | Fixed message ID, chosen before the first attempt. Delivered in order per conversation. |
 | Engine ID | The ID of a Ticket, Assignment, sandbox, or outbox message. | A ULID, not a counter, because a restore rewinds counters and a repeated ID can match an old branch, volume, or GitHub marker. (My call) |
 | Effect | One unit of work that runs after a commit: submit an Input, run an Eval, write a Channel, start a sandbox, and the others in section 8. | Written in the same transaction as the state change that needs it. Idempotent by its key. |
-| Router | The chief of staff: a long-lived pi-durable conversation per Profile that talks with Chris. | Reads the board, adds notes, and proposes briefs. Grants nothing. Owns the Profile's chat Thread (section 8). |
+| Router | The chief of staff, called the Chief in the Console: one model turn per person message or key moment, in a new pi-durable conversation each time. | Reads the board, sends Chris's own sentences, proposes briefs, and drafts plans. Grants nothing. Owns the Profile's chat Thread (sections 8 and 32). |
+| Work item | A saga, an epic, or a task in the `work_items` table. | Inert until an Eval starts a Ticket. A task is one Ticket and one PR (section 32). |
 | Sandbox | The Fly Machine where a Ticket's tools run. | One per live Assignment. `sandboxd` does not store injected values (section 13). |
 
 ### Ticket and router sessions
@@ -426,8 +428,8 @@ start subagents with pi-durable child tasks. The subagents share the Ticket's
 sandbox, and they have no report tools. There is no orchestrator tier: today's chief,
 orchestrator, and worker chain becomes router and Ticket worker. (Decided)
 
-Each Profile has one router conversation that lives as long as the Profile.
-(My call, because a later Profile has its own Policy part and Source instances.)
+Each router turn has a new conversation with no durable storage (section 32). The
+Profile's durable chat record is its `chat_messages` rows. (Decided on 2026-11-04)
 
 ## 7. Crossings between the Engine and pi-durable
 
@@ -465,7 +467,7 @@ and `request_id`, and the effect key names the Ticket (section 8). `when_busy` i
 Input (section 26). (My call)
 
 Every Input wakes the Ticket: pi-durable starts a run as soon as an idle conversation
-receives one. Router notes and Policy notices are rare, so each one can cost a model
+receives one. Sends and Policy notices are rare, so each one can cost a model
 turn. Bot comments that are not reviews stop at `ingest`. They stay as Triggers on the
 Thread and make no Input, and the worker reads the Thread when it needs them. (My call)
 
@@ -567,8 +569,10 @@ model or an outside API inside a transaction.
 | `resume(person, ticket, text)` | Section 29. | `ensure_sandbox`. `submit_input`. |
 | `close(person, ticket)` | Section 29. | `abort_session`. `stop_sandbox`. |
 | `sandbox_lost(assignment)` | Section 29. | `ensure_sandbox`. `submit_input`. |
-| `note(router, ticket, text)` | An Input with `actor = router`, `verified = false`. | `submit_input`. |
-| `propose(router, fromTrigger, project, brief)` | A candidate on the Thread of `fromTrigger`, and `eval_pending = true`. Refused if `fromTrigger` is older than 1 hour. | `run_eval`. |
+| `send_to_worker(router, message, ticket, quote, ask?)` | After the checks of section 32: a `chat_sends` row, and the quote through the Ticket's chat Thread. Else a one-press chip. | `submit_input`. |
+| `plan_work(router, fromTrigger, items)` | Work item rows. Only in a person-started turn (section 32). | none |
+| `advancePlan(root)` | In the transaction of an approval, a merge, a Close, or a Skip: a proposal for each ready task. | `run_eval` per task. |
+| `propose(router, fromTrigger, project, brief)` | A candidate on the Thread of `fromTrigger`, and `eval_pending = true`. Refused if `fromTrigger` is older than 1 hour. A reworded brief waits for a press of Start (section 32). | `run_eval`. |
 | `publish_policy(person, commitSha)` | New Policy version, from a logged-in session (section 11). For each live Ticket: if the new allowed list no longer holds the Mandate's sender, revoke the Mandate and stop the Ticket (section 26). Else, if a rule it used changed, a notice Input. | `submit_input` per notice. `abort_session` and `stop_sandbox` per stop. `channel_write` for each revocation. |
 | `mark_seen(person, upToEventId)` | Seen position. | none |
 
@@ -635,9 +639,8 @@ text takes over the worker. (My call)
 ### Router and the web chat
 
 Chris's chief chat is a Source. Each message is a `verified` Trigger with
-`actor = <logged-in person>`, on the Profile's chat Thread. The router conversation is
-subscribed to that Thread and receives each message as an Input. It answers in the
-chat. (Decided)
+`actor = <logged-in person>`, on the Profile's chat Thread. Each message starts one
+`router_turn` effect, and the router answers in the chat. (Decided on 2026-11-04, section 32)
 
 The router does not create work. When Chris asks for work, the router calls
 `propose` with the ID of his Trigger and a clear brief. The Eval then judges
@@ -645,17 +648,19 @@ the candidate. The gate takes the strength from Chris's Trigger, not from the
 router, and the assessment checks that the brief stays inside what his text
 asked for. The Mandate's basis stores his exact text. (My call, because the
 router has the conversation context to write a good brief, and this keeps the
-router unable to grant anything.)
+router unable to grant anything.) Code takes the brief and the Project from the proposal
+row, and the assessor cannot change them (section 32).
 
 GitHub Triggers go to the Eval directly. The router gets them as no Input. It has these
-tools: read the board, read a Ticket with its Thread as untrusted data, `note`, and
-`propose`. It has no sandbox, no GitHub write, and no secret. (My call)
+tools: `read_board`, `read_ticket`, `find_tickets`, `search_chat`, `propose`, `plan_work`,
+`send_to_worker`, and `show_control`. It has no sandbox, no web or GitHub tool, and no
+secret. (Decided on 2026-11-04)
 
-The router runs only when Chris writes in the chat or presses `a`. It does not wake on a new
-Ask or a failed Ticket, and it cannot answer an Ask, so each Ask reaches him directly. The
-worker prompt limits Asks to what only he can answer. A wake costs a model turn at a limit of
-2, and the first Project is small enough to measure first. Stage 4 counts the Asks, and a wake
-path is a later decision. (My call)
+The router runs when Chris writes in the chat, and for one read-only turn at a key moment: a
+new Ask, a Ticket that enters `blocked/failed`, or a worker reply (section 32). It can answer
+an `answer` Ask only with Chris's own sentences, and it can never approve, so each Ask still
+reaches him directly. The worker prompt limits Asks to what only he can answer. (Decided on
+2026-11-04)
 
 On a Profile chat Thread, the batch of an Eval is the proposal's `fromTrigger` and nothing
 else. One message can back several proposals within the hour, so "do A and B" can give two
@@ -664,11 +669,11 @@ stays inside it. A hijacked router can repeat a recent request, but it cannot us
 one. Each result goes to the chat, so an `ignore` or an `unavailable` does not stay silent.
 (My call)
 
-The Profile's chat Thread belongs to the router alone. `ingest` gives each message
-to the router conversation and never sets `eval_pending` there, so only `propose`
-starts an Eval from chat. An accepted Ticket does not subscribe to this Thread. It
-gets its own chat Thread, and Chris answers a Ticket there, from the Ticket detail
-or with `r`. (My call)
+The Profile's chat Thread belongs to the router alone. `ingest` starts a router turn for
+each message and never sets `eval_pending` there, so only `propose` and an approved plan
+start an Eval from chat. An accepted Ticket does not subscribe to this Thread. It gets its
+own chat Thread, and Chris's words reach it from the decision bar or through
+`send_to_worker`. (Decided on 2026-11-04)
 
 ### Effects and the queue
 
@@ -677,7 +682,7 @@ The `effects` table is the only durable queue. (Decided)
 | Column | Meaning |
 |---|---|
 | `id` | Row ID |
-| `kind` | `submit_input`, `run_eval`, `channel_write`, `ensure_sandbox`, `stop_sandbox`, `destroy_sandbox`, `abort_session`, `recover_source`, `notify` |
+| `kind` | `submit_input`, `run_eval`, `channel_write`, `ensure_sandbox`, `stop_sandbox`, `destroy_sandbox`, `abort_session`, `recover_source`, `notify`, `router_turn`, `chief_moment`. The last two run on a second `EffectRunner` with a 5-minute lease (section 32). |
 | `ticket_id` | The Ticket, when the effect has one. A stop cancels by this column (section 26). |
 | `key` | Unique idempotency key. It names the Ticket or conversation where one exists: `submit_input:<ticket id>:<request_id>`, `ensure_sandbox:<assignment id>`, `run_eval:<eval id>`. |
 | `payload` | JSON |
@@ -750,7 +755,7 @@ board query. (Decided)
 | `idle` | Open, no run, nothing waits on a person: for example a PR waiting for CI. | `run_ended` with no report that needs a person |
 
 `ended` and `stopped` are Ticket states, not board stages. An ended Ticket
-leaves the board and shows in "changes".
+leaves the open board and shows as recently ended.
 
 Two views read a `working` Ticket. Neither is a stage:
 
@@ -758,7 +763,7 @@ Two views read a `working` Ticket. Neither is a stage:
   activity spec. A Ticket that waits for a slot is not silent.
 - Waiting: the Ticket waits for a slot, with the time (section 28).
 
-The "Waiting" area of the screen also shows `idle` Tickets that a provider's usage limit
+The Console also shows `idle` Tickets that a provider's usage limit
 holds, with the reset time.
 
 "Offline" from the mod v3 design becomes a `blocked/failed` Ticket with the
@@ -769,8 +774,8 @@ reason "sandbox lost" or "session failed". (My call)
 One query returns the whole board: every open Ticket with its Project,
 stage, title, who (the session name), since when, its open Ask, its PR state,
 and the last change. This replaces the "board task lines" read of the mod v3
-specs. The changes feed is the `events` table (section 19) after the person's
-seen position.
+specs. The query also returns plans, stopped Tickets, and recently ended Tickets. The chat feed
+merges chat rows with allowlisted Engine events from the `events` table (section 19).
 
 ## 11. Authorization and Mandates
 
@@ -795,8 +800,9 @@ seen position.
 5. `authorize` fails closed. If it cannot read its state, or the control plane is in
    restore mode (section 25), the tool does no write and returns "authorization
    unavailable". `authorize` keeps no cache. (My call)
-6. The router can add notes. A note is an Input with `verified = false`. It
-   grants nothing, and `authorize` never reads notes. (Decided)
+6. The router can send a worker only whole sentences of Chris's message, or exact text
+   that Chris pressed Start or Approve on (section 32). A send grants nothing, and
+   `authorize` never reads a send. (Decided on 2026-11-04)
 7. Standing permissions are Policy data. (Decided) The first Project has none. Opening a
    PR and commenting on the Ticket's own PR are not gated, because the tools stay inside
    the Ticket's repo and Threads. (My call)
@@ -881,10 +887,9 @@ tokens. (My call)
 
 ## 12. Web UI
 
-The web UI is the native chief-of-staff screen of the new system. It reuses the
-approved mod v3 information design. (Decided) The Claude Code mod stays as it
-is for current Borant. The screen is a web page, so the terminal limits of mod v3 (one chord, digits at the prompt,
-band height) do not apply. The keys keep the same meaning.
+The web UI is the Console: one screen with one chat, built on the rules of section 32. It
+replaces the chief-of-staff screen that reused the mod v3 information design. (Decided on
+2026-11-04) The Claude Code mod stays as it is for current Borant.
 
 Login: GitHub OAuth, with an allowed list of GitHub user IDs in the Policy.
 The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`. (My call)
@@ -905,35 +910,36 @@ stop a holder of the value who calls the browser routes with no agent token. So 
 the value goes only to Chris's browser. Its check for Fly's Machine variables catches a run in
 the wrong place, and the session secret is the guard.
 
-### The chief-of-staff screen
+### The Console
+
+The Console is a new `apps/console` package: the shadcn version of AI Elements, Vite, TanStack
+Router with one route, and TanStack Query. The shadcn version replaces the elements.ai-sdk.dev
+registry, which that site retires at the end of November 2026. The shell renders per request
+with a CSRF token, a nonce, and a CSP. A route replies with JSON only on
+`Accept: application/json`, else with a 303. `/tickets/:id` and `/admin` stay
+server-rendered.
 
 | Area | Shows |
 |---|---|
-| Needs you | Each open Ask and each `person/review` and `blocked/failed` Ticket: the full question, why now, who asked, the Project, how long it waits, the router's note if any. An `approve` Ask shows the exact revision (section 27). Order: decide, approve, answer, unblock, then age. System items also show here: a lost source range, a login to repeat, a token near its end, backup lag, a detected charge, and a Ticket idle for 7 days. |
-| Silent and failed | Working Tickets with no tool call in 30 minutes, with the last tool call shown. Failed sessions and lost sandboxes. |
-| Waiting | Tickets that wait for a slot or a provider limit (section 28). |
-| Changes since your last look | New Tickets, done Tickets, merged and approved PRs, releases, answered Asks, Policy versions. "Mark seen" sets the seen position. Nothing else does. |
-| Projects | Every Project with its Tickets by name: who works on each, for how long, its stage, what it waits on. Idle Projects on one line. |
-| PRs closest to merge | Open PRs from Tickets, ordered by how close to merge: ready to merge, approved, review requested, CI running, CI failed. |
-| Chat | The router chat for the Profile, at the side. |
+| Sidebar | The Lanes and Plans views. Lanes are In Progress, In Review, and Done, with the stage of each Ticket, and silent and waiting states. A click filters the chat with `?view=`. |
+| Decision bar | The only surface for Approve and Answer: open Asks, proposed plans, stage items that need Chris, and system items, oldest first. A new item never replaces the pinned one. The bar ignores filters and shows "+N outside filter". The top line is Engine facts. Worker text sits below it, labelled "worker says". |
+| Stream | One conversation: person rows with removable tags, Chief rows, and Engine rows drawn from JSON. Engine rows are the send chip, Start, the receipt, `show_control`, the brief, and the failed turn. A filter shows only the rows of an item and allowlisted Engine events. |
+| Composer | Goes to the Chief, with a removable "To T42" chip, unless an `@` tag overrides it. |
+| Details | The selected item, with Stop, Withdraw, Resume, Close, Skip, and Retry. |
 
-| Key | Action |
-|---|---|
-| `j` `k` or arrows | Move the selection. The detail follows. |
-| `1` to `5` | Jump to needs you, silent, PRs, changes, projects. |
-| `r` | Answer the selected Ask. A text field opens. Enter sends, Esc keeps the draft. |
-| `y` | Approve. A second `y` confirms when the Ask names money or a deploy. `n` cancels. |
-| `s` | Stop the selected Ticket. A second `s` confirms. |
-| `a` | Ask the router about the selected item. |
-| `c` | Close the selected Ticket. A second `c` confirms. |
-| `o` | Open the PR. |
-| `g` | Go to the Ticket detail. |
-| `x` | Mark the listed changes seen. |
-| `/` | Focus the chat. |
+`y` approves only when the decision bar has focus, and it disarms for about 1 second after any
+change in the bar. A plan has no `y`. Money and deploy Asks keep the second press. Approve posts
+the ID and the revision, and a moved head shows a disabled "Head changed". The design sets no
+other key.
+
+The mockups have no "Changes since your last look" area and no "PRs closest to merge" area. The
+design does not say if `mark_seen` stays. The builder of the cutover PR decides and records it
+here.
 
 ### Phone
 
-The page works at phone width, and each key action also has a button. So Chris can answer,
+The page works at phone width: chat first, with the sidebar and the details as sheets. Each
+key action also has a button. So Chris can answer,
 approve, or stop from a push notification. An approval shows the same SHA and diff link there.
 (My call, because a push that he cannot act on delays each Ask until he is at his laptop.)
 
@@ -974,6 +980,7 @@ the chief)
 |---|---|---|
 | Master key, GitHub App private key, GitHub OAuth client, Litestream object-storage key, Fly deploy token for the sandbox app | Fly secrets on the control-plane app. The sandbox app has no Fly secrets (section 5). | The control plane only |
 | Claude credential | `CLAUDE_CODE_OAUTH_TOKEN`, a one-year token from `claude setup-token`, as a Fly secret on the control-plane app (section 17) | pi-claude-code |
+| TypeSafe API key, optional (section 32) | Fly secret on the control-plane app, never in a sandbox | The Jev call of a router turn |
 | Codex OAuth, LunaRoute key, Project secret bundles (for example `boopmark-staging`) | `secrets` table in the SQLite file, AES-256-GCM under the master key | The control plane, and injected tool calls |
 | GitHub App tokens | Minted per use as installation tokens, scoped to the Project repo, valid for 1 hour. Never in a sandbox. | The git proxy and the GitHub tools of the control plane |
 | Assignment tokens | Two random values per Assignment. The `sandboxd` token opens `sandboxd`, and the git token opens only the `/git/*` route. On the Machine, each stays in a root-only file, and `worker` gets the git token only through the git credential helper. The control plane must present them again after a restart, so a hash alone is not enough. The `assignments` table holds each one sealed: AES-256-GCM under the master key, with the Assignment's ID and the token's kind as authenticated data. An HMAC-SHA256 index, under a key derived from the master key, finds a presented token. So a copy of the SQLite file or its replica cannot present a live token without the master key. A bucket object from before schema 10 can still hold an old plaintext value. With no master key, the Engine mints no token and the fleet manager refuses to start a sandbox. The stop commit deletes both values and both indexes (section 26), and restore mode does the same (section 25). | The control plane, `sandboxd`, and the git credential helper in the sandbox |
@@ -1021,7 +1028,9 @@ plane (open a PR, comment, read a PR, `merge_pr`). (Decided on 2026-11-03)
 
 Agents act on GitHub as a GitHub App, not as Chris. (Decided on 2026-11-03) Chris
 installs the App on his own account, on the `boopmark` repo only. Planned: the App is also
-installed on the config repo, to read the Policy (section 11). The reasons:
+installed on the config repo, to read the Policy (section 11). The App is also installed on
+the private `scratch` repo (section 32), and `settings.github.extraRepositories` adds that repo
+to the token map. No webhook Source covers it. (Decided on 2026-11-04) The reasons for an App:
 
 - GitHub does not let an author approve their own PR. A worker with Chris's token
   opens PRs in his name, so he cannot approve them, and the review stage of the
@@ -1618,7 +1627,7 @@ The version with platform names is on the private review page. (My call)
 | Tools | Hosted MCP as the app, on an allowlist. | Many connectors through the gateway, with a per-tool allowlist. | Sandbox tools, report tools, and GitHub tools in the control plane. |
 | Approvals | A Slack card when a person watches, denied when nobody does. | Allow, ask, or deny per agent, with per-tool overrides. Deletes always ask. | `authorize` against the Mandate, standing permissions, and Approval rows from Chris's login, bound to a head SHA. |
 | Browser logins | Chromium in the image. No login handling found. | Same | Chromium for public pages. No logins. |
-| UI | Slack cards, Linear sessions, MCP, CLI. | Slack DMs, MCP, and a web app. | One web screen from mod v3, plus chat. |
+| UI | Slack cards, Linear sessions, MCP, CLI. | Slack DMs, MCP, and a web app. | One web Console with one chat (section 32). |
 
 ### What this design takes from Steve
 
@@ -1660,7 +1669,7 @@ on Steve and Steve personal agents. (Chief default, for Chris to check)
 | One machine owns all sessions | A Fly host failure stops all agents. | The dead man's switch, and section 25. |
 | Crossing bugs | A lost or doubled Input or report. | Every crossing is keyed. The reconcile runs at every startup. Crossing lag is a metric. Tests kill the process inside each window of section 7. |
 | `claude` processes on one Machine | Memory pressure. A kill of Node stops every session for a moment. | Section 28 sets the slots, and `oom_score_adj` makes the kernel kill `claude` first. The Machine can grow with one command. |
-| A wait for a slot | With all slots taken, a new Ticket or an answer to a Ticket with no slot waits. | The "Waiting" area of the screen. Chris can raise the setting or stop a Ticket (section 28). |
+| A wait for a slot | With all slots taken, a new Ticket or an answer to a Ticket with no slot waits. | A waiting state in the Console. Chris can raise the setting or stop a Ticket (section 28). |
 | A worker starts a Machine through `/.fly/api` | A Machine outside the fleet manager, and the bill rises. | Stage 1 showed that `worker` cannot connect to the socket, and that root gets `403` with no token. The fleet manager stops a started Machine with no row (section 15). |
 | A lost sandbox | Unpushed work is gone. | The worker pushes after each step. Nothing enforces this (section 25). |
 | A shared Claude account | Current Borant's agents slow down, or a new login logs them out. | Accepted by Chris (section 21). The first token is created at a time that he picks. |
@@ -1713,10 +1722,9 @@ None of these is Chris's decision yet. The document uses each one until Chris an
 | Roger work | Stays on Steve and Steve personal agents. The first Profile is `personal`. | Chief default, for Chris to check | 21, 22 |
 | Naming | "Profile" applies to the new system only. Current Borant keeps "collection". | Chief default, for Chris to check | 5, 6 |
 | `claude -p` fallback | Every role moves to Codex if the Codex test passes. No Anthropic API key. | Recommendation | 17 |
-| Router wake | The router runs only when Chris asks. It does not screen Asks in the first version. | Recommendation | 8 |
 
 Closed by Chris: the accounts and the `boopmark` settings (section 21), the subscription terms
-(section 23), and the five cuts of section 2.
+(section 23), the five cuts of section 2, and the router wake (section 32).
 
 ## 25. Contract: recovery and acceptable data loss
 
@@ -2071,8 +2079,8 @@ of section 15 removes it.
 
 ## 30. Left to the builder
 
-- The HTTP framework, the UI framework, the migration tool, and the test
-  runner.
+- The HTTP framework, the migration tool, and the test runner. Section 12 sets the
+  UI framework.
 - Exact table columns beyond what this document names.
 - Retry and timeout values that this document does not set.
 - The sandbox image build and the toolchains in it.
@@ -2081,6 +2089,8 @@ of section 15 removes it.
 - The prompts of the router, the assessor, and the worker, in the config repo.
 
 ## 31. What this design cut
+
+Section 32 lists the cuts of the one-chat Console.
 
 Cut on 2026-11-03 by Chris:
 
@@ -2115,3 +2125,149 @@ Cut by the designer:
 - Any link between the new system and current Borant
 - An egress filter for sandboxes (section 11)
 - The platform names of Steve in this public document (section 22)
+
+## 32. The one-chat Console
+
+Chris approved this design on 2026-11-04 with the words "Build it". (Decided on 2026-11-04,
+order from Chris through the orchestrator) The full design and its 15 stacked PRs are in
+`docs/console-design.md` in the private `borant-cloud` repo. This section holds the rules that
+change this document. The design file holds the details. A builder who changes a rule records
+the change in both files.
+
+In the Console, "the Chief" is the router of this document.
+
+### Core rules
+
+1. Every composer message goes to the one Chief. A tag or a filter never changes that, and
+   never limits what the Chief reads.
+2. Only Chris's own sentences, or exact text that Chris pressed Start or Approve on, reach a
+   worker as trusted input.
+3. Facts and buttons come from the Engine. Chief text cannot draw an action.
+4. Jev makes judgments, and code decides.
+5. An approval is only a button or a key, bound to a SHA or a plan hash.
+
+### Router turns
+
+The router has no long-lived conversation. Each turn opens a new Harness on
+`MemoryStorage`, so a restart has no router state to recover. The durable record is the
+`chat_messages` table.
+
+A person turn gets the instructions, a board digest of 8 KB, the last 30 person and Chief rows,
+the events since the previous person message, and the new message. Earlier Chief rows are
+fenced as data.
+
+Turns run as the effect kinds `router_turn` and `chief_moment`, on a second `EffectRunner`
+with a 5-minute lease. Person turns claim first. A failed person turn writes a row with a
+Retry button. Turns stream to a preview row through `GET /chat/live` (SSE), and the committed row
+replaces the preview. Tool arguments never stream, and buttons come only from committed rows.
+
+A key moment is a new Ask, a Ticket that enters `blocked/failed`, or a worker reply. It starts
+one read-only turn with `read_board` and `read_ticket` only, limited to the Tickets of the
+moment. The turn has at most 3 model turns, a 60-second timeout, and one attempt. One moment
+at most is pending, and it covers every fact after the last successful moment. The router has
+no other way to wake.
+
+### Sends to a worker
+
+`send_to_worker({ticketId, quote, askId?})` delivers Chris's words to a Ticket. The server
+checks, in this order:
+
+1. The quote must be whole sentences of the person message.
+2. The target must be a live Ticket. An ended or stopped Ticket gets a Resume or a proposal
+   row. A group with several live Tickets gets no send.
+3. A retried effect, a turn from Retry, or a newer person message with no tag or the same tag
+   forces a one-press chip.
+4. An `askId` sends only if it is the one open `answer` Ask, and the message tags it, or the
+   latest Chief row carries only it. An `approve` Ask is never answered this way.
+5. An automatic send needs a known target. With Jev up, Jev must also agree that the message
+   instructs or questions the worker. With Jev down, the message must carry one `@` tag, be the
+   whole quote, have no trailing `?`, and not target `person/review`. Section 2 of the design
+   file holds the exact table.
+
+Any other case gets a one-press chip that shows the target, the stage, and the exact text. A
+press checks the words and the target again. A send can never be recalled, so its receipt
+shows the target and the quote.
+
+"Merge it" and "stop" never act. `show_control` draws the Engine's own control, or selects the
+Ask in the decision bar.
+
+### Addressing and Jev
+
+A message is about an item in this order: an `@` tag, then the active filter, then Jev. The
+composer sends tags as IDs in `refs`, and the server resolves each ID again. A tag affects only
+display, filters, and hints.
+
+`router_turn` calls Jev (TypeSafe's classifier) once, with a 2-second timeout and one retry. It
+stores the result in `chat_messages.classification`, so a retry reuses it. `POST /chat` never
+waits for it. An error is never read as "no". A test seeds injection strings in reports and
+transcripts, to prove that worker and GitHub text never reach Jev.
+
+The system works with no Jev key: `@` sends use the Jev-down rule, and other sends are chips.
+The estimate is $0.40 a month at 100 messages a day. Chat text reaches TypeSafe and the
+router's model. `POST /chat` refuses text with a known token shape and stores nothing.
+
+### Briefs
+
+A brief of whole sentences from Chris's message runs through the Eval at once. A reworded brief
+waits for one press of Start on a row that shows the Project and the exact text. For any Eval
+with a proposal, code takes the brief and the Project from the row. The assessor returns only
+accept or ignore, its reasons, and the secret bundles. A test has the assessor return a
+different brief and Project.
+
+### The `scratch` Project
+
+`scratch` is a Policy Project on a private repo, for one-off work, so that a chat request that
+talk cannot answer runs at once. Its Tickets are normal Tickets in a real sandbox. `merge_pr`
+stays gated, and the Project has no inferred secret bundles. It has no webhooks, so PR comments
+do not reach its workers. A merge there passes with no CI (section 14).
+
+### Sagas, epics, and one-offs
+
+One `work_items` table holds sagas, epics, and tasks, with `blocked_by`. There are no channels
+and no orchestrator tier. A row stays inert until an Eval starts a Ticket. A plain one-off is a
+bare Ticket. A task is one Ticket and one PR.
+
+- `plan_work` runs only in person-started turns, and it refuses HTML, control, and zero-width
+  characters. IDs derive from the Trigger, so a retry cannot plan twice.
+- Every plan has one gate. A sheet shows each task as plain text, and the server hashes the raw
+  bodies, the Project, and the blockers. Approve posts the root ID and the hash. A changed hash
+  refuses, and the sheet draws again. A plan has no `y` key.
+- Approval writes one Trigger per task. `advancePlan` runs in the same transaction as an
+  approval, a merge, a Close, or a Skip. It gives each ready task a proposal and a `run_eval`.
+  Each PR keeps its own SHA-bound approval.
+- A blocker clears only on a `merged` event, or on Chris's Close or Skip. `report_done` alone
+  clears nothing, so nothing starts on unmerged work.
+
+### Data
+
+- Version 12 adds `chat_message_refs`, `chat_sends`, and `chat_messages.classification`. It
+  rewrites pending router `submit_input` rows to `router_turn`.
+- Version 13 adds `work_items`, and `item_id` on `tickets` and `proposals`.
+
+### What a hijacked Chief can do
+
+- It can lie in prose, offer chips and Start rows, draft plans that show in full, and send or
+  propose Chris's own sentences.
+- It cannot write unpressed trusted worker text, approve, draw a button, or change the decision
+  bar.
+
+Anything that can reach a worker renders as plain text. A Chief row whose input held worker
+text is marked "from worker text, unchecked" and renders no links.
+
+### Cut by this design
+
+- Conversation: threads, memory, summaries, and resumable streams
+- Legacy: channels, the orchestrator, claims, properties, epic stacks, issue mirroring, task
+  tools, and task editing
+- Jev: shortlists, a Policy role, shadow mode, and metrics
+- Sends and moments: per-Ticket and daily limits
+- UI: Tiptap, SSR, attachments, and a port of `/tickets/:id` and `/admin`
+- Reach: Chief web and GitHub tools, repo-less workers, and `scratch` webhooks
+
+### Not proven yet
+
+- `watch()` on `MemoryStorage`, and real deltas through `claude -p`
+- Vite, Tailwind, and shadcn under the strict tsconfig
+- Jev accuracy
+- The Eval on per-task Triggers, including whether its age check refuses old plan Triggers
+- Whether a Ticket ends after a merge
