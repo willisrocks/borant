@@ -10,6 +10,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The Depot `release` workflow runs these jobs at the release commit.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
