@@ -1,0 +1,66 @@
+name: release-darwin
+
+# The macOS half of a release. Depot CI has no macOS runner, so the Depot
+# `release` workflow dispatches this run, waits for it, and attaches its
+# archives. This workflow publishes nothing. Move these jobs to Depot CI when
+# Depot CI gets macOS.
+run-name: darwin ${{ inputs.version }} (${{ inputs.request }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: The release commit.
+        required: true
+        type: string
+      version:
+        description: The release version, without the v.
+        required: true
+        type: string
+      request:
+        description: An ID that the caller uses to find this run.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      BORANT_RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p borant --target ${{ matrix.target }}
+      - name: Check the version
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          got="$(target/${{ matrix.target }}/release/borant --version)"
+          [[ "$got" == "borant $BORANT_RELEASE_VERSION" ]] || { echo "version mismatch: $got" >&2; exit 1; }
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="borant-v${BORANT_RELEASE_VERSION}-${{ matrix.target }}"
+          mkdir -p "$name" out
+          cp target/${{ matrix.target }}/release/borant README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar -czf "out/$name.tar.gz" "$name"
+          (cd out && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: out/*
