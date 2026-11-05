@@ -1,0 +1,76 @@
+name: release-image
+
+# Pushes a saved image from the Depot Registry to ghcr.io. Depot CI builds and
+# saves the image, then the Depot `release` workflow dispatches this run and
+# waits for it. A job here reaches Depot through a GitHub OIDC trust and ghcr.io
+# through github.token, so no credential is stored anywhere.
+#
+# A version X.Y.Z pushes :X.Y.Z and :latest. A version dryrun-N proves the push:
+# it pushes that one tag and deletes it.
+run-name: image ${{ inputs.version }} (${{ inputs.request }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: The Depot build that holds the image.
+        required: true
+        type: string
+      version:
+        description: X.Y.Z, or dryrun-N for a throwaway tag.
+        required: true
+        type: string
+      request:
+        description: An ID that the caller uses to find this run.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      BUILD_ID: ${{ inputs.build_id }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Choose the tags
+        id: tags
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_ID" =~ ^[a-z0-9]+$ ]] || { echo "invalid build_id" >&2; exit 1; }
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "args=-t $image:$VERSION -t $image:latest" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ ^dryrun-[0-9]+$ ]]; then
+            echo "args=-t $image:$VERSION" >> "$GITHUB_OUTPUT"
+            echo "throwaway=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "invalid version: $VERSION" >&2
+            exit 1
+          fi
+      - uses: depot/setup-action@v1
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Push the saved build
+        run: depot push --project tvg2z6xjn2 ${{ steps.tags.outputs.args }} "$BUILD_ID"
+      - name: Delete the throwaway tag
+        if: always() && steps.tags.outputs.throwaway == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          path="users/${GITHUB_REPOSITORY_OWNER}/packages/container/${GITHUB_REPOSITORY#*/}/versions"
+          id="$(gh api --paginate "$path" --jq ".[] | select(.metadata.container.tags | index(\"$VERSION\")) | .id")"
+          [[ -n "$id" ]] || { echo "no version has the tag $VERSION" >&2; exit 1; }
+          gh api -X DELETE "$path/$id"

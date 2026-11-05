@@ -11,9 +11,10 @@ name: Release
 #    version set at build time, and checks `borant --version`.
 # 3. darwin: Depot CI has no macOS runner, so this job dispatches the GitHub
 #    workflow release-darwin.yml, waits for it, and collects its 2 archives.
-# 4. image: builds the image with `depot build` in the Depot project `borant`,
-#    from the release binaries for amd64 and arm64. It pushes
-#    ghcr.io/<owner>/borant:X.Y.Z and :latest with the secret GHCR_PAT.
+# 4. image: builds the image with `depot build --save` in the Depot project
+#    `borant`, from the release binaries for amd64 and arm64. It dispatches the
+#    GitHub workflow release-image.yml, which pushes
+#    ghcr.io/<owner>/borant:X.Y.Z and :latest. No credential is stored in Depot.
 # 5. publish: tags the commit vX.Y.Z and publishes a GitHub Release with the
 #    archives and their SHA-256 files. The notes are the `notes` input when it
 #    is set, else GitHub's generated notes since the previous tag. It is
@@ -221,7 +222,10 @@ jobs:
   image:
     needs: [plan, build]
     runs-on: depot-ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -232,32 +236,48 @@ jobs:
           path: dist
           merge-multiple: true
       - run: chmod +x dist/*/borant
-      - name: Log in to ghcr.io
-        if: needs.plan.outputs.publish == 'true'
-        env:
-          GHCR_PAT: ${{ secrets.GHCR_PAT }}
-        run: printf '%s' "$GHCR_PAT" | docker login ghcr.io -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
-      - name: Name the image
-        id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: depot/setup-action@v1
-      - uses: depot/build-push-action@v1
+      - id: build
+        uses: depot/build-push-action@v1
         with:
           project: tvg2z6xjn2
           context: .
           file: docker/release.Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ needs.plan.outputs.publish == 'true' }}
           save: true
           save-tags: |
             ${{ needs.plan.outputs.version }}-${{ github.run_id }}
-          tags: |
-            ${{ steps.name.outputs.image }}:${{ needs.plan.outputs.version }}
-            ${{ steps.name.outputs.image }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
             org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+      - name: Name the saved build
+        env:
+          BUILD_ID: ${{ steps.build.outputs.build-id }}
+        run: |
+          echo "Saved build: $BUILD_ID"
+          echo "Saved build: \`$BUILD_ID\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Push the image to ghcr.io
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ID: ${{ steps.build.outputs.build-id }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          REQUEST: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-image.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f build_id="$BUILD_ID" -f version="$VERSION" -f request="$REQUEST"
+          id=""
+          for _ in $(seq 1 24); do
+            id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-image.yml --event workflow_dispatch \
+              --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\"($REQUEST)\"))][0].databaseId // \"\"")"
+            [[ -n "$id" ]] && break
+            sleep 5
+          done
+          [[ -n "$id" ]] || { echo "no release-image run for request $REQUEST" >&2; exit 1; }
+          gh run watch "$id" --repo "$GITHUB_REPOSITORY" --interval 15 --exit-status
 
   publish:
     needs: [plan, build, darwin, image]
