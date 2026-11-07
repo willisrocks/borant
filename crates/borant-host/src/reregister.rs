@@ -160,7 +160,12 @@ mod tests {
         // A fleet that failed six times spreads over most of the window, so
         // the registrations of a recovery do not land in one second.
         assert!(max - min > 30_000, "{min}..{max}");
-        assert!(distinct.len() > 50, "{} distinct of {}", distinct.len(), waits.len());
+        assert!(
+            distinct.len() > 50,
+            "{} distinct of {}",
+            distinct.len(),
+            waits.len()
+        );
     }
 
     /// The wait of the sixth failure of `name`: a long outage.

@@ -155,7 +155,11 @@ fn hook_pre_tool_use_with_a_failing_daemon_denies_nothing() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     // The hook read the session first; no tool event went out after the error.
     let body = server.join().unwrap().unwrap();
     assert!(body.is_empty(), "{body}");

@@ -5,7 +5,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
 use borant_core::model::Harness;
 use borant_core::ports::MessageBus;
 use borant_core::proto::{CtlRequest, LocalEvent, LocalRegister, LocalSession, LocalState, Reply};
@@ -15,6 +14,7 @@ use borant_host::{Host, HostConfig};
 use borant_hub::{Hub, HubConfig};
 use borant_launch::ProcessLauncher;
 use borant_memory::{MemoryBus, MemorySession, MemoryState};
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 const BEAT: Duration = Duration::from_secs(10);
@@ -32,7 +32,11 @@ struct Fx {
 }
 
 /// Serves hub requests on the bus until the token is cancelled.
-async fn serve(bus: &MemoryBus, hub: Arc<Hub>, stop: CancellationToken) -> tokio::task::JoinHandle<()> {
+async fn serve(
+    bus: &MemoryBus,
+    hub: Arc<Hub>,
+    stop: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     let mut reqs = bus.serve(subjects::CTL).await.unwrap();
     tokio::spawn(async move {
         loop {
@@ -140,14 +144,19 @@ impl Fx {
     }
 
     /// Sends one call to the served hub.
-    async fn ctl(&self, req: CtlRequest) -> Result<serde_json::Value, borant_core::proto::ApiError> {
+    async fn ctl(
+        &self,
+        req: CtlRequest,
+    ) -> Result<serde_json::Value, borant_core::proto::ApiError> {
         let payload = serde_json::to_vec(&req).unwrap();
         let bytes = self
             .bus
             .request(subjects::CTL, payload.into(), Duration::from_secs(5))
             .await
             .unwrap();
-        serde_json::from_slice::<Reply>(&bytes).unwrap().into_result()
+        serde_json::from_slice::<Reply>(&bytes)
+            .unwrap()
+            .into_result()
     }
 }
 
@@ -218,20 +227,22 @@ async fn a_long_outage_fences_the_tools_before_a_takeover() {
     fx.hub.tick().await.unwrap();
     fx.hub_back().await;
     let taken = fx
-        .ctl(CtlRequest::RegisterSession(borant_core::proto::RegisterSession {
-            session: SessionId::new(),
-            host: "h2".parse().unwrap(),
-            harness: Harness::Fake,
-            harness_session_id: None,
-            pid: None,
-            cwd: "/tmp/taken".into(),
-            repo: None,
-            agent: Some("a".parse().unwrap()),
-            channel: None,
-            shared_dir: false,
-            role: None,
-            collection: None,
-        }))
+        .ctl(CtlRequest::RegisterSession(
+            borant_core::proto::RegisterSession {
+                session: SessionId::new(),
+                host: "h2".parse().unwrap(),
+                harness: Harness::Fake,
+                harness_session_id: None,
+                pid: None,
+                cwd: "/tmp/taken".into(),
+                repo: None,
+                agent: Some("a".parse().unwrap()),
+                channel: None,
+                shared_dir: false,
+                role: None,
+                collection: None,
+            },
+        ))
         .await
         .expect("the other host takes the expired lease");
     assert_eq!(taken["agent"], "a");
@@ -354,5 +365,8 @@ async fn registrations_after_an_outage_spread_over_a_window() {
         "every host registers inside the window: {per_second:?}"
     );
     let busy = per_second.iter().filter(|n| **n > 0).count();
-    assert!(busy >= 8, "the fleet registers in {busy} seconds: {per_second:?}");
+    assert!(
+        busy >= 8,
+        "the fleet registers in {busy} seconds: {per_second:?}"
+    );
 }
