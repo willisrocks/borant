@@ -1,6 +1,8 @@
 //! Placement, planned moves, drains, and spawns (spec sections 13 and 14).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
@@ -16,7 +18,7 @@ use borant_core::rules::roles;
 use borant_core::rules::schedule::{self, HostView, PlacementReq, Reject};
 use borant_core::{
     AgentId, BundleName, CollectionName, EventId, FencingToken, HostName, MemberName, SessionId,
-    keys, subjects,
+    Timestamp, keys, subjects,
 };
 use serde_json::{Value, json};
 
@@ -25,6 +27,86 @@ use crate::{Hub, Memory, PendingMove};
 
 /// The launches of one spawn that the hub counts before it gives up.
 const MAX_LAUNCH_TRIES: u32 = 3;
+
+/// How long an unchanged refusal waits before the hub publishes it again, so
+/// a spawn that no host can take does not fill the event log.
+const REFUSAL_REPEAT: Duration = Duration::from_secs(60);
+
+/// The first backoff of a queued spawn whose hosts are all full or offline.
+/// Each refusal doubles it, up to [`REFUSAL_BACKOFF_MAX`].
+const REFUSAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// The longest backoff of a queued spawn that no host has room for.
+const REFUSAL_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// The last refused placement of an agent: what refused it, when the hub
+/// published it, and when the spawn queue tries it again. A refusal that is
+/// unchanged publishes once a [`REFUSAL_REPEAT`], and a spawn whose hosts are
+/// all full or offline backs off for [`PlacementRefusal::tries`] doublings.
+#[derive(Debug, Clone)]
+pub(crate) struct PlacementRefusal {
+    /// The refused hosts, with the first rule that refused each.
+    pub rejected: Vec<(HostName, Reject)>,
+    /// When the hub last published the refusal, on the hub clock.
+    pub told_at: Timestamp,
+    /// When the queue tries the agent again, on the hub clock.
+    pub retry_at: Timestamp,
+    /// The refusals in a row that set `retry_at`.
+    pub tries: u32,
+}
+
+/// True when two refusals name the same hosts with the same rules. The order
+/// of the hosts follows the host list, which may change with a restart.
+pub(crate) fn same_refusal(a: &[(HostName, Reject)], b: &[(HostName, Reject)]) -> bool {
+    a.len() == b.len() && a.iter().all(|entry| b.contains(entry))
+}
+
+/// True when every host refused for a reason that a free slot or a host that
+/// comes back fixes, so the spawn waits instead of trying each tick.
+fn capacity_refusal(rejected: &[(HostName, Reject)]) -> bool {
+    rejected
+        .iter()
+        .all(|(_, why)| matches!(why, Reject::Full { .. } | Reject::Offline))
+}
+
+/// The hosts of one placement pass, with the agents on each: the host and
+/// lease lists read once, so a pass over many spawns does not list them once
+/// per spawn.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PlacementPass {
+    views: Vec<HostView>,
+}
+
+impl PlacementPass {
+    /// The views for `agent`, with the hosts where its launch failed marked,
+    /// so a refusal says `RecentlyFailed` instead of blaming the clone. It
+    /// borrows the pass unless the agent has a failed host.
+    pub(crate) fn for_agent<'a>(
+        &'a self,
+        hub: &Hub,
+        mem: &Memory,
+        agent: &AgentId,
+    ) -> Cow<'a, [HostView]> {
+        if mem.failed_hosts.get(agent).is_none_or(HashMap::is_empty) {
+            return Cow::Borrowed(&self.views);
+        }
+        let now = hub.now();
+        let mut views = self.views.clone();
+        for v in &mut views {
+            v.recently_failed =
+                crate::liveness::failed_recently(mem, agent, &v.info.name, now, &hub.cfg.lease);
+        }
+        Cow::Owned(views)
+    }
+
+    /// Counts the agent that the placement just reserved on `host`, so the
+    /// next spawn of the pass does not see the slot as free.
+    pub(crate) fn reserved(&mut self, host: &HostName) {
+        if let Some(v) = self.views.iter_mut().find(|v| &v.info.name == host) {
+            v.active_agents += 1;
+        }
+    }
+}
 
 /// The first prompt of a session after a takeover or a planned move.
 pub fn continue_prompt(
@@ -71,7 +153,8 @@ impl Hub {
     }
 
     /// Stores the refused hosts of a placement in the spawn record of the
-    /// agent, for `borant ps --queued`. An agent without a spawn record is not
+    /// agent, for `borant ps --queued`. The hub writes it when the refusal
+    /// changes, never on every try. An agent without a spawn record is not
     /// stored, and a record that another request changed is left to the next
     /// try.
     async fn note_reject(
@@ -93,6 +176,70 @@ impl Hub {
             Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Records a refused placement: publishes `placement.refused` when the
+    /// refusal changed or a minute passed since the last one, writes the
+    /// spawn record only when the refusal changed, and sets the backoff of a
+    /// spawn whose hosts are all full or offline. The lease and host lists of
+    /// the tick are not read again here.
+    async fn note_placement_refusal(
+        &self,
+        mem: &mut Memory,
+        agent: &AgentId,
+        reason: MoveReason,
+        rejected: &[(HostName, Reject)],
+        now: Timestamp,
+    ) -> Result<(), ApiError> {
+        let previous = mem.placement_refusals.get(agent);
+        let changed = previous.is_none_or(|p| !same_refusal(&p.rejected, rejected));
+        let told = !changed && previous.is_some_and(|p| now.since(p.told_at) < REFUSAL_REPEAT);
+        if !told {
+            let event = self
+                .event(
+                    now,
+                    Severity::Warn,
+                    SwarmEventBody::PlacementRefused {
+                        reason,
+                        rejected: rejected_hosts(rejected),
+                    },
+                )
+                .about_agent(agent.clone());
+            Self::queue(mem, event);
+        }
+        if changed {
+            self.note_reject(agent, rejected).await?;
+        }
+        let entry = mem
+            .placement_refusals
+            .entry(agent.clone())
+            .or_insert_with(|| PlacementRefusal {
+                rejected: rejected.to_vec(),
+                told_at: now,
+                retry_at: now,
+                tries: 0,
+            });
+        entry.rejected = rejected.to_vec();
+        if !told {
+            entry.told_at = now;
+        }
+        if capacity_refusal(rejected) {
+            entry.tries = entry.tries.saturating_add(1);
+            let backoff = REFUSAL_BACKOFF.saturating_mul(1u32 << (entry.tries - 1).min(6));
+            entry.retry_at = now.plus(backoff.min(REFUSAL_BACKOFF_MAX));
+        } else {
+            entry.tries = 0;
+            entry.retry_at = now;
+        }
+        Ok(())
+    }
+
+    /// The hosts and their agents for one placement pass, read once, so a
+    /// pass over many spawns lists the leases and the hosts once.
+    pub(crate) async fn placement_pass(&self, mem: &Memory) -> Result<PlacementPass, ApiError> {
+        Ok(PlacementPass {
+            views: self.views(mem, None).await?,
+        })
     }
 
     /// What a placement asks of a host: the tags of the role of the agent,
@@ -229,22 +376,39 @@ impl Hub {
         target: MoveTarget,
         prompt: Option<String>,
     ) -> Result<bool, ApiError> {
+        Ok(self
+            .place_agent_in(mem, agent, reason, target, prompt, None)
+            .await?
+            .is_some())
+    }
+
+    /// [`Hub::place_agent`], with the hosts of `pass` when a pass lists them
+    /// once for many spawns. Returns the host that the placement reserved.
+    pub(crate) async fn place_agent_in(
+        &self,
+        mem: &mut Memory,
+        agent: &Agent,
+        reason: MoveReason,
+        target: MoveTarget,
+        prompt: Option<String>,
+        pass: Option<&PlacementPass>,
+    ) -> Result<Option<HostName>, ApiError> {
         let now = self.now();
         // A retired agent is gone for good: no spawn, move, takeover, or wake
         // places it again.
         if agent.retired || agent.paused.is_some() {
             tracing::debug!(agent = %agent.id, "placement skipped: the agent is retired");
-            return Ok(false);
+            return Ok(None);
         }
         if self.person_started(agent) {
             tracing::debug!(agent = %agent.id, "placement skipped: a person starts this role");
-            return Ok(false);
+            return Ok(None);
         }
         // The sweep gave up on this claim after its recovery limit: it waits
         // for a person, and no lease tick places the agent again.
         if mem.recovery_stopped.contains(&agent.id) {
             tracing::debug!(agent = %agent.id, "placement skipped: the recovery limit");
-            return Ok(false);
+            return Ok(None);
         }
         // A spawn that failed its launches, or that a person cancelled, waits
         // for a person: the hub places it only after a new spawn record.
@@ -259,7 +423,7 @@ impl Hub {
                 state = ?rec.value.state,
                 "placement skipped: the spawn is closed"
             );
-            return Ok(false);
+            return Ok(None);
         }
         // A pinned agent is never replaced while its session may still run.
         // Only a clean end (a released lease) or a dead session on its own
@@ -277,10 +441,15 @@ impl Hub {
                 });
             if !released && !recovery {
                 tracing::info!(agent = %agent.id, "placement skipped: the agent is pinned");
-                return Ok(false);
+                return Ok(None);
             }
         }
-        let views = self.host_views(mem, &agent.id).await?;
+        // A pass lists the hosts and leases once for many spawns; otherwise
+        // this placement lists them for itself.
+        let views: Cow<'_, [HostView]> = match pass {
+            Some(pass) => pass.for_agent(self, mem, &agent.id),
+            None => Cow::Owned(self.host_views(mem, &agent.id).await?),
+        };
         let (host, harness) = match schedule::place(
             agent.preferred_harness,
             target.harness,
@@ -291,19 +460,9 @@ impl Hub {
             Ok(chosen) => chosen,
             Err(rejected) => {
                 tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
-                let event = self
-                    .event(
-                        now,
-                        Severity::Warn,
-                        SwarmEventBody::PlacementRefused {
-                            reason,
-                            rejected: rejected_hosts(&rejected),
-                        },
-                    )
-                    .about_agent(agent.id.clone());
-                Self::queue(mem, event);
-                self.note_reject(&agent.id, &rejected).await?;
-                return Ok(false);
+                self.note_placement_refusal(mem, &agent.id, reason, &rejected, now)
+                    .await?;
+                return Ok(None);
             }
         };
 
@@ -314,21 +473,21 @@ impl Hub {
         {
             // A live session holds the agent. Never take its lease.
             tracing::warn!(agent = %agent.id, "placement skipped: a live session holds the lease");
-            return Ok(false);
+            return Ok(None);
         }
         let Some(info) = views
             .iter()
             .find(|v| v.info.name == host)
             .map(|v| v.info.clone())
         else {
-            return Ok(false);
+            return Ok(None);
         };
         // The member of each bundle with several members, for this host and
         // harness. A bundle whose members are all limited keeps the agent
         // pending: the tick places it again until a member resets.
         let members = match self.assign_members(mem, agent, &info, harness).await? {
             Assign::Members(members) => members,
-            Assign::Wait => return Ok(false),
+            Assign::Wait => return Ok(None),
         };
         if agent.members != members {
             let mut updated = agent.clone();
@@ -357,6 +516,9 @@ impl Hub {
         self.store
             .put(&key, &reserved, doc.as_ref().map(|d| d.revision))
             .await?;
+        // A host takes the agent now: the queue may report the next refusal
+        // at once, not a minute after this one.
+        mem.placement_refusals.remove(&agent.id);
         let until = match reserved.state {
             LeaseState::Reserved { until, .. } => until,
             _ => now.plus(self.cfg.lease.reserve),
@@ -475,7 +637,7 @@ impl Hub {
         // A pending move or spawn stays until the agent registers, so a failed
         // launch is placed again with the same target and prompt.
         tracing::info!(agent = %agent.id, %host, %harness, ?reason, "launch order sent");
-        Ok(true)
+        Ok(Some(host))
     }
 
     async fn selected(&self, selector: &MoveSelector) -> Result<Vec<AgentId>, ApiError> {

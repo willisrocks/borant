@@ -20,6 +20,7 @@ use borant_core::rules::spawn::{agent_name_from_key, spawn_key_matches};
 use borant_core::{AgentId, BundleName, ChannelName, FencingToken, HostName, RoleName, keys};
 use serde_json::{Value, json};
 
+use crate::moves::{PlacementPass, same_refusal};
 use crate::{Hub, Memory};
 
 /// The arguments of one spawn, from `ToolCall::Spawn` or the CLI.
@@ -379,7 +380,10 @@ impl Hub {
                 tracing::info!(agent = %id, channel = %req.channel, reason, "spawn queued");
                 false
             }
-            None => self.place_record(mem, &record, &agent).await?,
+            None => {
+                let mut pass = self.placement_pass(mem).await?;
+                self.place_record(mem, &mut pass, &record, &agent).await?
+            }
         };
         // The reply nests the answer, as the CLI and the host read it.
         Ok(json!({ "agent": { "agent": id, "placed": placed } }))
@@ -479,31 +483,45 @@ impl Hub {
     /// Places the queued spawns, highest priority first, then the oldest. A
     /// record that does not fit does not block the ones after it.
     pub(crate) async fn place_queued(&self) -> Result<(), ApiError> {
-        for record in self.pending_spawns().await? {
+        let records = self.pending_spawns().await?;
+        if records.is_empty() {
+            return Ok(());
+        }
+        // The hosts and the leases of the whole pass, read once: the queue of
+        // a hub with many waiting spawns costs one listing, not one each.
+        let mut pass = {
+            let mem = self.mem.lock().await;
+            self.placement_pass(&mem).await?
+        };
+        for record in records {
             let Ok(agent) = self.agent(&record.agent).await else {
                 // The agent row and the record disagree: drop the record.
                 self.store.delete(&keys::spawn(&record.agent)).await?;
+                let mut mem = self.mem.lock().await;
+                mem.placement_refusals.remove(&record.agent);
                 continue;
             };
             if record.state == SpawnState::Launching && self.launch_in_flight(&record.agent).await?
             {
                 continue;
             }
+            // A spawn whose hosts are all full or offline waits for its
+            // backoff: on a pass that finds no change it costs no lease read,
+            // no host read, and no event.
+            if self.backing_off(&pass, &record, &agent.value).await {
+                continue;
+            }
             let placed = {
                 // One record at a time, so a request is served between them.
                 let mut mem = self.mem.lock().await;
-                let placed = self.place_record(&mut mem, &record, &agent.value).await?;
+                let placed = self
+                    .place_record(&mut mem, &mut pass, &record, &agent.value)
+                    .await?;
                 drop(mem);
                 self.flush().await;
                 placed
             };
             if placed {
-                let mut record = record;
-                record.state = SpawnState::Launching;
-                record.last_reject.clear();
-                self.store
-                    .upsert(&keys::spawn(&record.agent), &record)
-                    .await?;
                 // The spawn left the queue: the task it binds is not blocked
                 // by it any more, and the worker that the placement starts
                 // must be able to claim it.
@@ -514,6 +532,42 @@ impl Hub {
             }
         }
         Ok(())
+    }
+
+    /// True while the record waits on its backoff and nothing changed for it:
+    /// no host would take the agent, and every refusal is the one that the
+    /// backoff was set with. A slot that freed on a refused host, or a host
+    /// that registered since, gives a different refusal, so the spawn tries at
+    /// once instead of waiting out the backoff. The check runs on the pass's
+    /// snapshot, so it reads no lease and no host.
+    async fn backing_off(&self, pass: &PlacementPass, record: &SpawnRecord, agent: &Agent) -> bool {
+        if record.state != SpawnState::Queued {
+            return false;
+        }
+        let Some(refusal) = ({
+            let mem = self.mem.lock().await;
+            mem.placement_refusals.get(&record.agent).cloned()
+        }) else {
+            return false;
+        };
+        if refusal.retry_at <= self.now() {
+            return false;
+        }
+        let req = self.placement_req(agent, record.spec.host.as_ref()).await;
+        let views = {
+            let mem = self.mem.lock().await;
+            pass.for_agent(self, &mem, &record.agent)
+        };
+        match schedule::place(
+            agent.preferred_harness,
+            record.spec.harness,
+            &req,
+            &self.launch_bundles(agent),
+            &views,
+        ) {
+            Ok(_) => false,
+            Err(rejected) => same_refusal(&refusal.rejected, &rejected),
+        }
     }
 
     /// Drops the spawn records of agents that are gone or retired, so
@@ -566,10 +620,12 @@ impl Hub {
     }
 
     /// One placement try for one record. `Queued` stays `Queued` when no host
-    /// fits; a placed record becomes `Launching`.
+    /// fits; a placed record becomes `Launching`. `pass` holds the hosts of
+    /// the whole queue pass, so the try lists them no more.
     async fn place_record(
         &self,
         mem: &mut Memory,
+        pass: &mut PlacementPass,
         record: &SpawnRecord,
         agent: &Agent,
     ) -> Result<bool, ApiError> {
@@ -581,6 +637,9 @@ impl Hub {
                 LeaseState::Held { .. } | LeaseState::Reserved { .. }
             )
         }) {
+            // The lease is taken, so the record leaves the queue: a session of
+            // the agent runs, or its launch is on the way.
+            self.mark_launching(record).await?;
             return Ok(true);
         }
         let mut target = MoveTarget {
@@ -597,77 +656,74 @@ impl Hub {
             target.host = None;
         }
         let mut placed = self
-            .place_agent(
+            .place_agent_in(
                 mem,
                 agent,
                 MoveReason::Spawn,
                 target.clone(),
                 Some(record.spec.prompt.clone()),
+                Some(pass),
             )
             .await?;
         // No other host fits, so the hosts that failed this agent get the next
         // try: a spawn that only those hosts can take must reach its try limit
         // and fail with a message, not wait on "failed recently" for good.
-        if !placed && let Some(failed) = mem.failed_hosts.remove(&record.agent) {
+        if placed.is_none()
+            && let Some(failed) = mem.failed_hosts.remove(&record.agent)
+        {
             placed = self
-                .place_agent(
+                .place_agent_in(
                     mem,
                     agent,
                     MoveReason::Spawn,
                     target.clone(),
                     Some(record.spec.prompt.clone()),
+                    Some(pass),
                 )
                 .await?;
-            if !placed {
+            if placed.is_none() {
                 mem.failed_hosts.insert(record.agent.clone(), failed);
             }
         }
-        let mut next = record.clone();
-        if placed {
-            next.state = SpawnState::Launching;
-            next.last_reject.clear();
-            next.queue_reason = None;
-        } else {
-            // The watchdog may have failed the record between the list and
-            // this try; a failed spawn waits for a person.
-            let current = self
-                .store
-                .get::<SpawnRecord>(&keys::spawn(&record.agent))
-                .await?;
-            if current.is_some_and(|d| d.value.state == SpawnState::Failed) {
-                return Ok(false);
-            }
-            next.state = SpawnState::Queued;
-            next.last_reject = self.refusals(mem, agent, &target).await?;
+        if let Some(host) = &placed {
+            // The next spawn of the pass must see this slot taken.
+            pass.reserved(host);
+            self.mark_launching(record).await?;
+            return Ok(true);
         }
+        // The watchdog may have failed the record between the list and this
+        // try; a failed spawn waits for a person. A record that is already
+        // queued is left alone: the refusal stored its reason and its event
+        // when it changed, and a write here on every tick is what filled the
+        // store.
+        let Some(mut doc) = self
+            .store
+            .get::<SpawnRecord>(&keys::spawn(&record.agent))
+            .await?
+        else {
+            return Ok(false);
+        };
+        if matches!(doc.value.state, SpawnState::Failed | SpawnState::Queued) {
+            return Ok(false);
+        }
+        doc.value.state = SpawnState::Queued;
+        self.store
+            .put(&keys::spawn(&record.agent), &doc.value, Some(doc.revision))
+            .await?;
+        Ok(false)
+    }
+
+    /// Moves the record to `Launching`: the spawn leaves the queue, so its
+    /// refusal is old news.
+    async fn mark_launching(&self, record: &SpawnRecord) -> Result<(), ApiError> {
+        let mut next = record.clone();
+        next.state = SpawnState::Launching;
+        next.last_reject.clear();
+        next.queue_reason = None;
         self.store
             .upsert(&keys::spawn(&record.agent), &next)
             .await?;
-        Ok(placed)
-    }
-
-    /// Why each host refuses the agent now, as `spawn_queue` reports it.
-    async fn refusals(
-        &self,
-        mem: &Memory,
-        agent: &Agent,
-        target: &MoveTarget,
-    ) -> Result<Vec<(HostName, String)>, ApiError> {
-        let views = self.host_views(mem, &agent.id).await?;
-        let req = self.placement_req(agent, target.host.as_ref()).await;
-        match schedule::place(
-            agent.preferred_harness,
-            target.harness,
-            &req,
-            &self.launch_bundles(agent),
-            &views,
-        ) {
-            Ok(_) => Ok(Vec::new()),
-            Err(list) => Ok(list
-                .into_iter()
-                .map(|(host, why)| (host, why.to_string()))
-                .collect()),
-        }
+        Ok(())
     }
 
     /// The queue, as `spawn_queue` and `borant ps` show it: the placement
