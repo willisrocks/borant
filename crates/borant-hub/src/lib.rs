@@ -635,7 +635,11 @@ impl Hub {
         // Work that waits on a person, after every other step has had its
         // say: a spawn that a wait cannot place, and a claim whose claimer
         // can no longer work it.
-        self.tick_blocked().await
+        let blocked = self.tick_blocked().await;
+        // The events of the last passes wait here, so no publish holds the
+        // lock of a pass that queued them.
+        self.flush().await;
+        blocked
     }
 
     /// The hosts, leases, and agents of this tick, read once for the passes
