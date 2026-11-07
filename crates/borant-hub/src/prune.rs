@@ -31,7 +31,7 @@ use crate::export::SnapshotMark;
 /// The state keys of the agent sessions. `keys` has no prefix for them.
 const SESSION_PREFIX: &str = "session.";
 
-/// The most deletions of one kind in a batch, before the prune yields.
+/// The most deletions in a batch, before the prune yields.
 const BATCH: usize = 200;
 
 /// The age of the last snapshot that an apply accepts. A prune without a
