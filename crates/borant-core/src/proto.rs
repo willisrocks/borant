@@ -571,10 +571,22 @@ pub enum ToolCall {
         #[serde(default)]
         without_bundle: Option<BundleName>,
     },
-    /// Lists the agents that a prune would remove. Writes and deletes nothing.
+    /// Lists the records that a prune would remove, or with `apply` deletes
+    /// them after the token and backup checks. Writes nothing without
+    /// `apply`.
     PruneAgents {
         #[serde(default = "default_prune_secs")]
         older_than_secs: u64,
+        /// The session logs of an agent with no session for this long go
+        /// (design section 19).
+        #[serde(default = "default_retention_secs")]
+        retention_secs: u64,
+        /// Deletes what the dry run listed. Only a person may send it.
+        #[serde(default)]
+        apply: bool,
+        /// The token of the dry run that the caller read.
+        #[serde(default)]
+        token: Option<String>,
     },
     /// Creates or replaces a project.
     ProjectAdd {
@@ -638,6 +650,12 @@ fn default_page_size() -> usize {
 /// One day, the default age of an agent that a prune may remove.
 fn default_prune_secs() -> u64 {
     24 * 60 * 60
+}
+
+/// The retention of the design spec: the session logs of an agent with no
+/// session for 30 days.
+fn default_retention_secs() -> u64 {
+    30 * 24 * 60 * 60
 }
 
 impl ToolCall {

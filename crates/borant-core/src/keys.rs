@@ -70,6 +70,10 @@ pub fn lease_hub() -> String {
     "lease.hub".to_owned()
 }
 
+/// The mark that a hub snapshot writes, so a prune can tell how old the last
+/// backup is: its time, path, and size on the hub box.
+pub const SNAPSHOT: &str = "hub.snapshot";
+
 /// The hub's view of one pool host: pool, provider id, phase, and times.
 pub fn elastic(host: &HostName) -> String {
     format!("elastic.{host}")
