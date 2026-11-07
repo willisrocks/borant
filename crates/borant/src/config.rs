@@ -1414,6 +1414,32 @@ mod tests {
         assert!(!cfg.watch_hub);
         assert_eq!(cfg.hub_down, Duration::from_secs(120));
     }
+
+    #[tokio::test]
+    async fn timing_grace_reaches_the_host_config() {
+        let file: HostFile = toml::from_str(
+            r#"
+            [host]
+            name = "laptop"
+            harnesses = ["pi"]
+            [timing]
+            grace_secs = 5
+            [alerts]
+            hub_down_minutes = 5
+            "#,
+        )
+        .unwrap();
+        let cfg = host_config(&file).await.unwrap();
+        assert_eq!(cfg.lease_grace, Duration::from_secs(5));
+        // The fence window of a host never waits past the takeover, even when
+        // the hub_down notice is set well after it.
+        assert_eq!(cfg.fence_after(), cfg.lease + Duration::from_secs(5));
+        // A host with no [timing] keeps the grace of the hub default.
+        let plain: HostFile = toml::from_str("[host]\nharnesses = [\"pi\"]\n").unwrap();
+        let cfg = host_config(&plain).await.unwrap();
+        assert_eq!(cfg.lease_grace, Duration::from_secs(120));
+        assert_eq!(cfg.fence_after(), Duration::from_secs(120));
+    }
 }
 
 #[cfg(test)]

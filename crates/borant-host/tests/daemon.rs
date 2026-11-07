@@ -352,12 +352,18 @@ async fn expired_lease_with_no_takeover_is_reclaimed() {
 }
 
 #[tokio::test]
-async fn no_heartbeat_for_lease_pauses_then_resumes() {
-    let mut fx = Fx::new(true, |c| c.lease = Duration::from_millis(300)).await;
+async fn no_heartbeat_for_the_fence_window_pauses_then_resumes() {
+    // A short fence window: the pause comes after it, not after the lease.
+    let mut fx = Fx::new(true, |c| {
+        c.lease = Duration::from_millis(300);
+        c.lease_grace = Duration::from_millis(300);
+        c.hub_down = Duration::from_millis(600);
+    })
+    .await;
     let a = fx.session("a", "wa").await;
     fx.host.heartbeat_once().await;
     fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     fx.host.heartbeat_once().await;
     let paused = fx
         .host
@@ -377,13 +383,19 @@ async fn no_heartbeat_for_lease_pauses_then_resumes() {
 
 #[tokio::test]
 async fn hub_return_wakes_paused_sessions_once() {
-    let mut fx = Fx::new(true, |c| c.lease = Duration::from_millis(300)).await;
+    // A short fence window: the pause comes after it, not after the lease.
+    let mut fx = Fx::new(true, |c| {
+        c.lease = Duration::from_millis(300);
+        c.lease_grace = Duration::from_millis(300);
+        c.hub_down = Duration::from_millis(600);
+    })
+    .await;
     let a = fx.session("a", "wa").await;
     fx.host.heartbeat_once().await;
 
-    // The hub is gone for longer than the lease: the session pauses.
+    // The hub is gone for longer than the fence window: the session pauses.
     fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     fx.host.heartbeat_once().await;
     assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
 
@@ -395,9 +407,9 @@ async fn hub_return_wakes_paused_sessions_once() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(wake_messages(&fx, &agent("a")).await, 0);
 
-    // The hub flaps: down past the lease again, then up.
+    // The hub flaps: down past the fence window again, then up.
     fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     fx.host.heartbeat_once().await;
     assert!(fence(&fx, a.session).await.unwrap().contains("unreachable"));
     fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
@@ -429,7 +441,7 @@ async fn hub_return_wakes_paused_sessions_once() {
 
     // A new outage after the full recovery wakes every session once.
     fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     fx.host.heartbeat_once().await;
     fx.hub_stop = Some(serve_hub(&fx.bus, fx.hub.clone()).await);
     fx.host.heartbeat_once().await;
@@ -615,11 +627,17 @@ async fn turn_end_events_do_not_take_messages() {
 
 #[tokio::test]
 async fn paused_session_does_not_take_messages() {
-    let mut fx = Fx::new(true, |c| c.lease = Duration::from_millis(300)).await;
+    // A short fence window: the pause comes after it, not after the lease.
+    let mut fx = Fx::new(true, |c| {
+        c.lease = Duration::from_millis(300);
+        c.lease_grace = Duration::from_millis(300);
+        c.hub_down = Duration::from_millis(600);
+    })
+    .await;
     let b = fx.session("b", "wb").await;
     fx.host.heartbeat_once().await;
     fx.hub_stop.take().unwrap().cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     fx.host.heartbeat_once().await;
     assert!(fx.host.local_view(b.session).unwrap().fenced.is_some());
     let env = testing::envelope(Target::Agent(agent("b")), "not for a paused session");

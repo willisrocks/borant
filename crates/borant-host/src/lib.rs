@@ -1015,7 +1015,6 @@ impl Host {
             Err(e) => {
                 self.state().host_registered = false;
                 self.mark_hub_down();
-                self.register_failed();
                 let since = self.inner.clock.now().since(self.last_ok());
                 self.heartbeat_failure(&format!("hub unreachable for {since:?}"), &e);
                 if since > self.inner.cfg.fence_after() {
@@ -1404,6 +1403,40 @@ pub fn disk_used_pct(path: &Path) -> Option<f64> {
     }
     let used = total.saturating_sub(disk.available_space());
     Some((used as f64 / total as f64) * 100.0)
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+
+    fn cfg() -> HostConfig {
+        HostConfig::new("h1".parse().unwrap(), PathBuf::from("/tmp/h1"))
+    }
+
+    #[test]
+    fn the_fence_window_is_the_hub_down_window() {
+        let c = cfg();
+        assert_eq!(c.hub_down, Duration::from_secs(120));
+        assert_eq!(c.fence_after(), Duration::from_secs(120));
+        // Never past the takeover of the hub, so the lease invariant holds.
+        assert!(c.fence_after() <= c.lease + c.lease_grace);
+    }
+
+    #[test]
+    fn the_fence_window_never_waits_past_the_takeover() {
+        let mut c = cfg();
+        c.hub_down = Duration::from_secs(600);
+        assert_eq!(c.fence_after(), c.lease + c.lease_grace);
+        c.lease_grace = Duration::from_secs(30);
+        assert_eq!(c.fence_after(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn the_fence_window_waits_at_least_a_pending_request() {
+        let mut c = cfg();
+        c.hub_down = Duration::from_secs(1);
+        assert_eq!(c.fence_after(), c.lease + c.hub_timeout * 2);
+    }
 }
 
 #[cfg(test)]

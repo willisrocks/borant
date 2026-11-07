@@ -119,6 +119,48 @@ fn hook_role_and_collection_reach_the_registration() {
     assert!(body.contains(r#""collection":"personal""#), "{body}");
 }
 
+/// A `PreToolUse` whose daemon answers with an error allows the tool: a
+/// broken daemon must never block Claude Code, and only a session that the
+/// daemon reports as fenced blocks one.
+#[test]
+fn hook_pre_tool_use_with_a_failing_daemon_denies_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let session = borant_core::SessionId::new();
+    std::fs::write(run.join("claude-abc.sid"), session.to_string()).unwrap();
+    let socket = dir.path().join("host.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || one_request(listener));
+    let started = Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_borant"))
+        .args(["hook", "pre-tool-use"])
+        .env("BORANT_HOME", dir.path())
+        .env("BORANT_SOCKET", &socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"session_id":"abc","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}"#)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    // The hook read the session first; no tool event went out after the error.
+    let body = server.join().unwrap().unwrap();
+    assert!(body.is_empty(), "{body}");
+}
+
 /// A `StopFailure` of a rate limit becomes one `MemberLimited` event for the
 /// session, with the reset time that its text names.
 #[test]
