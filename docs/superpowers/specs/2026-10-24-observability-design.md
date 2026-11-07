@@ -426,7 +426,7 @@ It publishes `agent.pruned`. The hub also deletes ended sessions older than 7
 days, except the last session of each agent. For test runs:
 
 ```
-borant agents prune [--older 1h] [--dry-run]
+borant hub prune [--older-than-hours 24] [--apply --token T]
 borant agents rm <agent> [--force]
 ```
 
@@ -444,7 +444,7 @@ Each phase ships alone and is useful alone.
 
 | Phase | Content | Done when |
 |---|---|---|
-| 1 | `BORANT_EVENTS`, `SwarmEvent`, hub events (lease, host, placement, move, task status), host events (`delivery.*`, `session.paused`), `borant events --follow`, the log changes, agent pruning | A two-host takeover shows `lease.expired`, `placement.chosen`, and `move.launched` in `borant events --follow`, and `borant agents prune --dry-run` lists the dead test agents |
+| 1 | `BORANT_EVENTS`, `SwarmEvent`, hub events (lease, host, placement, move, task status), host events (`delivery.*`, `session.paused`), `borant events --follow`, the log changes, agent pruning | A two-host takeover shows `lease.expired`, `placement.chosen`, and `move.launched` in `borant events --follow`, and `borant hub prune` lists the dead test agents |
 | 2 | `HostStats`, `inbox_stats`, the hub `Snapshot`, the `stats` op, `borant top`, `borant status --json` | The redelivery bug from the stress test shows in the INBOX column without `natscli` |
 | 3 | Alert rules, `NtfyNotifier` on the hub and on always-on hosts, `hub.unreachable` | Stopping the host daemon on borant-2 sends one phone notification in under 3 minutes |
 | 4 | Usage from Pi, omp, and Claude Code, the usage KV, the price table, `$TODAY` columns, budget alerts | One day of real work gives a cost for each agent within 10% of the provider console |

@@ -331,6 +331,9 @@ async fn roles_prune_obeys_tools_deny() {
             Some(&auditor),
             ToolCall::PruneAgents {
                 older_than_secs: 86_400,
+                retention_secs: 30 * 86_400,
+                apply: false,
+                token: None,
             },
         )
         .await
@@ -345,6 +348,9 @@ async fn roles_prune_obeys_tools_deny() {
         Some(&worker),
         ToolCall::PruneAgents {
             older_than_secs: 86_400,
+            retention_secs: 30 * 86_400,
+            apply: false,
+            token: None,
         },
     )
     .await
