@@ -12,6 +12,7 @@ mod delivery;
 mod hub_down;
 pub mod outbox;
 mod persist;
+mod reregister;
 pub mod sandbox;
 mod secrets;
 mod sessions;
@@ -54,6 +55,7 @@ use tokio_util::sync::CancellationToken;
 use crate::checkpoint::RepoFacts;
 use crate::hub_down::{HubAlert, HubDownWatch};
 use crate::outbox::Outbox;
+use crate::reregister::RegisterGate;
 pub use crate::sandbox::SandboxConfig;
 use crate::secrets::{LaunchSecrets, LaunchVars, Redactor};
 
@@ -93,6 +95,11 @@ pub struct HostConfig {
     /// Where checkpoints go. Defaults to the `origin` remote of each repo.
     pub checkpoint_remote: Option<String>,
     pub lease: Duration,
+    /// How long the hub waits after a lease ends before it starts a takeover
+    /// on another host, `grace_secs` in `[timing]`. The fence window of the
+    /// tools never goes past `lease + lease_grace`: after that another session
+    /// may run the agent.
+    pub lease_grace: Duration,
     pub heartbeat: Duration,
     pub wakes_per_hour: u32,
     pub keep_turns: usize,
@@ -142,6 +149,9 @@ impl HostConfig {
             commands: HarnessCommands::default(),
             checkpoint_remote: None,
             lease: Duration::from_secs(30),
+            // The grace of the hub, spec section 11: the default of
+            // `LeaseConfig`, which `[timing] grace_secs` changes.
+            lease_grace: borant_core::rules::lease::LeaseConfig::default().grace,
             heartbeat: Duration::from_secs(10),
             wakes_per_hour: 30,
             keep_turns: 50,
@@ -164,6 +174,25 @@ impl HostConfig {
         self.socket
             .clone()
             .unwrap_or_else(|| self.home.join("host.sock"))
+    }
+
+    /// How long the heartbeats may fail before the tools of the local sessions
+    /// pause. A host rides out a short blip instead of fencing on the first
+    /// missed lease: the window is the `[alerts] hub_down_minutes` one, at
+    /// least the lease plus two request timeouts, so a renewal in flight is
+    /// not cut off.
+    ///
+    /// It never goes past `lease + lease_grace`, the moment the hub may let
+    /// another session take an agent over (spec section 11). A host that
+    /// cannot renew its lease must not let an agent act as if it still held
+    /// the lease after the hub may have given it away.
+    pub fn fence_after(&self) -> Duration {
+        let pending = self
+            .lease
+            .saturating_add(self.hub_timeout.saturating_mul(2));
+        let takeover = self.lease.saturating_add(self.lease_grace);
+        let floor = pending.min(takeover);
+        self.hub_down.clamp(floor, takeover)
     }
 
     /// The record of this host with its declared `harnesses`. The daemon
@@ -369,7 +398,7 @@ pub(crate) struct LocalSess {
     pub activity_sent: Option<Timestamp>,
     /// Set when the session lost its lease. Tools stay blocked.
     pub fenced: Option<String>,
-    /// Set while the hub is unreachable for longer than a lease.
+    /// Set while the hub is unreachable for longer than the fence window.
     pub paused: bool,
     /// Set when a pause must tell this session that the hub is back.
     pub wake_pending: bool,
@@ -438,8 +467,10 @@ pub(crate) struct State {
     /// The harnesses whose program was missing at the last check, so one
     /// warning covers a whole absence.
     pub missing_programs: HashSet<Harness>,
-    /// Start of the current run of successful heartbeats.
-    pub up_since: Option<Instant>,
+    /// Start of the current run of successful heartbeats, on the host clock.
+    /// The wall clock counts a sleep, so a machine that wakes past the fence
+    /// window pauses at once.
+    pub up_since: Option<Timestamp>,
     /// True when the hub was reachable for a lease, so a pause is a new
     /// outage and wakes its sessions.
     pub outage_over: bool,
@@ -496,7 +527,9 @@ pub(crate) struct Inner {
     pub events: Option<Arc<dyn EventLog>>,
     pub outbox: Outbox,
     pub state: Mutex<State>,
-    pub last_ok: Mutex<Instant>,
+    pub last_ok: Mutex<Timestamp>,
+    /// When the host registration may go again after failed heartbeats.
+    pub register: Mutex<RegisterGate>,
     /// When the daemon started, for `HostStats`.
     pub started: Timestamp,
     /// The round trip of the previous heartbeat, in milliseconds.
@@ -537,6 +570,7 @@ impl Host {
         let wakes = cfg.wakes_per_hour;
         let started = clock.now();
         let hub_down = HubDownWatch::new(cfg.hub_down, cfg.heartbeat);
+        let register = RegisterGate::new(cfg.heartbeat);
         Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -571,7 +605,8 @@ impl Host {
                     cleanup_skip_log_at: None,
                     cleanup_consumers_at: None,
                 }),
-                last_ok: Mutex::new(Instant::now()),
+                last_ok: Mutex::new(started),
+                register: Mutex::new(register),
                 started,
                 last_rtt: Mutex::new(None),
                 heartbeat_failing: AtomicBool::new(false),
@@ -896,17 +931,27 @@ impl Host {
         // that a person installs or removes while the daemon runs changes what
         // the hub places here: the registration below follows the change.
         let info = self.offered_info();
+        let now = self.inner.clock.now();
         let changed = self.state().registered_harnesses.as_ref() != Some(&info.harnesses);
-        if !self.state().host_registered || changed {
+        // The beat below goes out even while the gate holds the registration:
+        // it is what tells the host that the hub is back. The gate alone keeps
+        // a fleet from registering in one burst after an outage.
+        if (!self.state().host_registered || changed) && self.register_due(now) {
             let harnesses = info.harnesses.clone();
             let req = CtlRequest::RegisterHost { info };
             match self.hub(&req).await {
                 Ok(_) => {
-                    let mut st = self.state();
-                    st.host_registered = true;
-                    st.registered_harnesses = Some(harnesses);
+                    {
+                        let mut st = self.state();
+                        st.host_registered = true;
+                        st.registered_harnesses = Some(harnesses);
+                    }
+                    self.register_ok();
                 }
-                Err(e) => self.heartbeat_failure("cannot register the host", &e),
+                Err(e) => {
+                    self.heartbeat_failure("cannot register the host", &e);
+                    self.register_failed();
+                }
             }
         }
         let refs = self.lease_refs();
@@ -928,7 +973,7 @@ impl Host {
         }
         match reply {
             Ok(v) => {
-                *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = now;
                 let stable = self.mark_hub_up();
                 let reply = serde_json::from_value::<borant_core::proto::HeartbeatReply>(v)
                     .unwrap_or_default();
@@ -970,14 +1015,10 @@ impl Host {
             Err(e) => {
                 self.state().host_registered = false;
                 self.mark_hub_down();
-                let since = self
-                    .inner
-                    .last_ok
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .elapsed();
+                self.register_failed();
+                let since = self.inner.clock.now().since(self.last_ok());
                 self.heartbeat_failure(&format!("hub unreachable for {since:?}"), &e);
-                if since > self.inner.cfg.lease {
+                if since > self.inner.cfg.fence_after() {
                     self.set_paused(true);
                 }
                 if let Some(alert) = self.beat_failed() {
@@ -1043,9 +1084,10 @@ impl Host {
     /// reachable for a lease, so the recovery is stable and the sessions it
     /// paused can be woken.
     fn mark_hub_up(&self) -> bool {
+        let now = self.inner.clock.now();
         let mut st = self.state();
-        let since = *st.up_since.get_or_insert_with(Instant::now);
-        if since.elapsed() >= self.inner.cfg.lease {
+        let since = *st.up_since.get_or_insert(now);
+        if now.since(since) >= self.inner.cfg.lease {
             st.outage_over = true;
         }
         st.outage_over
@@ -1053,6 +1095,53 @@ impl Host {
 
     fn mark_hub_down(&self) {
         self.state().up_since = None;
+    }
+
+    /// The host clock time of the last heartbeat that got through.
+    fn last_ok(&self) -> Timestamp {
+        *self.inner.last_ok.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True when the registration gate is open at `now`.
+    fn register_due(&self, now: Timestamp) -> bool {
+        self.inner
+            .register
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .due(now)
+    }
+
+    /// Closes the gate for a jittered backoff after a failed attempt.
+    fn register_failed(&self) {
+        self.inner
+            .register
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .failed(&self.inner.cfg.name, self.inner.clock.now());
+    }
+
+    /// Opens the gate after a registration that got through.
+    fn register_ok(&self) {
+        self.inner
+            .register
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .registered();
+    }
+
+    /// True when the hub holds the record of this host. Public for tests.
+    pub fn host_registered(&self) -> bool {
+        self.state().host_registered
+    }
+
+    /// When the next host registration may go after a failed beat. Public for
+    /// tests.
+    pub fn register_due_at(&self) -> Option<Timestamp> {
+        self.inner
+            .register
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deadline()
     }
 
     /// Logs the first failure of a run at `warn`, and later ones at `debug`.

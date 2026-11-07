@@ -985,6 +985,9 @@ pub async fn host_config(file: &HostFile) -> anyhow::Result<HostConfig> {
     }
     let timing = file.timing.lease_config()?;
     cfg.lease = timing.lease;
+    // The host fences its tools no later than the moment the hub may start a
+    // takeover, so it needs the grace the hub waits.
+    cfg.lease_grace = timing.grace;
     cfg.heartbeat = timing.heartbeat;
     // The watchdog of a launch: `launch_timeout_secs` in `[timing]`, or
     // `BORANT_LAUNCH_TIMEOUT_SECS`.
