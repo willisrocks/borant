@@ -330,13 +330,17 @@ snapshot is missing or more than an hour old. A snapshot writes a mark at
 the age of its backup. An empty plan deletes nothing and needs no token, so a
 retried apply is harmless.
 
-The apply deletes in batches of at most 200, one kind at a time, and yields
-between batches: the inbox and the log first, then the KV keys, so a key that
-is gone cannot orphan an inbox or a log. An agent is never a candidate while
-it is live, parked, paused, queued, or bound to an open task. It is also never
-a candidate while a message or a log entry inside the retention waits for it;
-a message past the retention is past the age limit of the message streams
-(section 19), so it no longer keeps the agent.
+The apply deletes in batches of at most 200 and yields between batches. Each
+candidate is checked again, and its agent key goes first with the revision
+that the check read: an agent that wakes, takes a lease, or pauses between the
+plan and the delete wins the race, and the apply skips it and reports the
+skip. The rest of its keys, its inbox, and its log then go. A log that the
+retention would delete is likewise checked for a session or a waiting message
+first. An agent is never a candidate while it is live, parked, paused, queued,
+or bound to an open task. It is also never a candidate while a message or a
+log entry inside the retention waits for it; a message past the retention is
+past the age limit of the message streams (section 19), so it no longer keeps
+the agent.
 
 The hub must not hold the `mem` mutex while it reads the KV state, about 146
 inboxes, and the session logs, because every heartbeat waits for that mutex

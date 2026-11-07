@@ -19,7 +19,7 @@ use borant_core::model::{
     SpawnState, Task, TaskStatus,
 };
 use borant_core::ports::Entry;
-use borant_core::proto::ApiError;
+use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::rules::session_log;
 use borant_core::{AgentId, Timestamp, keys};
 use serde::Serialize;
@@ -112,6 +112,12 @@ pub struct Candidate {
     pub since: Option<Timestamp>,
     pub keys: Vec<String>,
     pub bytes: usize,
+    /// What the apply reports for this agent's inbox and log. Not in the
+    /// report: the kinds already count them.
+    #[serde(skip)]
+    pub messages: usize,
+    #[serde(skip)]
+    pub events: usize,
 }
 
 /// One agent that stays, with the first rule that keeps it.
@@ -129,6 +135,9 @@ pub struct Applied {
     pub messages: usize,
     pub logs: usize,
     pub events: usize,
+    /// The candidates that came back between the plan and the delete, so the
+    /// apply left them alone.
+    pub skipped: usize,
     /// The batches that the apply ran, each one at most [`BATCH`] deletions.
     pub batches: usize,
 }
@@ -157,8 +166,14 @@ struct Plan {
     kept: Vec<Kept>,
     /// The store keys that go, with the size of each value.
     keys: Vec<(String, usize)>,
+    /// The keys of the `leases` and `spawns` kinds: no agent owns them, so an
+    /// apply deletes them without a race to lose.
+    orphans: Vec<String>,
     inboxes: Vec<InboxItem>,
+    /// The logs of the pruned agents.
     logs: Vec<LogItem>,
+    /// The logs of agents that stay, past the retention.
+    idle_logs: Vec<LogItem>,
     kinds: Vec<KindReport>,
     totals: Totals,
     token: String,
@@ -176,7 +191,10 @@ pub(crate) async fn prune(
     let now = hub.now();
     let plan = plan(hub, &moving, older_than, retention).await?;
     let backup = backup(hub, now).await?;
-    let empty = plan.keys.is_empty() && plan.inboxes.is_empty() && plan.logs.is_empty();
+    let empty = plan.keys.is_empty()
+        && plan.inboxes.is_empty()
+        && plan.logs.is_empty()
+        && plan.idle_logs.is_empty();
 
     let applied = match mode {
         Mode::DryRun => None,
@@ -230,6 +248,7 @@ pub(crate) async fn prune(
             messages = a.messages,
             logs = a.logs,
             events = a.events,
+            skipped = a.skipped,
             batches = a.batches,
             "prune applied"
         ),
@@ -272,37 +291,121 @@ fn backup_why(b: &Backup) -> String {
 }
 
 /// Deletes what the plan lists, in batches of at most [`BATCH`], yielding
-/// between batches. The inboxes and the logs go first: a key that is gone
-/// cannot lead a later prune to the inbox and the log that it orphaned.
+/// between batches.
+///
+/// The plan is a few seconds old on a hub of 740 agents, and an agent can
+/// wake, take a lease, or pause in that time. So each candidate is checked
+/// again, and its agent key goes first with the revision that this check
+/// read: an agent that changed wins the race, and the apply leaves it alone.
+/// The agent key first also means a crash cannot orphan the inbox and the log
+/// of an agent that the record no longer names.
 async fn execute(hub: &Hub, plan: &Plan) -> Result<Applied, ApiError> {
     let mut applied = Applied::default();
-    for chunk in plan.inboxes.chunks(BATCH) {
-        for item in chunk {
-            hub.bus.delete_inbox(&item.agent).await?;
-            applied.inboxes += 1;
-            applied.messages += item.messages;
+    let mut batch = Batcher::default();
+    for c in &plan.candidates {
+        let agent_key = keys::agent(&c.agent);
+        let Some(agent) = hub.store.get::<Agent>(&agent_key).await? else {
+            // The record is already gone: its keys are leftovers.
+            for key in &c.keys {
+                hub.store.delete(key).await?;
+                batch.tick(&mut applied).await;
+            }
+            continue;
+        };
+        if !prunable_now(hub, &agent.value).await? {
+            applied.skipped += 1;
+            tracing::debug!(agent = %c.agent, "prune skipped an agent that came back");
+            continue;
         }
-        applied.batches += 1;
-        tokio::task::yield_now().await;
-    }
-    for chunk in plan.logs.chunks(BATCH) {
-        for item in chunk {
-            hub.sessions.delete(&item.agent).await?;
+        match hub.store.delete_at(&agent_key, agent.revision).await {
+            Ok(()) => {}
+            Err(e) if e.code == ApiErrorCode::Conflict => {
+                applied.skipped += 1;
+                tracing::debug!(agent = %c.agent, "prune lost the race for an agent");
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        batch.tick(&mut applied).await;
+        hub.bus.delete_inbox(&c.agent).await?;
+        applied.inboxes += 1;
+        applied.messages += c.messages;
+        if c.events > 0 {
+            hub.sessions.delete(&c.agent).await?;
             applied.logs += 1;
-            applied.events += item.events;
+            applied.events += c.events;
         }
-        applied.batches += 1;
-        tokio::task::yield_now().await;
-    }
-    for chunk in plan.keys.chunks(BATCH) {
-        for (key, _) in chunk {
+        for key in c.keys.iter().filter(|k| **k != agent_key) {
             hub.store.delete(key).await?;
-            applied.keys += 1;
+            batch.tick(&mut applied).await;
         }
-        applied.batches += 1;
-        tokio::task::yield_now().await;
     }
+    for key in &plan.orphans {
+        hub.store.delete(key).await?;
+        batch.tick(&mut applied).await;
+    }
+    // The logs of agents that stay: a wake in the window between the plan and
+    // this pass keeps its log, because the agent has a session again or a
+    // message waits for it.
+    for item in &plan.idle_logs {
+        let Some(agent) = hub.store.get::<Agent>(&keys::agent(&item.agent)).await? else {
+            continue;
+        };
+        if agent.value.session.is_some() || !hub.bus.unacked(&item.agent).await?.is_empty() {
+            applied.skipped += 1;
+            tracing::debug!(agent = %item.agent, "prune kept a log that came back");
+            continue;
+        }
+        hub.sessions.delete(&item.agent).await?;
+        applied.logs += 1;
+        applied.events += item.events;
+    }
+    batch.finish(&mut applied);
     Ok(applied)
+}
+
+/// Counts deletions and yields once one batch of [`BATCH`] is done, so a big
+/// prune never runs a long stretch without giving the reactor a turn.
+#[derive(Debug, Default)]
+struct Batcher {
+    in_batch: usize,
+}
+
+impl Batcher {
+    async fn tick(&mut self, applied: &mut Applied) {
+        applied.keys += 1;
+        self.in_batch += 1;
+        if self.in_batch == BATCH {
+            applied.batches += 1;
+            self.in_batch = 0;
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn finish(&self, applied: &mut Applied) {
+        if self.in_batch > 0 {
+            applied.batches += 1;
+        }
+    }
+}
+
+/// True when the agent that the plan saw is still one that a prune may
+/// delete: no session, not paused, and its lease still ended.
+async fn prunable_now(hub: &Hub, agent: &Agent) -> Result<bool, ApiError> {
+    if agent.session.is_some() || agent.paused.is_some() {
+        return Ok(false);
+    }
+    let Some(lease) = hub
+        .store
+        .get::<Lease>(&keys::lease_agent(&agent.id))
+        .await?
+    else {
+        return Ok(true);
+    };
+    Ok(matches!(
+        &lease.value.state,
+        LeaseState::Expired { .. } | LeaseState::Released { parked: false, .. }
+    ))
 }
 
 /// Lists the candidates for a prune of agents whose lease ended more than
@@ -334,8 +437,10 @@ async fn plan(
         candidates: Vec::new(),
         kept: Vec::new(),
         keys: Vec::new(),
+        orphans: Vec::new(),
         inboxes: Vec::new(),
         logs: Vec::new(),
+        idle_logs: Vec::new(),
         kinds: Vec::new(),
         totals: Totals::default(),
         token: String::new(),
@@ -398,6 +503,8 @@ async fn plan(
                 since,
                 keys: removed.keys,
                 bytes: removed.bytes,
+                messages: unacked.len(),
+                events: events.len(),
             });
             continue;
         };
@@ -410,7 +517,7 @@ async fn plan(
             && !fresh_undelivered
             && since.is_some_and(|s| now.since(s) >= retention)
         {
-            plan.logs.push(log_item(id, &events));
+            plan.idle_logs.push(log_item(id, &events));
         }
         plan.kept.push(Kept {
             agent: id.clone(),
@@ -446,7 +553,8 @@ async fn plan(
         lease_keys += 1;
         lease_bytes += scan.size(&key);
         leases.see(Some(*since));
-        plan.keys.push((key.clone(), scan.size(&key)));
+        plan.orphans.push(key.clone());
+        plan.keys.push((key, scan.size(&keys::lease_agent(id))));
     }
     plan.kinds.push(KindReport {
         kind: "leases",
@@ -478,7 +586,8 @@ async fn plan(
         spawn_keys += 1;
         spawn_bytes += scan.size(&key);
         spawns.see(Some(record.queued_at));
-        plan.keys.push((key.clone(), scan.size(&key)));
+        plan.orphans.push(key.clone());
+        plan.keys.push((key, scan.size(&keys::spawn(id))));
     }
     plan.kinds.push(KindReport {
         kind: "spawns",
@@ -516,7 +625,7 @@ async fn plan(
     let mut logs = KindSpan::default();
     let mut log_events = 0;
     let mut log_bytes = 0;
-    for item in &plan.logs {
+    for item in plan.logs.iter().chain(plan.idle_logs.iter()) {
         log_events += item.events;
         log_bytes += item.bytes;
         logs.see(item.oldest);
@@ -524,7 +633,7 @@ async fn plan(
     }
     plan.kinds.push(KindReport {
         kind: "session_events",
-        items: plan.logs.len(),
+        items: plan.logs.len() + plan.idle_logs.len(),
         keys: 0,
         messages: 0,
         events: log_events,
@@ -808,5 +917,172 @@ fn decode<T: serde::de::DeserializeOwned>(e: &Entry) -> Option<T> {
             tracing::warn!(key = %e.key, "skip bad document: {err}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The apply checks each candidate again before it deletes it, because
+    //! the plan is a few seconds old on a hub of 740 agents.
+
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use borant_core::model::{
+        Agent, Harness, Lease, LeaseState, PauseReason, Sender, SessionEvent, SessionEventBody,
+    };
+    use borant_core::ports::StateStore;
+    use borant_core::{AgentId, EventId, FencingToken, ManualClock, SessionId, Timestamp, keys};
+    use borant_memory::{MemoryBus, MemorySession, MemoryState};
+
+    use crate::{Hub, HubConfig};
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    fn hub() -> (Arc<Hub>, MemoryState) {
+        let state = MemoryState::new();
+        let hub = Arc::new(Hub::new(
+            Arc::new(state.clone()),
+            Arc::new(MemoryBus::new()),
+            Arc::new(MemorySession::new()),
+            Arc::new(ManualClock::new(Timestamp(60 * DAY.as_millis() as i64))),
+            HubConfig::default(),
+        ));
+        (hub, state)
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_wakes_after_the_plan_wins_the_race() {
+        let (hub, state) = hub();
+        let id: AgentId = "w".parse().unwrap();
+        let agent = Agent {
+            id: id.clone(),
+            session: None,
+            ..Default::default()
+        };
+        let agent_rev = state
+            .create(
+                &keys::agent(&id),
+                serde_json::to_vec(&agent).unwrap().into(),
+            )
+            .await
+            .unwrap();
+        state
+            .create(
+                &keys::lease_agent(&id),
+                serde_json::to_vec(&Lease {
+                    agent: id.clone(),
+                    token: FencingToken(1),
+                    state: LeaseState::Expired {
+                        since: Timestamp(1),
+                        last_session: None,
+                    },
+                })
+                .unwrap()
+                .into(),
+            )
+            .await
+            .unwrap();
+
+        let plan = super::plan(&hub, &HashSet::new(), DAY, DAY * 30)
+            .await
+            .unwrap();
+        assert_eq!(plan.candidates.len(), 1);
+
+        // The agent wakes before the apply reaches it: its session registers.
+        let mut awake = agent;
+        awake.session = Some(SessionId::new());
+        state
+            .update(
+                &keys::agent(&id),
+                serde_json::to_vec(&awake).unwrap().into(),
+                agent_rev,
+            )
+            .await
+            .unwrap();
+
+        let applied = super::execute(&hub, &plan).await.unwrap();
+        assert_eq!(applied.skipped, 1);
+        assert_eq!(applied.keys, 0);
+        assert!(state.get(&keys::agent(&id)).await.unwrap().is_some());
+        assert!(state.get(&keys::lease_agent(&id)).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_log_that_the_agent_woke_for_is_skipped() {
+        let (hub, state) = hub();
+        let id: AgentId = "idle".parse().unwrap();
+        let agent = Agent {
+            id: id.clone(),
+            session: None,
+            paused: Some(PauseReason {
+                by: Sender::Human,
+                why: "cap".into(),
+                at: Timestamp(1),
+            }),
+            ..Default::default()
+        };
+        let agent_rev = state
+            .create(
+                &keys::agent(&id),
+                serde_json::to_vec(&agent).unwrap().into(),
+            )
+            .await
+            .unwrap();
+        state
+            .create(
+                &keys::lease_agent(&id),
+                serde_json::to_vec(&Lease {
+                    agent: id.clone(),
+                    token: FencingToken(1),
+                    state: LeaseState::Expired {
+                        since: Timestamp(1),
+                        last_session: None,
+                    },
+                })
+                .unwrap()
+                .into(),
+            )
+            .await
+            .unwrap();
+        hub.sessions
+            .append(
+                &id,
+                &SessionEvent {
+                    id: EventId::new(),
+                    agent: id.clone(),
+                    session: None,
+                    harness: Harness::Fake,
+                    host: "h1".parse().unwrap(),
+                    turn: 0,
+                    at: Timestamp(1),
+                    body: SessionEventBody::TurnStart,
+                },
+            )
+            .await
+            .unwrap();
+
+        let plan = super::plan(&hub, &HashSet::new(), DAY, DAY * 30)
+            .await
+            .unwrap();
+        assert_eq!(plan.idle_logs.len(), 1, "the log is past the retention");
+
+        // The agent wakes before the apply: it has a session again.
+        let mut awake = agent;
+        awake.session = Some(SessionId::new());
+        state
+            .update(
+                &keys::agent(&id),
+                serde_json::to_vec(&awake).unwrap().into(),
+                agent_rev,
+            )
+            .await
+            .unwrap();
+
+        let applied = super::execute(&hub, &plan).await.unwrap();
+        assert_eq!(applied.skipped, 1);
+        assert_eq!(applied.logs, 0);
+        assert_eq!(hub.sessions.read(&id).await.unwrap().len(), 1);
     }
 }

@@ -766,12 +766,13 @@ fn render_prune(v: &Value) -> String {
         let a = &v["applied"];
         let _ = writeln!(
             out,
-            "Applied: keys={} inboxes={} messages={} logs={} events={} in {} batches.",
+            "Applied: keys={} inboxes={} messages={} logs={} events={} skipped={} in {} batches.",
             a["keys"].as_u64().unwrap_or(0),
             a["inboxes"].as_u64().unwrap_or(0),
             a["messages"].as_u64().unwrap_or(0),
             a["logs"].as_u64().unwrap_or(0),
             a["events"].as_u64().unwrap_or(0),
+            a["skipped"].as_u64().unwrap_or(0),
             a["batches"].as_u64().unwrap_or(0),
         );
     } else {
