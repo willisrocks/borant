@@ -383,19 +383,48 @@ impl Hub {
             }
         );
         let req = match req {
-            // A prune reads every inbox and session log. `prune_agents` takes
-            // `mem` itself, briefly, so the request does not hold it.
+            // A prune reads every inbox and session log, and an apply
+            // deletes in batches, so the request does not hold `mem`: the
+            // pending moves are copied under the lock and it is dropped.
             CtlRequest::Call {
                 actor,
                 key: None,
-                call: ToolCall::PruneAgents { older_than_secs },
+                call: call @ ToolCall::PruneAgents { .. },
                 ..
             } => {
+                let moving: HashSet<AgentId> = mem.pending_moves.keys().cloned().collect();
                 drop(mem);
                 let result = async {
-                    self.authorize(&actor, &ToolCall::PruneAgents { older_than_secs })
-                        .await?;
-                    prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
+                    self.authorize(&actor, &call).await?;
+                    let ToolCall::PruneAgents {
+                        older_than_secs,
+                        retention_secs,
+                        apply,
+                        token,
+                    } = call
+                    else {
+                        unreachable!("the arm above matched a prune")
+                    };
+                    if apply && actor.is_some() {
+                        return Err(ApiError::denied(
+                            "only a person can apply a prune; an agent reads the dry run",
+                        ));
+                    }
+                    let mode = if apply {
+                        prune::Mode::Apply {
+                            token: token.as_deref(),
+                        }
+                    } else {
+                        prune::Mode::DryRun
+                    };
+                    prune::prune(
+                        self,
+                        moving,
+                        Duration::from_secs(older_than_secs),
+                        Duration::from_secs(retention_secs),
+                        mode,
+                    )
+                    .await
                 }
                 .await;
                 if let Err(e) = &result {
