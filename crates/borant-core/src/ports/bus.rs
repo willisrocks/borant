@@ -94,6 +94,23 @@ pub trait MessageBus: Send + Sync + std::fmt::Debug {
             "this bus does not report inbox stats",
         ))
     }
+    /// The counts of many inboxes at once, one tuple per agent that has an
+    /// inbox. A bus that can ask the server for all of them in one call
+    /// overrides this; the default asks each inbox in turn, for a caller that
+    /// reads the whole swarm in one pass.
+    async fn inbox_stats_many(&self, agents: &[AgentId]) -> PortResult<Vec<(AgentId, InboxStats)>> {
+        let mut out = Vec::with_capacity(agents.len());
+        for agent in agents {
+            match self.inbox_stats(agent).await {
+                Ok(stats) => out.push((agent.clone(), stats)),
+                // An agent with no inbox has no counts. That is not a failure
+                // of the bus, so it leaves the agent out and goes on.
+                Err(e) if e.is(PortErrorKind::NotFound) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
     /// All messages in the inbox that are not acked, for an export.
     async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>>;
     async fn delete_inbox(&self, agent: &AgentId) -> PortResult<()>;

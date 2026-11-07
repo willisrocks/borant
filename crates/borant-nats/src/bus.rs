@@ -287,6 +287,34 @@ impl MessageBus for NatsBus {
         })
     }
 
+    async fn inbox_stats_many(&self, agents: &[AgentId]) -> PortResult<Vec<(AgentId, InboxStats)>> {
+        // One consumer list carries the counters of every inbox, where one
+        // `inbox_stats` per agent would ask the server for each consumer
+        // info in turn. The counters are the same fields of the same
+        // consumers, read in one request.
+        let stream = self.stream().await?;
+        let mut consumers = stream.consumers();
+        let mut by_name = std::collections::HashMap::with_capacity(agents.len());
+        while let Some(info) = consumers.next().await {
+            let info = info.map_err(|e| unavailable("list inboxes", e))?;
+            by_name.insert(
+                info.name,
+                InboxStats {
+                    pending: info.num_pending,
+                    ack_pending: info.num_ack_pending as u64,
+                    redelivered: info.num_redelivered as u64,
+                },
+            );
+        }
+        let mut out = Vec::with_capacity(agents.len());
+        for agent in agents {
+            if let Some(stats) = by_name.get(&consumer_name(agent)) {
+                out.push((agent.clone(), *stats));
+            }
+        }
+        Ok(out)
+    }
+
     async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>> {
         let stream = self.stream().await?;
         let mut c = match self.consumer(agent).await {

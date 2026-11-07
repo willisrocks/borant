@@ -133,3 +133,51 @@ async fn inbox_stats_report_a_nak_as_redelivered() {
         "{stats:?}"
     );
 }
+
+/// The batched call reads the counters of every inbox in one consumer list,
+/// and reports the same numbers as one call per inbox.
+#[tokio::test]
+async fn inbox_stats_many_reports_every_inbox_in_one_call() {
+    let Some(n) = nats().await else {
+        return;
+    };
+    let bus = n.bus();
+    let one = inbox_with(&bus, &["one", "two"]).await;
+    let two = inbox_with(&bus, &["three"]).await;
+    let missing: AgentId = testing::unique("a").parse().expect("an agent id");
+
+    let many = bus
+        .inbox_stats_many(&[one.clone(), two.clone(), missing])
+        .await
+        .expect("stats");
+    assert_eq!(
+        many.len(),
+        2,
+        "an agent without an inbox is left out: {many:?}"
+    );
+    assert_eq!(many[0].0, one);
+    assert_eq!((many[0].1.pending, many[0].1.ack_pending), (2, 0));
+    assert_eq!(many[1].0, two);
+    assert_eq!((many[1].1.pending, many[1].1.ack_pending), (1, 0));
+
+    // The same numbers as the per-inbox call.
+    for (agent, stats) in &many {
+        assert_eq!(bus.inbox_stats(agent).await.expect("stats"), *stats);
+    }
+
+    // A pull changes the counters that the batched call reports.
+    let _unacked = bus
+        .pull(&one, 1, Duration::from_secs(2))
+        .await
+        .expect("pull");
+    let many = bus
+        .inbox_stats_many(std::slice::from_ref(&one))
+        .await
+        .expect("stats");
+    assert_eq!(many.len(), 1);
+    assert_eq!(
+        (many[0].1.pending, many[0].1.ack_pending),
+        (1, 1),
+        "{many:?}"
+    );
+}

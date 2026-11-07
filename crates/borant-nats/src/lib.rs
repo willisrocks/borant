@@ -25,7 +25,7 @@ use borant_core::ports::{PortError, PortErrorKind};
 pub use bus::{NatsBus, consumer_name};
 pub use events::NatsEventLog;
 pub use session::NatsSession;
-pub use state::NatsState;
+pub use state::{NatsState, STATE_CACHE_CONSUMER};
 
 pub const KV_BUCKET: &str = "borant";
 pub const MSG_STREAM: &str = "BORANT_MSG";
@@ -131,7 +131,7 @@ fn nats(client: async_nats::Client, cfg: &NatsConfig) -> Nats {
 
 impl Nats {
     pub fn state(&self) -> NatsState {
-        NatsState::new(self.client.clone(), self.js.clone())
+        NatsState::new(self.js.clone())
     }
 
     pub fn bus(&self) -> NatsBus {
