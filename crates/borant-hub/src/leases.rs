@@ -1086,13 +1086,22 @@ impl Hub {
     /// costs what the leases that need it cost, not what the store holds.
     pub(crate) async fn tick_leases(&self, lists: &Lists) -> Result<(), ApiError> {
         let leases = &lists.leases;
+        // The revision of each agent record: a person who pins, pauses, or
+        // resumes an agent writes that record and not its lease, so the pass
+        // must look at the lease again when it changes.
+        let agent_rev: std::collections::HashMap<&AgentId, u64> = lists
+            .agents
+            .iter()
+            .map(|doc| (&doc.value.id, doc.revision))
+            .collect();
         let now = self.now();
         for doc in leases {
             let mut mem = self.mem.lock().await;
             if mem.maintenance {
                 return Ok(());
             }
-            if Self::gate_skips(&mem, doc, now) {
+            let agent_revision = agent_rev.get(&doc.value.agent).copied();
+            if Self::gate_skips(&mem, doc, agent_revision, now) {
                 continue;
             }
             let agent = doc.value.agent.clone();
@@ -1106,6 +1115,7 @@ impl Hub {
                         agent,
                         LeaseGate {
                             revision: doc.revision,
+                            agent_revision,
                             at: rest.at(),
                         },
                     );
@@ -1156,13 +1166,23 @@ impl Hub {
 
     /// True when the pass already looked at this lease and found nothing that
     /// its time or a change of its revision would not bring back. A message
-    /// that waits for the agent, or a pending placement, takes the gate away.
-    fn gate_skips(mem: &Memory, doc: &Doc<Lease>, now: Timestamp) -> bool {
+    /// that waits for the agent, a pending placement, or a new agent record
+    /// takes the gate away.
+    fn gate_skips(
+        mem: &Memory,
+        doc: &Doc<Lease>,
+        agent_revision: Option<u64>,
+        now: Timestamp,
+    ) -> bool {
         if mem.pending_moves.contains_key(&doc.value.agent) {
             return false;
         }
         match mem.lease_gate.get(&doc.value.agent) {
-            Some(gate) if gate.revision == doc.revision => gate.at.is_none_or(|at| at > now),
+            Some(gate)
+                if gate.revision == doc.revision && gate.agent_revision == agent_revision =>
+            {
+                gate.at.is_none_or(|at| at > now)
+            }
             _ => false,
         }
     }

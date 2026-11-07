@@ -183,6 +183,10 @@ pub(crate) struct HostSessions {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LeaseGate {
     pub revision: u64,
+    /// The revision of the agent record that the pass read. A person writes
+    /// that record to pin, pause, or resume an agent, so its change brings the
+    /// lease back to the pass.
+    pub agent_revision: Option<u64>,
     /// `None` looks at the lease only when its revision changes or a message
     /// waits for its agent: nothing that the pass does can happen for it.
     pub at: Option<Timestamp>,

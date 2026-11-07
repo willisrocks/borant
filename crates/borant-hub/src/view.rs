@@ -27,9 +27,9 @@ impl Hub {
     }
 
     /// The view of the records of one tick. `inboxes` reads the counts of
-    /// every agent's inbox, which is one store call per agent: a caller that
-    /// reads the view for its hosts and agents alone, as the alert pass does,
-    /// leaves it out.
+    /// every agent's inbox in one call to the bus; a caller that reads the
+    /// view for its hosts and agents alone, as the alert pass does, leaves
+    /// them out.
     pub(crate) async fn view_of(
         &self,
         caller: Option<&AgentId>,
@@ -152,15 +152,20 @@ impl Hub {
                 last_text,
                 tool_running_since,
             });
-            if !inboxes {
-                continue;
-            }
-            // A bus that cannot report the counts leaves the agent out.
-            if let Ok(stats) = self.bus.inbox_stats(&agent.id).await {
-                view.inboxes.push(InboxStatus {
-                    agent: agent.id.clone(),
-                    stats,
-                });
+        }
+        if inboxes {
+            // One call for the whole swarm: a bus that can ask the server for
+            // every inbox at once does, and one that cannot asks in turn.
+            let ids: Vec<AgentId> = lists.agents.iter().map(|d| d.value.id.clone()).collect();
+            match self.bus.inbox_stats_many(&ids).await {
+                Ok(all) => {
+                    view.inboxes = all
+                        .into_iter()
+                        .map(|(agent, stats)| InboxStatus { agent, stats })
+                        .collect();
+                }
+                // A bus that cannot report the counts leaves the agents out.
+                Err(e) => tracing::debug!("the inbox counts are unavailable: {e}"),
             }
         }
         Ok(view)

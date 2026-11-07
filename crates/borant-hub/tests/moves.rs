@@ -128,7 +128,10 @@ async fn expired_idle_agent_waits_until_message() {
         .publish(&subjects::agent(&w.agent), &env)
         .await
         .unwrap();
-    h1_sleeps(&fx, 2).await;
+    // The lease of an idle agent is looked at by the wake check, which runs
+    // every ten seconds: the hub reads the count of the inbox and not every
+    // message on every tick.
+    h1_sleeps(&fx, 10).await;
     match next_cmd(&mut h2).await {
         Some(HostCommand::Launch(o)) => assert_eq!(o.agent, w.agent),
         other => panic!("expected a launch, got {other:?}"),

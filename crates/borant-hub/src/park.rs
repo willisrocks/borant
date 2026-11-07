@@ -10,7 +10,7 @@
 //! or not, after the `idle_release_after` of its role, so a finished agent
 //! that nobody cancelled does not hold a laptop.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
@@ -52,6 +52,29 @@ impl Hub {
         }
     }
 
+    /// The agents of `ready` that a message waits for: one call where the bus
+    /// reports many inboxes at once, and each inbox in turn where it does
+    /// not.
+    async fn with_mail(&self, ready: &[(Agent, HostName, SessionId)]) -> HashSet<AgentId> {
+        let ids: Vec<AgentId> = ready.iter().map(|(agent, _, _)| agent.id.clone()).collect();
+        match self.bus.inbox_stats_many(&ids).await {
+            Ok(all) => all
+                .into_iter()
+                .filter(|(_, stats)| stats.pending > 0 || stats.ack_pending > 0)
+                .map(|(agent, _)| agent)
+                .collect(),
+            Err(_) => {
+                let mut out = HashSet::new();
+                for agent in &ids {
+                    if self.has_mail(agent).await {
+                        out.insert(agent.clone());
+                    }
+                }
+                out
+            }
+        }
+    }
+
     /// True when the idle passes may run now, at most once a [`PASS_EVERY`].
     pub(crate) async fn idle_pass_due(&self) -> bool {
         let now = self.now();
@@ -85,6 +108,7 @@ impl Hub {
             return Ok(parked);
         }
         let now = self.now();
+        let mut ready: Vec<(Agent, HostName, SessionId)> = Vec::new();
         for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
             let agent = doc.value;
             // Parking is for agents that come back; a retired or paused one does not.
@@ -108,7 +132,12 @@ impl Hub {
             if self.has_claims(&agent.id, &agent.channels).await? {
                 continue;
             }
-            if self.has_mail(&agent.id).await {
+            ready.push((agent, host, session));
+        }
+        // The messages that wait, in one call for the whole pass.
+        let with_mail = self.with_mail(&ready).await;
+        for (agent, host, session) in ready {
+            if with_mail.contains(&agent.id) {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;
@@ -130,6 +159,7 @@ impl Hub {
             return Ok(parked);
         }
         let now = self.now();
+        let mut ready: Vec<(Agent, HostName, SessionId)> = Vec::new();
         for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
             let agent = doc.value;
             if agent.retired || agent.paused.is_some() || agent.pinned {
@@ -164,7 +194,12 @@ impl Hub {
             if self.tool_running(&agent).await {
                 continue;
             }
-            if self.has_mail(&agent.id).await {
+            ready.push((agent, host, session));
+        }
+        // The messages that wait, in one call for the whole pass.
+        let with_mail = self.with_mail(&ready).await;
+        for (agent, host, session) in ready {
+            if with_mail.contains(&agent.id) {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;
