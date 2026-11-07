@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borant_core::events::{EventFilter, SwarmEventBody};
 use borant_core::model::{
     Agent, ChannelKind, CloseReason, Envelope, Harness, HostInfo, NewTask, Sender, SpawnRecord,
     SpawnState, Target, Task, TaskBinding, TaskStatus,
@@ -18,7 +19,7 @@ use borant_core::model::{
 use borant_core::ports::{MessageBus, StateStore};
 use borant_core::proto::{Actor, ApiErrorCode, CtlRequest, HostCommand, Registered, ToolCall};
 use borant_core::rules::roles::{CollectionConfig, OnePer, ProjectConfig, RoleConfig};
-use borant_core::{AgentId, ChannelName, Clock, RoleName, keys};
+use borant_core::{AgentId, ChannelName, Clock, HostName, RoleName, keys};
 use borant_hub::{Hub, HubConfig};
 use common::{Fx, name, next_cmd};
 use futures::StreamExt;
@@ -243,6 +244,162 @@ async fn spawns_a_record_that_does_not_fit_does_not_block_the_next() {
     assert!(
         record(&fx, &next).await.unwrap().last_reject.is_empty(),
         "the later record is placed"
+    );
+}
+
+/// The refusals that the event log holds for `agent`, each as the host and
+/// the rule that `borant ps --queued` prints, in the order of the event.
+async fn refusals(fx: &Fx, agent: &AgentId) -> Vec<Vec<(HostName, String)>> {
+    let mut log = fx
+        .events
+        .read(&EventFilter::default(), false)
+        .await
+        .expect("read the log");
+    let mut out = Vec::new();
+    while let Some(event) = log.next().await {
+        if let SwarmEventBody::PlacementRefused { rejected, .. } = event.body
+            && event.agent.as_ref() == Some(agent)
+        {
+            out.push(rejected.into_iter().map(|r| (r.host, r.why)).collect());
+        }
+    }
+    out
+}
+
+/// A spawn against a full host publishes one refusal, not one per tick, and
+/// repeats an unchanged refusal at most once a minute.
+#[tokio::test]
+async fn spawns_a_full_host_refuses_once_and_not_once_per_tick() {
+    let fx = Fx::new();
+    host(&fx, "h1", 1).await;
+    let spawner = owner(&fx).await;
+    fx.heartbeat("h1", &[&spawner]).await;
+    let spawned = fx
+        .call(Some(&spawner), spawn_call("work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+    let first = vec![(name("h1"), "full (1/1)".to_owned())];
+    assert_eq!(refusals(&fx, &agent).await, vec![first.clone()]);
+
+    for _ in 0..3 {
+        fx.hub.tick().await.expect("tick");
+    }
+    assert_eq!(
+        refusals(&fx, &agent).await,
+        vec![first.clone()],
+        "one refusal, not one per tick"
+    );
+    assert_eq!(
+        record(&fx, &agent).await.unwrap().last_reject,
+        first,
+        "the record says why the host refuses it"
+    );
+
+    // The backoff retries, and an unchanged refusal stays quiet inside the
+    // minute.
+    fx.advance(30);
+    fx.heartbeat("h1", &[&spawner]).await;
+    fx.hub.tick().await.expect("tick");
+    assert_eq!(refusals(&fx, &agent).await.len(), 1, "inside the minute");
+    fx.advance(40);
+    fx.heartbeat("h1", &[&spawner]).await;
+    fx.hub.tick().await.expect("tick");
+    assert_eq!(
+        refusals(&fx, &agent).await.len(),
+        2,
+        "the same refusal repeats once a minute, not once a tick"
+    );
+    assert_eq!(record(&fx, &agent).await.unwrap().state, SpawnState::Queued);
+}
+
+/// A spawn that waits on a full host is placed on the next tick after a slot
+/// frees, not after its backoff: the pass's host list has the free slot.
+#[tokio::test]
+async fn spawns_a_queued_spawn_is_placed_within_one_tick_after_a_slot_frees() {
+    let fx = Fx::new();
+    host(&fx, "h1", 1).await;
+    let spawner = owner(&fx).await;
+    fx.heartbeat("h1", &[&spawner]).await;
+    let mut commands = fx.commands("h1").await;
+    let spawned = fx
+        .call(Some(&spawner), spawn_call("work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+    fx.hub.tick().await.expect("tick");
+    assert_eq!(record(&fx, &agent).await.unwrap().state, SpawnState::Queued);
+
+    // The owner's session ends and frees the one slot. The clock does not
+    // move, so only the pass's snapshot can wake the spawn.
+    fx.req(CtlRequest::EndSession {
+        session: spawner.session,
+        agent: spawner.agent.clone(),
+        token: spawner.token,
+        reason: "done".into(),
+    })
+    .await
+    .expect("end the session");
+    fx.hub.tick().await.expect("tick");
+    match next_cmd(&mut commands).await.expect("a launch") {
+        HostCommand::Launch(order) => assert_eq!(order.agent, agent),
+        other => panic!("the freed slot gets the spawn, got {other:?}"),
+    }
+    assert_eq!(
+        record(&fx, &agent).await.unwrap().state,
+        SpawnState::Launching
+    );
+}
+
+/// A refusal that changes publishes again at once: a host that registered
+/// since is named in the new event and in the record.
+#[tokio::test]
+async fn spawns_a_changed_refusal_publishes_again() {
+    let fx = Fx::new();
+    host(&fx, "h1", 1).await;
+    let spawner = owner(&fx).await;
+    fx.heartbeat("h1", &[&spawner]).await;
+    let mut spawn = spawn_call("work", 0);
+    if let ToolCall::Spawn { harness, .. } = &mut spawn {
+        // No host on h2 runs this harness, so a second host refuses too.
+        *harness = Some(Harness::Fake);
+    }
+    let spawned = fx.call(Some(&spawner), spawn).await.expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+    assert_eq!(
+        refusals(&fx, &agent).await,
+        vec![vec![(name("h1"), "full (1/1)".to_owned())]]
+    );
+
+    fx.req(CtlRequest::RegisterHost {
+        info: HostInfo {
+            name: name("h2"),
+            harnesses: vec![Harness::ClaudeCode],
+            launcher: "process".into(),
+            max_agents: 4,
+            ..Default::default()
+        },
+    })
+    .await
+    .expect("register h2");
+    fx.hub.tick().await.expect("tick");
+    let mut got = refusals(&fx, &agent).await;
+    assert_eq!(got.len(), 2, "the changed refusal publishes again");
+    got[1].sort();
+    assert_eq!(
+        got[1],
+        vec![
+            (name("h1"), "full (1/1)".to_owned()),
+            (name("h2"), "no harness".to_owned()),
+        ]
+    );
+    assert_eq!(
+        record(&fx, &agent).await.unwrap().last_reject,
+        got[1],
+        "the record names the host that registered"
     );
 }
 

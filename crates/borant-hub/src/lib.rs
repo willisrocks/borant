@@ -205,6 +205,10 @@ pub(crate) struct Memory {
     /// Hosts where a launch failed, per agent, with the time of the failure.
     /// An entry older than the lease grace no longer blocks the host.
     pub failed_hosts: HashMap<AgentId, HashMap<HostName, Timestamp>>,
+    /// The last refused placement of each agent, so the hub publishes a
+    /// refusal when it changes and a queued spawn backs off while every host
+    /// stays full or offline.
+    pub placement_refusals: HashMap<AgentId, crate::moves::PlacementRefusal>,
     /// Idle expired agents whose session log was already checked.
     pub idle_checked: HashSet<AgentId>,
     /// When the hub last read the pending messages of an idle agent.
