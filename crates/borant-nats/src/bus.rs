@@ -378,10 +378,15 @@ impl MessageBus for NatsBus {
     }
 
     async fn request(&self, subject: &str, payload: Bytes, timeout: Duration) -> PortResult<Bytes> {
-        match tokio::time::timeout(timeout, self.client.request(subject.to_owned(), payload)).await
-        {
-            Ok(Ok(m)) => Ok(m.payload),
-            Ok(Err(e)) => Err(match e.kind() {
+        // The timeout goes on the request itself: the connection's default
+        // (10 s) would otherwise cut a caller that waits for a slow reply,
+        // such as the snapshot of a large hub, short of what it asked for.
+        let request = async_nats::Request::new()
+            .payload(payload)
+            .timeout(Some(timeout));
+        match self.client.send_request(subject.to_owned(), request).await {
+            Ok(m) => Ok(m.payload),
+            Err(e) => Err(match e.kind() {
                 RequestErrorKind::NoResponders => {
                     PortError::unavailable(format!("no server for {subject}"))
                 }
@@ -391,10 +396,6 @@ impl MessageBus for NatsBus {
                 ),
                 _ => unavailable("request", e),
             }),
-            Err(_) => Err(PortError::new(
-                PortErrorKind::Timeout,
-                format!("request to {subject} timed out"),
-            )),
         }
     }
 
@@ -425,5 +426,70 @@ impl MessageBus for NatsBus {
             .flush()
             .await
             .map_err(|e| unavailable("flush", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request waits for the timeout its caller passed, not for the
+    /// connection's default. The connection here gives up after 50 ms, so
+    /// only the timeout on the request can carry the 300 ms reply through.
+    /// The test skips when `BORANT_NATS_URL` is unset.
+    #[tokio::test]
+    async fn request_honors_the_timeout_of_its_caller() {
+        let Ok(url) = std::env::var("BORANT_NATS_URL") else {
+            eprintln!("skip: BORANT_NATS_URL is not set");
+            return;
+        };
+        let client = async_nats::ConnectOptions::new()
+            .request_timeout(Some(Duration::from_millis(50)))
+            .connect(url)
+            .await
+            .expect("connect");
+        let bus = NatsBus::new(
+            client.clone(),
+            async_nats::jetstream::new(client.clone()),
+            Duration::from_secs(60),
+        );
+        let subject = format!("borant.test.request.{}", std::process::id());
+
+        // A connection default of 50 ms would give up long before the reply.
+        let mut sub = client.subscribe(subject.clone()).await.expect("subscribe");
+        let responder_client = client.clone();
+        let responder = tokio::spawn(async move {
+            let msg = sub.next().await.expect("the request");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            responder_client
+                .publish(
+                    msg.reply.expect("a reply subject"),
+                    Bytes::from_static(b"late"),
+                )
+                .await
+                .expect("publish the reply");
+        });
+        let reply = bus
+            .request(
+                &subject,
+                Bytes::from_static(b"ping"),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("the slow reply");
+        assert_eq!(reply, Bytes::from_static(b"late"));
+        responder.await.expect("the responder");
+
+        // The caller's own short timeout still ends the wait.
+        let _held = client.subscribe(subject.clone()).await.expect("subscribe");
+        let err = bus
+            .request(
+                &subject,
+                Bytes::from_static(b"ping"),
+                Duration::from_millis(100),
+            )
+            .await
+            .expect_err("no reply inside 100 ms");
+        assert_eq!(err.kind, PortErrorKind::Timeout);
     }
 }
