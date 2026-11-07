@@ -874,3 +874,49 @@ async fn prune_batching_stays_under_the_cap() {
         applied["applied"]["batches"]
     );
 }
+
+#[tokio::test]
+async fn prune_a_new_idle_log_changes_the_token() {
+    let fx = Fx::new();
+    // Two paused agents have no session, and their logs are past the
+    // retention: the plan deletes their logs and keeps the agents.
+    let seed_idle = async |name: &str| {
+        let id: AgentId = name.parse().unwrap();
+        let mut agent = agent_doc(&id, None);
+        agent.paused = Some(PauseReason {
+            by: Sender::Human,
+            why: "cap".into(),
+            at: Timestamp(1),
+        });
+        seed(&fx, agent, expired(fx.clock.now().minus(DAY * 40))).await;
+        fx.sessions
+            .append(&id, &event(&id, Timestamp(1), SessionEventBody::TurnStart))
+            .await
+            .unwrap();
+    };
+    seed_idle("idle-a").await;
+    backup(&fx, fx.clock.now()).await;
+    let first = dry(&fx).await;
+    assert_eq!(kind(&first, "session_events")["items"], json!(1));
+    let token = first["token"].as_str().unwrap().to_owned();
+
+    seed_idle("idle-b").await;
+    let second = dry(&fx).await;
+    assert_eq!(kind(&second, "session_events")["items"], json!(2));
+    assert_ne!(
+        second["token"], first["token"],
+        "a new idle log is a new plan"
+    );
+
+    let err = run(&fx, true, Some(&token)).await.unwrap_err();
+    assert!(err.message.contains("plan changed"), "{}", err.message);
+    assert_eq!(
+        fx.sessions
+            .read(&"idle-a".parse().unwrap())
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the refused apply deleted nothing"
+    );
+}

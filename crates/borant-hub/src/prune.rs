@@ -657,7 +657,14 @@ async fn plan(
         plan.totals.events += kind.events;
         plan.totals.bytes += kind.bytes;
     }
-    plan.token = plan_token(older_than, retention, &plan.keys, &plan.logs, &plan.inboxes);
+    plan.token = plan_token(
+        older_than,
+        retention,
+        &plan.keys,
+        &plan.logs,
+        &plan.idle_logs,
+        &plan.inboxes,
+    );
     Ok(plan)
 }
 
@@ -723,10 +730,12 @@ fn plan_token(
     retention: Duration,
     keys: &[(String, usize)],
     logs: &[LogItem],
+    idle_logs: &[LogItem],
     inboxes: &[InboxItem],
 ) -> String {
     let mut all: Vec<String> = keys.iter().map(|(k, _)| k.clone()).collect();
     all.extend(logs.iter().map(|i| format!("log.{}", i.agent)));
+    all.extend(idle_logs.iter().map(|i| format!("idle.{}", i.agent)));
     all.extend(inboxes.iter().map(|i| format!("inbox.{}", i.agent)));
     all.sort_unstable();
     let mut hash = FNV_OFFSET;
