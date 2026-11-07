@@ -373,8 +373,8 @@ oldest, and newest item; the totals of keys, messages, events, and bytes; one
 line for each candidate with the keys that a prune removes (`agent.*`,
 `lease.agent.*`, `chan.*.member.*`, the `session.*` records of the agent, and
 the `spawn.*` record); and the reason each other agent is kept. The dry run
-also prints its token. Every dry run and every apply writes the same report to
-the hub log.
+also prints its token. Every dry run and every apply writes the counts of each
+kind, the totals, the token, and the age of the backup to the hub log.
 
 ## Tasks
 

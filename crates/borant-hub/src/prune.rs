@@ -254,7 +254,17 @@ pub(crate) async fn prune(
         ),
         None => tracing::info!(
             mode = report.mode,
-            report = %serde_json::to_string(&report).unwrap_or_default(),
+            older_than_secs = report.older_than_secs,
+            retention_secs = report.retention_secs,
+            token = %report.token,
+            backup_fresh = report.backup.fresh,
+            backup_age_secs = report.backup.age_secs,
+            // The report is the reply; the log holds what a reader of a log
+            // needs without the key list of every candidate.
+            kinds = %serde_json::to_string(&report.kinds).unwrap_or_default(),
+            totals = %serde_json::to_string(&report.totals).unwrap_or_default(),
+            candidates = report.candidates.len(),
+            kept = report.kept.len(),
             "prune dry run"
         ),
     }
