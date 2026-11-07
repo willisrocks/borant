@@ -29,8 +29,8 @@ at the end name each choice and the evidence.
 2. A copy of the hub state, at most 5 minutes old, exists off borant-1. A
    restore drill proves that it restores.
 3. The three silent failure classes log at `warn`.
-4. `borant agents prune --dry-run` lists the stale agents and the keys that a
-   prune removes.
+4. `borant hub prune` lists the stale agents and the records that a prune
+   removes, and its dry run is the default.
 5. A hub restart does not pause the swarm.
 
 ## Non-goals and cuts
@@ -44,9 +44,10 @@ at the end name each choice and the evidence.
 - JWT operator mode (`nsc`, a resolver, `.creds` files). It adds moving parts
   for four users.
 - TLS for NATS. Tailscale already encrypts the traffic.
-- Real deletion in `agents prune`. The roadmap asks for `--dry-run`. Safe
-  deletion needs a protocol against hosts that publish outside the hub lock
-  (see the prune decision record).
+- Real deletion without `--apply` and a fresh backup. The dry run stays the
+  default, and an apply needs a token from its own dry run and a hub snapshot
+  at most an hour old, because hosts publish outside the hub mutex and a
+  delete can race with a publish (see the prune decision record).
 - Channel pruning (1307 `chan.*` keys). This needs a channel close rule first.
 - Host outbox retention and replay after a restore (vision document, lines
   110 to 130). A restore in phase 0 accepts the loss of messages since the
@@ -308,14 +309,38 @@ Change these sites to `tracing::warn!` with the agent or subject in the event:
 A loop that can fail each second (the inbox pull, the heartbeat) logs the
 first failure at `warn` and the later ones at `debug` until it succeeds again.
 
-### `borant agents prune --dry-run`
+### `borant hub prune`
 
-A new read-only `ToolCall::PruneAgents { older_than }`. The CLI sends it to
-the host daemon on `/v1/call` (`crates/borant-host/src/api.rs:77,154`), like
-`borant agents`, and the host relays it to the hub. It works from any host. An
-agent session can call it too, which is harmless because it writes nothing.
-Old hosts reject the new variant, so it works on a host only after the phase 0
-release reaches that host.
+A `ToolCall::PruneAgents { older_than, retention, apply, token }`. The CLI
+sends it to the host daemon on `/v1/call` (`crates/borant-host/src/api.rs:77,154`),
+like `borant agents`, and the host relays it to the hub. It works from any
+host. An agent session can call the dry run too, which is harmless because it
+writes nothing; only a person may send `apply`. Old hosts reject the new
+variant, so it works on a host only after the release reaches that host.
+
+The dry run is the default and `--dry-run` may say so. `--older-than-hours`
+sets the age, default 24. `--retention-days` sets the log and message
+retention of section 19 of the design, default 30.
+
+An apply deletes the records of its own dry run. It needs `--token`, the token
+that the dry run printed: a token over the sorted records, so a plan that
+changed since the dry run is refused. It also refuses while the last hub
+snapshot is missing or more than an hour old. A snapshot writes a mark at
+`hub.snapshot` with its time, path, and size, so a restarted hub still knows
+the age of its backup. An empty plan deletes nothing and needs no token, so a
+retried apply is harmless.
+
+The apply deletes in batches of at most 200 and yields between batches. Each
+candidate is checked again, and its agent key goes first with the revision
+that the check read: an agent that wakes, takes a lease, or pauses between the
+plan and the delete wins the race, and the apply skips it and reports the
+skip. The rest of its keys, its inbox, and its log then go. A log that the
+retention would delete is likewise checked for a session or a waiting message
+first. An agent is never a candidate while it is live, parked, paused, queued,
+or bound to an open task. It is also never a candidate while a message or a
+log entry inside the retention waits for it; a message past the retention is
+past the age limit of the message streams (section 19), so it no longer keeps
+the agent.
 
 The hub must not hold the `mem` mutex while it reads the KV state, about 146
 inboxes, and the session logs, because every heartbeat waits for that mutex
@@ -323,24 +348,33 @@ and `NatsState::list` reads one key at a time over about 1758 keys. Unlike the
 snapshot, the prune takes the mutex only to copy the pending moves, because a
 dry run needs no consistent read of the state. It then reads the KV state, the
 inboxes, and the session logs without the mutex. The CLI prints the result.
-Without `--dry-run`, the command exits with
-"only --dry-run is available". `--older-than-hours` sets the age, default 24.
 
 An agent is a candidate only if all of these are true:
 
 1. `agent.session` is `None`.
-2. Its lease is `Expired` or `Released`, with `since` older than `older_than`.
-3. It has no pending move in hub memory.
-4. It claims no task.
+2. Its lease is `Expired` or `Released` and not `parked`, with `since` older
+   than `older_than`; the agent is not paused.
+3. It has no pending move in hub memory and no spawn record still `Queued`.
+4. It claims no task and is not bound to an open task.
 5. It owns no channel.
-6. `bus.unacked` returns no message. `inbox_pending` is not enough, because it
-   leaves out delivered messages that wait for an ack.
-7. `session_log::undelivered` of its session log is empty.
+6. `bus.unacked` returns no message inside the retention. `inbox_pending` is
+   not enough, because it leaves out delivered messages that wait for an ack.
+7. `session_log::undelivered` of its session log is empty inside the
+   retention.
 
-The output has one line for each candidate, the reason each other agent is
-kept, and totals: candidates, keys that a prune removes (`agent.*`,
-`lease.agent.*`, `chan.*.member.*`, the `session.*` records of the agent), and
-their bytes.
+An apply also deletes a released or expired lease whose agent record is gone,
+an ended spawn record of an agent with no record when it is older than
+`older_than`, and the session log of an agent that stays once it has had no
+session for the retention (section 19 of the design).
+
+The report has one line for each kind (`agents`, `leases`, `spawns`,
+`inboxes`, `session_events`) with its items, keys, messages, events, bytes,
+oldest, and newest item; the totals of keys, messages, events, and bytes; one
+line for each candidate with the keys that a prune removes (`agent.*`,
+`lease.agent.*`, `chan.*.member.*`, the `session.*` records of the agent, and
+the `spawn.*` record); and the reason each other agent is kept. The dry run
+also prints its token. Every dry run and every apply writes the counts of each
+kind, the totals, the token, and the age of the backup to the hub log.
 
 ## Tasks
 
@@ -407,15 +441,23 @@ Proof:
 
 Acceptance:
 
-1. `borant agents prune --dry-run` lists candidates by the seven rules in
-   "`borant agents prune --dry-run`", the kept agents with their reason, and
-   the totals.
-2. The request writes no key and deletes nothing.
-3. `borant agents prune` without `--dry-run` exits non-zero with "only
-   --dry-run is available".
+1. `borant hub prune` lists candidates by the seven rules in "`borant hub
+   prune`", the kept agents with their reason, a line for each kind, and the
+   totals. It is the default, and `--dry-run` says so.
+2. The dry run writes no key and deletes nothing.
+3. `--apply` without `--token` fails, and so does a token from a plan that
+   changed.
+4. `--apply` refuses while the last snapshot is missing or more than an hour
+   old.
+5. `--apply` deletes only the long-released agents of the plan, in batches of
+   at most 200, and a second apply with the same token deletes nothing.
+6. An agent that is live, parked, paused, queued, or bound to an open task is
+   never deleted.
 
 Proof: `just test-crate borant-hub prune`, with one test for each of the seven
-rules and one that asserts the store is unchanged after the request.
+rules, the parked, paused, queued, and task-bound agents, the levels of the
+apply checks, a store that is unchanged after a dry run, and a batch over 200
+records.
 
 ### Orchestrator and Chris tasks
 
@@ -469,6 +511,14 @@ inbox does not prove that no work waits (`session_log::undelivered`). Hosts
 publish outside the hub mutex, so a delete can race with a publish. Reversible:
 yes. Friend: Codex recommended the dry run only, and added rules 6 and 7.
 Blocker: none.
+
+Decision (2026-11-07): the prune ships with a real apply, and stays a dry run
+by default. Evidence: 898 released leases, 62,180 undelivered messages, and a
+526 MB snapshot. The apply needs a token over the plan and a snapshot at most
+an hour old, deletes in batches of at most 200, and never deletes an agent
+that is live, parked, paused, queued, or bound to an open task; a message or a
+log entry inside the retention still keeps its agent. Reversible: yes, from
+the snapshot that the apply requires. Blocker: none.
 
 Decision (2026-10-25): no 1Password items for the NATS passwords. Evidence:
 the service account of the agents can only read the `Agents` vault, so the

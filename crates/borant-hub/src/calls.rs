@@ -1,7 +1,5 @@
 //! Request dispatch and the channel and agent calls.
 
-use std::time::Duration;
-
 use borant_core::model::{
     Agent, Channel, ChannelKind, Lease, LeaseState, Member, Project, Sender, Task, TaskEventKind,
     TaskKind, TaskStatus,
@@ -492,9 +490,12 @@ impl Hub {
                 tracing::info!(agent = %agent, pinned = on, "agent pin changed");
                 Ok(json!({ "agent": agent, "pinned": on }))
             }
-            ToolCall::PruneAgents { older_than_secs } => {
-                crate::prune::prune_agents(self, Duration::from_secs(older_than_secs)).await
-            }
+            // `handle` runs a prune without the request mutex, before this
+            // arm: a prune takes no idempotency key, and holding `mem` for a
+            // pass over every inbox is what the arm above avoids.
+            ToolCall::PruneAgents { .. } => Err(ApiError::invalid(
+                "a prune takes no idempotency key; send it without one",
+            )),
             ToolCall::ListHosts => self.list_hosts(mem).await,
             ToolCall::ProjectAdd { project } => {
                 if project.remote_url.trim().is_empty() || project.default_branch.trim().is_empty()

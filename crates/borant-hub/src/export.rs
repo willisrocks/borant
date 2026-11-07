@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use borant_core::model::{Agent, Envelope, SessionEvent};
 use borant_core::ports::{MessageBus, SessionStore, StateStore};
-use borant_core::{AgentId, keys, subjects};
+use borant_core::{AgentId, Timestamp, keys, subjects};
 use serde::{Deserialize, Serialize};
 
 use crate::Hub;
@@ -45,6 +45,19 @@ pub struct SnapshotReport {
     pub sessions: usize,
     pub pending: usize,
     pub lock_ms: u64,
+    /// When the file landed, on the hub clock. A prune reads it back from
+    /// the state store to refuse an apply without a fresh backup.
+    pub at: Timestamp,
+}
+
+/// The mark of the last snapshot, in the state store under
+/// [`keys::SNAPSHOT`]. It lives beside the data, so a restarted hub still
+/// knows how old its backup is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SnapshotMark {
+    pub at: Timestamp,
+    pub path: String,
+    pub bytes: u64,
 }
 
 /// Writes a snapshot of the running hub to `out` without maintenance mode.
@@ -80,6 +93,7 @@ async fn write_snapshot(hub: &Hub, out: &Path, tmp: &Path) -> anyhow::Result<Sna
         sessions: 0,
         pending: 0,
         lock_ms: 0,
+        at: hub.now(),
     };
 
     // 1. The agents, without the request mutex.
@@ -142,6 +156,18 @@ async fn write_snapshot(hub: &Hub, out: &Path, tmp: &Path) -> anyhow::Result<Sna
     w.get_ref().sync_all()?;
     drop(w);
     std::fs::rename(tmp, out)?;
+    // The prune reads the mark to refuse an apply without a fresh backup. A
+    // snapshot that cannot write it still wrote its file: the apply then
+    // refuses, which is the safe side.
+    report.at = hub.now();
+    let mark = SnapshotMark {
+        at: report.at,
+        path: out.display().to_string(),
+        bytes: std::fs::metadata(out).map(|m| m.len()).unwrap_or(0),
+    };
+    if let Err(e) = hub.store.upsert(keys::SNAPSHOT, &mark).await {
+        tracing::warn!("the snapshot mark was not written: {e}");
+    }
     Ok(report)
 }
 
