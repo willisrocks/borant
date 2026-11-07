@@ -22,6 +22,7 @@ mod join;
 mod leases;
 mod liveness;
 mod members;
+mod metrics;
 pub mod mirror;
 mod moves;
 mod park;
@@ -332,6 +333,9 @@ pub struct Hub {
     /// the time of the last one of each task. A board read every few seconds
     /// then scans only what is new.
     pub(crate) status_since: std::sync::Mutex<board::StatusSinces>,
+    /// The counters and histograms of `/metrics` that the request and tick
+    /// paths record, never behind `mem`.
+    pub(crate) metrics: metrics::Metrics,
     pub(crate) mem: Mutex<Memory>,
 }
 
@@ -352,6 +356,7 @@ impl Hub {
             events: None,
             notifier: None,
             status_since: std::sync::Mutex::new(board::StatusSinces::default()),
+            metrics: metrics::Metrics::new(),
             mem: Mutex::new(Memory::default()),
         }
     }
@@ -368,7 +373,19 @@ impl Hub {
     }
 
     /// Handles one request. Requests run one at a time.
+    ///
+    /// The call is timed for `borant_hub_ctl_requests_total`,
+    /// `borant_hub_ctl_latency_seconds`, and `borant_hub_ctl_errors_total`.
     pub async fn handle(&self, req: CtlRequest) -> Reply {
+        let kind = metrics::ctl_kind(&req);
+        let at = std::time::Instant::now();
+        let reply = self.handle_request(req).await;
+        self.metrics
+            .ctl(kind, at.elapsed(), matches!(reply, Reply::Error(_)));
+        reply
+    }
+
+    async fn handle_request(&self, req: CtlRequest) -> Reply {
         let mut mem = self.mem.lock().await;
         if mem.maintenance && !matches!(req, CtlRequest::Maintenance { .. }) {
             return Reply::Error(ApiError::unavailable("the hub is in maintenance mode"));
@@ -573,6 +590,14 @@ impl Hub {
         result.into()
     }
 
+    /// One tick pass, timed for `borant_hub_tick_seconds`.
+    pub async fn tick(&self) -> Result<(), ApiError> {
+        let at = std::time::Instant::now();
+        let result = self.tick_passes().await;
+        self.metrics.tick_done(at.elapsed());
+        result
+    }
+
     /// One pass of lease expiry, takeovers, and claim timeouts.
     ///
     /// The hosts, leases, and agents are read once and handed to every pass
@@ -580,7 +605,7 @@ impl Hub {
     /// instead of once per pass. The lease pass takes the memory lock for one
     /// lease at a time, never for the whole pass, so requests are served
     /// while a restart catches up on a large store.
-    pub async fn tick(&self) -> Result<(), ApiError> {
+    async fn tick_passes(&self) -> Result<(), ApiError> {
         if self.mem.lock().await.maintenance {
             return Ok(());
         }
@@ -647,13 +672,19 @@ impl Hub {
     }
 
     /// The hosts, leases, and agents of this tick, read once for the passes
-    /// that need them.
+    /// that need them. The counts of the three listings are the
+    /// `borant_hub_store_keys` gauge of this tick.
     pub(crate) async fn lists(&self) -> Result<Lists, ApiError> {
-        Ok(Lists {
+        let lists = Lists {
             hosts: self.store.list::<HostInfo>(keys::HOST_PREFIX).await?,
             leases: self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?,
             agents: self.store.list::<Agent>(keys::AGENT_PREFIX).await?,
-        })
+        };
+        self.metrics
+            .keys(keys::LEASE_AGENT_PREFIX, lists.leases.len());
+        self.metrics.keys(keys::AGENT_PREFIX, lists.agents.len());
+        self.metrics.keys(keys::HOST_PREFIX, lists.hosts.len());
+        Ok(lists)
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then

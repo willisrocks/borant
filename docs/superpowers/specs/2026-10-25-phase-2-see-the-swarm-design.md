@@ -88,6 +88,7 @@ needs_human = true
 stall_minutes = 30
 host_offline_minutes = 5
 hub_down_minutes = 2
+# hub_rss_warn_mb = 2048    # the hub alerts above this resident size; off unless set
 
 [notifiers.phone]
 adapter = "exec"
@@ -111,6 +112,7 @@ fires once and resolves once. The rules:
 | members_limited | every member of a bundle is limited | resolves when one member resets |
 | budget_stop | a pool needs a host and a budget blocks it | nothing |
 | provisioner_refused | a create or delete returns `denied` or `invalid` | other errors (a retry handles them) |
+| hub_rss | the resident memory of the hub process is above `hub_rss_warn_mb`, read from `/proc/self/statm` | never, unless a person sets the key; resolves when the process drops below the line |
 
 `hub.unreachable` is not a hub rule. The host with `watch_hub = true` sends it
 through its own notifier after `hub_down_minutes` of failed heartbeats,

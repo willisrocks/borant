@@ -215,6 +215,9 @@ impl Hub {
             budget_blocked: self.budget_blocked().await?,
             refused,
             mirror_refused,
+            // `None` off Linux, where there is no `/proc/self/statm`; the rule
+            // then stays quiet.
+            hub_rss_bytes: crate::metrics::resident_bytes(),
             restart_grace,
         };
         Ok((view, tasks))

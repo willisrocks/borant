@@ -24,6 +24,9 @@ pub const MEMBERS_LIMITED: &str = "members_limited";
 pub const BUDGET_STOP: &str = "budget_stop";
 pub const PROVISIONER_REFUSED: &str = "provisioner_refused";
 pub const MIRROR_REFUSED: &str = "mirror_refused";
+/// The hub process holds more resident memory than `[alerts]
+/// hub_rss_warn_mb`. The subject is the one hub of this store.
+pub const HUB_RSS: &str = "hub_rss";
 
 /// One fact about an agent that the live view does not carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +75,8 @@ pub struct AlertView {
     pub refused: Vec<Refusal>,
     /// The tracker refusal that paused the issue mirror, until a restart.
     pub mirror_refused: Option<String>,
+    /// The resident memory of the hub process, where the platform tells it.
+    pub hub_rss_bytes: Option<u64>,
     /// True while the hub is in its restart grace. A host that has not sent a
     /// heartbeat yet is expected then, so `host_offline` stays quiet.
     pub restart_grace: bool,
@@ -292,6 +297,26 @@ pub fn active_alerts(
                 .with_priority(Priority::High)
                 .with_tags([MIRROR_REFUSED.to_owned()]),
         );
+    }
+    // One subject, the hub: the threshold is off unless a person sets it, and
+    // a hub that stays below the line for one pass resolves the alert.
+    if let (Some(warn_mb), Some(rss)) = (cfg.hub_rss_warn_mb, view.hub_rss_bytes) {
+        let line = warn_mb.saturating_mul(1024 * 1024);
+        if rss > line {
+            active.insert(
+                key(HUB_RSS, "hub"),
+                Notice::new(
+                    "The hub is using a lot of memory",
+                    format!(
+                        "the hub process holds {} MiB of resident memory, above the {} MiB line",
+                        rss / (1024 * 1024),
+                        warn_mb
+                    ),
+                )
+                .with_priority(Priority::High)
+                .with_tags([HUB_RSS.to_owned()]),
+            );
+        }
     }
     active
 }
@@ -834,6 +859,41 @@ mod tests {
         assert_eq!(
             resolved(&evaluate(&clear, &open, &cfg(), NOW)),
             vec!["mirror_refused:tracker"]
+        );
+    }
+
+    #[test]
+    fn hub_rss_fires_above_its_line_and_resolves_below() {
+        let mut view = view_with(Vec::new());
+        view.hub_rss_bytes = Some(2 * 1024 * 1024 * 1024);
+        // Off by default: a hub of any size sends nothing.
+        assert!(evaluate(&view, &BTreeSet::new(), &cfg(), NOW).is_empty());
+
+        let strict = AlertsConfig {
+            hub_rss_warn_mb: Some(1024),
+            ..cfg()
+        };
+        let actions = evaluate(&view, &BTreeSet::new(), &strict, NOW);
+        assert_eq!(fired(&actions), vec!["hub_rss:hub"]);
+        let AlertAction::Fire { notice, .. } = &actions[0] else {
+            panic!("a fire")
+        };
+        assert_eq!(notice.priority, Priority::High);
+        assert!(notice.body.contains("2048 MiB"), "{}", notice.body);
+        assert!(notice.body.contains("1024 MiB"), "{}", notice.body);
+
+        // A later pass below the line resolves the one alert, and so does a
+        // platform that has no number at all.
+        let open = BTreeSet::from(["hub_rss:hub".to_owned()]);
+        view.hub_rss_bytes = Some(512 * 1024 * 1024);
+        assert_eq!(
+            resolved(&evaluate(&view, &open, &strict, NOW)),
+            vec!["hub_rss:hub"]
+        );
+        view.hub_rss_bytes = None;
+        assert_eq!(
+            resolved(&evaluate(&view, &open, &strict, NOW)),
+            vec!["hub_rss:hub"]
         );
     }
 

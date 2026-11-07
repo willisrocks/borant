@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Hub;
 use crate::board::Caller;
+use crate::metrics::{self, Histogram, Metrics};
 
 /// The web page, embedded into the binary.
 const PAGE: &str = include_str!("web/index.html");
@@ -282,7 +283,7 @@ async fn metrics(State(app): State<App>) -> Result<Response, Fail> {
         }
     }
     let queued = app.hub.spawn_queue_length().await?;
-    let text = render_metrics(&view, &tasks, queued, app.started);
+    let text = render_metrics(&view, &tasks, queued, app.started, &app.hub.metrics);
     Ok((
         [(
             header::CONTENT_TYPE,
@@ -300,19 +301,21 @@ const LEASE_STATES: [&str; 4] = ["held", "reserved", "expired", "released"];
 /// The task statuses of `borant_tasks`, in a fixed order.
 const TASK_STATUSES: [&str; 5] = ["open", "in_progress", "needs_human", "stuck", "closed"];
 
-/// Renders the gauges of the phase 8 spec from a `SwarmView`, the tasks of
-/// every channel, and the length of the spawn queue.
+/// Renders the metrics of the phase 8 spec from a `SwarmView`, the tasks of
+/// every channel, the length of the spawn queue, and the counters that the
+/// request and tick paths record.
 ///
 /// `started` is when the hub started serving: the value of
 /// `borant_hub_start_time_seconds`. The ages are measured from the view's
 /// `at`, the hub clock when it built the view, or from `started` for a view
 /// without one. A host or an agent with no value for a gauge gets no series
 /// for it, never a made-up zero.
-pub fn render_metrics(
+pub(crate) fn render_metrics(
     view: &SwarmView,
     tasks: &[(ChannelName, Task)],
     queued: usize,
     started: Timestamp,
+    counters: &Metrics,
 ) -> String {
     let now = view.at.unwrap_or(started);
     let mut out = String::new();
@@ -320,7 +323,7 @@ pub fn render_metrics(
     header(
         &mut out,
         "borant_hub_start_time_seconds",
-        "Unix time when the hub started serving, in seconds.",
+        "Unix time when the hub started serving, in seconds. A value that changes between two scrapes means the hub restarted.",
     );
     line(
         &mut out,
@@ -328,6 +331,99 @@ pub fn render_metrics(
         &[],
         started.0 as f64 / 1000.0,
     );
+
+    header_kind(
+        &mut out,
+        "borant_hub_ctl_requests_total",
+        "counter",
+        "The requests of borant.ctl that the hub served, by kind.",
+    );
+    for (kind, count) in metrics::CTL_KINDS.iter().zip(counters.ctl_requests()) {
+        line(
+            &mut out,
+            "borant_hub_ctl_requests_total",
+            &[("kind", kind)],
+            count as f64,
+        );
+    }
+
+    histogram_header(
+        &mut out,
+        "borant_hub_ctl_latency_seconds",
+        "The time a request of borant.ctl took, by kind.",
+    );
+    for (i, kind) in metrics::CTL_KINDS.iter().enumerate() {
+        histogram_samples(
+            &mut out,
+            "borant_hub_ctl_latency_seconds",
+            &[("kind", kind)],
+            counters.ctl_latency(i),
+        );
+    }
+
+    header_kind(
+        &mut out,
+        "borant_hub_ctl_errors_total",
+        "counter",
+        "The requests of borant.ctl that the hub answered with an error, by kind.",
+    );
+    for (kind, count) in metrics::CTL_KINDS.iter().zip(counters.ctl_errors()) {
+        line(
+            &mut out,
+            "borant_hub_ctl_errors_total",
+            &[("kind", kind)],
+            count as f64,
+        );
+    }
+
+    histogram_header(
+        &mut out,
+        "borant_hub_tick_seconds",
+        "The time one pass of the hub tick took.",
+    );
+    histogram_samples(&mut out, "borant_hub_tick_seconds", &[], counters.tick());
+
+    header(
+        &mut out,
+        "borant_hub_store_keys",
+        "The keys under each prefix, from the last tick that listed them.",
+    );
+    for (prefix, count) in counters.store_keys() {
+        line(
+            &mut out,
+            "borant_hub_store_keys",
+            &[("prefix", prefix)],
+            count as f64,
+        );
+    }
+
+    header(
+        &mut out,
+        "borant_hub_inbox_pending_total",
+        "The messages that every inbox has not delivered yet.",
+    );
+    let pending: u64 = view.inboxes.iter().map(|inbox| inbox.stats.pending).sum();
+    line(
+        &mut out,
+        "borant_hub_inbox_pending_total",
+        &[],
+        pending as f64,
+    );
+
+    // Off Linux there is no `/proc/self/statm`, so the series is absent.
+    if let Some(bytes) = metrics::resident_bytes() {
+        header(
+            &mut out,
+            "borant_hub_process_resident_bytes",
+            "The resident set of the hub process, in bytes.",
+        );
+        line(
+            &mut out,
+            "borant_hub_process_resident_bytes",
+            &[],
+            bytes as f64,
+        );
+    }
 
     header(
         &mut out,
@@ -562,7 +658,36 @@ fn task_counts(tasks: &[(ChannelName, Task)]) -> Vec<(ChannelName, &'static str,
 
 /// One `# HELP` and `# TYPE gauge` pair.
 fn header(out: &mut String, name: &str, help: &str) {
-    out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n"));
+    header_kind(out, name, "gauge", help);
+}
+
+/// One `# HELP` and `# TYPE <kind>` pair.
+fn header_kind(out: &mut String, name: &str, kind: &str, help: &str) {
+    out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+}
+
+/// The `# HELP` and `# TYPE histogram` pair of a family that several label
+/// sets share. Prometheus takes one pair per family, so the samples of every
+/// label set follow it from [`histogram_samples`].
+fn histogram_header(out: &mut String, name: &str, help: &str) {
+    header_kind(out, name, "histogram", help);
+}
+
+/// Every sample of one histogram with `labels`: the cumulative buckets, the
+/// `+Inf` bucket, the sum, and the count.
+fn histogram_samples(out: &mut String, name: &str, labels: &[(&str, &str)], histogram: &Histogram) {
+    let (cumulative, count, sum) = histogram.read();
+    for (bound, seen) in histogram.bounds().iter().zip(&cumulative) {
+        let le = bound.to_string();
+        let mut all = labels.to_vec();
+        all.push(("le", le.as_str()));
+        line(out, &format!("{name}_bucket"), &all, *seen as f64);
+    }
+    let mut all = labels.to_vec();
+    all.push(("le", "+Inf"));
+    line(out, &format!("{name}_bucket"), &all, count as f64);
+    line(out, &format!("{name}_sum"), labels, sum);
+    line(out, &format!("{name}_count"), labels, count as f64);
 }
 
 /// One sample line. No labels makes a gauge without a label set.
