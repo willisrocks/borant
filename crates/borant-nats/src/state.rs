@@ -41,7 +41,9 @@ type Seen = (u64, Option<Bytes>);
 /// arrives on the next list, because every list drains the consumer before
 /// it reads the map. Each entry keeps the stream sequence it was seen at, so
 /// a message that is older than what the map holds (a local write raced the
-/// delivery) never replaces it.
+/// delivery) never replaces it. A delete marker needs its sequence only until
+/// the drain reaches the stream's tail, so the map drops it there and holds
+/// the live keys alone.
 #[derive(Debug)]
 struct Cache {
     js: jetstream::Context,
@@ -116,6 +118,13 @@ impl NatsState {
         let mut cache = self.cache.lock().await;
         cache.entries.insert(key.to_owned(), (revision, value));
     }
+
+    /// The number of keys the list cache holds. A deleted key leaves the map
+    /// once the cache reaches the stream's tail, so this stays bounded by the
+    /// live keys of the bucket, not by everything ever written.
+    pub async fn cached_entries(&self) -> usize {
+        self.cache.lock().await.entries.len()
+    }
 }
 
 fn is_wrong_revision(e: &impl std::fmt::Display) -> bool {
@@ -133,10 +142,11 @@ async fn create_consumer(store: &kv::Store) -> PortResult<Consumer<pull::Config>
             description: Some(STATE_CACHE_CONSUMER.to_owned()),
             filter_subject: format!("{}>", store.prefix),
             deliver_policy: DeliverPolicy::LastPerSubject,
-            // The consumer keeps its position by acking. A message that is
-            // not acked comes back after the ack wait, which the revision
-            // check makes harmless.
-            ack_policy: AckPolicy::Explicit,
+            // The cache only follows the stream, so nobody needs to know a
+            // message was handled: no ack costs a round trip. The consumer
+            // still moves its delivery position past each message, and a new
+            // consumer primes the map from scratch after a restart.
+            ack_policy: AckPolicy::None,
             inactive_threshold: INACTIVE,
             ..Default::default()
         })
@@ -174,10 +184,6 @@ async fn drain(
         while let Some(message) = batch.next().await {
             let message = message.map_err(|e| unavailable("sync state cache", e))?;
             pending = Some(apply(prefix, &message, entries)?);
-            message
-                .ack()
-                .await
-                .map_err(|e| unavailable("ack state cache message", e))?;
         }
         match pending {
             // The batch was empty.
@@ -237,6 +243,11 @@ async fn sync(store: &kv::Store, cache: &mut Cache) -> PortResult<()> {
         match drain(&consumer, &store.prefix, &mut cache.entries).await {
             Ok(()) => {
                 cache.consumer = Some(consumer);
+                // The drain read to the stream's tail, so no older message can
+                // follow: a delete marker has done its work and leaves the
+                // map. Without this, every deleted key, such as a pruned
+                // lease, would stay in the hub's memory for good.
+                cache.entries.retain(|_, (_, value)| value.is_some());
                 return Ok(());
             }
             Err(e) if !remade && consumer_gone(&e) => {
