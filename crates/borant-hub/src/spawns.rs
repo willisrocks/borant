@@ -455,12 +455,12 @@ impl Hub {
     }
 
     /// The spawns that wait for a placement or a launch, in placement order:
-    /// highest priority first, then the oldest.
+    /// highest priority first, then the oldest. The count of the listing is
+    /// the `borant_hub_store_keys` gauge of the spawn prefix.
     async fn pending_spawns(&self) -> Result<Vec<SpawnRecord>, ApiError> {
-        let mut queued: Vec<SpawnRecord> = self
-            .store
-            .list::<SpawnRecord>(keys::SPAWN_PREFIX)
-            .await?
+        let docs = self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await?;
+        self.metrics.keys(keys::SPAWN_PREFIX, docs.len());
+        let mut queued: Vec<SpawnRecord> = docs
             .into_iter()
             .map(|d| d.value)
             .filter(|r| r.state == SpawnState::Queued || r.state == SpawnState::Launching)

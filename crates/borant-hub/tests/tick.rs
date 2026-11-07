@@ -348,6 +348,31 @@ async fn many_ticks_keep_the_memory() {
     );
 }
 
+/// The key gauges of `/metrics` come from the listings that the tick already
+/// makes, so they cost the store nothing: a settled tick spends the calls it
+/// spent before the gauges, and the next settled tick spends the same.
+#[tokio::test]
+async fn the_tick_metrics_add_no_store_call() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    // The first pass settles the store: the next ones find nothing to do.
+    fx.hub.tick().await.expect("the first pass");
+    fx.advance(1);
+    let mark = fx.count_from();
+    fx.hub.tick().await.expect("a tick");
+    let settled = fx.count_since(mark);
+    fx.advance(1);
+    let mark = fx.count_from();
+    fx.hub.tick().await.expect("a tick");
+    let again = fx.count_since(mark);
+    println!("a settled tick: {settled} store calls, then {again}");
+    assert!(
+        again <= settled,
+        "the second settled tick took {again} store calls after {settled}"
+    );
+    assert!(settled < 40, "a settled tick took {settled} store calls");
+}
+
 /// The resident set of this process, in KiB, from `/proc`. Zero where the
 /// platform has no such file, so the test holds on its other bounds.
 fn resident_kb() -> u64 {

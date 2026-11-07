@@ -198,7 +198,14 @@ sleeping laptop shows as old data, not as a gap.
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `borant_hub_start_time_seconds` | gauge | `instance` | hub. `changes()` counts restarts. |
+| `borant_hub_start_time_seconds` | gauge | `instance` | hub. A value that changes between two scrapes is a restart: `changes()` counts restarts. |
+| `borant_hub_ctl_requests_total` | counter | `kind` | hub, `Hub::handle`, one per `CtlRequest` variant |
+| `borant_hub_ctl_latency_seconds` | histogram | `kind` | hub, one per `CtlRequest` variant |
+| `borant_hub_ctl_errors_total` | counter | `kind` | hub, a reply of `Error` |
+| `borant_hub_tick_seconds` | histogram | | hub, one observation per tick pass |
+| `borant_hub_store_keys` | gauge | `prefix` (`lease.agent.`, `agent.`, `host.`, `spawn.`) | hub tick, from the listings that the tick already makes, never an extra one |
+| `borant_hub_inbox_pending_total` | gauge | | hub, the sum of `borant_inbox_pending` |
+| `borant_hub_process_resident_bytes` | gauge | | hub, `/proc/self/statm` on Linux, absent elsewhere |
 | `borant_hub_requests_total` | counter | `op`, `code` | hub, `calls.rs` |
 | `borant_hub_request_duration_seconds`, `borant_hub_tick_duration_seconds` | histogram | `op` | hub |
 | `borant_events_total` | counter | `kind` | hub |

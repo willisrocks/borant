@@ -231,22 +231,42 @@ fn bytes<T: serde::Serialize>(value: &T) -> Bytes {
     Bytes::from(serde_json::to_vec(value).expect("a record"))
 }
 
-/// The names of the gauges of the spec, and no other.
-const GAUGES: [&str; 13] = [
-    "borant_hub_start_time_seconds",
-    "borant_host_online",
-    "borant_host_heartbeat_age_seconds",
-    "borant_host_load1",
-    "borant_host_mem_avail_bytes",
-    "borant_host_disk_used_ratio",
-    "borant_host_agents",
-    "borant_host_max_agents",
-    "borant_agent_lease_state",
-    "borant_inbox_pending",
-    "borant_inbox_redelivered",
-    "borant_tasks",
-    "borant_spawn_queue_length",
+/// The metric families of `/metrics`, in the order that the renderer writes
+/// them: the name and the type of its `# TYPE` line. No other family, and no
+/// other order.
+const FAMILIES: [(&str, &str); 20] = [
+    ("borant_hub_start_time_seconds", "gauge"),
+    ("borant_hub_ctl_requests_total", "counter"),
+    ("borant_hub_ctl_latency_seconds", "histogram"),
+    ("borant_hub_ctl_errors_total", "counter"),
+    ("borant_hub_tick_seconds", "histogram"),
+    ("borant_hub_store_keys", "gauge"),
+    ("borant_hub_inbox_pending_total", "gauge"),
+    ("borant_hub_process_resident_bytes", "gauge"),
+    ("borant_host_online", "gauge"),
+    ("borant_host_heartbeat_age_seconds", "gauge"),
+    ("borant_host_load1", "gauge"),
+    ("borant_host_mem_avail_bytes", "gauge"),
+    ("borant_host_disk_used_ratio", "gauge"),
+    ("borant_host_agents", "gauge"),
+    ("borant_host_max_agents", "gauge"),
+    ("borant_agent_lease_state", "gauge"),
+    ("borant_inbox_pending", "gauge"),
+    ("borant_inbox_redelivered", "gauge"),
+    ("borant_tasks", "gauge"),
+    ("borant_spawn_queue_length", "gauge"),
 ];
+
+/// The families of `FAMILIES` that this platform has a source for: the
+/// resident size is absent off Linux.
+fn families() -> Vec<(&'static str, &'static str)> {
+    FAMILIES
+        .into_iter()
+        .filter(|(name, _)| {
+            cfg!(target_os = "linux") || *name != "borant_hub_process_resident_bytes"
+        })
+        .collect()
+}
 
 /// A view with one online host, one agent that holds its lease, and one
 /// inbox, at the scrape time `NOW`.
@@ -336,40 +356,94 @@ fn metrics_tasks() -> Vec<(ChannelName, Task)> {
     ]
 }
 
+/// The counters that a scrape of the new families reads: two requests of one
+/// kind, one of them failed, one tick, and one tick's listings.
+fn metrics_counters() -> Metrics {
+    let metrics = Metrics::new();
+    metrics.ctl(0, Duration::from_millis(3), false);
+    metrics.ctl(0, Duration::from_millis(40), true);
+    metrics.tick_done(Duration::from_millis(120));
+    metrics.keys(keys::LEASE_AGENT_PREFIX, 7);
+    metrics.keys(keys::AGENT_PREFIX, 3);
+    metrics.keys(keys::HOST_PREFIX, 1);
+    metrics.keys(keys::SPAWN_PREFIX, 2);
+    metrics
+}
+
 #[test]
-fn http_metrics_has_every_gauge_name_and_a_value() {
-    let text = render_metrics(&metrics_view(), &metrics_tasks(), 2, Timestamp(900_000_000));
-    for gauge in GAUGES {
+fn http_metrics_has_every_family_name_a_type_and_a_value() {
+    let text = render_metrics(
+        &metrics_view(),
+        &metrics_tasks(),
+        2,
+        Timestamp(900_000_000),
+        &Metrics::new(),
+    );
+    for (gauge, kind) in families() {
         assert!(
-            text.contains(&format!("# TYPE {gauge} gauge")),
-            "no TYPE line for {gauge}:\n{text}"
+            text.contains(&format!("# TYPE {gauge} {kind}")),
+            "no TYPE line for {gauge} as {kind}:\n{text}"
         );
         assert!(
             text.contains(&format!("# HELP {gauge} ")),
             "no HELP line for {gauge}:\n{text}"
         );
-        let samples = text
-            .lines()
-            .filter(|line| {
-                line.starts_with(&format!("{gauge} ")) || line.starts_with(&format!("{gauge}{{"))
-            })
-            .count();
-        assert!(samples > 0, "no sample of {gauge}:\n{text}");
+        if kind == "histogram" {
+            for suffix in ["_bucket{", "_sum", "_count"] {
+                assert!(
+                    text.contains(&format!("{gauge}{suffix}")),
+                    "no {gauge}{suffix} sample:\n{text}"
+                );
+            }
+        } else {
+            let samples = text
+                .lines()
+                .filter(|line| {
+                    line.starts_with(&format!("{gauge} "))
+                        || line.starts_with(&format!("{gauge}{{"))
+                })
+                .count();
+            assert!(samples > 0, "no sample of {gauge}:\n{text}");
+        }
     }
-    // No other gauge slips in under a name that the spec does not have.
+    // No other family slips in under a name that the spec does not have.
     let names: Vec<&str> = text
         .lines()
         .filter_map(|line| line.strip_prefix("# TYPE "))
         .filter_map(|rest| rest.split_once(' ').map(|(name, _)| name))
         .collect();
-    assert_eq!(names, GAUGES.to_vec(), "the gauges of the spec, in order");
+    let expected: Vec<&str> = families().into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, expected, "the families of the spec, in order");
 }
 
 #[test]
-fn http_metrics_renders_the_values_of_the_view_and_the_tasks() {
-    let text = render_metrics(&metrics_view(), &metrics_tasks(), 2, Timestamp(900_000_000));
+fn http_metrics_renders_the_values_of_the_view_the_tasks_and_the_counters() {
+    let text = render_metrics(
+        &metrics_view(),
+        &metrics_tasks(),
+        2,
+        Timestamp(900_000_000),
+        &metrics_counters(),
+    );
     for expected in [
         "borant_hub_start_time_seconds 900000",
+        "borant_hub_ctl_requests_total{kind=\"register_host\"} 2",
+        "borant_hub_ctl_requests_total{kind=\"host_heartbeat\"} 0",
+        "borant_hub_ctl_errors_total{kind=\"register_host\"} 1",
+        "borant_hub_ctl_errors_total{kind=\"call\"} 0",
+        "borant_hub_ctl_latency_seconds_bucket{kind=\"register_host\",le=\"0.005\"} 1",
+        "borant_hub_ctl_latency_seconds_bucket{kind=\"register_host\",le=\"0.05\"} 2",
+        "borant_hub_ctl_latency_seconds_bucket{kind=\"register_host\",le=\"+Inf\"} 2",
+        "borant_hub_ctl_latency_seconds_sum{kind=\"register_host\"} 0.043",
+        "borant_hub_ctl_latency_seconds_count{kind=\"register_host\"} 2",
+        "borant_hub_tick_seconds_bucket{le=\"0.1\"} 0",
+        "borant_hub_tick_seconds_bucket{le=\"0.25\"} 1",
+        "borant_hub_tick_seconds_count 1",
+        "borant_hub_store_keys{prefix=\"lease.agent.\"} 7",
+        "borant_hub_store_keys{prefix=\"agent.\"} 3",
+        "borant_hub_store_keys{prefix=\"host.\"} 1",
+        "borant_hub_store_keys{prefix=\"spawn.\"} 2",
+        "borant_hub_inbox_pending_total 3",
         "borant_host_online{host=\"h1\"} 1",
         "borant_host_heartbeat_age_seconds{host=\"h1\"} 30",
         "borant_host_load1{host=\"h1\"} 0.5",
@@ -390,6 +464,20 @@ fn http_metrics_renders_the_values_of_the_view_and_the_tasks() {
     ] {
         assert!(text.contains(expected), "no `{expected}`:\n{text}");
     }
+    // The resident size is the process the test runs in, or absent off Linux.
+    let resident = text
+        .lines()
+        .find(|line| line.starts_with("borant_hub_process_resident_bytes "));
+    if cfg!(target_os = "linux") {
+        let line = resident.expect("the resident size on Linux");
+        let bytes: u64 = line
+            .rsplit_once(' ')
+            .and_then(|(_, value)| value.parse().ok())
+            .expect("a byte count");
+        assert!(bytes > 1024 * 1024, "{line}");
+    } else {
+        assert_eq!(resident, None);
+    }
 }
 
 #[test]
@@ -397,12 +485,18 @@ fn http_metrics_skips_a_host_value_it_does_not_have() {
     let mut view = metrics_view();
     view.hosts[0].last_seen = None;
     view.hosts[0].stats = None;
-    let text = render_metrics(&view, &[], 0, NOW);
+    let text = render_metrics(&view, &[], 0, NOW, &Metrics::new());
     assert!(text.contains("borant_host_online{host=\"h1\"} 1"));
     assert!(!text.contains("borant_host_heartbeat_age_seconds{host=\"h1\"}"));
     assert!(!text.contains("borant_host_load1{host=\"h1\"}"));
     assert!(text.contains("borant_host_max_agents{host=\"h1\"} 4"));
     assert!(text.contains("borant_spawn_queue_length 0"));
+    // The inbox of the fixture still waits on three messages: the total is
+    // the sum, and an empty view sums to a zero, never to a missing series.
+    assert!(text.contains("borant_hub_inbox_pending_total 3"));
+    view.inboxes.clear();
+    let text = render_metrics(&view, &[], 0, NOW, &Metrics::new());
+    assert!(text.contains("borant_hub_inbox_pending_total 0"));
 }
 
 #[tokio::test]
@@ -585,6 +679,12 @@ async fn http_channels_lists_the_channels_and_not_their_tasks() {
 #[tokio::test]
 async fn http_metrics_route_serves_the_text_format() {
     let fx = Fx::new();
+    // A request and a tick through the hub, so the counters of the scrape
+    // come from the paths that record them.
+    fx.hub
+        .handle(borant_core::proto::CtlRequest::Maintenance { on: false })
+        .await;
+    fx.hub.tick().await.expect("the tick");
     let request = Request::builder()
         .uri("/metrics")
         .body(Body::empty())
@@ -600,10 +700,25 @@ async fn http_metrics_route_serves_the_text_format() {
     assert!(content_type.starts_with("text/plain; version=0.0.4"));
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let text = String::from_utf8_lossy(&body);
-    for gauge in GAUGES {
-        assert!(text.contains(gauge), "no {gauge}:\n{text}");
+    for (family, _) in families() {
+        assert!(text.contains(family), "no {family}:\n{text}");
     }
     assert!(text.contains("borant_tasks{channel=\"roadmap\",status=\"open\"} 1"));
+    assert!(text.contains("borant_hub_ctl_requests_total{kind=\"maintenance\"} 1"));
+    assert!(text.contains("borant_hub_tick_seconds_count 1"));
+    // The tick read the store once per list, so the gauges are its counts.
+    assert!(
+        text.contains("borant_hub_store_keys{prefix=\"host.\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("borant_hub_store_keys{prefix=\"agent.\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("borant_hub_store_keys{prefix=\"lease.agent.\"} 1"),
+        "{text}"
+    );
 }
 
 #[tokio::test]

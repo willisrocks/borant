@@ -718,6 +718,9 @@ pub struct AlertsFile {
     pub hub_down_minutes: Option<u64>,
     /// A host whose disk is this full gets the `host_disk` alert.
     pub disk_warn_pct: Option<u8>,
+    /// The resident size of the hub process above which the `hub_rss` alert
+    /// fires, in MiB. Unset is off, as before this key.
+    pub hub_rss_warn_mb: Option<u64>,
 }
 
 impl AlertsFile {
@@ -726,7 +729,7 @@ impl AlertsFile {
     pub fn summary(&self) -> String {
         let flag = |v: Option<bool>, default: bool| if v.unwrap_or(default) { "on" } else { "off" };
         format!(
-            "notifier={} needs_human={} stall_minutes={} hung_minutes={} host_offline_minutes={} hub_down_minutes={} watch_hub={}",
+            "notifier={} needs_human={} stall_minutes={} hung_minutes={} host_offline_minutes={} hub_down_minutes={} watch_hub={} hub_rss_mb={}",
             self.notifier.as_deref().unwrap_or("desktop"),
             flag(self.needs_human, true),
             self.stall_minutes.unwrap_or(30),
@@ -735,6 +738,8 @@ impl AlertsFile {
             self.host_offline_minutes.unwrap_or(5),
             self.hub_down_minutes.unwrap_or(2),
             flag(self.watch_hub, false),
+            self.hub_rss_warn_mb
+                .map_or_else(|| "off".to_owned(), |mb| mb.to_string()),
         )
     }
 
@@ -751,6 +756,7 @@ impl AlertsFile {
             host_offline_minutes: self.host_offline_minutes.unwrap_or(d.host_offline_minutes),
             hub_down_minutes: self.hub_down_minutes.unwrap_or(d.hub_down_minutes),
             disk_warn_pct: self.disk_warn_pct.unwrap_or(d.disk_warn_pct),
+            hub_rss_warn_mb: self.hub_rss_warn_mb,
         }
     }
 }

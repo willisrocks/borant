@@ -141,6 +141,10 @@ pub struct AlertsConfig {
     /// A host whose disk is this full gets the `host_disk` alert.
     #[serde(default = "eighty_five")]
     pub disk_warn_pct: u8,
+    /// The resident memory of the hub process above which the `hub_rss`
+    /// alert fires, in MiB. Unset never fires it, as before this key.
+    #[serde(default)]
+    pub hub_rss_warn_mb: Option<u64>,
 }
 
 impl Default for AlertsConfig {
@@ -154,6 +158,7 @@ impl Default for AlertsConfig {
             host_offline_minutes: five_minutes(),
             hub_down_minutes: two_minutes(),
             disk_warn_pct: eighty_five(),
+            hub_rss_warn_mb: None,
         }
     }
 }
