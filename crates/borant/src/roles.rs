@@ -17,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config;
 
+/// The wait for a snapshot reply. The hub writes the whole file before it
+/// answers, so the wait must cover the write, not just the round trip.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(600);
+
 fn shutdown_on_signal() -> CancellationToken {
     let token = CancellationToken::new();
     let t = token.clone();
@@ -240,6 +244,15 @@ pub async fn export(out: &Path, snapshot: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The NATS connection alone, built from `hub.toml` without the rest of the
+/// hub's parts. A snapshot only asks the running hub over `borant.ctl`, and
+/// the backup unit runs without the hub unit's `CREDENTIALS_DIRECTORY`: the
+/// mirror, the change watch, the notifier, and the secrets stores all need
+/// that directory, so none of them is built here.
+async fn snapshot_nats(file: &config::HubFile) -> anyhow::Result<borant_nats::Nats> {
+    Ok(borant_nats::connect(&file.nats.to_config("borant-export")).await?)
+}
+
 /// Asks the running hub for a snapshot. The file lands on the hub box, so
 /// `out` must be absolute; the command itself works from any host and
 /// without maintenance mode.
@@ -247,16 +260,19 @@ async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
     if !out.is_absolute() {
         anyhow::bail!("--out must be an absolute path on the hub box");
     }
-    let (nats, _, _) = hub_parts("borant-export").await?;
+    let nats = snapshot_nats(&config::hub_file()?).await?;
     let bus = nats.bus();
     let payload = serde_json::to_vec(&CtlRequest::Snapshot {
         out: out.to_path_buf(),
     })?;
+    // The hub writes the whole file before it replies, and a 526 MB snapshot
+    // took about a minute on the hub box, so the wait covers a log several
+    // times larger than that.
     let reply = borant_core::ports::MessageBus::request(
         &bus,
         subjects::CTL,
         payload.into(),
-        Duration::from_secs(60),
+        SNAPSHOT_TIMEOUT,
     )
     .await
     .with_context(|| "no running hub answered the snapshot request")?;
@@ -265,9 +281,14 @@ async fn export_snapshot(out: &Path) -> anyhow::Result<()> {
     let report = reply
         .into_result()
         .map_err(|e| anyhow::anyhow!(e.message))?;
+    let path = report["path"].as_str().unwrap_or("?");
+    // The file is on the hub box, which is this machine when the backup unit
+    // runs it; from another host the size stays unknown.
+    let size = std::fs::metadata(path)
+        .map(|m| format!(" ({} bytes)", m.len()))
+        .unwrap_or_default();
     println!(
-        "Wrote {}: {} state keys, {} session events, {} pending messages (hub lock {} ms).",
-        report["path"].as_str().unwrap_or("?"),
+        "Wrote {path}{size}: {} state keys, {} session events, {} pending messages (hub lock {} ms).",
         report["state"].as_u64().unwrap_or(0),
         report["sessions"].as_u64().unwrap_or(0),
         report["pending"].as_u64().unwrap_or(0),
@@ -323,5 +344,28 @@ mod tests {
             err.to_string(),
             "--out must be an absolute path on the hub box"
         );
+    }
+
+    /// A snapshot only asks the running hub over `borant.ctl`. A hub file
+    /// that names a mirror credential still connects without
+    /// `CREDENTIALS_DIRECTORY`, which the backup unit does not have; the
+    /// mirror itself is what needs it.
+    #[tokio::test]
+    async fn the_snapshot_path_needs_no_credentials_directory() {
+        let file: config::HubFile = toml::from_str(
+            "[mirror]\nadapter = \"exec\"\nprogram = \"/bin/false\"\ncredential = \"issues-token\"\n",
+        )
+        .expect("a hub file");
+        if std::env::var_os("CREDENTIALS_DIRECTORY").is_none() {
+            assert!(
+                file.mirror_tracker().await.is_err(),
+                "the mirror needs the credentials directory of the hub unit"
+            );
+        }
+        // The connect retries in the background, so this returns even with
+        // no broker at hand.
+        snapshot_nats(&file)
+            .await
+            .expect("a snapshot connects without the mirror");
     }
 }
