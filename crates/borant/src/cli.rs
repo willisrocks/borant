@@ -684,6 +684,16 @@ fn print_prune(v: &Value) {
     print!("{}", render_prune(v));
 }
 
+/// A hub older than this build drops the fields that it does not know, and
+/// answers an apply with a dry run. Say so, instead of leaving the caller
+/// with a report that they take for a delete.
+fn check_applied(apply: bool, v: &Value) -> anyhow::Result<()> {
+    if apply && v["mode"] != json!("applied") {
+        bail!("this hub does not know --apply and answered a dry run; update the hub first");
+    }
+    Ok(())
+}
+
 fn render_prune(v: &Value) -> String {
     use std::fmt::Write;
 
@@ -1729,6 +1739,7 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             )
             .await?;
             print_prune(&v);
+            check_applied(apply, &v)?;
         }
         Command::Hosts => pretty(&call(&c, ToolCall::ListHosts).await?),
         Command::Host {
@@ -3240,6 +3251,14 @@ mod tests {
         };
         assert!(apply);
         assert_eq!(token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn an_apply_that_the_hub_reads_as_a_dry_run_is_an_error() {
+        assert!(check_applied(false, &json!({ "mode": "dry-run" })).is_ok());
+        assert!(check_applied(true, &json!({ "mode": "applied" })).is_ok());
+        let err = check_applied(true, &json!({ "mode": "dry-run" })).unwrap_err();
+        assert!(err.to_string().contains("update the hub"), "{err}");
     }
 
     #[test]
