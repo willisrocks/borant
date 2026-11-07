@@ -46,6 +46,21 @@ impl Hub {
         }
     }
 
+    /// A message waits for `agent`, so the lease pass looks at its lease on
+    /// the next tick whatever its gate said: a wake is not held for the poll,
+    /// and a backlog that this message changes is read again.
+    ///
+    /// A caller that holds the memory lock itself takes no part in this: the
+    /// wake check of the lease pass is what wakes the agent then, so the one
+    /// lock never waits on itself.
+    pub(crate) fn wake_soon(&self, agent: &AgentId) {
+        let Ok(mut mem) = self.mem.try_lock() else {
+            return;
+        };
+        mem.lease_gate.remove(agent);
+        mem.wake_seen.remove(agent);
+    }
+
     /// Publishes one event at once. The caller holds no lock.
     pub(crate) async fn publish(&self, event: SwarmEvent) {
         let Some(log) = &self.events else {

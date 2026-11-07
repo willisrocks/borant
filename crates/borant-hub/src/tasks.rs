@@ -608,8 +608,11 @@ impl Hub {
                     event: None,
                     sent: now,
                 };
-                if let Err(e) = self.bus.publish(&subjects::agent(&owner), &env).await {
-                    tracing::warn!(task = %next.id, "deadline message to the owner failed: {e}");
+                match self.bus.publish(&subjects::agent(&owner), &env).await {
+                    Ok(()) => self.wake_soon(&owner),
+                    Err(e) => {
+                        tracing::warn!(task = %next.id, "deadline message to the owner failed: {e}");
+                    }
                 }
             }
             tracing::warn!(task = %next.id, %channel, "the deadline passed: the task is stuck");

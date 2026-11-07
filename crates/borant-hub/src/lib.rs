@@ -51,7 +51,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::config::{AlertsConfig, ChannelConfig};
-use borant_core::model::{Activity, HostStats, HubLease, Lease, MoveReason, Sender};
+use borant_core::model::{
+    Activity, Agent, HostInfo, HostStats, HubLease, Lease, MoveReason, Sender,
+};
 use borant_core::ports::provision::ProvisionerCapabilities;
 use borant_core::ports::{EventLog, MessageBus, Notifier, SessionStore, StateStore};
 use borant_core::proto::{ApiError, ApiErrorCode, CtlRequest, MoveTarget, Reply, ToolCall};
@@ -69,7 +71,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::members::Report;
-use crate::store::Store;
+use crate::store::{Doc, Store};
 
 /// `[http]` of `hub.toml`: the read-only listener of the web view.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -175,6 +177,29 @@ pub(crate) struct HostSessions {
     pub sessions: HashSet<SessionId>,
 }
 
+/// What the lease pass decided about a lease that it left alone: the revision
+/// it read, and when to look at it again. The pass then skips the lease
+/// without a store call until its time comes or its revision changes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LeaseGate {
+    pub revision: u64,
+    /// The revision of the agent record that the pass read. A person writes
+    /// that record to pin, pause, or resume an agent, so its change brings the
+    /// lease back to the pass.
+    pub agent_revision: Option<u64>,
+    /// `None` looks at the lease only when its revision changes or a message
+    /// waits for its agent: nothing that the pass does can happen for it.
+    pub at: Option<Timestamp>,
+}
+
+/// The hosts, leases, and agents of one tick, read once and shared by every
+/// pass of that tick.
+pub(crate) struct Lists {
+    pub hosts: Vec<Doc<HostInfo>>,
+    pub leases: Vec<Doc<Lease>>,
+    pub agents: Vec<Doc<Agent>>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Memory {
     /// The last heartbeat of each host, on the hub clock.
@@ -235,6 +260,8 @@ pub(crate) struct Memory {
     pub host_stats: HashMap<HostName, HostStats>,
     /// When the elastic rules last ran.
     pub last_elastic: Option<Timestamp>,
+    /// When the idle passes last ran.
+    pub last_park: Option<Timestamp>,
     /// When the liveness sweep last ran.
     pub last_sweep: Option<Timestamp>,
     /// The last event time of each agent that already got the silence DM, so
@@ -273,6 +300,17 @@ pub(crate) struct Memory {
     pub elastic_backoff: BTreeMap<PoolName, Timestamp>,
     /// The capabilities of each provisioner, read once at the first pass.
     pub elastic_caps: BTreeMap<String, ProvisionerCapabilities>,
+    /// What the lease pass found for each lease that it left alone, so the
+    /// next tick skips it without a store call. Pruned to the leases that the
+    /// store holds.
+    pub lease_gate: HashMap<AgentId, LeaseGate>,
+    /// The agents that hold a lease on each host, from the latest lease list,
+    /// so a host registration reads no lease.
+    pub leases_on: HashMap<HostName, u64>,
+    /// The undelivered count of each agent whose pending messages the lease
+    /// pass already read, so a backlog that nothing touched is not read
+    /// again.
+    pub wake_seen: HashMap<AgentId, u64>,
     /// The swarm events of the writes in this request or tick step, which are
     /// published after the `mem` guard drops.
     pub outbox: Vec<borant_core::events::SwarmEvent>,
@@ -537,21 +575,23 @@ impl Hub {
 
     /// One pass of lease expiry, takeovers, and claim timeouts.
     ///
-    /// The pass takes the memory lock for one lease at a time, never for the
-    /// whole pass, so requests are served while a restart catches up on a
-    /// large store.
+    /// The hosts, leases, and agents are read once and handed to every pass
+    /// of the tick, so a tick of a large store reads the same records once
+    /// instead of once per pass. The lease pass takes the memory lock for one
+    /// lease at a time, never for the whole pass, so requests are served
+    /// while a restart catches up on a large store.
     pub async fn tick(&self) -> Result<(), ApiError> {
         if self.mem.lock().await.maintenance {
             return Ok(());
         }
-        let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
+        let lists = self.lists().await?;
         // The liveness sweep runs before the lease pass, so a dead session is
         // ended and recovered here instead of being replaced silently by a
         // takeover that leaves the spawn record running.
-        if let Err(e) = self.tick_liveness().await {
+        if let Err(e) = self.tick_liveness(&lists).await {
             tracing::warn!("the liveness sweep failed: {e}");
         }
-        self.tick_leases(leases).await?;
+        self.tick_leases(&lists).await?;
         // The agents that wait for a member of their bundle to reset.
         self.wake_limited_members().await?;
         // The queued spawns, before the elastic rules count what is still
@@ -562,18 +602,22 @@ impl Hub {
         // A stopped session whose turn outlived its grace is fenced here.
         self.fence_overdue().await?;
         // The elastic pools park with the idle timeout of each pool; a hub
-        // with no pool keeps the one timeout for its hosts.
+        // with no pool keeps the one timeout for its hosts. Either way the
+        // idle passes run on their own cadence: they list every agent and
+        // read the state of every idle one.
+        let park = self.idle_pass_due().await;
         let parked = match &self.cfg.elastic {
             Some(elastic) if !elastic.pools.is_empty() => self.tick_elastic().await,
-            _ => self
+            _ if park => self
                 .park_idle(None, park::DEFAULT_IDLE_TIMEOUT)
                 .await
                 .map(|_| ()),
+            _ => Ok(()),
         };
         parked?;
         // A helper or a worker that stays idle gives its slot back on any
         // host, pool or not, after the `idle_release_after` of its role.
-        if let Err(e) = self.park_idle_roles().await {
+        if park && let Err(e) = self.park_idle_roles().await {
             tracing::warn!("the idle release pass failed: {e}");
         }
         // A passed deadline puts the task in front of its owner before the
@@ -587,7 +631,7 @@ impl Hub {
         if let Err(e) = self.tick_schedules().await {
             tracing::warn!("the schedule pass failed: {e}");
         }
-        self.tick_alerts().await?;
+        self.tick_alerts(&lists).await?;
         // Answer keys outlive the retry window of a draft by a day, then go.
         if let Err(e) = self.prune_answer_keys().await {
             tracing::warn!("the answer key prune failed: {e}");
@@ -595,7 +639,21 @@ impl Hub {
         // Work that waits on a person, after every other step has had its
         // say: a spawn that a wait cannot place, and a claim whose claimer
         // can no longer work it.
-        self.tick_blocked().await
+        let blocked = self.tick_blocked().await;
+        // The events of the last passes wait here, so no publish holds the
+        // lock of a pass that queued them.
+        self.flush().await;
+        blocked
+    }
+
+    /// The hosts, leases, and agents of this tick, read once for the passes
+    /// that need them.
+    pub(crate) async fn lists(&self) -> Result<Lists, ApiError> {
+        Ok(Lists {
+            hosts: self.store.list::<HostInfo>(keys::HOST_PREFIX).await?,
+            leases: self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?,
+            agents: self.store.list::<Agent>(keys::AGENT_PREFIX).await?,
+        })
     }
 
     /// Takes the hub lease, gives every held agent lease a new expiry, then

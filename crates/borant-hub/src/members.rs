@@ -536,8 +536,11 @@ impl Hub {
                     event: None,
                     sent: now,
                 };
-                if let Err(e) = self.bus.publish(&subjects::agent(agent), &env).await {
-                    tracing::warn!(%agent, "cannot wake the agent after its limit reset: {e}");
+                match self.bus.publish(&subjects::agent(agent), &env).await {
+                    Ok(()) => self.wake_soon(agent),
+                    Err(e) => {
+                        tracing::warn!(%agent, "cannot wake the agent after its limit reset: {e}");
+                    }
                 }
             }
             if !state.waiting.is_empty() {

@@ -18,7 +18,29 @@ use borant_core::{
 use serde_json::{Value, json};
 
 use crate::store::Doc;
-use crate::{ActivityReport, HostSessions, Hub, IdleReport, Memory, PendingMove};
+use crate::{ActivityReport, HostSessions, Hub, IdleReport, LeaseGate, Lists, Memory, PendingMove};
+
+/// What the lease pass leaves behind for a lease that it did not write: when
+/// to look at it again, or that nothing can happen for it before its revision
+/// changes or a message waits for its agent.
+#[derive(Debug, Clone, Copy)]
+enum Rest {
+    At(Timestamp),
+    Settled,
+}
+
+impl Rest {
+    fn at(self) -> Option<Timestamp> {
+        match self {
+            Rest::At(at) => Some(at),
+            Rest::Settled => None,
+        }
+    }
+}
+
+/// How long a lease that needs nothing is left alone before the pass looks
+/// again, so a wake that no message announced still comes.
+const SETTLED_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often the hub reads the pending messages of an idle expired agent.
 const WAKE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -86,7 +108,10 @@ impl Hub {
         self.store.upsert(&key, &info).await?;
         let now = self.now();
         mem.hosts_seen.insert(info.name.clone(), now);
-        let agents = self.host_agents(&info.name).await?;
+        // The agents of the host come from the lease list of the last tick,
+        // so a registration reads no lease: a host that retries its
+        // registration does not read the whole store each time.
+        let agents = mem.leases_on.get(&info.name).copied().unwrap_or(0);
         let event = self
             .event(
                 now,
@@ -100,17 +125,6 @@ impl Hub {
             .about_host(info.name.clone());
         Self::queue(mem, event);
         Ok(json!({ "host": info.name }))
-    }
-
-    /// How many agents hold a lease on `host`.
-    async fn host_agents(&self, host: &HostName) -> Result<u64, ApiError> {
-        Ok(self
-            .store
-            .list::<Lease>(keys::LEASE_AGENT_PREFIX)
-            .await?
-            .into_iter()
-            .filter(|d| matches!(&d.value.state, LeaseState::Held { host: h, .. } if h == host))
-            .count() as u64)
     }
 
     /// A pin that a lost hub record dropped stays: the session of a pinned
@@ -617,6 +631,7 @@ impl Hub {
         mem.pending_moves.remove(&agent_id);
         mem.park_sent.remove(&agent_id);
         mem.idle.remove(&agent_id);
+        mem.activity.remove(&agent_id);
         // A new session counts its turns from zero.
         mem.turns_seen.remove(&agent_id);
         tracing::info!(agent = %agent_id, session = %r.session, token = new_lease.token.0, "session registered");
@@ -691,6 +706,9 @@ impl Hub {
     ) -> Result<(), ApiError> {
         let now = self.now();
         let key = keys::lease_agent(agent);
+        // The turn of this session is over, so a fence that waited for it has
+        // nothing to fence.
+        mem.pause_fences.remove(&session);
         let mut released = false;
         // An end that the host outbox replayed after an outage reaches the
         // hub after the lease expired. The expired lease still names that
@@ -711,6 +729,7 @@ impl Hub {
                 };
                 self.store.put(&key, &next, Some(doc.revision)).await?;
                 mem.idle.remove(agent);
+                mem.activity.remove(agent);
                 let mut a = self.agent(agent).await?;
                 let host = a.value.host.clone();
                 a.value.session = None;
@@ -1061,26 +1080,111 @@ impl Hub {
     /// Runs one lease at a time and takes the memory lock for each step, not
     /// for the whole pass. A request is served between steps, so the catch-up
     /// after a restart on a large store does not stall `handle`.
-    pub(crate) async fn tick_leases(&self, leases: Vec<Doc<Lease>>) -> Result<(), ApiError> {
+    ///
+    /// A lease that an earlier pass found nothing to do for is skipped without
+    /// a store call until its time comes or its revision changes, so the tick
+    /// costs what the leases that need it cost, not what the store holds.
+    pub(crate) async fn tick_leases(&self, lists: &Lists) -> Result<(), ApiError> {
+        let leases = &lists.leases;
+        // The revision of each agent record: a person who pins, pauses, or
+        // resumes an agent writes that record and not its lease, so the pass
+        // must look at the lease again when it changes.
+        let agent_rev: std::collections::HashMap<&AgentId, u64> = lists
+            .agents
+            .iter()
+            .map(|doc| (&doc.value.id, doc.revision))
+            .collect();
+        let now = self.now();
         for doc in leases {
             let mut mem = self.mem.lock().await;
             if mem.maintenance {
                 return Ok(());
             }
+            let agent_revision = agent_rev.get(&doc.value.agent).copied();
+            if Self::gate_skips(&mem, doc, agent_revision, now) {
+                continue;
+            }
+            let agent = doc.value.agent.clone();
             let step = self.tick_one(&mut mem, doc).await;
+            // A lease that the step left alone is not read again before its
+            // time or a change of its revision. One that the step wrote, or
+            // that a request changed under it, is looked at again next tick.
+            match step {
+                Ok(Some(rest)) => {
+                    mem.lease_gate.insert(
+                        agent,
+                        LeaseGate {
+                            revision: doc.revision,
+                            agent_revision,
+                            at: rest.at(),
+                        },
+                    );
+                }
+                Ok(None) | Err(_) => {
+                    mem.lease_gate.remove(&agent);
+                }
+            }
             // The events of this step wait here, so no publish holds the lock.
+            let queued = !mem.outbox.is_empty();
             drop(mem);
-            self.flush().await;
+            if queued {
+                self.flush().await;
+            }
             match step {
                 // A request changed this lease between the list and the step,
                 // so the compare-and-set write failed. The next tick retries.
                 Err(e) if e.code == ApiErrorCode::Conflict => {
                     tracing::debug!("lease changed during the tick: {e}");
                 }
-                other => other?,
+                // The events are already out; only a real failure stops the
+                // pass.
+                Ok(_) => {}
+                Err(e) => return Err(e),
             }
         }
+        // The gates of the leases that the store no longer holds go with them,
+        // so a hub that sees many agents over time keeps one entry per lease.
+        let mut mem = self.mem.lock().await;
+        let held: std::collections::HashSet<&AgentId> =
+            leases.iter().map(|doc| &doc.value.agent).collect();
+        mem.lease_gate.retain(|agent, _| held.contains(agent));
+        mem.wake_seen.retain(|agent, _| held.contains(agent));
+        // The agents of each host, for a registration that would otherwise
+        // read every lease.
+        let mut leases_on: std::collections::HashMap<HostName, u64> =
+            std::collections::HashMap::new();
+        for doc in leases {
+            if let LeaseState::Held { host, .. } | LeaseState::Reserved { host, .. } =
+                &doc.value.state
+            {
+                *leases_on.entry(host.clone()).or_default() += 1;
+            }
+        }
+        mem.leases_on = leases_on;
         Ok(())
+    }
+
+    /// True when the pass already looked at this lease and found nothing that
+    /// its time or a change of its revision would not bring back. A message
+    /// that waits for the agent, a pending placement, or a new agent record
+    /// takes the gate away.
+    fn gate_skips(
+        mem: &Memory,
+        doc: &Doc<Lease>,
+        agent_revision: Option<u64>,
+        now: Timestamp,
+    ) -> bool {
+        if mem.pending_moves.contains_key(&doc.value.agent) {
+            return false;
+        }
+        match mem.lease_gate.get(&doc.value.agent) {
+            Some(gate)
+                if gate.revision == doc.revision && gate.agent_revision == agent_revision =>
+            {
+                gate.at.is_none_or(|at| at > now)
+            }
+            _ => false,
+        }
     }
 
     /// The listed lease, if no request changed it since the list.
@@ -1092,7 +1196,13 @@ impl Hub {
             .filter(|fresh| fresh.revision == doc.revision))
     }
 
-    async fn tick_one(&self, mem: &mut Memory, doc: Doc<Lease>) -> Result<(), ApiError> {
+    /// One lease: the expiry write when its time has come, else the takeover
+    /// and claim path for a lease that no session can hold.
+    ///
+    /// `Ok(None)` means the step wrote the lease or lost it to a request, so
+    /// the next tick looks at it again. `Ok(Some(rest))` means the lease was
+    /// left alone, with when to look at it again.
+    async fn tick_one(&self, mem: &mut Memory, doc: &Doc<Lease>) -> Result<Option<Rest>, ApiError> {
         let now = self.now();
         let cfg = self.cfg.lease;
         let quiet = mem.started.is_some_and(|t| now.since(t) < cfg.lease);
@@ -1160,32 +1270,55 @@ impl Hub {
                 let event = self.lease_event(now, severity, &agent_id, host.as_ref(), body);
                 Self::queue(mem, event);
             }
-            return Ok(());
+            return Ok(None);
+        }
+        // A lease with time left needs nothing of this pass: the expiry is
+        // `lease::tick` above and the renewal is the heartbeat's. No store
+        // read, so a live agent costs no call per tick.
+        let since = match &doc.value.state {
+            LeaseState::Held { expires, .. } => return Ok(Some(Rest::At(*expires))),
+            LeaseState::Reserved { until, .. } => return Ok(Some(Rest::At(*until))),
+            LeaseState::Expired { since, .. } | LeaseState::Released { since, .. } => *since,
+        };
+        // A lease that no session can hold yet needs nothing either: the
+        // takeover waits for the grace, and the quiet time after a restart
+        // holds it longer. Claims can only return after the claim timeout,
+        // which is far past the grace.
+        let mut not_before = since.plus(cfg.grace);
+        if let Some(started) = mem.started
+            && quiet
+        {
+            not_before = not_before.max(started.plus(cfg.lease));
+        }
+        if now < not_before {
+            return Ok(Some(Rest::At(not_before)));
         }
         // The lease was listed before this step took the mutex. A session
         // that registered in between holds the lease now and must keep its
         // claims, so act only on a listing that is still current. The
         // writes above are safe already: their compare-and-set fails.
-        let Some(doc) = self.unchanged_lease(&doc).await? else {
-            return Ok(());
+        let Some(doc) = self.unchanged_lease(doc).await? else {
+            return Ok(None);
         };
         let since = match doc.value.state {
             LeaseState::Expired { since, .. } | LeaseState::Released { since, .. } => since,
-            _ => return Ok(()),
+            _ => return Ok(Some(Rest::Settled)),
         };
         let Ok(agent) = self.agent(&agent_id).await else {
-            return Ok(());
+            // The record of the agent may arrive after its lease; look again
+            // at the next poll rather than settle for good.
+            return Ok(Some(Rest::At(now.plus(SETTLED_POLL))));
         };
         let agent = agent.value;
         // A retired agent is never placed again: no takeover and no wake.
         if agent.retired || agent.paused.is_some() {
-            return Ok(());
+            return Ok(Some(Rest::Settled));
         }
         // A chief is started by a person: the hub never recovers it, not on
         // a dead session and not after a clean end.
         if self.person_started(&agent) {
             mem.pending_moves.remove(&agent_id);
-            return Ok(());
+            return Ok(Some(Rest::Settled));
         }
 
         // Claims return to open when no session held the agent for the
@@ -1222,7 +1355,9 @@ impl Hub {
             && !pinned_recovery
             && !matches!(doc.value.state, LeaseState::Released { .. })
         {
-            return Ok(());
+            // The session may still run; the claim timeout is what makes its
+            // death visible.
+            return Ok(Some(Rest::At(since.plus(cfg.claim_timeout))));
         }
 
         let expired = matches!(doc.value.state, LeaseState::Expired { .. });
@@ -1230,9 +1365,6 @@ impl Hub {
         // it. A plain release (an ordinary session end) stays asleep.
         let parked = matches!(doc.value.state, LeaseState::Released { parked: true, .. });
         let pending = mem.pending_moves.get(&agent_id).cloned();
-        if quiet || now.since(since) < cfg.grace {
-            return Ok(());
-        }
         if pinned_recovery {
             let target = MoveTarget {
                 host: agent.host.clone(),
@@ -1253,26 +1385,46 @@ impl Hub {
                     },
                 );
             }
-            return Ok(());
+            return Ok(None);
         }
         if let Some(p) = pending {
             // A spawn or a planned move that is not placed yet.
             self.place_agent(mem, &agent, p.reason, p.target, p.prompt)
                 .await?;
-            return Ok(());
+            return Ok(None);
         }
         if !(expired || parked) || !agent.movable || agent.channels.is_empty() {
-            return Ok(());
+            // Nothing places this lease again. Only the claim timeout can
+            // still change a task, so that is the one time to look.
+            return Ok(Some(match mem.claims_released.contains(&agent_id) {
+                true => Rest::Settled,
+                false => Rest::At(base.plus(cfg.claim_timeout)),
+            }));
         }
         let mut needs = !mem.claims_released.contains(&agent_id)
             && self.has_claims(&agent_id, &agent.channels).await?;
-        if !needs && self.bus.inbox_pending(&agent_id).await.unwrap_or(0) > 0 {
+        let pending_msgs = if needs {
+            0
+        } else {
+            self.bus.inbox_pending(&agent_id).await.unwrap_or(0)
+        };
+        if pending_msgs > 0 {
             let due = mem
                 .wake_checked
                 .get(&agent_id)
                 .is_none_or(|t| now.since(*t) >= WAKE_CHECK_EVERY);
-            if due {
+            // A backlog that did not change since the pass read it has the
+            // same answer, so the messages are read again at the poll and not
+            // before: sixty-two thousand undelivered messages are not a scan
+            // every ten seconds.
+            let same = mem.wake_seen.get(&agent_id) == Some(&pending_msgs);
+            let stale = mem
+                .wake_checked
+                .get(&agent_id)
+                .is_none_or(|t| now.since(*t) >= SETTLED_POLL);
+            if due && (!same || stale) {
                 mem.wake_checked.insert(agent_id.clone(), now);
+                mem.wake_seen.insert(agent_id.clone(), pending_msgs);
                 needs = self
                     .bus
                     .unacked(&agent_id)
@@ -1281,6 +1433,8 @@ impl Hub {
                     .iter()
                     .any(|e| wake::should_wake(e, &agent_id));
             }
+        } else {
+            mem.wake_seen.remove(&agent_id);
         }
         // The log check recovers a lost session's undelivered replies. A
         // parked session ended cleanly, so only a claim or a wake message
@@ -1304,7 +1458,7 @@ impl Hub {
         // forgot the in-memory stop.
         if needs && self.recovery_exhausted(&agent_id).await? {
             tracing::debug!(agent = %agent_id, "no takeover: the recovery limit");
-            return Ok(());
+            return Ok(Some(Rest::Settled));
         }
         if needs {
             let placed = self
@@ -1324,7 +1478,11 @@ impl Hub {
                     },
                 );
             }
+            return Ok(None);
         }
-        Ok(())
+        // New mail is the one thing that no event of the hub tells the pass
+        // about: a host publishes it to the inbox, so a released agent that
+        // can wake reads the count of its inbox at the wake check.
+        Ok(Some(Rest::At(now.plus(WAKE_CHECK_EVERY))))
     }
 }

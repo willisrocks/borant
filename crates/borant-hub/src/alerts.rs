@@ -10,14 +10,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
-use borant_core::model::{Agent, Task, TaskStatus};
+use borant_core::model::{Task, TaskStatus};
 use borant_core::ports::Notifier;
 use borant_core::proto::ApiError;
 use borant_core::rules::alerts::{self, AgentAlert, AlertAction, AlertView, Refusal, TaskAlert};
 use borant_core::{AgentId, ChannelName, Timestamp, keys};
 use serde_json::json;
 
-use crate::Hub;
+use crate::{Hub, Lists};
 
 /// The alert pass runs at most this often.
 pub(crate) const ALERT_EVERY: Duration = Duration::from_secs(30);
@@ -35,7 +35,7 @@ impl Hub {
     }
 
     /// Runs the alert pass when its time has come.
-    pub(crate) async fn tick_alerts(&self) -> Result<(), ApiError> {
+    pub(crate) async fn tick_alerts(&self, lists: &Lists) -> Result<(), ApiError> {
         let now = self.now();
         {
             let mut mem = self.mem.lock().await;
@@ -47,14 +47,14 @@ impl Hub {
             }
             mem.last_alerts = Some(now);
         }
-        if let Err(e) = self.alert_pass(now).await {
+        if let Err(e) = self.alert_pass(now, lists).await {
             tracing::warn!("alert pass failed: {e}");
         }
         Ok(())
     }
 
-    async fn alert_pass(&self, now: Timestamp) -> Result<(), ApiError> {
-        let (view, tasks) = self.alert_view(now).await?;
+    async fn alert_pass(&self, now: Timestamp, lists: &Lists) -> Result<(), ApiError> {
+        let (view, tasks) = self.alert_view(now, lists).await?;
         let open = self.open_alerts().await?;
 
         for action in alerts::evaluate(&view, &open, &self.cfg.alerts, now) {
@@ -162,23 +162,24 @@ impl Hub {
         keys::valid_key(&kv).then_some(kv)
     }
 
-    /// The rules' inputs: the live view plus what only the hub keeps. The
-    /// task scan also serves `agent_stalled`, which marks the claimed task of
-    /// a stalled agent as stuck.
+    /// The rules' inputs: the live view of the hosts and agents of this tick
+    /// plus what only the hub keeps. The view is built without the inbox
+    /// counts of every agent: no rule reads them, and the counts are one store
+    /// call per agent. The task scan also serves `agent_stalled`, which marks
+    /// the claimed task of a stalled agent as stuck.
     async fn alert_view(
         &self,
         now: Timestamp,
+        lists: &Lists,
     ) -> Result<(AlertView, Vec<(ChannelName, Task)>), ApiError> {
-        let swarm = self.view().await?;
-        let agents: Vec<AgentAlert> = self
-            .store
-            .list::<Agent>(keys::AGENT_PREFIX)
-            .await?
-            .into_iter()
+        let swarm = self.view_of(None, lists, false).await?;
+        let agents: Vec<AgentAlert> = lists
+            .agents
+            .iter()
             // A paused agent runs no turn, so it cannot stall.
             .filter(|d| d.value.paused.is_none())
             .map(|d| AgentAlert {
-                agent: d.value.id,
+                agent: d.value.id.clone(),
                 pinned: d.value.pinned,
             })
             .collect();
@@ -346,7 +347,7 @@ mod tests {
             .await
             .expect("seed a host");
 
-        hub.alert_pass(NOW)
+        hub.alert_pass(NOW, &hub.lists().await.expect("the records of the hub"))
             .await
             .expect("the pass survives the keys it cannot read");
 
@@ -439,7 +440,9 @@ mod members_tests {
                 .expect("seed a member");
         }
 
-        hub.alert_pass(NOW).await.expect("the pass completes");
+        hub.alert_pass(NOW, &hub.lists().await.expect("the records of the hub"))
+            .await
+            .expect("the pass completes");
     }
 
     /// Rule: `members_limited` fires while every member of the bundle is
@@ -508,7 +511,9 @@ mod members_tests {
         }
 
         // Both members limited: the alert fires, on a key with no `:`.
-        hub.alert_pass(NOW).await.expect("the pass fires");
+        hub.alert_pass(NOW, &hub.lists().await.expect("the records of the hub"))
+            .await
+            .expect("the pass fires");
         let open: Vec<String> = state
             .list(super::ALERT_PREFIX)
             .await
@@ -527,9 +532,12 @@ mod members_tests {
             .upsert("member.fake-auth.b", &limited("b", None))
             .await
             .expect("the reset");
-        hub.alert_pass(NOW.plus(std::time::Duration::from_secs(1)))
-            .await
-            .expect("the pass resolves");
+        hub.alert_pass(
+            NOW.plus(std::time::Duration::from_secs(1)),
+            &hub.lists().await.expect("the records of the hub"),
+        )
+        .await
+        .expect("the pass resolves");
         let left: Vec<String> = state
             .list(super::ALERT_PREFIX)
             .await

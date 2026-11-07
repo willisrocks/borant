@@ -117,6 +117,7 @@ impl Hub {
                 tracing::warn!(agent = %w.agent, wait = %w.id, "wait wake lost: {e}");
                 continue;
             }
+            self.wake_soon(&w.agent);
             self.store.delete(&doc.key).await?;
             tracing::info!(agent = %w.agent, wait = %w.id, satisfied, "wait woke the agent");
         }

@@ -9,6 +9,7 @@
 //! The pass also reports silence, a spawn that stays queued, and forgets the
 //! hosts that failed a launch longer than the lease grace ago.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use borant_core::model::{
@@ -18,7 +19,7 @@ use borant_core::proto::{ApiError, ApiErrorCode};
 use borant_core::{AgentId, Timestamp, keys};
 
 use crate::leases::pinned_session_dead;
-use crate::{Hub, Memory};
+use crate::{Hub, Lists, Memory};
 
 /// How often the liveness sweep runs.
 pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(60);
@@ -55,10 +56,28 @@ pub(crate) fn failed_recently(
         .is_some_and(|at| now.since(*at) < cfg.grace)
 }
 
+/// The agents of a tick, by id.
+pub(crate) fn agent_index(lists: &Lists) -> HashMap<&AgentId, &Agent> {
+    lists
+        .agents
+        .iter()
+        .map(|doc| (&doc.value.id, &doc.value))
+        .collect()
+}
+
+/// The leases of a tick, by agent.
+fn lease_index(lists: &Lists) -> HashMap<&AgentId, &Lease> {
+    lists
+        .leases
+        .iter()
+        .map(|doc| (&doc.value.agent, &doc.value))
+        .collect()
+}
+
 impl Hub {
     /// Runs the sweep when its time has come, at most once a [`SWEEP_EVERY`].
     /// A failure is a warn, never a failed tick: the lease pass still runs.
-    pub(crate) async fn tick_liveness(&self) -> Result<(), ApiError> {
+    pub(crate) async fn tick_liveness(&self, lists: &Lists) -> Result<(), ApiError> {
         let now = self.now();
         {
             let mut mem = self.mem.lock().await;
@@ -70,16 +89,16 @@ impl Hub {
             }
             mem.last_sweep = Some(now);
         }
-        if let Err(e) = self.liveness_pass(now).await {
+        if let Err(e) = self.liveness_pass(now, lists).await {
             tracing::warn!("liveness pass failed: {e}");
         }
         Ok(())
     }
 
-    async fn liveness_pass(&self, now: Timestamp) -> Result<(), ApiError> {
+    async fn liveness_pass(&self, now: Timestamp, lists: &Lists) -> Result<(), ApiError> {
         self.prune_failed_hosts(now).await;
-        self.sweep_dead(now).await?;
-        self.report_silence(now).await?;
+        self.sweep_dead(now, lists).await?;
+        self.report_silence(now, lists).await?;
         Ok(())
     }
 
@@ -94,15 +113,19 @@ impl Hub {
     }
 
     /// Ends every spawn that still says running while its session is dead.
-    async fn sweep_dead(&self, now: Timestamp) -> Result<(), ApiError> {
+    async fn sweep_dead(&self, now: Timestamp, lists: &Lists) -> Result<(), ApiError> {
         let records = self.store.list::<SpawnRecord>(keys::SPAWN_PREFIX).await?;
+        let agents = agent_index(lists);
+        let leases = lease_index(lists);
         for record in records {
             if record.value.state != SpawnState::Running {
                 continue;
             }
             let step = {
                 let mut mem = self.mem.lock().await;
-                let step = self.sweep_one(&mut mem, &record.value, now).await;
+                let step = self
+                    .sweep_one(&mut mem, &record.value, now, &agents, &leases)
+                    .await;
                 drop(mem);
                 self.flush().await;
                 step
@@ -121,26 +144,23 @@ impl Hub {
         mem: &mut Memory,
         record: &SpawnRecord,
         now: Timestamp,
+        agents: &HashMap<&AgentId, &Agent>,
+        leases: &HashMap<&AgentId, &Lease>,
     ) -> Result<(), ApiError> {
         let agent = &record.agent;
-        let Ok(doc) = self.agent(agent).await else {
+        let Some(agent) = agents.get(agent).map(|a| (*a).clone()) else {
             return Ok(());
         };
-        let agent = doc.value;
         if agent.retired || agent.paused.is_some() {
             return Ok(());
         }
-        let Some(lease) = self
-            .store
-            .get::<Lease>(&keys::lease_agent(&agent.id))
-            .await?
-        else {
+        let Some(lease) = leases.get(&agent.id).copied() else {
             return Ok(());
         };
         let LeaseState::Expired {
             since,
             last_session,
-        } = &lease.value.state
+        } = &lease.state
         else {
             return Ok(());
         };
@@ -150,7 +170,7 @@ impl Hub {
         // no heartbeat to read, so the claim timeout is the evidence; the
         // grace alone is not, because a laptop that sleeps sends no beat and
         // its sessions reclaim their leases when it wakes.
-        let dead = pinned_session_dead(mem, &agent, &lease.value, now, &self.cfg.lease)
+        let dead = pinned_session_dead(mem, &agent, lease, now, &self.cfg.lease)
             || (agent.host.is_none() && now.since(*since) >= self.cfg.lease.claim_timeout);
         if !dead {
             return Ok(());
@@ -386,16 +406,16 @@ impl Hub {
     /// The silence report: an agent that holds its lease, holds an
     /// in-progress claim, and wrote no session event for `stall_minutes`.
     /// Once per silence, and never a kill.
-    async fn report_silence(&self, now: Timestamp) -> Result<(), ApiError> {
+    async fn report_silence(&self, now: Timestamp, lists: &Lists) -> Result<(), ApiError> {
         let stall = Duration::from_secs(self.cfg.alerts.stall_minutes.saturating_mul(60));
-        for lease in self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await? {
+        let agents = agent_index(lists);
+        for lease in &lists.leases {
             let LeaseState::Held { host, session, .. } = &lease.value.state else {
                 continue;
             };
-            let Ok(doc) = self.agent(&lease.value.agent).await else {
+            let Some(agent) = agents.get(&lease.value.agent).map(|a| (*a).clone()) else {
                 continue;
             };
-            let agent = doc.value;
             if agent.retired || agent.paused.is_some() {
                 continue;
             }

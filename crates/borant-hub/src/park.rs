@@ -10,7 +10,7 @@
 //! or not, after the `idle_release_after` of its role, so a finished agent
 //! that nobody cancelled does not hold a laptop.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 use borant_core::events::{Severity, SwarmEventBody};
@@ -33,7 +33,62 @@ const IDLE_REPORT_HEARTBEATS: u32 = 3;
 /// host that keeps a session with a failed checkpoint is not flooded.
 const PARK_RETRY: Duration = Duration::from_secs(60);
 
+/// How often the idle passes run. Their timeouts are minutes, and each pass
+/// lists every agent and reads the state of every idle one, so a tick of a
+/// large store does not repeat them sixty times a minute.
+pub(crate) const PASS_EVERY: Duration = Duration::from_secs(30);
+
 impl Hub {
+    /// True when a message waits for `agent`: an undelivered or unacked one.
+    /// The counts of the inbox are one call; reading the messages to look for
+    /// any is a scan of the whole backlog, which is what a hub with tens of
+    /// thousands of undelivered messages cannot do per agent.
+    async fn has_mail(&self, agent: &AgentId) -> bool {
+        match self.bus.inbox_stats(agent).await {
+            Ok(stats) => stats.pending > 0 || stats.ack_pending > 0,
+            // A bus that cannot report the counts leaves the messages to the
+            // read, as before.
+            Err(_) => !self.bus.unacked(agent).await.unwrap_or_default().is_empty(),
+        }
+    }
+
+    /// The agents of `ready` that a message waits for: one call where the bus
+    /// reports many inboxes at once, and each inbox in turn where it does
+    /// not.
+    async fn with_mail(&self, ready: &[(Agent, HostName, SessionId)]) -> HashSet<AgentId> {
+        let ids: Vec<AgentId> = ready.iter().map(|(agent, _, _)| agent.id.clone()).collect();
+        match self.bus.inbox_stats_many(&ids).await {
+            Ok(all) => all
+                .into_iter()
+                .filter(|(_, stats)| stats.pending > 0 || stats.ack_pending > 0)
+                .map(|(agent, _)| agent)
+                .collect(),
+            Err(_) => {
+                let mut out = HashSet::new();
+                for agent in &ids {
+                    if self.has_mail(agent).await {
+                        out.insert(agent.clone());
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// True when the idle passes may run now, at most once a [`PASS_EVERY`].
+    pub(crate) async fn idle_pass_due(&self) -> bool {
+        let now = self.now();
+        let mut mem = self.mem.lock().await;
+        if mem
+            .last_park
+            .is_some_and(|last| now.since(last) < PASS_EVERY)
+        {
+            return false;
+        }
+        mem.last_park = Some(now);
+        true
+    }
+
     /// Parks the agents that stayed idle past `idle_timeout` and returns them.
     /// Only the hosts of `pool` are considered, so one pool's timeout never
     /// parks another pool's agents; `None` accepts every host that has a
@@ -53,6 +108,7 @@ impl Hub {
             return Ok(parked);
         }
         let now = self.now();
+        let mut ready: Vec<(Agent, HostName, SessionId)> = Vec::new();
         for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
             let agent = doc.value;
             // Parking is for agents that come back; a retired or paused one does not.
@@ -76,13 +132,12 @@ impl Hub {
             if self.has_claims(&agent.id, &agent.channels).await? {
                 continue;
             }
-            if !self
-                .bus
-                .unacked(&agent.id)
-                .await
-                .unwrap_or_default()
-                .is_empty()
-            {
+            ready.push((agent, host, session));
+        }
+        // The messages that wait, in one call for the whole pass.
+        let with_mail = self.with_mail(&ready).await;
+        for (agent, host, session) in ready {
+            if with_mail.contains(&agent.id) {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;
@@ -104,6 +159,7 @@ impl Hub {
             return Ok(parked);
         }
         let now = self.now();
+        let mut ready: Vec<(Agent, HostName, SessionId)> = Vec::new();
         for doc in self.store.list::<Agent>(keys::AGENT_PREFIX).await? {
             let agent = doc.value;
             if agent.retired || agent.paused.is_some() || agent.pinned {
@@ -138,13 +194,12 @@ impl Hub {
             if self.tool_running(&agent).await {
                 continue;
             }
-            if !self
-                .bus
-                .unacked(&agent.id)
-                .await
-                .unwrap_or_default()
-                .is_empty()
-            {
+            ready.push((agent, host, session));
+        }
+        // The messages that wait, in one call for the whole pass.
+        let with_mail = self.with_mail(&ready).await;
+        for (agent, host, session) in ready {
+            if with_mail.contains(&agent.id) {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;
