@@ -308,7 +308,7 @@ async fn execute(hub: &Hub, plan: &Plan) -> Result<Applied, ApiError> {
             // The record is already gone: its keys are leftovers.
             for key in &c.keys {
                 hub.store.delete(key).await?;
-                batch.tick(&mut applied).await;
+                batch.key(&mut applied).await;
             }
             continue;
         };
@@ -326,23 +326,25 @@ async fn execute(hub: &Hub, plan: &Plan) -> Result<Applied, ApiError> {
             }
             Err(e) => return Err(e),
         }
-        batch.tick(&mut applied).await;
+        batch.key(&mut applied).await;
         hub.bus.delete_inbox(&c.agent).await?;
         applied.inboxes += 1;
         applied.messages += c.messages;
+        batch.done(&mut applied).await;
         if c.events > 0 {
             hub.sessions.delete(&c.agent).await?;
             applied.logs += 1;
             applied.events += c.events;
+            batch.done(&mut applied).await;
         }
         for key in c.keys.iter().filter(|k| **k != agent_key) {
             hub.store.delete(key).await?;
-            batch.tick(&mut applied).await;
+            batch.key(&mut applied).await;
         }
     }
     for key in &plan.orphans {
         hub.store.delete(key).await?;
-        batch.tick(&mut applied).await;
+        batch.key(&mut applied).await;
     }
     // The logs of agents that stay: a wake in the window between the plan and
     // this pass keeps its log, because the agent has a session again or a
@@ -359,6 +361,7 @@ async fn execute(hub: &Hub, plan: &Plan) -> Result<Applied, ApiError> {
         hub.sessions.delete(&item.agent).await?;
         applied.logs += 1;
         applied.events += item.events;
+        batch.done(&mut applied).await;
     }
     batch.finish(&mut applied);
     Ok(applied)
@@ -372,8 +375,14 @@ struct Batcher {
 }
 
 impl Batcher {
-    async fn tick(&mut self, applied: &mut Applied) {
+    /// One key that the apply deleted.
+    async fn key(&mut self, applied: &mut Applied) {
         applied.keys += 1;
+        self.done(applied).await;
+    }
+
+    /// One deletion of any kind: a key, an inbox, or a log.
+    async fn done(&mut self, applied: &mut Applied) {
         self.in_batch += 1;
         if self.in_batch == BATCH {
             applied.batches += 1;
