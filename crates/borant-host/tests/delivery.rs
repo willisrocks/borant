@@ -172,9 +172,11 @@ impl Acker for TestAck {
 fn cfg(dir: &std::path::Path) -> HostConfig {
     let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.to_path_buf());
     cfg.harnesses = vec![Harness::ClaudeCode];
-    // A short lease makes the pause of an outage quick; the limit must outlast
-    // the gate that holds a pull.
+    // A short fence window makes the pause of an outage quick; the limit must
+    // outlast the gate that holds a pull.
     cfg.lease = Duration::from_millis(300);
+    cfg.lease_grace = Duration::from_millis(300);
+    cfg.hub_down = Duration::from_millis(600);
     cfg.inbox_pull_timeout = Duration::from_secs(10);
     cfg
 }
@@ -253,9 +255,10 @@ async fn delivery_to_a_paused_session_goes_back_at_once() {
     host.heartbeat_once().await;
     assert!(host.local_view(session).unwrap().fenced.is_none());
 
-    // The hub goes away, and a heartbeat after the lease pauses the session.
+    // The hub goes away, and a heartbeat after the fence window pauses the
+    // session.
     stop.cancel();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     host.heartbeat_once().await;
     assert!(
         host.local_view(session).unwrap().fenced.is_some(),

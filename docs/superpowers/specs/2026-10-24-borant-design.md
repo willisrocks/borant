@@ -497,12 +497,18 @@ All defaults in this section are calls.
 - Each new lease gets a higher fencing token. Each control request carries the
   token, and the hub daemon rejects an older token.
 - If a host daemon cannot renew a lease before it ends, for example during a
-  network outage, it pauses the session. A `PreToolUse` hook (Claude Code) or a
-  tool hook (Pi, omp) blocks all tools and tells the agent why.
+  network outage, it keeps the session working until the fence window ends.
+  The window is `[alerts] hub_down_minutes` (2 minutes by default), at least
+  the lease plus two host request timeouts so a renewal in flight is not cut
+  off, and never past the lease plus the grace, the moment the hub may hand
+  the agent to another session. Then it pauses the session. A `PreToolUse`
+  hook (Claude Code) or a tool hook (Pi, omp) blocks all tools and tells the
+  agent why. (Call, changed after the hub OOM investigation: a 30 s blip
+  denied every tool.)
 - A host cannot tell "the hub is down" from "only this host is cut off". Thus
   the same pause rule applies during a hub outage or a hub move: sessions work
-  until the lease ends, then pause. This prevents two live sessions of one
-  agent. (Call)
+  until the fence window ends, then pause. This prevents two live sessions of
+  one agent. (Call)
 - The hub never starts a takeover before the lease and the grace period end.
   When a hub daemon starts, for example after a hub move, it gives every lease
   a new expiry from its start time. Thus a hub restart never causes a mass
@@ -685,6 +691,10 @@ Nobody watches these sessions, and a prompt stops them with no error.
   session-log appends in a local outbox and sends them later. The outbox is a
   SQLite file in the Borant home folder of the host. It does not depend on
   the broker. (Call, changed after the spikes.)
+- A host whose heartbeat fails re-registers with a jittered backoff: the window
+  is one heartbeat, doubles with each failed attempt, and caps at a minute. A
+  fleet that lost the hub therefore registers over a window, not in one burst.
+  (Call, changed after the hub OOM investigation.)
 - Control requests, such as `task_claim` or `task_create`, do not go into the
   outbox. They fail at once with "hub unavailable", and the agent can try
   again later. Thus an agent never starts work on a claim that can lose later.
@@ -701,8 +711,8 @@ Nobody watches these sessions, and a prompt stops them with no error.
   `borant hub move <ssh-host>` runs these three steps over SSH. Downtime is a
   few minutes.
 - The hub is a single point of failure in v1. If it goes down, messages wait
-  in the outboxes, task changes fail, and sessions pause when their leases end
-  (section 11).
+  in the outboxes, task changes fail, and sessions pause when the fence window
+  ends (section 11).
 
 ## 17. Interfaces
 
@@ -764,7 +774,7 @@ plus the daemon roles. The CLI and the tools call the same local API.
 
 | Item | Effect |
 |---|---|
-| The hub is a single point of failure | While the hub is down, messages wait, task changes fail, and sessions pause after their leases end |
+| The hub is a single point of failure | While the hub is down, messages wait, task changes fail, and sessions pause after the fence window (section 11) |
 | Write then publish without an outbox | A crash of the hub daemon between the two loses one event |
 | The neutral log lacks the thinking and the text between tool calls in Claude Code | A takeover has less context than the old session |
 | `asyncRewake` is lightly documented | A Claude Code release can change it. The spike is the only proof. |
