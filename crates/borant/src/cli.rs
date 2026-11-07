@@ -101,10 +101,7 @@ pub enum Command {
         json: bool,
     },
     /// List all agents.
-    Agents {
-        #[command(subcommand)]
-        cmd: Option<AgentsCmd>,
-    },
+    Agents,
     /// List all hosts.
     Hosts,
     /// Pin an agent so the hub never replaces it and its tools survive a pause.
@@ -446,19 +443,6 @@ pub enum ChannelCmd {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum AgentsCmd {
-    /// List the agents that a prune would remove, without changing anything.
-    Prune {
-        /// Show the candidates. Real deletion is not available yet.
-        #[arg(long)]
-        dry_run: bool,
-        /// Agents whose lease ended more than this many hours ago.
-        #[arg(long, default_value_t = 24)]
-        older_than_hours: u64,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 pub enum ProjectCmd {
     /// Add a project, or replace the project with the same name.
     Add {
@@ -525,6 +509,30 @@ pub enum HubCmd {
     Import { file: PathBuf },
     /// Export, copy to an SSH host, and import there.
     Move { ssh_host: String },
+    /// List the records that a prune would remove, with a report of each
+    /// kind. The default is a dry run: nothing is deleted without `--apply`.
+    ///
+    /// An apply deletes the records that the dry run listed, in batches. It
+    /// refuses without the token of that dry run, and while the last hub
+    /// snapshot is more than an hour old.
+    Prune {
+        /// Report only. This is the default.
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Delete the records of the dry run whose token this is.
+        #[arg(long, requires = "token")]
+        apply: bool,
+        /// The token that `borant hub prune` printed.
+        #[arg(long)]
+        token: Option<String>,
+        /// Agents whose lease ended more than this many hours ago.
+        #[arg(long, default_value_t = 24)]
+        older_than_hours: u64,
+        /// The session logs of an agent with no session for this many days
+        /// go, as section 19 of the design allows.
+        #[arg(long, default_value_t = 30)]
+        retention_days: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -669,8 +677,9 @@ fn render_schedules(v: &Value) -> String {
     out
 }
 
-/// Prints the reply of `agents prune`: one line per candidate with the keys
-/// that a prune removes, the reason each other agent stays, and the totals.
+/// Prints the reply of `hub prune`: the report of each kind, one line per
+/// candidate with the keys that a prune removes, and the reason each other
+/// agent stays.
 fn print_prune(v: &Value) {
     print!("{}", render_prune(v));
 }
@@ -679,6 +688,54 @@ fn render_prune(v: &Value) -> String {
     use std::fmt::Write;
 
     let mut out = String::new();
+    let applied = v["applied"].is_object();
+    let _ = writeln!(
+        out,
+        "Prune {}: agents older than {}s, logs older than {}s.",
+        if applied { "applied" } else { "dry run" },
+        v["older_than_secs"].as_u64().unwrap_or(0),
+        v["retention_secs"].as_u64().unwrap_or(0),
+    );
+    let b = &v["backup"];
+    let age = match b["age_secs"].as_u64() {
+        Some(age) => format!("{age}s old"),
+        None => "none on record".to_owned(),
+    };
+    let _ = writeln!(
+        out,
+        "Backup: {age} ({})",
+        if b["fresh"].as_bool().unwrap_or(false) {
+            "fresh"
+        } else {
+            "too old: an apply refuses until a new snapshot"
+        },
+    );
+    let kinds = v["kinds"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let _ = writeln!(out, "Kinds:");
+    for k in kinds {
+        let _ = writeln!(
+            out,
+            "  {:<16} items={} keys={} messages={} events={} bytes={} oldest={} newest={}",
+            k["kind"].as_str().unwrap_or("?"),
+            k["items"].as_u64().unwrap_or(0),
+            k["keys"].as_u64().unwrap_or(0),
+            k["messages"].as_u64().unwrap_or(0),
+            k["events"].as_u64().unwrap_or(0),
+            k["bytes"].as_u64().unwrap_or(0),
+            k["oldest"],
+            k["newest"],
+        );
+    }
+    let t = &v["totals"];
+    let _ = writeln!(
+        out,
+        "Totals: items={} keys={} messages={} events={} bytes={}",
+        t["items"].as_u64().unwrap_or(0),
+        t["keys"].as_u64().unwrap_or(0),
+        t["messages"].as_u64().unwrap_or(0),
+        t["events"].as_u64().unwrap_or(0),
+        t["bytes"].as_u64().unwrap_or(0),
+    );
     let candidates = v["candidates"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let kept = v["kept"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let _ = writeln!(out, "Candidates ({}):", candidates.len());
@@ -705,15 +762,25 @@ fn render_prune(v: &Value) -> String {
             k["reason"].as_str().unwrap_or("?"),
         );
     }
-    let t = &v["totals"];
-    let _ = writeln!(
-        out,
-        "Totals: candidates={} keys={} bytes={}",
-        t["candidates"].as_u64().unwrap_or(0),
-        t["keys"].as_u64().unwrap_or(0),
-        t["bytes"].as_u64().unwrap_or(0),
-    );
-    out.push_str("Dry run: nothing was deleted.\n");
+    if applied {
+        let a = &v["applied"];
+        let _ = writeln!(
+            out,
+            "Applied: keys={} inboxes={} messages={} logs={} events={} in {} batches.",
+            a["keys"].as_u64().unwrap_or(0),
+            a["inboxes"].as_u64().unwrap_or(0),
+            a["messages"].as_u64().unwrap_or(0),
+            a["logs"].as_u64().unwrap_or(0),
+            a["events"].as_u64().unwrap_or(0),
+            a["batches"].as_u64().unwrap_or(0),
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Dry run: nothing was deleted. Token: {} (pass it to --apply).",
+            v["token"].as_str().unwrap_or("?"),
+        );
+    }
     out
 }
 
@@ -1639,21 +1706,24 @@ pub async fn run_user_command(cmd: Command) -> anyhow::Result<i32> {
             };
             crate::events::run(&config::socket(), &args).await?;
         }
-        Command::Agents { cmd: None } => pretty(&call(&c, ToolCall::ListAgents).await?),
-        Command::Agents {
+        Command::Agents => pretty(&call(&c, ToolCall::ListAgents).await?),
+        Command::Hub {
             cmd:
-                Some(AgentsCmd::Prune {
-                    dry_run,
+                Some(HubCmd::Prune {
+                    apply,
+                    token,
                     older_than_hours,
+                    retention_days,
+                    ..
                 }),
         } => {
-            if !dry_run {
-                bail!("only --dry-run is available");
-            }
             let v = call(
                 &c,
                 ToolCall::PruneAgents {
                     older_than_secs: older_than_hours.saturating_mul(60 * 60),
+                    retention_secs: retention_days.saturating_mul(24 * 60 * 60),
+                    apply,
+                    token,
                 },
             )
             .await?;
@@ -2245,8 +2315,9 @@ mod tests {
             "borant events --since 2026-10-25T09:00:00Z --agent w1 --channel api --host borant-1",
             "borant events --severity warn",
             "borant agents",
-            "borant agents prune --dry-run",
-            "borant agents prune --dry-run --older-than-hours 48",
+            "borant hub prune --dry-run",
+            "borant hub prune --older-than-hours 48 --retention-days 7",
+            "borant hub prune --apply --token 1f2e3d4c",
             "borant hosts",
             "borant host remove borant-3",
             "borant pin w1",
@@ -3133,22 +3204,56 @@ mod tests {
         assert_eq!(err.to_string(), "name one agent, or use --task CHANNEL/ID");
     }
 
-    #[tokio::test]
-    async fn prune_needs_dry_run() {
-        let err = run_user_command(Command::Agents {
-            cmd: Some(AgentsCmd::Prune {
-                dry_run: false,
-                older_than_hours: 24,
-            }),
-        })
-        .await
-        .unwrap_err();
-        assert_eq!(err.to_string(), "only --dry-run is available");
+    #[test]
+    fn prune_is_a_dry_run_unless_applied() {
+        let cli = Cli::try_parse_from(["borant", "hub", "prune"]).unwrap();
+        let Command::Hub {
+            cmd:
+                Some(HubCmd::Prune {
+                    apply,
+                    token,
+                    older_than_hours,
+                    retention_days,
+                    ..
+                }),
+        } = cli.command
+        else {
+            panic!("not a hub prune");
+        };
+        assert!(!apply, "the default deletes nothing");
+        assert_eq!(token, None);
+        assert_eq!(older_than_hours, 24);
+        assert_eq!(retention_days, 30);
+
+        // An apply names the token of the dry run it read.
+        let err = Cli::try_parse_from(["borant", "hub", "prune", "--apply"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let cli =
+            Cli::try_parse_from(["borant", "hub", "prune", "--apply", "--token", "abc"]).unwrap();
+        let Command::Hub {
+            cmd: Some(HubCmd::Prune { apply, token, .. }),
+        } = cli.command
+        else {
+            panic!("not a hub prune");
+        };
+        assert!(apply);
+        assert_eq!(token.as_deref(), Some("abc"));
     }
 
     #[test]
-    fn prints_prune_candidates_and_kept() {
+    fn prints_prune_kinds_and_kept() {
         let v = json!({
+            "mode": "dry-run",
+            "older_than_secs": 86_400,
+            "retention_secs": 2_592_000,
+            "token": "1f2e3d",
+            "backup": { "last": 1_000, "age_secs": 12, "fresh": true, "path": "/b.jsonl" },
+            "kinds": [{
+                "kind": "agents", "items": 1, "keys": 2, "messages": 0,
+                "events": 0, "bytes": 42, "oldest": 1_000, "newest": 1_000,
+            }],
+            "totals": { "items": 1, "keys": 2, "messages": 0, "events": 0, "bytes": 42 },
             "candidates": [{
                 "agent": "old",
                 "since": 1_000,
@@ -3156,12 +3261,17 @@ mod tests {
                 "bytes": 42,
             }],
             "kept": [{ "agent": "busy", "reason": "session" }],
-            "totals": { "candidates": 1, "keys": 2, "bytes": 42 },
         });
         let out = render_prune(&v);
         assert_eq!(
             out,
-            "Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\nKept (1):\n  busy                     session\nTotals: candidates=1 keys=2 bytes=42\nDry run: nothing was deleted.\n"
+            "Prune dry run: agents older than 86400s, logs older than 2592000s.\n\
+             Backup: 12s old (fresh)\n\
+             Kinds:\n  agents           items=1 keys=2 messages=0 events=0 bytes=42 oldest=1000 newest=1000\n\
+             Totals: items=1 keys=2 messages=0 events=0 bytes=42\n\
+             Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\n\
+             Kept (1):\n  busy                     session\n\
+             Dry run: nothing was deleted. Token: 1f2e3d (pass it to --apply).\n"
         );
     }
 
