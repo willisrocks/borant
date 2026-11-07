@@ -33,7 +33,39 @@ const IDLE_REPORT_HEARTBEATS: u32 = 3;
 /// host that keeps a session with a failed checkpoint is not flooded.
 const PARK_RETRY: Duration = Duration::from_secs(60);
 
+/// How often the idle passes run. Their timeouts are minutes, and each pass
+/// lists every agent and reads the state of every idle one, so a tick of a
+/// large store does not repeat them sixty times a minute.
+pub(crate) const PASS_EVERY: Duration = Duration::from_secs(30);
+
 impl Hub {
+    /// True when a message waits for `agent`: an undelivered or unacked one.
+    /// The counts of the inbox are one call; reading the messages to look for
+    /// any is a scan of the whole backlog, which is what a hub with tens of
+    /// thousands of undelivered messages cannot do per agent.
+    async fn has_mail(&self, agent: &AgentId) -> bool {
+        match self.bus.inbox_stats(agent).await {
+            Ok(stats) => stats.pending > 0 || stats.ack_pending > 0,
+            // A bus that cannot report the counts leaves the messages to the
+            // read, as before.
+            Err(_) => !self.bus.unacked(agent).await.unwrap_or_default().is_empty(),
+        }
+    }
+
+    /// True when the idle passes may run now, at most once a [`PASS_EVERY`].
+    pub(crate) async fn idle_pass_due(&self) -> bool {
+        let now = self.now();
+        let mut mem = self.mem.lock().await;
+        if mem
+            .last_park
+            .is_some_and(|last| now.since(last) < PASS_EVERY)
+        {
+            return false;
+        }
+        mem.last_park = Some(now);
+        true
+    }
+
     /// Parks the agents that stayed idle past `idle_timeout` and returns them.
     /// Only the hosts of `pool` are considered, so one pool's timeout never
     /// parks another pool's agents; `None` accepts every host that has a
@@ -76,13 +108,7 @@ impl Hub {
             if self.has_claims(&agent.id, &agent.channels).await? {
                 continue;
             }
-            if !self
-                .bus
-                .unacked(&agent.id)
-                .await
-                .unwrap_or_default()
-                .is_empty()
-            {
+            if self.has_mail(&agent.id).await {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;
@@ -138,13 +164,7 @@ impl Hub {
             if self.tool_running(&agent).await {
                 continue;
             }
-            if !self
-                .bus
-                .unacked(&agent.id)
-                .await
-                .unwrap_or_default()
-                .is_empty()
-            {
+            if self.has_mail(&agent.id).await {
                 continue;
             }
             self.order_park(&agent, &host, session, now).await?;

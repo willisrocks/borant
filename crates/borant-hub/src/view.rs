@@ -3,13 +3,11 @@
 
 use std::collections::HashMap;
 
-use borant_core::model::{
-    Agent, AgentStatus, HostInfo, HostStatus, InboxStatus, Lease, LeaseState, SwarmView,
-};
+use borant_core::AgentId;
+use borant_core::model::{AgentStatus, HostStatus, InboxStatus, Lease, LeaseState, SwarmView};
 use borant_core::proto::ApiError;
-use borant_core::{AgentId, keys};
 
-use crate::Hub;
+use crate::{Hub, Lists};
 
 impl Hub {
     /// The hosts with their latest stats, every agent with its lease and host,
@@ -24,6 +22,20 @@ impl Hub {
     /// hold project content, so it goes to a person and to an agent that
     /// shares one of its channels, and no other caller sees it.
     pub(crate) async fn view_for(&self, caller: Option<&AgentId>) -> Result<SwarmView, ApiError> {
+        let lists = self.lists().await?;
+        self.view_of(caller, &lists, true).await
+    }
+
+    /// The view of the records of one tick. `inboxes` reads the counts of
+    /// every agent's inbox, which is one store call per agent: a caller that
+    /// reads the view for its hosts and agents alone, as the alert pass does,
+    /// leaves it out.
+    pub(crate) async fn view_of(
+        &self,
+        caller: Option<&AgentId>,
+        lists: &Lists,
+        inboxes: bool,
+    ) -> Result<SwarmView, ApiError> {
         let now = self.now();
         let (seen, stats, activity, hung) = {
             let mem = self.mem.lock().await;
@@ -34,17 +46,16 @@ impl Hub {
                 self.hung_sessions(&mem, now),
             )
         };
-        let hosts = self.store.list::<HostInfo>(keys::HOST_PREFIX).await?;
-        let leases = self.store.list::<Lease>(keys::LEASE_AGENT_PREFIX).await?;
-        let agents = self.store.list::<Agent>(keys::AGENT_PREFIX).await?;
-        let lease_of: HashMap<&AgentId, &Lease> = leases
+        let lease_of: HashMap<&AgentId, &Lease> = lists
+            .leases
             .iter()
             .map(|doc| (&doc.value.agent, &doc.value))
             .collect();
         // The channels of an agent caller, when its record still exists. An
         // agent that is not in the store reads no other agent.
         let caller_channels = caller.map(|c| {
-            agents
+            lists
+                .agents
                 .iter()
                 .find(|doc| &doc.value.id == c)
                 .map(|doc| doc.value.channels.clone())
@@ -55,7 +66,8 @@ impl Hub {
         // own collection, as it reads their board, though it shares no channel
         // with each of them.
         let caller_collection = caller.and_then(|c| {
-            agents
+            lists
+                .agents
                 .iter()
                 .find(|doc| &doc.value.id == c)
                 .and_then(|doc| doc.value.collection.clone())
@@ -65,7 +77,7 @@ impl Hub {
             at: Some(now),
             ..SwarmView::default()
         };
-        for doc in &hosts {
+        for doc in &lists.hosts {
             let info = doc.value.clone();
             let last_seen = seen.get(&info.name).copied();
             view.hosts.push(HostStatus {
@@ -75,7 +87,7 @@ impl Hub {
                 info,
             });
         }
-        for doc in &agents {
+        for doc in &lists.agents {
             let agent = &doc.value;
             let lease = lease_of.get(&agent.id).copied();
             let host = lease
@@ -140,6 +152,9 @@ impl Hub {
                 last_text,
                 tool_running_since,
             });
+            if !inboxes {
+                continue;
+            }
             // A bus that cannot report the counts leaves the agent out.
             if let Ok(stats) = self.bus.inbox_stats(&agent.id).await {
                 view.inboxes.push(InboxStatus {

@@ -391,6 +391,7 @@ impl Hub {
             sent: self.now(),
         };
         self.bus.publish(&subjects::agent(to), &envelope).await?;
+        self.wake_soon(to);
         Ok(())
     }
 }

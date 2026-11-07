@@ -1,15 +1,18 @@
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use borant_core::model::{Harness, HostInfo, RepoInfo};
-use borant_core::ports::{EventLog, Incoming, MessageBus, Notice, Notifier, PortResult};
+use borant_core::model::{Envelope, Harness, HostInfo, RepoInfo};
+use borant_core::ports::{
+    EventLog, Incoming, MessageBus, Notice, Notifier, PortResult, StateStore,
+};
 use borant_core::proto::{
     Actor, ApiError, CtlRequest, HeartbeatReply, HostCommand, RegisterSession, Registered,
     SessionLeaseRef, ToolCall,
 };
-use borant_core::{HostName, ManualClock, SessionId, Timestamp, subjects};
+use borant_core::{AgentId, HostName, ManualClock, SessionId, Timestamp, subjects};
 use borant_hub::{Hub, HubConfig};
 use borant_memory::{MemoryBus, MemoryEventLog, MemorySession, MemoryState};
 use futures::StreamExt;
@@ -44,6 +47,123 @@ pub struct Fx {
     pub events: Arc<dyn EventLog>,
     pub clock: Arc<ManualClock>,
     pub recorder: Arc<Recorder>,
+    /// The store calls of the hub since [`Fx::count_from`].
+    pub state_calls: Arc<AtomicU64>,
+    /// The `inbox_stats` calls of the hub since [`Fx::count_from`].
+    pub stats_calls: Arc<AtomicU64>,
+}
+
+/// A state store that counts the calls of the hub through it.
+#[derive(Debug, Clone)]
+pub struct CountingState {
+    inner: MemoryState,
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl StateStore for CountingState {
+    async fn get(&self, key: &str) -> PortResult<Option<borant_core::ports::Entry>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.get(key).await
+    }
+
+    async fn create(&self, key: &str, value: bytes::Bytes) -> PortResult<u64> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.create(key, value).await
+    }
+
+    async fn update(&self, key: &str, value: bytes::Bytes, expected: u64) -> PortResult<u64> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.update(key, value, expected).await
+    }
+
+    async fn delete(&self, key: &str, expected: Option<u64>) -> PortResult<()> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.delete(key, expected).await
+    }
+
+    async fn list(&self, prefix: &str) -> PortResult<Vec<borant_core::ports::Entry>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.list(prefix).await
+    }
+
+    async fn watch(
+        &self,
+        prefix: &str,
+    ) -> PortResult<BoxStream<'static, borant_core::ports::Change>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.watch(prefix).await
+    }
+}
+
+/// A bus that counts the `inbox_stats` calls: one per agent per caller is
+/// what a hub with hundreds of agents must not do each second.
+#[derive(Debug)]
+pub struct CountingBus {
+    inner: Arc<dyn MessageBus>,
+    stats: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl MessageBus for CountingBus {
+    async fn publish(&self, subject: &str, env: &Envelope) -> PortResult<()> {
+        self.inner.publish(subject, env).await
+    }
+
+    async fn ensure_inbox(&self, agent: &AgentId, subjects: &[String]) -> PortResult<()> {
+        self.inner.ensure_inbox(agent, subjects).await
+    }
+
+    async fn recover_inbox(&self, agent: &AgentId, subjects: &[String]) -> PortResult<()> {
+        self.inner.recover_inbox(agent, subjects).await
+    }
+
+    async fn pull(
+        &self,
+        agent: &AgentId,
+        max: usize,
+        wait: Duration,
+    ) -> PortResult<Vec<borant_core::ports::Delivery>> {
+        self.inner.pull(agent, max, wait).await
+    }
+
+    async fn inbox_pending(&self, agent: &AgentId) -> PortResult<u64> {
+        self.inner.inbox_pending(agent).await
+    }
+
+    async fn inbox_stats(&self, agent: &AgentId) -> PortResult<borant_core::ports::InboxStats> {
+        self.stats.fetch_add(1, Ordering::Relaxed);
+        self.inner.inbox_stats(agent).await
+    }
+
+    async fn unacked(&self, agent: &AgentId) -> PortResult<Vec<Envelope>> {
+        self.inner.unacked(agent).await
+    }
+
+    async fn delete_inbox(&self, agent: &AgentId) -> PortResult<()> {
+        self.inner.delete_inbox(agent).await
+    }
+
+    async fn subscribe(&self, pattern: &str) -> PortResult<BoxStream<'static, Envelope>> {
+        self.inner.subscribe(pattern).await
+    }
+
+    async fn request(
+        &self,
+        subject: &str,
+        payload: bytes::Bytes,
+        timeout: Duration,
+    ) -> PortResult<bytes::Bytes> {
+        self.inner.request(subject, payload, timeout).await
+    }
+
+    async fn serve(&self, subject: &str) -> PortResult<BoxStream<'static, Incoming>> {
+        self.inner.serve(subject).await
+    }
+
+    async fn send(&self, subject: &str, payload: bytes::Bytes) -> PortResult<()> {
+        self.inner.send(subject, payload).await
+    }
 }
 
 pub fn name(s: &str) -> HostName {
@@ -93,10 +213,21 @@ impl Fx {
         let sessions = MemorySession::new();
         let clock = Arc::new(ManualClock::new(Timestamp(1_000_000)));
         let recorder = Arc::new(Recorder::default());
+        let state_calls = Arc::new(AtomicU64::new(0));
+        let stats_calls = Arc::new(AtomicU64::new(0));
+        let counted_state = CountingState {
+            inner: state.clone(),
+            calls: state_calls.clone(),
+        };
+        let inner_bus = make(bus.clone(), state.clone());
+        let counted_bus = Arc::new(CountingBus {
+            inner: inner_bus,
+            stats: stats_calls.clone(),
+        });
         let hub = Arc::new(
             Hub::new(
-                Arc::new(state.clone()),
-                make(bus.clone(), state.clone()),
+                Arc::new(counted_state),
+                counted_bus,
                 Arc::new(sessions.clone()),
                 clock.clone(),
                 cfg,
@@ -112,7 +243,23 @@ impl Fx {
             events,
             clock,
             recorder,
+            state_calls,
+            stats_calls,
         }
+    }
+
+    /// The store calls of the hub from now on.
+    pub fn count_from(&self) -> u64 {
+        self.state_calls.load(Ordering::Relaxed)
+    }
+
+    /// The `inbox_stats` calls of the hub from now on.
+    pub fn stats_from(&self) -> u64 {
+        self.stats_calls.load(Ordering::Relaxed)
+    }
+
+    pub fn count_since(&self, mark: u64) -> u64 {
+        self.state_calls.load(Ordering::Relaxed) - mark
     }
 
     pub async fn req(&self, r: CtlRequest) -> Result<Value, ApiError> {

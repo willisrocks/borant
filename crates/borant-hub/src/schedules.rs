@@ -202,6 +202,7 @@ impl Hub {
                     sent: now,
                 };
                 self.bus.publish(&subjects::agent(to), &env).await?;
+                self.wake_soon(to);
                 tracing::info!(
                     schedule = %schedule.name,
                     fire = %fire.0,
