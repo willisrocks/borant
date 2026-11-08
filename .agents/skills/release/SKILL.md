@@ -5,17 +5,20 @@ description: Use when cutting, preparing, or announcing a Borant release, writin
 
 # Release Borant
 
-A release is the `Release` GitHub Actions workflow on `main`. It builds the
-binaries and the container image, tags `vX.Y.Z`, publishes a GitHub Release,
-and bumps the version on `main`. `docs/guide.md` ("Releases") describes each
-job.
+A release is the `Release` workflow on Depot CI, on `main`. It runs `ci`, builds
+the binaries and the container image, tags `vX.Y.Z`, publishes a GitHub Release,
+and bumps the version on `main`. `docs/guide.md` ("Releases") describes each job.
+
+Start a release on the machine that holds the Depot login. Other hosts have no
+Depot login, so an agent on one of them must ask the owner of that machine.
 
 ## Steps
 
 A release ships the tip of `main`. Merge the work first.
 
 1. Make sure that the last `ci` run on `main` is green:
-   `gh run list --workflow ci.yml --branch main --limit 1`.
+   `gh pr checks` on the last PR, or the `ci / *` checks on the tip of `main`. The
+   release runs `ci` itself and stops if it fails, so this step only saves time.
 2. List the changes since the last release: `just changes`.
 3. Pick the bump from the changes:
 
@@ -32,7 +35,8 @@ A release ships the tip of `main`. Merge the work first.
 5. Show the user the bump and the notes, and wait for approval. A release is
    public and cannot be undone.
 6. Start it: `just release <bump> target/release-notes.md`.
-7. Watch it: `gh run watch $(gh run list --workflow release.yml --user "$(gh api user --jq .login)" --limit 1 --json databaseId --jq '.[0].databaseId')`.
+7. Watch it with the run ID that `just release` prints:
+   `depot ci status <run-id> --wait`.
 
 If a job fails, read `references/troubleshooting.md`.
 

@@ -64,19 +64,22 @@ changes:
       git log --no-merges --format='- %s (%h)' origin/main
     fi
 
-# Start a GitHub release (bump: patch|minor|major; notes: optional Markdown file).
+# Start a release on Depot CI (bump: patch|minor|major; notes: optional Markdown
+# file). Run it on the machine that holds the Depot login.
 release bump="patch" notes="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{bump}}" in patch|minor|major) ;; *) echo "bump must be patch, minor, or major" >&2; exit 1 ;; esac
-    args=(-f confirm=release -f bump={{bump}})
+    command -v depot >/dev/null || { echo "a release needs the depot CLI and its login; only the release machine has them" >&2; exit 1; }
+    args=(--input confirm=release --input bump={{bump}})
     if [[ -n "{{notes}}" ]]; then
       [[ -f "{{notes}}" ]] || { echo "no notes file at {{notes}}" >&2; exit 1; }
-      args+=(-f notes="$(cat "{{notes}}")")
+      args+=(--input notes="$(cat "{{notes}}")")
     fi
-    gh workflow run release.yml --ref main "${args[@]}"
-    sleep 3
-    gh run list --workflow release.yml --limit 1
+    repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+    run="$(depot ci dispatch --repo "$repo" --workflow release.yml --ref main "${args[@]}" --output json | jq -r .run_id)"
+    echo "Release run: $run"
+    echo "Watch it: depot ci status $run --wait"
 
 # Render the chief mod at 200x50 and 120x40 and write ANSI + PNG captures.
 cos-visual plugin-dir="integrations/claude-code" out="docs/chief-mod-board-ux/captures" prefix="":
