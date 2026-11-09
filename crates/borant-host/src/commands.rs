@@ -245,24 +245,11 @@ impl Host {
         // register. tmux refuses a second session of the same name, so the
         // old one goes first: the handle of this daemon's last launch, and the
         // named session that a restart, a lost order, or an older attempt left
-        // behind.
+        // behind. The stop also sweeps the tools that either left: the same
+        // sweep that a stop runs, so a fresh launch starts in a clean dir.
         let stale = self.state().last_launch.remove(&o.agent);
-        if let Some(stale) = stale
-            && let Err(e) = self.inner.launcher.stop(&stale).await
-        {
-            tracing::debug!(agent = %o.agent, "cannot stop the stale launch: {e}");
-        }
-        match self.inner.launcher.release(&o.agent).await {
-            Ok(true) => tracing::info!(
-                agent = %o.agent,
-                "ended a leftover session of the agent before the launch"
-            ),
-            Ok(false) => {}
-            Err(e) => tracing::warn!(
-                agent = %o.agent,
-                "cannot end a leftover session of the agent: {e}"
-            ),
-        }
+        self.stop_process(Some(&o.agent), None, stale.as_ref())
+            .await;
         // Claude Code asks whether it trusts a directory that it does not
         // know, and a git repository root is never covered by the trust of its
         // parent. A launch that sits at that prompt never registers, so the

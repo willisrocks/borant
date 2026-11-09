@@ -21,7 +21,7 @@ futures.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-nix = { version = "0.31", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process", "user"] }
 rusqlite.workspace = true
 sysinfo.workspace = true
 serde.workspace = true
