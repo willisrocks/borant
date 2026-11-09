@@ -5,10 +5,11 @@
 //! gigabytes on a host that no longer runs the agent. The host snapshots the
 //! tree of the session before it signals anything, and afterwards also sweeps
 //! the processes that left the tree but kept a working directory in the
-//! agent's own work dir.
+//! agent's own work dir, or that daemonized away from both with the agent
+//! still in their environment (a test database started by `pg_ctl`, for one).
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,8 @@ enum Why {
     Tree,
     /// Out of the tree, with its cwd in the agent's work dir.
     Cwd,
+    /// Out of the tree and the work dir, with the agent in its environment.
+    Env,
 }
 
 impl Why {
@@ -36,6 +39,7 @@ impl Why {
         match self {
             Why::Tree => "tree",
             Why::Cwd => "cwd",
+            Why::Env => "env",
         }
     }
 }
@@ -85,11 +89,12 @@ pub(crate) fn snapshot(
 }
 
 impl Snapshot {
-    /// SIGTERMs what the snapshot holds and what the cwd sweep finds, waits out
-    /// the grace that the harness gets, and SIGKILLs the rest. One line for
-    /// each signalled process, with its name, its RSS, and why the sweep
-    /// picked it, and one summary line. The command line is never read, so no
-    /// argument of a tool can reach the log.
+    /// SIGTERMs what the snapshot holds, what the cwd sweep finds, and the
+    /// processes that still name the agent in their environment, waits out the
+    /// grace that the harness gets, and SIGKILLs the rest. One line for each
+    /// signalled process, with its name, its RSS, and why the sweep picked it,
+    /// and one summary line. The command line and the environment are never
+    /// read into the log, so no argument or value of a tool can reach it.
     pub(crate) async fn finish(self) {
         let own = Own::capture();
         let mut system = System::new();
@@ -133,6 +138,36 @@ impl Snapshot {
                 }
                 seen.insert(raw);
                 targets.push(Target::of(raw, Why::Cwd, p));
+            }
+        }
+        if let Some(agent) = &self.agent {
+            // A tool can daemonize away from the tree and chdir out of the
+            // work dir, as a test database started by `pg_ctl` does: its
+            // parent is PID 1. The launcher set `BORANT_AGENT` for every
+            // process of the session, and the daemon inherits it, so the
+            // environment is what still names the agent. The match is exact,
+            // so agent `a` never matches a process of agent `a1`, and the
+            // daemon itself never carries the variable.
+            let needle = OsString::from(format!("BORANT_AGENT={agent}"));
+            for (pid, p) in system.processes() {
+                let raw = pid.as_u32();
+                if seen.contains(&raw) || !may_signal(raw, p, &own) {
+                    continue;
+                }
+                // A multiplexer server keeps the environment that it was
+                // started with, which can name an agent, and it is no
+                // session's to end: one signal would take every session of
+                // the host with it.
+                if is_multiplexer(p) {
+                    continue;
+                }
+                // An environment that this user cannot read holds no entry:
+                // the process is skipped, never guessed at.
+                if !p.environ().iter().any(|entry| entry == &needle) {
+                    continue;
+                }
+                seen.insert(raw);
+                targets.push(Target::of(raw, Why::Env, p));
             }
         }
         let agent = self
@@ -291,9 +326,9 @@ fn in_dir(path: &Path, dir: &Path) -> bool {
 /// Sends `signal` to a process and, when `take_group` is set and the process
 /// leads its group, to the group too: a tool that started its own session
 /// takes its children with it, as the harness does. Only a tree target takes
-/// its group: ancestry says that the group is the session's, while a cwd
-/// target can lead a group whose members work outside the agent's dir. The
-/// daemon's own group is never signalled.
+/// its group: ancestry says that the group is the session's, while a cwd or
+/// env target can lead a group whose members work outside the agent's dir and
+/// carry no sign of the agent. The daemon's own group is never signalled.
 fn signal(raw: u32, own_group: Option<NixPid>, sig: Signal, take_group: bool) {
     let pid = NixPid::from_raw(raw as i32);
     let leads = take_group
@@ -314,6 +349,7 @@ fn refresh_all(system: &mut System) {
             .with_memory()
             .with_user(UpdateKind::Always)
             .with_cwd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always)
             .with_exe(UpdateKind::OnlyIfNotSet)
             .without_tasks(),
     );
