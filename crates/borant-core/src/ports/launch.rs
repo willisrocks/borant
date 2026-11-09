@@ -32,6 +32,14 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
     fn kind(&self) -> &'static str;
     async fn launch(&self, spec: &LaunchSpec) -> PortResult<LaunchHandle>;
     async fn stop(&self, handle: &LaunchHandle) -> PortResult<()>;
+    /// The pids of the processes that the launcher started for the session of
+    /// `handle`, such as the pane processes of a tmux session. The host
+    /// snapshots their tree before it stops a session, because a tool can
+    /// leave the tree of the harness below them. A launcher that cannot name
+    /// them answers none.
+    async fn session_pids(&self, _handle: &LaunchHandle) -> PortResult<Vec<u32>> {
+        Ok(Vec::new())
+    }
     /// Ends any session that this launcher holds for `agent`, even one whose
     /// handle the caller lost: a daemon that restarted, a launch order that
     /// never arrived, or a session of an older attempt. It ends that one named

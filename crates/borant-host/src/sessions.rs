@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::checkpoint;
 use crate::outbox::OutboxKind;
-use crate::{Host, LocalSess, Queued, activity, terminate_hard};
+use crate::{Host, LocalSess, Queued, activity, sweep, terminate_hard};
 
 const RETRY_ATTACH: Duration = Duration::from_secs(5);
 /// How long a registration call waits for the first attach attempt.
@@ -767,13 +767,18 @@ impl Host {
     /// that this daemon still holds goes first; then the launcher ends any
     /// session that it still has of the agent under its name, which a restart
     /// or a lost handle leaves behind; then the process itself, which a hung
-    /// harness may not stop for SIGTERM alone.
+    /// harness may not stop for SIGTERM alone. Then the sweep ends the tools
+    /// that left the tree or the session of the harness.
     pub(crate) async fn stop_process(
         &self,
         agent: Option<&AgentId>,
         pid: Option<u32>,
         launch: Option<&borant_core::ports::LaunchHandle>,
     ) {
+        // Before any signal: a descendant is only findable while its parent
+        // lives, and the tree snapshot is what names a tool that leaves the
+        // group of the harness below.
+        let snapshot = self.tree_snapshot(agent, pid, launch).await;
         if let Some(h) = launch
             && let Err(e) = self.inner.launcher.stop(h).await
         {
@@ -791,6 +796,27 @@ impl Host {
         if let Some(p) = pid {
             terminate_hard(p).await;
         }
+        snapshot.finish().await;
+    }
+
+    /// Snapshots the processes of a session before any signal: the harness
+    /// `pid`, the pane pids that `launch` still reports, and every descendant
+    /// of them, plus the agent's own work dir for the cwd sweep.
+    pub(crate) async fn tree_snapshot(
+        &self,
+        agent: Option<&AgentId>,
+        pid: Option<u32>,
+        launch: Option<&borant_core::ports::LaunchHandle>,
+    ) -> sweep::Snapshot {
+        let mut roots: Vec<u32> = pid.into_iter().collect();
+        if let Some(h) = launch {
+            match self.inner.launcher.session_pids(h).await {
+                Ok(pids) => roots.extend(pids),
+                Err(e) => tracing::debug!("cannot read the processes of a launch: {e}"),
+            }
+        }
+        let work_dir = agent.map(|a| self.inner.cfg.home.join("work").join(a.as_str()));
+        sweep::snapshot(agent, &roots, work_dir)
     }
 
     /// The checkpoint remote of a repository: the one of its project, else
