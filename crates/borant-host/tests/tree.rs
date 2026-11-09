@@ -1,7 +1,8 @@
 //! A stop or a move ends the whole tree of a session, not only its harness: a
-//! tool that leaves the group of the harness (`setsid`), or that is reparented
-//! with its cwd in the agent's work dir, must not keep a host's memory. The
-//! sweep never reaches a sibling agent's work dir, or anything outside the
+//! tool that leaves the group of the harness (`setsid`), that is reparented
+//! with its cwd in the agent's work dir, or that daemonizes away from both
+//! while keeping the agent in its environment, must not keep a host's memory.
+//! The sweep never reaches a sibling agent's work dir, or anything outside the
 //! work root.
 
 use std::collections::HashMap;
@@ -344,6 +345,40 @@ fn forking_harness(
     (child, escaped, orphan)
 }
 
+/// A fake harness that starts a tool which leaves both the tree and the
+/// process group of the harness, as `pg_ctl` leaves a database: a double fork
+/// plus `setsid`, with its cwd in `elsewhere`, outside the agent's work root
+/// that the cwd sweep matches. `env` is the environment of the harness, and
+/// the tool inherits it, as every process of a launch inherits `BORANT_AGENT`.
+/// The tool writes its pid to `pid_file`. When `setsid` is missing, the tool
+/// stays in the group of the harness and the test must skip.
+fn daemonizing_harness(
+    cwd: &Path,
+    env: &[(&str, &str)],
+    elsewhere: &Path,
+    pid_file: &Path,
+) -> Child {
+    let script = format!(
+        "( cd \"{elsewhere}\"; setsid sh -c 'echo $$ > \"{pid}\"; exec sleep 300' & ) ; \
+         while :; do sleep 1; done",
+        elsewhere = elsewhere.display(),
+        pid = pid_file.display(),
+    );
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg(script)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .process_group(0)
+        // The test runner can itself run in an agent's session; a test that
+        // checks for the absence of the variable must not inherit one.
+        .env_remove("BORANT_AGENT");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.spawn().expect("start the fake harness")
+}
+
 /// Registers a fake harness as the session of `agent`, with its cwd in `cwd`.
 async fn register(fx: &Fx, agent: &AgentId, cwd: &Path, pid: u32) -> LocalSession {
     let session = fx
@@ -524,6 +559,138 @@ async fn a_stop_spares_a_process_outside_the_work_root() {
     assert_alive(at_root_pid, "a process in the work root itself").await;
     reap(&mut elsewhere);
     reap(&mut at_root);
+    let _ = harness.try_wait();
+}
+
+/// A tool that daemonizes, as `pg_ctl` does, leaves both the tree and the work
+/// dir: only the agent in its environment still names it, and a stop ends it.
+#[tokio::test]
+async fn a_stop_ends_a_daemonized_tool_by_its_agent_env() {
+    if !setsid_available() {
+        return;
+    }
+    let fx = Fx::new(true, |_| {}).await;
+    let agent: AgentId = "env-a".parse().unwrap();
+    let work = fx.dir.path().join("work").join(agent.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    // The data dir of the daemonized tool, outside the agent's work root.
+    let pgdata = fx.dir.path().join("pgdata");
+    std::fs::create_dir_all(&pgdata).unwrap();
+    let pid_file = fx.dir.path().join("pg.pid");
+    let mut harness = daemonizing_harness(
+        &work,
+        &[
+            ("BORANT_AGENT", agent.as_str()),
+            // A value that must never reach the log.
+            ("PGPASSWORD", "hunter2-env-secret"),
+        ],
+        &pgdata,
+        &pid_file,
+    );
+    let pid = harness.id();
+    let _guard = KillOnDrop(pid);
+    let tool = wait_for_pid(&pid_file).await;
+    let _tool_guard = KillOnDrop(tool);
+    wait_out_of_tree(tool, pid).await;
+    assert!(alive(tool), "the daemonized tool did not start");
+
+    let session = register(&fx, &agent, &work, pid).await;
+    let logs = log_lines(async {
+        fx.host
+            .handle_command(HostCommand::Stop {
+                session: session.session,
+            })
+            .await;
+    })
+    .await;
+
+    assert_gone(pid, "the harness").await;
+    assert_gone(tool, "the daemonized tool").await;
+    assert!(
+        logs.contains(&format!("pid={tool}")),
+        "no line for the daemonized tool: {logs}"
+    );
+    assert!(
+        logs.contains("why=\"env\"") || logs.contains("why=env"),
+        "no env line: {logs}"
+    );
+    assert!(
+        !logs.contains("hunter2-env-secret"),
+        "the log carries an environment value: {logs}"
+    );
+    let _ = harness.try_wait();
+}
+
+/// The env match is exact: a stop of agent `a` never ends a daemonized tool of
+/// agent `a1`, even though its cwd is outside both work dirs.
+#[tokio::test]
+async fn a_stop_spares_a_daemon_of_a_sibling_agent_env() {
+    if !setsid_available() {
+        return;
+    }
+    let fx = Fx::new(true, |_| {}).await;
+    let agent: AgentId = "env-sib".parse().unwrap();
+    let work = fx.dir.path().join("work").join(agent.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    let pgdata = fx.dir.path().join("pgdata");
+    std::fs::create_dir_all(&pgdata).unwrap();
+    let pid_file = fx.dir.path().join("pg.pid");
+    let mut harness = daemonizing_harness(
+        &work,
+        &[("BORANT_AGENT", &format!("{}1", agent.as_str()))],
+        &pgdata,
+        &pid_file,
+    );
+    let pid = harness.id();
+    let _guard = KillOnDrop(pid);
+    let tool = wait_for_pid(&pid_file).await;
+    let _tool_guard = KillOnDrop(tool);
+    wait_out_of_tree(tool, pid).await;
+    assert!(alive(tool), "the daemonized tool did not start");
+
+    let session = register(&fx, &agent, &work, pid).await;
+    fx.host
+        .handle_command(HostCommand::Stop {
+            session: session.session,
+        })
+        .await;
+
+    assert_gone(pid, "the harness").await;
+    assert_alive(tool, "a daemonized tool of the sibling agent").await;
+    let _ = harness.try_wait();
+}
+
+/// A process outside the work dir that carries no `BORANT_AGENT` is no
+/// session's to end: a stop spares it.
+#[tokio::test]
+async fn a_stop_spares_a_daemon_without_the_agent_env() {
+    if !setsid_available() {
+        return;
+    }
+    let fx = Fx::new(true, |_| {}).await;
+    let agent: AgentId = "env-none".parse().unwrap();
+    let work = fx.dir.path().join("work").join(agent.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    let pgdata = fx.dir.path().join("pgdata");
+    std::fs::create_dir_all(&pgdata).unwrap();
+    let pid_file = fx.dir.path().join("pg.pid");
+    let mut harness = daemonizing_harness(&work, &[], &pgdata, &pid_file);
+    let pid = harness.id();
+    let _guard = KillOnDrop(pid);
+    let tool = wait_for_pid(&pid_file).await;
+    let _tool_guard = KillOnDrop(tool);
+    wait_out_of_tree(tool, pid).await;
+    assert!(alive(tool), "the daemonized tool did not start");
+
+    let session = register(&fx, &agent, &work, pid).await;
+    fx.host
+        .handle_command(HostCommand::Stop {
+            session: session.session,
+        })
+        .await;
+
+    assert_gone(pid, "the harness").await;
+    assert_alive(tool, "a process outside the work dir without the agent env").await;
     let _ = harness.try_wait();
 }
 
