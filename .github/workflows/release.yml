@@ -1,9 +1,11 @@
 name: Release
 
-# Publishes Borant vX.Y.Z from the green tip of main, by hand.
+# Publishes Borant vX.Y.Z from the green tip of main, by hand, or a patch
+# from a `release/vX.Y.x` branch cut from a tag.
 #
-# 1. plan: requires main and the typed confirmation, requires a green `ci`
-#    run at main's tip, and computes the next version from the newest vX.Y.Z
+# 1. plan: requires main (or a release/v* branch with a patch bump) and the
+#    typed confirmation, requires a green `ci` run at the branch's tip, and
+#    computes the next version from the newest vX.Y.Z
 #    tag with the `bump` input (.github/scripts/next-version.sh). The first
 #    release is 0.1.0.
 # 2. build: builds `borant` for four targets at that commit, with the version
@@ -14,7 +16,7 @@ name: Release
 #    archives and their SHA-256 files. The notes are the `notes` input when it
 #    is set, else GitHub's generated notes since the previous tag. It is
 #    marked Latest.
-# 5. bump: writes the version into the manifests on main with a
+# 5. bump (main only): writes the version into the manifests on main with a
 #    `chore(release): vX.Y.Z` commit. A failure before publish leaves main
 #    and the tags as they were.
 on:
@@ -64,17 +66,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require main and confirmation
+      - name: Require main or a patch branch, and confirmation
         env:
           CONFIRM: ${{ inputs.confirm }}
+          BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "release must run from main" >&2; exit 1; }
+          # A patch branch (`release/vX.Y.x`, cut from a tag) ships a fix
+          # while main holds changes that wait for their own release. It takes
+          # only a patch bump, and the bump job leaves main alone.
+          case "$GITHUB_REF" in
+            refs/heads/main) ;;
+            refs/heads/release/v*)
+              [[ "$BUMP" == patch ]] || { echo "a patch branch releases only a patch bump" >&2; exit 1; }
+              ;;
+            *) echo "release must run from main or a release/v* patch branch" >&2; exit 1 ;;
+          esac
           [[ "$CONFIRM" == release ]] || { echo "confirm must be release" >&2; exit 1; }
       - name: Require a green CI run at the release commit
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: bash .github/scripts/require-green-ci.sh
       - name: Compute the version
         id: plan
@@ -257,6 +270,9 @@ jobs:
 
   bump:
     needs: [plan, publish]
+    # A patch branch's release leaves main's version as it is: main may hold
+    # the next minor's changes, and its own release bumps it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

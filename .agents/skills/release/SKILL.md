@@ -36,6 +36,20 @@ A release ships the tip of `main`. Merge the work first.
 
 If a job fails, read `references/troubleshooting.md`.
 
+## A patch while main waits
+
+When main holds changes that wait for their own release, ship a fix as a patch
+from the last tag instead:
+
+1. `git switch -c release/vX.Y.x vX.Y.Z` (for example `release/v0.23.x` from
+   `v0.23.1`), cherry-pick the fix, and push the branch. CI runs on it.
+2. Write the notes, and get approval as above.
+3. `just release patch target/release-notes.md release/vX.Y.x`.
+
+The plan job accepts only a patch bump there. The version comes from the newest
+tag, and the bump job leaves main's version alone. Merge the fix to main as
+usual too.
+
 ## The Depot CI path
 
 Use this path only when the owner says that this release goes through Depot CI.
