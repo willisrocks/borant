@@ -8,6 +8,7 @@
 //! agent's own work dir.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -124,6 +125,12 @@ impl Snapshot {
                 if !in_dir(cwd, &dir) {
                     continue;
                 }
+                // A multiplexer server keeps the cwd that it was started
+                // with, and it is no session's to end: one signal would take
+                // every session of the host with it.
+                if is_multiplexer(p) {
+                    continue;
+                }
                 seen.insert(raw);
                 targets.push(Target::of(raw, Why::Cwd, p));
             }
@@ -138,7 +145,12 @@ impl Snapshot {
             return;
         }
         for t in &targets {
-            signal(t.pid, own.group, Signal::SIGTERM);
+            signal(
+                t.pid,
+                own.group,
+                Signal::SIGTERM,
+                matches!(t.why, Why::Tree),
+            );
             tracing::info!(
                 %agent,
                 pid = t.pid,
@@ -160,7 +172,12 @@ impl Snapshot {
                     pid = t.pid,
                     "a process of the session ignored SIGTERM, sending SIGKILL"
                 );
-                signal(t.pid, own.group, Signal::SIGKILL);
+                signal(
+                    t.pid,
+                    own.group,
+                    Signal::SIGKILL,
+                    matches!(t.why, Why::Tree),
+                );
             }
         }
         tracing::info!(
@@ -210,6 +227,21 @@ impl Own {
     }
 }
 
+/// The executable names of the multiplexer servers that hold sessions. A
+/// server daemonizes without a chdir, so it keeps the cwd of whoever started
+/// it, and that cwd can be an agent's work dir that the server does not
+/// belong to.
+const MULTIPLEXERS: &[&str] = &["tmux", "zellij", "herdr"];
+
+/// True for a multiplexer server: its executable names the server, whatever
+/// its cwd says. The process name is the fallback when the exe is unreadable.
+fn is_multiplexer(p: &sysinfo::Process) -> bool {
+    let exe = p.exe().and_then(|exe| exe.file_name());
+    MULTIPLEXERS
+        .iter()
+        .any(|server| exe.is_some_and(|file| file == OsStr::new(server)) || p.name() == *server)
+}
+
 /// True when this daemon may signal `pid`. A signal never reaches the daemon,
 /// its group, the hub (the same executable), or a process of another user.
 fn may_signal(raw: u32, p: &sysinfo::Process, own: &Own) -> bool {
@@ -256,13 +288,17 @@ fn in_dir(path: &Path, dir: &Path) -> bool {
     path == dir || path.starts_with(dir)
 }
 
-/// Sends `signal` to a process, and to the group when the process leads it:
-/// a tool that started its own session takes its children with it, as the
-/// harness does. The daemon's own group is never signalled.
-fn signal(raw: u32, own_group: Option<NixPid>, sig: Signal) {
+/// Sends `signal` to a process and, when `take_group` is set and the process
+/// leads its group, to the group too: a tool that started its own session
+/// takes its children with it, as the harness does. Only a tree target takes
+/// its group: ancestry says that the group is the session's, while a cwd
+/// target can lead a group whose members work outside the agent's dir. The
+/// daemon's own group is never signalled.
+fn signal(raw: u32, own_group: Option<NixPid>, sig: Signal, take_group: bool) {
     let pid = NixPid::from_raw(raw as i32);
-    let leads =
-        nix::unistd::getpgid(Some(pid)).is_ok_and(|pgid| pgid == pid) && Some(pid) != own_group;
+    let leads = take_group
+        && nix::unistd::getpgid(Some(pid)).is_ok_and(|pgid| pgid == pid)
+        && Some(pid) != own_group;
     if leads {
         let _ = killpg(pid, sig);
     } else {

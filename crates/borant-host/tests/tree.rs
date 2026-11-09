@@ -675,3 +675,116 @@ async fn a_stop_ends_the_tree_of_a_tmux_launch() {
         "no tree line for the pane: {logs}"
     );
 }
+
+/// A copy of the shell named `name`, so a test can start a process whose
+/// executable carries that name, as a multiplexer server's does. A copied
+/// coreutils binary is no good: those dispatch on their own name, and one
+/// named `tmux` exits at once.
+fn copy_sh_as(dir: &Path, name: &str) -> Option<PathBuf> {
+    let src = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join("sh"))
+        .find(|path| path.is_file())?;
+    let dst = dir.join(name);
+    std::fs::copy(&src, &dst).ok()?;
+    Some(dst)
+}
+
+/// A multiplexer server daemonizes without a chdir, so it can keep a cwd in an
+/// agent's dir that it does not belong to. A cwd sweep never ends one: a
+/// signal would take every session of the host with it.
+#[tokio::test]
+async fn a_stop_spares_a_multiplexer_server_in_the_agent_dir() {
+    let fx = Fx::new(true, |_| {}).await;
+    let agent: AgentId = "mux-a".parse().unwrap();
+    let work = fx.dir.path().join("work").join(agent.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    let bin = fx.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let Some(server_bin) = copy_sh_as(&bin, "tmux") else {
+        eprintln!("skipping: no sh on PATH to name as a server");
+        return;
+    };
+    // A real process whose executable is named `tmux`, with its cwd in the
+    // agent's dir, as a server that a daemon started from there would be.
+    let mut server = Command::new(&server_bin)
+        .args(["-c", "while :; do sleep 1; done"])
+        .current_dir(&work)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start the fake server");
+    let server_pid = server.id();
+    let _server_guard = KillOnDrop(server_pid);
+
+    let mut harness = stayer(&work);
+    let pid = harness.id();
+    let _harness_guard = KillOnDrop(pid);
+    let session = register(&fx, &agent, &work, pid).await;
+    fx.host
+        .handle_command(HostCommand::Stop {
+            session: session.session,
+        })
+        .await;
+
+    assert_gone(pid, "the harness").await;
+    assert_alive(server_pid, "a multiplexer server in the agent dir").await;
+    reap(&mut server);
+    let _ = harness.try_wait();
+}
+
+/// A cwd target gets its own signal, never its group: its group can hold a
+/// process that works outside the agent's dir and is no session's to end.
+#[tokio::test]
+async fn a_stop_ends_a_cwd_target_without_its_group() {
+    let fx = Fx::new(true, |_| {}).await;
+    let agent: AgentId = "grp-a".parse().unwrap();
+    let work = fx.dir.path().join("work").join(agent.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    let outside = fx.dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let member_file = fx.dir.path().join("member.pid");
+    // The leader works in the agent's dir, leads its own group, and its
+    // background member works outside the dir.
+    let mut leader = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "( cd \"{outside}\"; exec sh -c 'echo $$ > \"{member}\"; exec sleep 300' ) & \
+             while :; do sleep 1; done",
+            outside = outside.display(),
+            member = member_file.display(),
+        ))
+        .current_dir(&work)
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start a group leader");
+    let leader_pid = leader.id();
+    let _leader_guard = KillOnDrop(leader_pid);
+    let member_pid = wait_for_pid(&member_file).await;
+    let _member_guard = KillOnDrop(member_pid);
+    assert!(alive(member_pid), "the member did not start");
+    // Same group, so a killpg on the leader would reach it.
+    assert_eq!(
+        parent_of(member_pid),
+        Some(leader_pid),
+        "the member is not a child of the leader"
+    );
+
+    let mut harness = stayer(&work);
+    let pid = harness.id();
+    let _harness_guard = KillOnDrop(pid);
+    let session = register(&fx, &agent, &work, pid).await;
+    fx.host
+        .handle_command(HostCommand::Stop {
+            session: session.session,
+        })
+        .await;
+
+    assert_gone(leader_pid, "the cwd target").await;
+    assert_alive(member_pid, "a group member outside the agent dir").await;
+    reap(&mut leader);
+    let _ = harness.try_wait();
+}
