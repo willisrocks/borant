@@ -174,6 +174,18 @@ impl Launcher for TmuxLauncher {
         self.end_session_named(&handle.id).await.map(drop)
     }
 
+    /// The pane processes of the session, which lead everything that the
+    /// harness started under it.
+    async fn session_pids(&self, handle: &LaunchHandle) -> PortResult<Vec<u32>> {
+        check_kind(handle, KIND)?;
+        let pids = self.pane_pids_on(Some(&self.socket), &handle.id).await?;
+        if !pids.is_empty() {
+            return Ok(pids);
+        }
+        // A launcher of an older version started it on the default server.
+        self.pane_pids_on(None, &handle.id).await
+    }
+
     /// Ends `agent`'s session, whatever handle a caller has for it: the host
     /// calls this before a launch, because `new-session` refuses a name that
     /// exists and a session of a daemon that restarted, of a lost order, or of
@@ -229,6 +241,29 @@ impl TmuxLauncher {
     /// server.
     async fn is_running_on(&self, socket: Option<&str>, name: &str) -> PortResult<bool> {
         has_session(socket, name).await
+    }
+
+    /// The pane pids of the session named `name` on `socket`. A session that
+    /// is gone has no panes, and that is no error.
+    async fn pane_pids_on(&self, socket: Option<&str>, name: &str) -> PortResult<Vec<u32>> {
+        let mut args = socket_args(socket);
+        args.extend([
+            "list-panes".to_owned(),
+            // `=<name>:` is the first window of the exact session, as for
+            // `capture-pane`.
+            "-t".to_owned(),
+            format!("={name}:"),
+            "-F".to_owned(),
+            "#{pane_pid}".to_owned(),
+        ]);
+        let out = run("tmux", &args).await?;
+        if !out.status.success() {
+            return Ok(Vec::new());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .collect())
     }
 
     /// Kills the session named `name` on the server that holds it, the

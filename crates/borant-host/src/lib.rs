@@ -16,6 +16,7 @@ mod reregister;
 pub mod sandbox;
 mod secrets;
 mod sessions;
+mod sweep;
 
 /// The version that the host reports in its stats, the one of
 /// `borant --version`: a release build sets `BORANT_RELEASE_VERSION`, because
@@ -1244,7 +1245,7 @@ impl Host {
             .map(|(agent, _, _)| agent)
             .collect();
         for agent in late {
-            let Some((_, screen)) = self.take_pending_launch(&agent).await else {
+            let Some((_, screen, snapshot)) = self.take_pending_launch(&agent).await else {
                 // The launch registered between the listing and the stop.
                 continue;
             };
@@ -1253,6 +1254,7 @@ impl Host {
                 elapsed = ?timeout,
                 "a launch did not register in time, stopping it"
             );
+            snapshot.finish().await;
             let req = CtlRequest::LaunchFailed {
                 agent: agent.clone(),
                 host: self.inner.cfg.name.clone(),
@@ -1270,9 +1272,20 @@ impl Host {
     }
 
     /// Takes the pending launch of `agent` and stops it, with the redacted end
-    /// of its screen. `None` when no launch of the agent waits to register.
-    async fn take_pending_launch(&self, agent: &AgentId) -> Option<(LaunchHandle, String)> {
+    /// of its screen and the snapshot of its process tree. `None` when no
+    /// launch of the agent waits to register. The caller finishes the
+    /// snapshot, which sweeps what the stopped launch left.
+    async fn take_pending_launch(
+        &self,
+        agent: &AgentId,
+    ) -> Option<(LaunchHandle, String, sweep::Snapshot)> {
         let pending = self.state().pending_launch.remove(agent)?;
+        // Before the stop, as in `stop_process`: a launch that never
+        // registered can still have started tools, and they leave the tree
+        // when its session ends.
+        let snapshot = self
+            .tree_snapshot(Some(agent), None, Some(&pending.handle))
+            .await;
         // The screen before the stop, redacted: a sticky prompt can hold a
         // value that the harness printed.
         let screen = self
@@ -1286,7 +1299,7 @@ impl Host {
         }
         // Values that no session will read go with the launch.
         self.forget_secrets(agent, None).await;
-        Some((pending.handle, screen))
+        Some((pending.handle, screen, snapshot))
     }
 
     /// The agents whose launch this host started and whose session has not
@@ -1302,9 +1315,10 @@ impl Host {
     /// watchdog reports a launch that missed its timeout; this stop is the
     /// hub's answer, so it is not a failed try. Public for tests.
     pub async fn stop_closed_launch(&self, agent: &AgentId) {
-        if self.take_pending_launch(agent).await.is_none() {
+        let Some((_, _, snapshot)) = self.take_pending_launch(agent).await else {
             return;
-        }
+        };
+        snapshot.finish().await;
         // A session that the launch never registered ends with it, so its
         // attach retry stops asking a hub that closed the agent.
         let unregistered: Vec<SessionId> = self
@@ -1348,7 +1362,7 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
 }
 
 /// The time between SIGTERM and SIGKILL of a harness that a stop ends.
-const STOP_GRACE: Duration = Duration::from_secs(3);
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(3);
 
 /// Ends the harness process of a stopped session, and the group that it leads.
 /// A hung harness may never handle SIGTERM (a lid close can freeze the process,
