@@ -65,7 +65,7 @@ changes:
     fi
 
 # Start a GitHub release (bump: patch|minor|major; notes: optional Markdown file).
-release bump="patch" notes="":
+release bump="patch" notes="" ref="main":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{bump}}" in patch|minor|major) ;; *) echo "bump must be patch, minor, or major" >&2; exit 1 ;; esac
@@ -74,7 +74,7 @@ release bump="patch" notes="":
       [[ -f "{{notes}}" ]] || { echo "no notes file at {{notes}}" >&2; exit 1; }
       args+=(-f notes="$(cat "{{notes}}")")
     fi
-    gh workflow run release.yml --ref main "${args[@]}"
+    gh workflow run release.yml --ref "{{ref}}" "${args[@]}"
     sleep 3
     gh run list --workflow release.yml --limit 1
 
