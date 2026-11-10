@@ -1,5 +1,6 @@
 mod common;
 
+use borant_core::events::{EventFilter, SwarmEvent};
 use borant_core::model::{ChannelKind, Harness, MoveReason, NewTask, Target, Task, TaskStatus};
 use borant_core::ports::MessageBus;
 use borant_core::proto::{
@@ -7,6 +8,7 @@ use borant_core::proto::{
 };
 use borant_core::{ChannelName, subjects, testing};
 use common::{Fx, name, next_cmd};
+use futures::StreamExt;
 
 fn api() -> ChannelName {
     "api".parse().unwrap()
@@ -781,6 +783,25 @@ async fn lost_reclaim_reply_gives_the_same_token_again() {
     assert_eq!(first.renewed.len(), 1);
     assert_eq!(first.renewed, second.renewed);
     assert_eq!(first.renewed[0].token.0, w.token.0 + 1);
+    // The beats that a host queues while its connection is down all land when
+    // it reconnects, so a repeat of the reclaim is the same reclaim: it logs
+    // and tells the swarm once. Seen on 2026-11-10: seven reclaim events per
+    // agent in one second after the macbook woke.
+    assert_eq!(events_of(&fx, "lease.reclaimed").await.len(), 1);
+}
+
+/// The events of the log with this kind.
+async fn events_of(fx: &Fx, kind: &str) -> Vec<SwarmEvent> {
+    let filter = EventFilter {
+        kinds: vec![kind.into()],
+        ..EventFilter::default()
+    };
+    let mut stream = fx.events.read(&filter, false).await.unwrap();
+    let mut out = Vec::new();
+    while let Some(event) = stream.next().await {
+        out.push(event);
+    }
+    out
 }
 
 #[tokio::test]

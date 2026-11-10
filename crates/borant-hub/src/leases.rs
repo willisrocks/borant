@@ -96,6 +96,27 @@ pub(crate) fn pinned_session_dead(
 }
 
 impl Hub {
+    /// Records that the hub heard `host` at `now`. A gap of `hung_minutes`
+    /// since the last time is a sleep, not a slow beat: the host and its
+    /// sessions lost that time, and the ones that say nothing after it are
+    /// hung until they move again.
+    ///
+    /// A host that slept usually sends its registration before its first
+    /// beat, so the check runs on a registration too; a plain insert there
+    /// would hide the gap from the beat that follows it.
+    fn note_host_seen(&self, mem: &mut Memory, host: &HostName, now: Timestamp) {
+        let slept_gap =
+            std::time::Duration::from_secs(self.cfg.alerts.hung_minutes.saturating_mul(60));
+        if mem
+            .hosts_seen
+            .insert(host.clone(), now)
+            .is_some_and(|last| now.since(last) >= slept_gap)
+        {
+            mem.hosts_slept.insert(host.clone(), now);
+            tracing::info!(%host, "the host slept and its sessions lost that time");
+        }
+    }
+
     pub(crate) async fn register_host(
         &self,
         mem: &mut Memory,
@@ -107,7 +128,7 @@ impl Hub {
         }
         self.store.upsert(&key, &info).await?;
         let now = self.now();
-        mem.hosts_seen.insert(info.name.clone(), now);
+        self.note_host_seen(mem, &info.name, now);
         // The agents of the host come from the lease list of the last tick,
         // so a registration reads no lease: a host that retries its
         // registration does not read the whole store each time.
@@ -152,19 +173,7 @@ impl Hub {
         launching: &[AgentId],
     ) -> Result<HeartbeatReply, ApiError> {
         let now = self.now();
-        // A gap of `hung_minutes` in the beats of a host is a sleep, not a slow
-        // beat: the host and its sessions lost that time, and the ones that say
-        // nothing after it are hung until they move again.
-        let slept_gap =
-            std::time::Duration::from_secs(self.cfg.alerts.hung_minutes.saturating_mul(60));
-        if mem
-            .hosts_seen
-            .insert(host.clone(), now)
-            .is_some_and(|last| now.since(last) >= slept_gap)
-        {
-            mem.hosts_slept.insert(host.clone(), now);
-            tracing::info!(%host, "the host slept and its sessions lost that time");
-        }
+        self.note_host_seen(mem, host, now);
         mem.host_sessions.insert(
             host.clone(),
             HostSessions {
@@ -218,49 +227,61 @@ impl Hub {
             };
             self.store.put(&key, &l, Some(doc.revision)).await?;
             self.assert_pinned(s).await?;
-            if let Ok(mut a) = self.agent(&s.agent).await
-                && a.value.session != Some(s.session)
-            {
-                a.value.session = Some(s.session);
-                self.store.put(&a.key, &a.value, Some(a.revision)).await?;
-            }
-            mem.expired_at.remove(&s.agent);
-            mem.claims_released.remove(&s.agent);
-            mem.idle_checked.remove(&s.agent);
-            mem.wake_checked.remove(&s.agent);
-            // A sweep may have ended this session while the host was asleep;
-            // the reclaim says it still runs, so the spawn is running again,
-            // the session is not ended, and a recovery that waited for the
-            // session is unnecessary.
-            self.mark_spawn_running(&s.agent).await?;
-            if let Ok(Some(mut session)) =
-                self.store.get::<Session>(&keys::session(&s.session)).await
-                && session.value.ended.is_some()
-            {
-                session.value.ended = None;
-                self.store
-                    .put(&session.key, &session.value, Some(session.revision))
-                    .await?;
-            }
-            if mem
-                .pending_moves
-                .get(&s.agent)
-                .is_some_and(|p| p.reason == MoveReason::Recover)
-            {
-                mem.pending_moves.remove(&s.agent);
-            }
-            tracing::info!(agent = %s.agent, session = %s.session, token = l.token.0, "lease reclaimed after expiry");
-            let event = self.lease_event(
-                now,
-                Severity::Info,
-                &s.agent,
-                Some(host),
-                SwarmEventBody::LeaseReclaimed {
-                    session: s.session,
-                    token: l.token,
-                },
+            // The beats that a host queued while its connection was down all
+            // land when it reconnects, and a lease that this session already
+            // took back gives the same token again: that is one reclaim, not
+            // one per beat, so the later beats renew it and neither log nor
+            // queue a second event.
+            let already_ours = matches!(
+                &doc.value.state,
+                LeaseState::Held { session: held, host: held_host, .. }
+                    if *held == s.session && held_host == host
             );
-            Self::queue(mem, event);
+            if !already_ours {
+                if let Ok(mut a) = self.agent(&s.agent).await
+                    && a.value.session != Some(s.session)
+                {
+                    a.value.session = Some(s.session);
+                    self.store.put(&a.key, &a.value, Some(a.revision)).await?;
+                }
+                mem.expired_at.remove(&s.agent);
+                mem.claims_released.remove(&s.agent);
+                mem.idle_checked.remove(&s.agent);
+                mem.wake_checked.remove(&s.agent);
+                // A sweep may have ended this session while the host was asleep;
+                // the reclaim says it still runs, so the spawn is running again,
+                // the session is not ended, and a recovery that waited for the
+                // session is unnecessary.
+                self.mark_spawn_running(&s.agent).await?;
+                if let Ok(Some(mut session)) =
+                    self.store.get::<Session>(&keys::session(&s.session)).await
+                    && session.value.ended.is_some()
+                {
+                    session.value.ended = None;
+                    self.store
+                        .put(&session.key, &session.value, Some(session.revision))
+                        .await?;
+                }
+                if mem
+                    .pending_moves
+                    .get(&s.agent)
+                    .is_some_and(|p| p.reason == MoveReason::Recover)
+                {
+                    mem.pending_moves.remove(&s.agent);
+                }
+                tracing::info!(agent = %s.agent, session = %s.session, token = l.token.0, "lease reclaimed after expiry");
+                let event = self.lease_event(
+                    now,
+                    Severity::Info,
+                    &s.agent,
+                    Some(host),
+                    SwarmEventBody::LeaseReclaimed {
+                        session: s.session,
+                        token: l.token,
+                    },
+                );
+                Self::queue(mem, event);
+            }
             renewed.push(RenewedLease {
                 session: s.session,
                 token: l.token,
