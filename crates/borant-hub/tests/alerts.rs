@@ -306,9 +306,12 @@ async fn alerts_a_stalled_agent_fires_once_sets_stuck_and_resolves() {
     // The hub set the claimed task to stuck in the same pass.
     assert_eq!(stored_task(&fx, task.id).await.status, TaskStatus::Stuck);
 
-    // The same state does not fire again, inside the cadence or after it.
+    // The same state does not fire again, inside the cadence or after it. The
+    // host keeps beating all along, as a live host does, so the silence of the
+    // agent is the one thing that changed.
     fx.hub.tick().await.unwrap();
     fx.clock.advance(Duration::from_secs(31));
+    fx.heartbeat(&reg, old).await;
     fx.hub.tick().await.unwrap();
     assert_eq!(fx.recorder.notices().len(), 1);
     assert_eq!(alert_keys(&fx).await.len(), 1);
@@ -316,6 +319,7 @@ async fn alerts_a_stalled_agent_fires_once_sets_stuck_and_resolves() {
     // The agent moves again: one resolve, and no second notice.
     fx.heartbeat(&reg, fx.clock.now()).await;
     fx.clock.advance(Duration::from_secs(31));
+    fx.heartbeat(&reg, fx.clock.now()).await;
     fx.hub.tick().await.unwrap();
     assert!(alert_keys(&fx).await.is_empty(), "the alert resolves");
     assert_eq!(fx.recorder.notices().len(), 1);

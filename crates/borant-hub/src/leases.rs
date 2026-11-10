@@ -5,6 +5,7 @@ use borant_core::model::{
     Agent, Harness, HostInfo, Lease, LeaseState, MAX_SESSION_RECOVERIES, MoveReason, Session,
     SpawnRecord, SpawnState, Task, TaskEventKind, TaskStatus,
 };
+use borant_core::ports::{Notice, Priority};
 use borant_core::proto::{
     ApiError, ApiErrorCode, HeartbeatReply, MoveTarget, RegisterSession, Registered, RenewedLease,
     SessionLeaseRef,
@@ -1116,6 +1117,9 @@ impl Hub {
             .map(|doc| (&doc.value.id, doc.revision))
             .collect();
         let now = self.now();
+        // The expiries of this pass alone, so a pass that a failure stopped
+        // early leaves nothing for the next one.
+        self.mem.lock().await.expired_hosts.clear();
         for doc in leases {
             let mut mem = self.mem.lock().await;
             if mem.maintenance {
@@ -1163,6 +1167,9 @@ impl Hub {
                 Err(e) => return Err(e),
             }
         }
+        // The hosts that went silent and the ones heard again, once per host
+        // and per silence, after every lease of the pass had its step.
+        self.check_host_silence(now, leases).await;
         // The gates of the leases that the store no longer holds go with them,
         // so a hub that sees many agents over time keeps one entry per lease.
         let mut mem = self.mem.lock().await;
@@ -1279,6 +1286,12 @@ impl Hub {
                 );
             }
             self.store.put(&doc.key, &next, Some(doc.revision)).await?;
+            // A held lease that expires is the measure of a host that stopped
+            // beating. The pass counts them per host, so one silent host is
+            // one line and not one line per agent.
+            if was_held && let LeaseState::Held { host, .. } = &doc.value.state {
+                Self::note_expiry(mem, host, &agent_id, now);
+            }
             if was_held {
                 mem.expired_at.entry(agent_id.clone()).or_insert(now);
                 if let Ok(mut a) = self.agent(&agent_id).await {
@@ -1505,5 +1518,200 @@ impl Hub {
         // about: a host publishes it to the inbox, so a released agent that
         // can wake reads the count of its inbox at the wake check.
         Ok(Some(Rest::At(now.plus(WAKE_CHECK_EVERY))))
+    }
+}
+
+/// The rule of the alert that a silent host fires. It is not a rule of the
+/// alert pass: the hub keeps the silence in memory and resolves it on the
+/// host's own beat, because that pass resolves every key that its rules do
+/// not call true.
+pub(crate) const HOST_SILENT: &str = "host_silent";
+
+/// The held leases that one lease pass expired, per host.
+#[derive(Debug, Clone)]
+pub(crate) struct HostExpiry {
+    /// When the first of them expired.
+    pub since: Timestamp,
+    /// The agents that lost their lease.
+    pub agents: std::collections::BTreeSet<AgentId>,
+}
+
+/// A host that stopped beating for the lease timeout and lost its held
+/// leases, with the agents that it lost, until the hub hears it again.
+#[derive(Debug, Clone)]
+pub(crate) struct SilentHost {
+    /// The last heartbeat or registration before the silence.
+    pub last_seen: Timestamp,
+    /// When the first lease of the host expired.
+    pub since: Timestamp,
+    /// The agents whose leases expired, which is who it lost.
+    pub agents: std::collections::BTreeSet<AgentId>,
+}
+
+/// The agents of a silence, for one line: the first few by name, then a
+/// count, so a host of a hundred agents still reads as one line.
+fn agent_names(agents: &std::collections::BTreeSet<AgentId>) -> String {
+    const SHOWN: usize = 12;
+    let names: Vec<&str> = agents.iter().take(SHOWN).map(AgentId::as_str).collect();
+    let rest = agents.len().saturating_sub(names.len());
+    let list = names.join(", ");
+    if rest > 0 {
+        format!("{list}, and {rest} more")
+    } else {
+        list
+    }
+}
+
+impl Hub {
+    /// Counts one held lease that the pass expired, for its host.
+    fn note_expiry(mem: &mut Memory, host: &HostName, agent: &AgentId, now: Timestamp) {
+        let entry = mem
+            .expired_hosts
+            .entry(host.clone())
+            .or_insert_with(|| HostExpiry {
+                since: now,
+                agents: std::collections::BTreeSet::new(),
+            });
+        entry.agents.insert(agent.clone());
+    }
+
+    /// The hosts that stopped beating for the lease timeout and lost their
+    /// leases: one `host_silent` alert per host and not one per agent, and it
+    /// resolves when the hub hears the host again. A lease that expires while
+    /// the host still beats says nothing about the host, so it fires nothing.
+    ///
+    /// The silence lives in memory and not in `alert.*`: the alert pass owns
+    /// that store and resolves every key that its rules do not call true, so
+    /// a stored silence would come back as a false resolve. The event kinds
+    /// and the notifier are the ones of the alert path, and the silence ends
+    /// on the host's own beat.
+    async fn check_host_silence(&self, now: Timestamp, leases: &[Doc<Lease>]) {
+        let cfg = self.cfg.lease;
+        let (silenced, heard) = {
+            let mut mem = self.mem.lock().await;
+            // A host that the hub heard after its last beat ends the silence,
+            // however many beats it queued while it was away: one line per
+            // silence, and it goes before a silence that starts again here.
+            let heard: Vec<(HostName, SilentHost)> = mem
+                .silent_hosts
+                .iter()
+                .filter(|(host, silent)| {
+                    mem.hosts_seen
+                        .get(*host)
+                        .is_some_and(|seen| *seen > silent.last_seen)
+                })
+                .map(|(host, silent)| (host.clone(), silent.clone()))
+                .collect();
+            for (host, _) in &heard {
+                mem.silent_hosts.remove(host);
+            }
+            let mut silenced = Vec::new();
+            let expired = std::mem::take(&mut mem.expired_hosts);
+            for (host, expiry) in expired {
+                if let Some(silent) = mem.silent_hosts.get_mut(&host) {
+                    // The silence goes on: the leases of a later pass join
+                    // the same line.
+                    silent.agents.extend(expiry.agents);
+                    continue;
+                }
+                let Some(last_seen) = mem.hosts_seen.get(&host).copied() else {
+                    continue;
+                };
+                // A beat within the lease timeout says the host is alive: its
+                // lease expired for another reason than silence.
+                if now.since(last_seen) < cfg.lease {
+                    continue;
+                }
+                let silent = SilentHost {
+                    last_seen,
+                    since: expiry.since,
+                    agents: expiry.agents,
+                };
+                mem.silent_hosts.insert(host.clone(), silent.clone());
+                silenced.push((host, silent));
+            }
+            (silenced, heard)
+        };
+        for (host, silent) in silenced {
+            self.announce_silence(now, &host, &silent).await;
+        }
+        for (host, silent) in heard {
+            self.announce_back(now, &host, &silent, leases).await;
+        }
+    }
+
+    /// One warn, one notice, and one event for a host that went silent. The
+    /// line names the host, when it was last seen, and the agents it lost, so
+    /// a person reads the host and not a Borant outage.
+    async fn announce_silence(&self, at: Timestamp, host: &HostName, silent: &SilentHost) {
+        let n = silent.agents.len();
+        tracing::warn!(
+            leases = n,
+            "host {host} is silent since {}: {n} leases expired",
+            silent.since
+        );
+        let line = format!(
+            "host {host} is silent since {}: {n} leases expired (last seen {})",
+            silent.since, silent.last_seen
+        );
+        if let Some(notifier) = &self.notifier {
+            let notice = Notice::new(
+                "A host is silent",
+                format!("{line}. Affected: {}.", agent_names(&silent.agents)),
+            )
+            .with_priority(Priority::High)
+            .with_tags([HOST_SILENT.to_owned()]);
+            if let Err(e) = notifier.notify(&notice).await {
+                tracing::warn!(%host, "the silent-host notice failed: {e}");
+            }
+        }
+        let mut event = self
+            .event(
+                at,
+                Severity::Warn,
+                SwarmEventBody::AlertFired {
+                    rule: HOST_SILENT.to_owned(),
+                    subject: host.to_string(),
+                },
+            )
+            .about_host(host.clone());
+        event.note = Some(line);
+        self.publish(event).await;
+    }
+
+    /// One info event when the hub hears a silent host again: how long it was
+    /// silent, and how many of the leases it lost it holds again.
+    async fn announce_back(
+        &self,
+        at: Timestamp,
+        host: &HostName,
+        silent: &SilentHost,
+        leases: &[Doc<Lease>],
+    ) {
+        let held_on: std::collections::HashSet<&AgentId> = leases
+            .iter()
+            .filter_map(|doc| match &doc.value.state {
+                LeaseState::Held { host: h, .. } if h == host => Some(&doc.value.agent),
+                _ => None,
+            })
+            .collect();
+        let reclaimed = silent.agents.iter().filter(|a| held_on.contains(a)).count();
+        let secs = at.since(silent.last_seen).as_secs();
+        tracing::info!(%host, silent_secs = secs, reclaimed, "the host is back");
+        let mut event = self
+            .event(
+                at,
+                Severity::Info,
+                SwarmEventBody::AlertResolved {
+                    rule: HOST_SILENT.to_owned(),
+                    subject: host.to_string(),
+                },
+            )
+            .about_host(host.clone());
+        event.note = Some(format!(
+            "host {host} was silent for {secs}s: {reclaimed} of {} leases reclaimed",
+            silent.agents.len()
+        ));
+        self.publish(event).await;
     }
 }

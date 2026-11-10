@@ -757,6 +757,13 @@ message.
   `borant stop` ends such a session at once. `borant restart <agent>` stops the
   frozen session and starts the agent again. Nothing is killed on a guess: the
   flag is a flag.
+- **Sleep warning:** a host that sends no heartbeat for the lease time (30
+  seconds) and loses its leases raises one `host_silent` alert for the host
+  and not one per agent. It names the host, the last time it was seen, and the
+  agents that it lost, and the per-agent `lease.expired` lines stay. It
+  resolves once, when the host beats again, with how long it was silent and
+  how many leases it took back. Laptops are included: `host_offline` covers
+  only `always_on` hosts.
 
 Checkpoints go to `refs/borant/<agent>/wip` on the `origin` remote of the
 repository. Set `checkpoint_remote` if the origin does not accept custom refs.

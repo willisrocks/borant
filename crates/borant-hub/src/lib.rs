@@ -312,6 +312,13 @@ pub(crate) struct Memory {
     /// pass already read, so a backlog that nothing touched is not read
     /// again.
     pub wake_seen: HashMap<AgentId, u64>,
+    /// The held leases that the lease pass expired in its current pass, per
+    /// host, so one silent host is one line and not one per agent.
+    pub expired_hosts: BTreeMap<HostName, crate::leases::HostExpiry>,
+    /// A host that stopped beating and lost its leases, with the agents that
+    /// it lost, until the hub hears it again. One entry per silence, so the
+    /// hub warns once per host.
+    pub silent_hosts: BTreeMap<HostName, crate::leases::SilentHost>,
     /// The swarm events of the writes in this request or tick step, which are
     /// published after the `mem` guard drops.
     pub outbox: Vec<borant_core::events::SwarmEvent>,
