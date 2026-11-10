@@ -139,6 +139,28 @@ async fn a_sleep_leaves_a_hung_agent_on_the_view_and_the_alert() {
     assert!(alert_keys(&fx).await.is_empty());
 }
 
+/// Rule: the registration that a woken host sends before its first beat is the
+/// first thing the hub hears from it, so the sleep is recorded there too. The
+/// macbook slept twice on 2026-11-10 (13 minutes each: 00:41Z and 16:41Z) and
+/// re-registered on waking, so the beats after it never saw a gap and no agent
+/// was ever flagged.
+#[tokio::test]
+async fn a_registration_after_a_sleep_records_it() {
+    let fx = Fx::new();
+    fx.host("h1", &[Harness::Fake]).await;
+    let reg = fx.register("h1", Some("w1"), None).await;
+    let start = fx.clock.now();
+    beat(&fx, &reg, start).await;
+
+    // The lid closes for 25 minutes. The host wakes and registers before its
+    // first beat.
+    fx.advance(25 * 60);
+    fx.host("h1", &[Harness::Fake]).await;
+    beat(&fx, &reg, start).await;
+    let flag = hung(&fx).await.expect("the agent is hung after the sleep");
+    assert_eq!(flag["host_slept"], true);
+}
+
 /// Rule: the blocked-work alarm sticks the claim of a hung agent, and its
 /// `attention_msg` says why and names the restart. The alert pass leaves a hung
 /// agent to the hung alert, so this is where its claim goes `stuck`.
