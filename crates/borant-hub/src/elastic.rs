@@ -448,6 +448,9 @@ impl Hub {
             return Ok(None);
         }
         let lease = self.store.get::<Lease>(&keys::lease_agent(id)).await?;
+        let released = lease
+            .as_ref()
+            .is_some_and(|d| matches!(d.value.state, LeaseState::Released { .. }));
         if lease.is_some_and(|d| {
             matches!(
                 d.value.state,
@@ -460,6 +463,9 @@ impl Hub {
             return Ok(None);
         };
         let agent = agent.value;
+        // A pinned agent is placed only after a clean end, that is a released
+        // lease: then it waits for a host like any other, and a resume or a
+        // restart that fits nowhere is demand.
         if agent.pinned || agent.retired || agent.paused.is_some() {
             return Ok(None);
         }
@@ -964,7 +970,7 @@ mod tests {
         Harness, HostInfo, HostStats, MoveReason, Sender, SessionStats, SpawnSpec, Task, TaskKind,
         TaskStatus,
     };
-    use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
+    use borant_core::proto::{CtlRequest, MoveSelector, MoveTarget, ToolCall};
     use borant_core::rules::roles::Resolved;
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
@@ -1865,6 +1871,67 @@ mod tests {
             before,
             "a placed agent is no demand"
         );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_move_that_fits_no_host_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        fx.hub.mem.lock().await.pending_moves.remove(&w);
+
+        let moved = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .move_agents(
+                    &mut mem,
+                    &MoveSelector::Agent(w.clone()),
+                    MoveTarget::default(),
+                    None,
+                )
+                .await
+                .expect("a move that waits for a host is no error")
+        };
+        assert_eq!(moved, vec![w.clone()]);
+        assert!(
+            fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "the unplaced move is recorded as demand"
+        );
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the pool orders a host");
+    }
+
+    #[tokio::test]
+    async fn elastic_a_drain_with_no_other_host_orders_one() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        register_in(&fx, "h1", None, 2).await;
+        idle_agent(&fx, "w1", "h1", NOW, NOW).await;
+        let w: AgentId = "w1".parse().unwrap();
+
+        let moved = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .drain(&mut mem, &name("h1"))
+                .await
+                .expect("a drain with no capacity elsewhere is no error")
+        };
+        assert_eq!(moved, vec![w.clone()]);
+        assert!(
+            fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "the mover is recorded as demand"
+        );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_drain_without_pools_still_refuses() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(None, prov.clone());
+        register_in(&fx, "h1", None, 2).await;
+        idle_agent(&fx, "w1", "h1", NOW, NOW).await;
+        let mut mem = fx.hub.mem.lock().await;
+        assert!(fx.hub.drain(&mut mem, &name("h1")).await.is_err());
     }
 
     #[tokio::test]

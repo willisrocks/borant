@@ -470,7 +470,7 @@ fn serving_slots(
 /// memory and a full disk. A host that cannot reach the repo
 /// is the host's own state, not the image's. A draining host is no
 /// capacity, and a new host fixes that.
-fn fixable_reason(reason: &Reject) -> bool {
+pub fn fixable_reason(reason: &Reject) -> bool {
     matches!(
         reason,
         Reject::MissingBundle(_)

@@ -69,6 +69,15 @@ fn capacity_refusal(rejected: &[(HostName, Reject)]) -> bool {
         .all(|(_, why)| matches!(why, Reject::Full { .. } | Reject::Offline))
 }
 
+/// True when no host takes an explicit move now, and a new pool host or a free
+/// slot would fix every refusal: the move waits as demand, so the pool orders
+/// a host, instead of failing the move or the drain.
+fn move_waits_for_a_host(rejected: &[(HostName, Reject)]) -> bool {
+    rejected.iter().all(|(_, why)| {
+        matches!(why, Reject::Full { .. }) || borant_core::rules::pool::fixable_reason(why)
+    })
+}
+
 /// The hosts of one placement pass, with the agents on each: the host and
 /// lease lists read once, so a pass over many spawns does not list them once
 /// per spawn.
@@ -762,6 +771,15 @@ impl Hub {
         Ok(())
     }
 
+    /// True when an elastic pool is configured, so a refused placement can
+    /// wait for a host that the pool orders.
+    fn has_pools(&self) -> bool {
+        self.cfg
+            .elastic
+            .as_ref()
+            .is_some_and(|e| !e.pools.is_empty())
+    }
+
     pub(crate) async fn move_agents(
         &self,
         mem: &mut Memory,
@@ -827,19 +845,33 @@ impl Hub {
                     }
                     let req = self.placement_req(&agent, target.host.as_ref()).await;
                     let bundles = self.launch_bundles(&agent);
-                    let Some((to, _)) = schedule::place(
+                    // A target that no host can take now is demand when the
+                    // pool can order a host: the session stops, the move
+                    // stays pending, and the host that comes up takes it.
+                    let to = match schedule::place(
                         agent.preferred_harness,
                         target.harness,
                         &req,
                         &bundles,
                         &views,
-                    )
-                    .ok() else {
-                        return Err(ApiError::unavailable(format!(
-                            "no host can take agent {id} now"
-                        )));
+                    ) {
+                        Ok((to, _)) => Some(to),
+                        Err(rejected)
+                            if self.has_pools()
+                                && target.host.is_none()
+                                && move_waits_for_a_host(&rejected) =>
+                        {
+                            None
+                        }
+                        Err(_) => {
+                            return Err(ApiError::unavailable(format!(
+                                "no host can take agent {id} now"
+                            )));
+                        }
                     };
-                    *planned.entry(to.clone()).or_default() += 1;
+                    if let Some(to) = &to {
+                        *planned.entry(to.clone()).or_default() += 1;
+                    }
                     let cmd = HostCommand::PrepareMove {
                         agent: id.clone(),
                         session,
@@ -857,19 +889,21 @@ impl Hub {
                             prompt: None,
                         },
                     );
-                    let now = self.now();
-                    let requested = self
-                        .event(
-                            now,
-                            Severity::Info,
-                            SwarmEventBody::MoveRequested {
-                                from_host: Some(host.clone()),
-                                to_host: to,
-                                reason: MoveReason::Planned,
-                            },
-                        )
-                        .about_agent(id.clone());
-                    Self::queue(mem, requested);
+                    if let Some(to) = to {
+                        let now = self.now();
+                        let requested = self
+                            .event(
+                                now,
+                                Severity::Info,
+                                SwarmEventBody::MoveRequested {
+                                    from_host: Some(host.clone()),
+                                    to_host: to,
+                                    reason: MoveReason::Planned,
+                                },
+                            )
+                            .about_agent(id.clone());
+                        Self::queue(mem, requested);
+                    }
                 }
                 Some(LeaseState::Reserved { .. }) => continue,
                 _ => {
@@ -878,9 +912,21 @@ impl Hub {
                         .place_agent(mem, &agent, MoveReason::Planned, target.clone(), None)
                         .await?
                     {
-                        return Err(ApiError::unavailable(format!(
-                            "no host can take agent {id} now"
-                        )));
+                        if !self.has_pools() || target.host.is_some() {
+                            return Err(ApiError::unavailable(format!(
+                                "no host can take agent {id} now"
+                            )));
+                        }
+                        // The pool counts the pending move as demand and the
+                        // tick places the agent when the host is up.
+                        mem.pending_moves.insert(
+                            id.clone(),
+                            PendingMove {
+                                target: target.clone(),
+                                reason: MoveReason::Planned,
+                                prompt: None,
+                            },
+                        );
                     }
                 }
             }
