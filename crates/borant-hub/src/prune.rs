@@ -31,6 +31,10 @@ use crate::export::SnapshotMark;
 /// The state keys of the agent sessions. `keys` has no prefix for them.
 const SESSION_PREFIX: &str = "session.";
 
+/// The keys `session.started.{agent}` share that prefix but hold the start time
+/// of a session, an integer, not a `Session`. The scan skips them.
+const SESSION_STARTED_PREFIX: &str = "session.started.";
+
 /// The most deletions in a batch, before the prune yields.
 const BATCH: usize = 200;
 
@@ -860,6 +864,7 @@ impl Scan {
             } else if e.key.starts_with(keys::CHANNEL_PREFIX) {
                 scan.read_channel(e);
             } else if e.key.starts_with(SESSION_PREFIX)
+                && !e.key.starts_with(SESSION_STARTED_PREFIX)
                 && let Some(s) = decode::<Session>(e)
             {
                 scan.session_keys
@@ -967,6 +972,50 @@ mod tests {
     use crate::{Hub, HubConfig};
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    /// Collects what `tracing` logs on this thread.
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn a_session_started_key_is_skipped_without_a_warning() {
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let entry = |key: &str, value: &str| borant_core::ports::Entry {
+            key: key.to_owned(),
+            value: value.as_bytes().to_vec().into(),
+            revision: 1,
+        };
+        let scan = tracing::subscriber::with_default(subscriber, || {
+            super::Scan::read(&[
+                entry("session.started.worker", "1700000000000"),
+                entry("session.started.other", "42"),
+            ])
+        });
+        assert!(scan.session_keys.is_empty());
+        let out = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(out.is_empty(), "unexpected log output: {out}");
+    }
 
     fn hub() -> (Arc<Hub>, MemoryState) {
         let state = MemoryState::new();

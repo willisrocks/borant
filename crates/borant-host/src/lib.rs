@@ -668,11 +668,21 @@ impl Host {
 
     /// Sends a request to the hub and waits for its reply.
     pub(crate) async fn hub(&self, req: &CtlRequest) -> Result<serde_json::Value, ApiError> {
+        self.hub_within(req, self.inner.cfg.hub_timeout).await
+    }
+
+    /// Like [`Host::hub`], with a wait of its own for a request that the hub
+    /// takes long to answer, such as a prune of a big hub.
+    pub(crate) async fn hub_within(
+        &self,
+        req: &CtlRequest,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, ApiError> {
         let payload = serde_json::to_vec(req).map_err(|e| ApiError::internal(e.to_string()))?;
         let bytes = self
             .inner
             .bus
-            .request(subjects::CTL, payload.into(), self.inner.cfg.hub_timeout)
+            .request(subjects::CTL, payload.into(), timeout)
             .await
             .map_err(|e| ApiError::unavailable(format!("hub unavailable: {}", e.message)))?;
         serde_json::from_slice::<Reply>(&bytes)

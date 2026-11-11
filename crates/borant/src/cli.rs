@@ -552,8 +552,18 @@ pub(crate) fn client() -> LocalClient {
 
 const CALL: Duration = Duration::from_secs(30);
 
+/// How long the CLI waits for the host to answer a call. A prune plans over
+/// the whole hub, so it waits as long as the host waits for the hub.
+fn call_wait(call: &ToolCall) -> Duration {
+    match call {
+        ToolCall::PruneAgents { .. } => borant_core::proto::PRUNE_TIMEOUT,
+        _ => CALL,
+    }
+}
+
 pub(crate) async fn call(c: &LocalClient, call: ToolCall) -> anyhow::Result<Value> {
-    reply(c, json!({ "call": call })).await
+    let wait = call_wait(&call);
+    reply_within(c, json!({ "call": call }), wait).await
 }
 
 /// A call that the hub reads as the agent of this session when the process
@@ -594,7 +604,11 @@ fn down(e: anyhow::Error) -> anyhow::Error {
 }
 
 async fn reply(c: &LocalClient, body: Value) -> anyhow::Result<Value> {
-    match c.post::<_, Value>("/v1/call", &body, CALL).await {
+    reply_within(c, body, CALL).await
+}
+
+async fn reply_within(c: &LocalClient, body: Value, wait: Duration) -> anyhow::Result<Value> {
+    match c.post::<_, Value>("/v1/call", &body, wait).await {
         Outcome::Reply(Ok(v)) => Ok(v),
         Outcome::Reply(Err(e)) => bail!("{}", e.message),
         Outcome::Down(e) => Err(down(e)),
@@ -763,7 +777,7 @@ fn render_prune(v: &Value) -> String {
             let _ = writeln!(out, "    {}", k.as_str().unwrap_or("?"));
         }
     }
-    let _ = writeln!(out, "Kept ({}):", kept.len());
+    let _ = writeln!(out, "Kept ({}): {}", kept.len(), kept_counts(kept));
     for k in kept {
         let _ = writeln!(
             out,
@@ -793,6 +807,25 @@ fn render_prune(v: &Value) -> String {
         );
     }
     out
+}
+
+/// The count of kept agents for each reason, most first, so a report of a
+/// thousand agents reads at a glance: `unacked 846, parked 142`.
+fn kept_counts(kept: &[Value]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for k in kept {
+        let reason = k["reason"].as_str().unwrap_or("?");
+        match counts.iter_mut().find(|(r, _)| r == reason) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((reason.to_owned(), 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+        .iter()
+        .map(|(r, n)| format!("{r} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Parses `NAME:USED:RESETS_AT`: USED is a share from 0 to 1, and RESETS_AT is
@@ -3290,9 +3323,32 @@ mod tests {
              Kinds:\n  agents           items=1 keys=2 messages=0 events=0 bytes=42 oldest=1000 newest=1000\n\
              Totals: items=1 keys=2 messages=0 events=0 bytes=42\n\
              Candidates (1):\n  old                      since=1000 keys=2 bytes=42\n    agent.old\n    lease.agent.old\n\
-             Kept (1):\n  busy                     session\n\
+             Kept (1): session 1\n  busy                     session\n\
              Dry run: nothing was deleted. Token: 1f2e3d (pass it to --apply).\n"
         );
+    }
+
+    #[test]
+    fn kept_reasons_are_counted_most_first() {
+        let kept: Vec<Value> = ["parked", "unacked", "unacked", "unacked", "parked", "lease"]
+            .iter()
+            .map(|r| json!({ "agent": "a", "reason": r }))
+            .collect();
+        assert_eq!(kept_counts(&kept), "unacked 3, parked 2, lease 1");
+        assert_eq!(kept_counts(&[]), "");
+    }
+
+    #[test]
+    fn only_a_prune_waits_longer_than_the_default_call() {
+        let prune = ToolCall::PruneAgents {
+            older_than_secs: 1,
+            retention_secs: 1,
+            apply: false,
+            token: None,
+        };
+        assert_eq!(call_wait(&prune), borant_core::proto::PRUNE_TIMEOUT);
+        assert!(call_wait(&prune) >= Duration::from_secs(15 * 60));
+        assert_eq!(call_wait(&ToolCall::ListAgents), CALL);
     }
 
     #[test]

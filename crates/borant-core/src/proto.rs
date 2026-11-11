@@ -647,6 +647,11 @@ fn default_page_size() -> usize {
     100
 }
 
+/// How long a prune call waits for the hub, at the host and at the CLI. The
+/// plan reads every inbox and log, and took about 2.5 minutes on a hub of
+/// 1100 agents; the default call timeouts (5 s, 30 s) cut it off.
+pub const PRUNE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// One day, the default age of an agent that a prune may remove.
 fn default_prune_secs() -> u64 {
     24 * 60 * 60
