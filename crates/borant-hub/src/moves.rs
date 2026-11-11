@@ -7,7 +7,7 @@ use std::time::Duration;
 use borant_core::events::{RejectedHost, Severity, SwarmEventBody};
 use borant_core::model::{
     Agent, Harness, HostInfo, LaunchFailure, Lease, LeaseState, MemberState, MoveReason, Project,
-    Sender, SessionEvent, SessionEventBody, SpawnRecord, SpawnState, launch_error_text,
+    Sender, Session, SessionEvent, SessionEventBody, SpawnRecord, SpawnState, launch_error_text,
 };
 use borant_core::proto::{
     ApiError, ApiErrorCode, HostCommand, LaunchOrder, MoveSelector, MoveTarget,
@@ -544,11 +544,22 @@ impl Hub {
             Some((sha, branch)) => (Some(sha), branch),
             None => (None, None),
         };
-        let from_harness = events
+        // The harness of the newest session comes from its own record: a
+        // host logs an event of a session that it no longer knows, such as a
+        // checkpoint after the end, with a placeholder harness.
+        let last_session = events
             .iter()
             .rev()
-            .find(|(_, e)| e.session.is_some())
-            .map(|(_, e)| e.harness);
+            .find_map(|(_, e)| e.session.map(|id| (id, e.harness)));
+        let from_harness = match last_session {
+            Some((id, logged)) => {
+                Some(match self.store.get::<Session>(&keys::session(&id)).await {
+                    Ok(Some(doc)) => doc.value.harness,
+                    _ => logged,
+                })
+            }
+            None => None,
+        };
         let prompt = match (reason, prompt) {
             (MoveReason::Spawn, Some(p)) => p,
             (_, Some(p)) => p,
