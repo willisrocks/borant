@@ -169,27 +169,37 @@ impl Hub {
     /// Stores the refused hosts of a placement in the spawn record of the
     /// agent, for `borant ps --queued`. The hub writes it when the refusal
     /// changes, never on every try. An agent without a spawn record is not
-    /// stored, and a record that another request changed is left to the next
-    /// try.
+    /// stored. A record that another request changed is read again; when the
+    /// write still conflicts, it returns false and the next try writes it.
     async fn note_reject(
         &self,
         agent: &AgentId,
         rejected: &[(HostName, Reject)],
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let key = keys::spawn(agent);
-        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
-            return Ok(());
-        };
-        let mut record = doc.value;
-        record.last_reject = rejected
+        let last_reject: Vec<(HostName, String)> = rejected
             .iter()
             .map(|(host, why)| (host.clone(), why.to_string()))
             .collect();
-        match self.store.put(&key, &record, Some(doc.revision)).await {
-            Ok(_) => Ok(()),
-            Err(e) if e.code == ApiErrorCode::Conflict => Ok(()),
-            Err(e) => Err(e),
+        // A request that changed the record between the read and the write
+        // makes the write conflict: read again, so the stored reason does not
+        // stay the first one for good.
+        for _ in 0..3 {
+            let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+                return Ok(true);
+            };
+            if doc.value.last_reject == last_reject {
+                return Ok(true);
+            }
+            let mut record = doc.value;
+            record.last_reject = last_reject.clone();
+            match self.store.put(&key, &record, Some(doc.revision)).await {
+                Ok(_) => return Ok(true),
+                Err(e) if e.code == ApiErrorCode::Conflict => continue,
+                Err(e) => return Err(e),
+            }
         }
+        Ok(false)
     }
 
     /// Records a refused placement: publishes `placement.refused` when the
@@ -221,19 +231,29 @@ impl Hub {
                 .about_agent(agent.clone());
             Self::queue(mem, event);
         }
-        if changed {
-            self.note_reject(agent, rejected).await?;
-        }
+        // A reason that did not reach the record stays "changed" for the next
+        // try, so `ps` never keeps a refusal that the hub no longer holds.
+        let stored = if changed {
+            self.note_reject(agent, rejected).await?
+        } else {
+            true
+        };
         let entry = mem
             .placement_refusals
             .entry(agent.clone())
             .or_insert_with(|| PlacementRefusal {
-                rejected: rejected.to_vec(),
+                rejected: if stored {
+                    rejected.to_vec()
+                } else {
+                    Vec::new()
+                },
                 told_at: now,
                 retry_at: now,
                 tries: 0,
             });
-        entry.rejected = rejected.to_vec();
+        if stored {
+            entry.rejected = rejected.to_vec();
+        }
         if !told {
             entry.told_at = now;
         }
@@ -485,7 +505,16 @@ impl Hub {
         ) {
             Ok(chosen) => chosen,
             Err(rejected) => {
-                tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
+                tracing::debug!(
+                    agent = %agent.id,
+                    hosts = views.len(),
+                    rejected = %rejected
+                        .iter()
+                        .map(|(h, why)| format!("{h}: {why}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    "no host qualifies for the agent now"
+                );
                 self.note_placement_refusal(mem, &agent.id, reason, &rejected, now)
                     .await?;
                 return Ok(None);

@@ -1359,3 +1359,37 @@ async fn spawns_a_spawn_pinned_to_an_offline_host_still_waits() {
         SpawnState::Failed
     );
 }
+
+/// A spawn queued while one host is full and the other is offline is placed
+/// on the other one within one tick of its coming online with room, and the
+/// refusal that `ps` shows named both hosts while it waited.
+#[tokio::test]
+async fn spawns_a_queued_spawn_is_placed_when_an_offline_host_comes_online() {
+    let fx = Fx::new();
+    host(&fx, "h1", 1).await;
+    host(&fx, "h2", 2).await;
+    let spawner = owner(&fx).await;
+    // h2 stops heartbeating: it is offline when the spawn comes.
+    fx.advance(600);
+    fx.heartbeat("h1", &[&spawner]).await;
+    let spawned = fx
+        .call(Some(&spawner), spawn_call("work", 0))
+        .await
+        .expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+    fx.hub.tick().await.expect("tick");
+    let rec = record(&fx, &agent).await.expect("the record");
+    assert_eq!(rec.state, SpawnState::Queued);
+    let hosts: Vec<_> = rec.last_reject.iter().map(|(h, _)| h.to_string()).collect();
+    assert!(hosts.contains(&"h1".to_owned()), "{hosts:?}");
+    assert!(hosts.contains(&"h2".to_owned()), "{hosts:?}");
+
+    let mut commands = fx.commands("h2").await;
+    fx.heartbeat("h2", &[]).await;
+    fx.hub.tick().await.expect("tick");
+    match next_cmd(&mut commands).await.expect("a launch") {
+        HostCommand::Launch(order) => assert_eq!(order.agent, agent),
+        other => panic!("h2 gets the spawn, got {other:?}"),
+    }
+}
