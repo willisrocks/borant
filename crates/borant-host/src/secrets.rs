@@ -12,8 +12,10 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use borant_core::ports::PortError;
-use borant_core::ports::secrets::{Bundle, BundleName, MemberName, Secret, SecretRef};
+use borant_core::ports::secrets::{
+    Bundle, BundleName, MemberName, Resolved, Secret, SecretRef, SecretStore,
+};
+use borant_core::ports::{PortError, PortErrorKind};
 use borant_core::proto::LaunchOrder;
 use borant_core::rules::redact::redact;
 use borant_core::{AgentId, SessionId};
@@ -473,7 +475,7 @@ async fn resolve(
             .stores
             .get(store)
             .ok_or_else(|| PortError::invalid(format!("the secret store {store} is not open")))?;
-        let resolved = open.resolve(refs).await?;
+        let resolved = resolve_store(open.as_ref(), store, refs).await?;
         for (r, value) in resolved.values {
             values.insert(r, value);
         }
@@ -487,6 +489,32 @@ async fn resolve(
         }
     }
     Ok(values)
+}
+
+/// Resolves the refs of one store. A timeout is the sign of a host that has
+/// no CPU to spare, so it gets one retry, and a second timeout says that the
+/// host is overloaded instead of blaming the store.
+async fn resolve_store<S: SecretStore + ?Sized>(
+    open: &S,
+    store: &str,
+    refs: &[SecretRef],
+) -> Result<Resolved, PortError> {
+    match open.resolve(refs).await {
+        Err(e) if e.kind == PortErrorKind::Timeout => {
+            tracing::warn!(store, "secret resolve timed out; retrying once: {e}");
+            open.resolve(refs).await.map_err(|e| {
+                if e.kind == PortErrorKind::Timeout {
+                    PortError::new(
+                        PortErrorKind::Timeout,
+                        format!("the host is overloaded: resolving the secret store {store} timed out twice ({e})"),
+                    )
+                } else {
+                    e
+                }
+            })
+        }
+        other => other,
+    }
 }
 
 /// Writes the directory that the shim reads: `env` (0600), `pre.json` when
@@ -587,7 +615,60 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), PortError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{REDACTED, Redactor};
+    use super::{REDACTED, Redactor, resolve_store};
+    use borant_core::ports::secrets::{Resolved, SecretCapabilities, SecretRef, SecretStore};
+    use borant_core::ports::{PortError, PortErrorKind, PortResult};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A store that times out `timeouts` times and then answers.
+    #[derive(Debug)]
+    struct Slow {
+        timeouts: u32,
+        calls: AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for Slow {
+        fn kind(&self) -> &'static str {
+            "slow"
+        }
+        fn capabilities(&self) -> SecretCapabilities {
+            SecretCapabilities::default()
+        }
+        async fn resolve(&self, _refs: &[SecretRef]) -> PortResult<Resolved> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.timeouts {
+                Err(PortError::new(
+                    PortErrorKind::Timeout,
+                    "timed out after 30s",
+                ))
+            } else {
+                Ok(Resolved::default())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resolve_timeout_retries_once() {
+        let store = Slow {
+            timeouts: 1,
+            calls: AtomicU32::new(0),
+        };
+        assert!(resolve_store(&store, "op", &[]).await.is_ok());
+        assert_eq!(store.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn two_resolve_timeouts_say_the_host_is_overloaded() {
+        let store = Slow {
+            timeouts: 5,
+            calls: AtomicU32::new(0),
+        };
+        let e = resolve_store(&store, "op", &[]).await.unwrap_err();
+        assert_eq!(e.kind, PortErrorKind::Timeout);
+        assert!(e.message.contains("host is overloaded"), "{}", e.message);
+        assert_eq!(store.calls.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn the_redactor_removes_an_exact_value() {
