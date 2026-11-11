@@ -347,6 +347,17 @@ impl Hub {
                     }),
                     mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
                     disk_used_pct: mem.host_stats.get(&name).and_then(|s| s.disk_used_pct),
+                    load_per_cpu: mem
+                        .host_stats
+                        .get(&name)
+                        .filter(|s| s.cpus > 0)
+                        .map(|s| s.load1 / f64::from(s.cpus)),
+                    launches_failing: crate::liveness::host_failing(
+                        mem,
+                        &name,
+                        now,
+                        &self.cfg.lease,
+                    ),
                     pool: d.value.pool.clone(),
                     info: d.value,
                 }

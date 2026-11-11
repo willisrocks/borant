@@ -477,6 +477,8 @@ fn fixable_reason(reason: &Reject) -> bool {
             | Reject::NoHarness
             | Reject::LowMemory { .. }
             | Reject::LowDisk { .. }
+            | Reject::Overloaded { .. }
+            | Reject::RecentlyFailed
             | Reject::Offline
     )
 }
@@ -650,6 +652,8 @@ mod tests {
             pool: Some("workers".parse().unwrap()),
             mem_avail_mb: None,
             disk_used_pct: None,
+            load_per_cpu: None,
+            launches_failing: false,
         }
     }
 
