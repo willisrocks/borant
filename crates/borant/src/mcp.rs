@@ -19,6 +19,8 @@ use tokio::sync::Mutex;
 use crate::config;
 
 const CALL: Duration = Duration::from_secs(30);
+/// How long the `wait` tool keeps trying to reach a daemon that restarts.
+const RECONNECT: Duration = Duration::from_secs(60);
 
 /// The parent PIDs of this process, nearest first.
 pub fn ancestors() -> Vec<u32> {
@@ -362,11 +364,14 @@ impl BorantMcp {
     }
 
     async fn forward(&self, call: Value) -> Result<String, String> {
+        let is_wait = call["tool"] == "wait";
         let call: ToolCall = serde_json::from_value(strip_nulls(call))
             .map_err(|e| format!("invalid arguments: {e}"))?;
         // After `/clear`, Claude Code keeps this process, but the daemon has
         // a new session. Look the session up again once.
-        for attempt in 0..2 {
+        let mut relooked = false;
+        let down_since = std::time::Instant::now();
+        loop {
             let session = self.session().await?;
             match self
                 .client
@@ -377,21 +382,26 @@ impl BorantMcp {
                     return Ok(serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
                 Outcome::Reply(Err(e))
-                    if attempt == 0
+                    if !relooked
                         && e.code == borant_core::proto::ApiErrorCode::NotFound
                         && e.message.contains("no local session") =>
                 {
+                    relooked = true;
                     *self.session.lock().await = None;
                 }
                 // The kind of the refusal, then its message: a person who
                 // reads a tool error knows whether a retry can work.
                 Outcome::Reply(Err(e)) => return Err(e.to_string()),
+                // A restart of the daemon must not end a wait: try again for
+                // a short window before the tool reports it.
+                Outcome::Down(_) if is_wait && down_since.elapsed() < RECONNECT => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
                 Outcome::Down(e) => {
                     return Err(format!("The Borant host daemon is not reachable: {e}"));
                 }
             }
         }
-        Err("Borant does not know this session.".into())
     }
 
     #[tool(description = "Show your Borant agent ID, host, channels, and the channels you own.")]
