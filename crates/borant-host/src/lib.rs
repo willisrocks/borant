@@ -966,6 +966,14 @@ impl Host {
             }
         }
         let refs = self.lease_refs();
+        // The launches that this beat reports, by start: the reply closes
+        // these and no newer launch of the same agent.
+        let reported: HashMap<AgentId, Instant> = self
+            .state()
+            .pending_launch
+            .iter()
+            .map(|(a, p)| (a.clone(), p.started))
+            .collect();
         let req = CtlRequest::HostHeartbeat {
             host: self.inner.cfg.name.clone(),
             sessions: refs,
@@ -1004,8 +1012,14 @@ impl Host {
                 self.set_paused(false);
                 // A launch that the hub closed stops now: the agent is
                 // retired or paused, or its lease is released.
+                // The reply answers the beat's own list: a launch that started
+                // after the beat, such as the resume of a restart, is a new
+                // launch that the hub has not judged.
                 for agent in reply.stop_launches {
-                    self.stop_closed_launch(&agent).await;
+                    let Some(started) = reported.get(&agent).copied() else {
+                        continue;
+                    };
+                    self.stop_launch_started(&agent, Some(started)).await;
                 }
                 // Saving the stale work can take a network push, so it runs
                 // outside the heartbeat loop.
@@ -1325,6 +1339,22 @@ impl Host {
     /// watchdog reports a launch that missed its timeout; this stop is the
     /// hub's answer, so it is not a failed try. Public for tests.
     pub async fn stop_closed_launch(&self, agent: &AgentId) {
+        self.stop_launch_started(agent, None).await;
+    }
+
+    /// As `stop_closed_launch`, but with `started` it stops only the launch
+    /// that began then: a newer launch of the agent keeps running.
+    async fn stop_launch_started(&self, agent: &AgentId, started: Option<Instant>) {
+        if let Some(started) = started
+            && self
+                .state()
+                .pending_launch
+                .get(agent)
+                .is_none_or(|p| p.started != started)
+        {
+            tracing::debug!(%agent, "a newer launch replaced the one the hub closed");
+            return;
+        }
         let Some((_, _, snapshot)) = self.take_pending_launch(agent).await else {
             return;
         };

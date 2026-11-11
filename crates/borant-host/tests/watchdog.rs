@@ -618,3 +618,94 @@ async fn a_claude_launch_trusts_its_fresh_folder_in_the_session_profile() {
     f.stop.cancel();
     drop(f.dir);
 }
+
+/// Serves the real hub, but holds the reply of a heartbeat until `gate` opens;
+/// `reached` fires once the hub has judged the beat.
+async fn serve_gated_hub(
+    bus: &MemoryBus,
+    hub: Arc<Hub>,
+    reached: Arc<tokio::sync::Notify>,
+    gate: Arc<tokio::sync::Notify>,
+) {
+    let mut reqs = bus.serve(subjects::CTL).await.expect("serve the hub");
+    tokio::spawn(async move {
+        while let Some(req) = reqs.next().await {
+            let parsed = serde_json::from_slice::<CtlRequest>(&req.payload).unwrap();
+            let beat = matches!(parsed, CtlRequest::HostHeartbeat { .. });
+            let reply = hub.handle(parsed).await;
+            if beat {
+                reached.notify_one();
+                gate.notified().await;
+            }
+            let _ = req
+                .responder
+                .respond(serde_json::to_vec(&reply).unwrap().into())
+                .await;
+        }
+    });
+}
+
+/// A heartbeat reply that closes the launch of a paused agent must not stop
+/// the launch that a restart started after the beat went out.
+#[tokio::test]
+async fn a_reply_for_an_old_launch_does_not_stop_the_newer_one() {
+    let bus = MemoryBus::new();
+    let sessions = MemorySession::new();
+    let state = MemoryState::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = HostConfig::new("h1".parse().unwrap(), dir.path().to_path_buf());
+    cfg.harnesses = vec![Harness::Fake];
+    cfg.commands.fake = Some(vec!["true".to_owned()]);
+    cfg.hub_timeout = Duration::from_secs(5);
+    let launcher = FakeLauncher::default();
+    let host = Host::new(
+        cfg,
+        Arc::new(bus.clone()),
+        Arc::new(sessions.clone()),
+        Arc::new(SystemClock),
+        Box::new(launcher.clone()),
+        None,
+        None,
+        Outbox::in_memory().unwrap(),
+    );
+    let hub = Arc::new(Hub::new(
+        Arc::new(state.clone()),
+        Arc::new(bus.clone()),
+        Arc::new(sessions.clone()),
+        Arc::new(borant_core::ManualClock::new(Timestamp(1_000_000))),
+        HubConfig::default(),
+    ));
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new(tokio::sync::Notify::new());
+    serve_gated_hub(&bus, hub, reached.clone(), gate.clone()).await;
+    let f = ClosedFixture {
+        host: host.clone(),
+        launcher: launcher.clone(),
+        state,
+        stop: CancellationToken::new(),
+        dir,
+    };
+    let agent: AgentId = "a1".parse().unwrap();
+    // The stop of the restart paused the agent; the first launch still waits.
+    put_agent(&f, &agent, false, true).await;
+    host.launch(order(&agent)).await.unwrap();
+
+    let beat = {
+        let host = host.clone();
+        tokio::spawn(async move { host.heartbeat_once().await })
+    };
+    reached.notified().await;
+    // The resume of the restart launches again before the reply arrives.
+    host.launch(order(&agent)).await.unwrap();
+    let before = launcher.calls().len();
+    gate.notify_one();
+    beat.await.unwrap();
+
+    let after = launcher.calls();
+    assert!(
+        !after[before..].iter().any(|c| c.starts_with("stop")),
+        "the stale reply stopped the newer launch: {after:?}"
+    );
+
+    drop(f);
+}
