@@ -15,9 +15,10 @@ use crate::{Hub, Memory};
 
 /// How long a retired session that the hub has no turn state for gets before
 /// it is stopped anyway. The heartbeat's `SessionStats` carries the `busy` of
-/// each session, which `TurnStart`/`TurnEnd` set, so this safety grace covers
-/// only a session that the host reports no stats for; waiting for a turn end
-/// of such a session could keep its lease and its clone for ever.
+/// each session, which `TurnStart`/`TurnEnd` set, so a session in a turn
+/// stops at the turn end. A session that never ends its turn (blocked in a
+/// long tool) or that the host reports no stats for is stopped at this grace,
+/// so it cannot keep its lease and its clone for ever.
 pub(crate) const UNKNOWN_TURN_GRACE: Duration = Duration::from_secs(600);
 
 /// A retired agent that still waits for its stop: the host that runs its
@@ -218,17 +219,23 @@ impl Hub {
                 continue;
             }
             // A session that is not in a turn stops now: `idle_since` from its
-            // last turn end, or `busy: false` from the host. A busy session
-            // stops at its turn end, and one that the host reports no stats
-            // for stops at the safety grace, so no retired session waits for a
-            // turn end that no host will ever report.
+            // last turn end, or `busy: false` from the host. Any other retired
+            // session, busy or with no stats, stops at the safety grace: a
+            // turn that blocks in a tool (a long `wait`) never ends, and a
+            // hub restart forgets the pending stops, so the grace restarts
+            // from the first heartbeat that sees the session.
             let busy = Self::session_busy(mem, host, &s.agent);
+            let wait = mem
+                .stop_pending
+                .entry(s.agent.clone())
+                .or_insert(StopWait {
+                    host: host.clone(),
+                    since: now,
+                })
+                .clone();
             let due = s.idle_since.is_some()
                 || busy == Some(false)
-                || (busy.is_none()
-                    && mem.stop_pending.get(&s.agent).is_some_and(|w| {
-                        w.host == *host && now.since(w.since) >= UNKNOWN_TURN_GRACE
-                    }));
+                || (wait.host == *host && now.since(wait.since) >= UNKNOWN_TURN_GRACE);
             if !due {
                 continue;
             }

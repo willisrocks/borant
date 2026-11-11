@@ -1055,6 +1055,43 @@ fn wait_line(reply: &Value) -> String {
     }
 }
 
+/// How long a wait keeps trying to reach a local daemon that went away, so a
+/// restart of the daemon (a deploy) does not end a long wait.
+const WAIT_RECONNECT: Duration = Duration::from_secs(60);
+/// The pause between two tries to reach the daemon again.
+const WAIT_RETRY_PAUSE: Duration = Duration::from_millis(500);
+
+/// One long poll of `/v1/wait/*` that survives a restart of the local daemon:
+/// when the connection fails, it asks again for the rest of the wait, until
+/// the daemon has been away for [`WAIT_RECONNECT`]. The `timeout_ms` of the
+/// path is the span; each retry rewrites it to what is left.
+async fn wait_resuming(c: &LocalClient, path: &str, span: Duration) -> Outcome<Value> {
+    let start = std::time::Instant::now();
+    let mut away_since: Option<std::time::Instant> = None;
+    loop {
+        // The first try asks for the whole span; a retry for what is left.
+        let left = if away_since.is_some() {
+            span.saturating_sub(start.elapsed())
+        } else {
+            span
+        };
+        let path = match path.rsplit_once("timeout_ms=") {
+            Some((head, _)) => format!("{head}timeout_ms={}", left.as_millis()),
+            None => path.to_owned(),
+        };
+        match c.get::<Value>(&path, left + WAIT_MARGIN).await {
+            Outcome::Down(e) => {
+                let since = *away_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= WAIT_RECONNECT {
+                    return Outcome::Down(e);
+                }
+                tokio::time::sleep(WAIT_RETRY_PAUSE).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Waits for an agent or a task and returns the exit code of the command.
 async fn wait(
     c: &LocalClient,
@@ -1075,7 +1112,7 @@ async fn wait(
         }
         _ => bail!("name one agent, or use --task CHANNEL/ID"),
     };
-    let reply = match c.get::<Value>(&path, span + WAIT_MARGIN).await {
+    let reply = match wait_resuming(c, &path, span).await {
         Outcome::Reply(Ok(v)) => v,
         Outcome::Reply(Err(e)) => bail!("{}", e.message),
         Outcome::Down(e) => {
@@ -3247,6 +3284,61 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.to_string(), "name one agent, or use --task CHANNEL/ID");
+    }
+
+    /// The daemon drops the connection mid-wait, as a restart does: the wait
+    /// asks again and returns the outcome of the second answer.
+    #[tokio::test]
+    async fn cli_wait_resumes_after_the_daemon_drops_the_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("host.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let served = tokio::spawn(async move {
+            let mut heads = Vec::new();
+            for answer in 0..2 {
+                let (mut conn, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while conn.read(&mut byte).await.unwrap() == 1 {
+                    head.push(byte[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                heads.push(String::from_utf8(head).unwrap());
+                if answer == 0 {
+                    // The daemon dies: no reply at all.
+                    drop(conn);
+                    continue;
+                }
+                let body = json!({"ok": {
+                    "outcome": "done",
+                    "task": {"id": TASK, "status": "closed", "close_reason": "done"},
+                }})
+                .to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                conn.write_all(reply.as_bytes()).await.unwrap();
+                conn.shutdown().await.unwrap();
+            }
+            heads
+        });
+        let c = LocalClient::new(socket);
+        let code = wait(&c, None, Some(format!("api/{TASK}")), Some("10m".into()))
+            .await
+            .unwrap();
+        assert_eq!(code, 0, "the wait returns the outcome of the second try");
+        let heads = served.await.unwrap();
+        assert!(heads[0].contains("timeout_ms=600000"), "{}", heads[0]);
+        assert!(
+            heads[1].contains("/v1/wait/task?channel=api"),
+            "{}",
+            heads[1]
+        );
     }
 
     #[test]

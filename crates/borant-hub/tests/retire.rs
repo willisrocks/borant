@@ -434,32 +434,41 @@ async fn retire_stops_a_not_busy_session_at_the_next_heartbeat() {
     );
 }
 
-/// A session whose stats say it is busy keeps its turn: no stop at the safety
-/// grace, and the stop at the first heartbeat that reports the turn ended, so
-/// a worker that writes its last message is not cut off.
+/// A session whose stats say it is busy keeps its turn for the safety grace,
+/// and stops at the first heartbeat that reports the turn ended; a turn that
+/// never ends (blocked in a long tool) stops at the grace.
 #[tokio::test]
-async fn retire_does_not_stop_a_busy_session_at_the_grace() {
+async fn retire_stops_a_busy_session_at_the_grace_not_before() {
     let (fx, owner, w, bound, _other) = fixture().await;
     let mut cmds = fx.commands("h1").await;
-    // The session is in a turn when the bound task closes.
     fx.heartbeat_busy("h1", &w, true).await;
     close(&fx, &owner, &bound).await;
     assert!(next_cmd(&mut cmds).await.is_none(), "no stop in a turn");
 
     fx.clock.advance(Duration::from_secs(31));
     fx.heartbeat_busy("h1", &w, true).await;
-    assert!(
-        next_cmd(&mut cmds).await.is_none(),
-        "a busy session is not stopped at the grace"
-    );
-    fx.clock.advance(Duration::from_secs(599));
+    assert!(next_cmd(&mut cmds).await.is_none(), "a busy session waits");
+    fx.clock.advance(Duration::from_secs(560));
     fx.heartbeat_busy("h1", &w, true).await;
-    assert!(
-        next_cmd(&mut cmds).await.is_none(),
-        "a busy session is not stopped at the safety grace"
-    );
+    assert!(next_cmd(&mut cmds).await.is_none(), "not before the grace");
 
-    // The turn ends: the stop goes out.
+    // The turn never ends: the stop goes out at the grace, on the heartbeat.
+    fx.clock.advance(Duration::from_secs(10));
+    fx.heartbeat_busy("h1", &w, true).await;
+    match next_cmd(&mut cmds).await {
+        Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
+        other => panic!("expected a stop at the grace, got {other:?}"),
+    }
+}
+
+/// A busy session whose turn ends before the grace stops at the turn end.
+#[tokio::test]
+async fn retire_stops_a_busy_session_at_its_turn_end() {
+    let (fx, owner, w, bound, _other) = fixture().await;
+    let mut cmds = fx.commands("h1").await;
+    fx.heartbeat_busy("h1", &w, true).await;
+    close(&fx, &owner, &bound).await;
+    assert!(next_cmd(&mut cmds).await.is_none(), "no stop in a turn");
     fx.heartbeat_busy("h1", &w, false).await;
     match next_cmd(&mut cmds).await {
         Some(HostCommand::Stop { session }) => assert_eq!(session, w.session),
