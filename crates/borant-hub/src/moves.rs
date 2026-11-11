@@ -69,6 +69,15 @@ fn capacity_refusal(rejected: &[(HostName, Reject)]) -> bool {
         .all(|(_, why)| matches!(why, Reject::Full { .. } | Reject::Offline))
 }
 
+/// True when no host takes an explicit move now, and a new pool host or a free
+/// slot would fix every refusal: the move waits as demand, so the pool orders
+/// a host, instead of failing the move or the drain.
+fn move_waits_for_a_host(rejected: &[(HostName, Reject)]) -> bool {
+    rejected.iter().all(|(_, why)| {
+        matches!(why, Reject::Full { .. }) || borant_core::rules::pool::fixable_reason(why)
+    })
+}
+
 /// The hosts of one placement pass, with the agents on each: the host and
 /// lease lists read once, so a pass over many spawns does not list them once
 /// per spawn.
@@ -87,7 +96,10 @@ impl PlacementPass {
         mem: &Memory,
         agent: &AgentId,
     ) -> Cow<'a, [HostView]> {
-        if mem.failed_hosts.get(agent).is_none_or(HashMap::is_empty) {
+        // The pass lists the hosts once, with the failures of every agent.
+        // The flags of this agent come from the memory of now, because an
+        // earlier try of the same spawn may have cleared its own failures.
+        if mem.failed_hosts.is_empty() && self.views.iter().all(|v| !v.launches_failing) {
             return Cow::Borrowed(&self.views);
         }
         let now = hub.now();
@@ -95,6 +107,8 @@ impl PlacementPass {
         for v in &mut views {
             v.recently_failed =
                 crate::liveness::failed_recently(mem, agent, &v.info.name, now, &hub.cfg.lease);
+            v.launches_failing =
+                crate::liveness::host_failing(mem, Some(agent), &v.info.name, now, &hub.cfg.lease);
         }
         Cow::Owned(views)
     }
@@ -347,6 +361,18 @@ impl Hub {
                     }),
                     mem_avail_mb: mem.host_stats.get(&name).and_then(|s| s.mem_avail_mb),
                     disk_used_pct: mem.host_stats.get(&name).and_then(|s| s.disk_used_pct),
+                    load_per_cpu: mem
+                        .host_stats
+                        .get(&name)
+                        .filter(|s| s.cpus > 0)
+                        .map(|s| s.load1 / f64::from(s.cpus)),
+                    launches_failing: crate::liveness::host_failing(
+                        mem,
+                        agent,
+                        &name,
+                        now,
+                        &self.cfg.lease,
+                    ),
                     pool: d.value.pool.clone(),
                     info: d.value,
                 }
@@ -751,6 +777,15 @@ impl Hub {
         Ok(())
     }
 
+    /// True when an elastic pool is configured, so a refused placement can
+    /// wait for a host that the pool orders.
+    fn has_pools(&self) -> bool {
+        self.cfg
+            .elastic
+            .as_ref()
+            .is_some_and(|e| !e.pools.is_empty())
+    }
+
     pub(crate) async fn move_agents(
         &self,
         mem: &mut Memory,
@@ -816,19 +851,33 @@ impl Hub {
                     }
                     let req = self.placement_req(&agent, target.host.as_ref()).await;
                     let bundles = self.launch_bundles(&agent);
-                    let Some((to, _)) = schedule::place(
+                    // A target that no host can take now is demand when the
+                    // pool can order a host: the session stops, the move
+                    // stays pending, and the host that comes up takes it.
+                    let to = match schedule::place(
                         agent.preferred_harness,
                         target.harness,
                         &req,
                         &bundles,
                         &views,
-                    )
-                    .ok() else {
-                        return Err(ApiError::unavailable(format!(
-                            "no host can take agent {id} now"
-                        )));
+                    ) {
+                        Ok((to, _)) => Some(to),
+                        Err(rejected)
+                            if self.has_pools()
+                                && target.host.is_none()
+                                && move_waits_for_a_host(&rejected) =>
+                        {
+                            None
+                        }
+                        Err(_) => {
+                            return Err(ApiError::unavailable(format!(
+                                "no host can take agent {id} now"
+                            )));
+                        }
                     };
-                    *planned.entry(to.clone()).or_default() += 1;
+                    if let Some(to) = &to {
+                        *planned.entry(to.clone()).or_default() += 1;
+                    }
                     let cmd = HostCommand::PrepareMove {
                         agent: id.clone(),
                         session,
@@ -846,19 +895,21 @@ impl Hub {
                             prompt: None,
                         },
                     );
-                    let now = self.now();
-                    let requested = self
-                        .event(
-                            now,
-                            Severity::Info,
-                            SwarmEventBody::MoveRequested {
-                                from_host: Some(host.clone()),
-                                to_host: to,
-                                reason: MoveReason::Planned,
-                            },
-                        )
-                        .about_agent(id.clone());
-                    Self::queue(mem, requested);
+                    if let Some(to) = to {
+                        let now = self.now();
+                        let requested = self
+                            .event(
+                                now,
+                                Severity::Info,
+                                SwarmEventBody::MoveRequested {
+                                    from_host: Some(host.clone()),
+                                    to_host: to,
+                                    reason: MoveReason::Planned,
+                                },
+                            )
+                            .about_agent(id.clone());
+                        Self::queue(mem, requested);
+                    }
                 }
                 Some(LeaseState::Reserved { .. }) => continue,
                 _ => {
@@ -867,9 +918,21 @@ impl Hub {
                         .place_agent(mem, &agent, MoveReason::Planned, target.clone(), None)
                         .await?
                     {
-                        return Err(ApiError::unavailable(format!(
-                            "no host can take agent {id} now"
-                        )));
+                        if !self.has_pools() || target.host.is_some() {
+                            return Err(ApiError::unavailable(format!(
+                                "no host can take agent {id} now"
+                            )));
+                        }
+                        // The pool counts the pending move as demand and the
+                        // tick places the agent when the host is up.
+                        mem.pending_moves.insert(
+                            id.clone(),
+                            PendingMove {
+                                target: target.clone(),
+                                reason: MoveReason::Planned,
+                                prompt: None,
+                            },
+                        );
                     }
                 }
             }
@@ -1155,6 +1218,61 @@ impl Hub {
     /// The record that fails also retires its agent, by the path of a normal
     /// retire, so no takeover places it again; the record stays for `ps`.
     ///
+    /// True when `host` has no record and no pool host of that name is on its
+    /// way: a spawn that names it waits for nothing. A host that registered
+    /// once and is offline now still has its record, and the spawn waits for
+    /// it to come back.
+    pub(crate) async fn host_is_gone(&self, host: &HostName) -> Result<bool, ApiError> {
+        if self
+            .store
+            .get::<HostInfo>(&keys::host(host))
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let booting = self
+            .store
+            .get::<borant_core::rules::pool::ElasticHost>(&keys::elastic(host))
+            .await?
+            .is_some_and(|d| {
+                matches!(
+                    d.value.phase,
+                    borant_core::rules::pool::Phase::Requested
+                        | borant_core::rules::pool::Phase::Booting
+                )
+            });
+        Ok(!booting)
+    }
+
+    /// Fails the spawn of `agent` at once because the host that it names is
+    /// gone: a launch that no host can take is no reason to wait for the
+    /// timeout of the queue. Goes through the path of the last failed try, so
+    /// the spawner hears of it and the agent is retired.
+    pub(crate) async fn fail_spawn_on_gone_host(
+        &self,
+        mem: &mut Memory,
+        agent: &AgentId,
+        host: &HostName,
+    ) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        let mut record = doc.value;
+        if !matches!(record.state, SpawnState::Queued | SpawnState::Launching) {
+            return Ok(());
+        }
+        record.attempts = MAX_LAUNCH_TRIES - 1;
+        self.store
+            .put(&doc.key, &record, Some(doc.revision))
+            .await?;
+        let error = format!("host {host} is gone");
+        self.note_launch_failure(mem, agent, host, None, Some(&error))
+            .await?;
+        Ok(())
+    }
+
     /// The spawner gets one direct message, with the write that fails the
     /// record: a repeat on a `Failed` record counts nothing and sends
     /// nothing. A spawn by a person has no agent to tell.

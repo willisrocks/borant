@@ -1314,3 +1314,48 @@ async fn spawns_a_single_host_spawn_retries_and_then_fails() {
     assert_eq!(failed.state, SpawnState::Failed, "{failed:?}");
     assert_eq!(failed.attempts, 3);
 }
+
+/// A spawn that names a host that is gone fails at once and says so, instead
+/// of waiting in the queue for the host.
+#[tokio::test]
+async fn spawns_a_spawn_pinned_to_a_gone_host_fails_at_once() {
+    let fx = Fx::new();
+    host(&fx, "h1", 2).await;
+    let spawner = owner(&fx).await;
+    fx.heartbeat("h1", &[&spawner]).await;
+    let mut call = spawn_call("work", 0);
+    if let ToolCall::Spawn { host, .. } = &mut call {
+        *host = Some(name("h3"));
+    }
+    let spawned = fx.call(Some(&spawner), call).await.expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    assert_eq!(spawned["agent"]["placed"], false, "{spawned}");
+
+    fx.hub.tick().await.expect("tick");
+    let rec = record(&fx, &agent).await.expect("the record");
+    assert_eq!(rec.state, SpawnState::Failed, "{rec:?}");
+    let reason = rec.fail_reason().unwrap();
+    assert!(reason.contains("host h3 is gone"), "{reason}");
+}
+
+/// A host that registered once and is offline now still has its record: the
+/// spawn waits for it.
+#[tokio::test]
+async fn spawns_a_spawn_pinned_to_an_offline_host_still_waits() {
+    let fx = Fx::new();
+    host(&fx, "h1", 2).await;
+    host(&fx, "h3", 2).await;
+    let spawner = owner(&fx).await;
+    fx.heartbeat("h1", &[&spawner]).await;
+    let mut call = spawn_call("work", 0);
+    if let ToolCall::Spawn { host, .. } = &mut call {
+        *host = Some(name("h3"));
+    }
+    let spawned = fx.call(Some(&spawner), call).await.expect("spawn");
+    let agent: AgentId = spawned["agent"]["agent"].as_str().unwrap().parse().unwrap();
+    fx.hub.tick().await.expect("tick");
+    assert_ne!(
+        record(&fx, &agent).await.expect("the record").state,
+        SpawnState::Failed
+    );
+}

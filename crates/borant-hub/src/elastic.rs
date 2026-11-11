@@ -448,6 +448,9 @@ impl Hub {
             return Ok(None);
         }
         let lease = self.store.get::<Lease>(&keys::lease_agent(id)).await?;
+        let released = lease
+            .as_ref()
+            .is_some_and(|d| matches!(d.value.state, LeaseState::Released { .. }));
         if lease.is_some_and(|d| {
             matches!(
                 d.value.state,
@@ -460,7 +463,10 @@ impl Hub {
             return Ok(None);
         };
         let agent = agent.value;
-        if agent.pinned || agent.retired || agent.paused.is_some() {
+        // A pinned agent is placed only after a clean end, that is a released
+        // lease: then it waits for a host like any other, and a resume or a
+        // restart that fits nowhere is demand.
+        if (agent.pinned && !released) || agent.retired || agent.paused.is_some() {
             return Ok(None);
         }
         let harness = harness.unwrap_or(agent.preferred_harness);
@@ -964,7 +970,7 @@ mod tests {
         Harness, HostInfo, HostStats, MoveReason, Sender, SessionStats, SpawnSpec, Task, TaskKind,
         TaskStatus,
     };
-    use borant_core::proto::{CtlRequest, MoveTarget, ToolCall};
+    use borant_core::proto::{CtlRequest, MoveSelector, MoveTarget, ToolCall};
     use borant_core::rules::roles::Resolved;
     use borant_core::{ChannelName, FencingToken, ManualClock, SessionId, TaskId};
     use borant_memory::{Call, MemoryBus, MemoryProvisioner, MemorySession, MemoryState};
@@ -1865,6 +1871,175 @@ mod tests {
             before,
             "a placed agent is no demand"
         );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_move_that_fits_no_host_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        fx.hub.mem.lock().await.pending_moves.remove(&w);
+
+        let moved = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .move_agents(
+                    &mut mem,
+                    &MoveSelector::Agent(w.clone()),
+                    MoveTarget::default(),
+                    None,
+                )
+                .await
+                .expect("a move that waits for a host is no error")
+        };
+        assert_eq!(moved, vec![w.clone()]);
+        assert!(
+            fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "the unplaced move is recorded as demand"
+        );
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the pool orders a host");
+    }
+
+    #[tokio::test]
+    async fn elastic_a_drain_with_no_other_host_orders_one() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        register_in(&fx, "h1", None, 2).await;
+        idle_agent(&fx, "w1", "h1", NOW, NOW).await;
+        let w: AgentId = "w1".parse().unwrap();
+
+        let moved = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .drain(&mut mem, &name("h1"))
+                .await
+                .expect("a drain with no capacity elsewhere is no error")
+        };
+        assert_eq!(moved, vec![w.clone()]);
+        assert!(
+            fx.hub.mem.lock().await.pending_moves.contains_key(&w),
+            "the mover is recorded as demand"
+        );
+    }
+
+    #[tokio::test]
+    async fn elastic_a_drain_without_pools_still_refuses() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(None, prov.clone());
+        register_in(&fx, "h1", None, 2).await;
+        idle_agent(&fx, "w1", "h1", NOW, NOW).await;
+        let mut mem = fx.hub.mem.lock().await;
+        assert!(fx.hub.drain(&mut mem, &name("h1")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn elastic_an_unplaced_resume_of_a_pinned_agent_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        // A spawned worker is pinned; its restart released the lease.
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        agent.pinned = true;
+        fx.hub.store.upsert(&keys::agent(&w), &agent).await.unwrap();
+        fx.hub.mem.lock().await.pending_moves.insert(
+            w.clone(),
+            PendingMove {
+                target: MoveTarget::default(),
+                reason: MoveReason::Resume,
+                prompt: None,
+            },
+        );
+
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the resume orders a host");
+
+        // A pinned agent whose session may still run is no demand.
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        let before = created(&fx).await.len();
+        pending(&fx, "w2").await;
+        let w2: AgentId = "w2".parse().unwrap();
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w2))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        agent.pinned = true;
+        fx.hub
+            .store
+            .upsert(&keys::agent(&w2), &agent)
+            .await
+            .unwrap();
+        let lease = Lease {
+            agent: w2.clone(),
+            token: FencingToken(2),
+            state: LeaseState::Expired {
+                since: NOW,
+                last_session: None,
+            },
+        };
+        fx.hub
+            .store
+            .upsert(&keys::lease_agent(&w2), &lease)
+            .await
+            .unwrap();
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), before, "an unreleased pin waits");
+    }
+
+    /// The state of sp-c902349b08e2845e: not pinned, released lease, paused by
+    /// a stop, then resumed with no host that fits.
+    #[tokio::test]
+    async fn elastic_an_unplaced_resume_of_an_unpinned_agent_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        fx.hub.mem.lock().await.pending_moves.remove(&w);
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        assert!(!agent.pinned);
+        agent.paused = Some(borant_core::model::PauseReason {
+            by: Sender::Human,
+            why: "hung".to_owned(),
+            at: NOW,
+        });
+        fx.hub.store.upsert(&keys::agent(&w), &agent).await.unwrap();
+
+        let out = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .resume(
+                    &mut mem,
+                    None,
+                    borant_core::proto::PauseSelector::Agent(w.clone()),
+                    None,
+                )
+                .await
+                .unwrap()
+        };
+        assert_eq!(out["placed"], false);
+        assert!(fx.hub.mem.lock().await.pending_moves.contains_key(&w));
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the unplaced resume is demand");
     }
 
     #[tokio::test]

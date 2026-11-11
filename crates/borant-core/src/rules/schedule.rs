@@ -33,7 +33,17 @@ pub struct HostView {
     /// How full the disk of the host is, from its last heartbeat. `None` for a
     /// host that reports no stats, which passes the disk rule.
     pub disk_used_pct: Option<f64>,
+    /// The one-minute load average per CPU, from the last heartbeat. `None` for
+    /// a host that reports no load, which passes the load rule.
+    pub load_per_cpu: Option<f64>,
+    /// True if launches of any agent failed on this host within the lease
+    /// grace: the host counts as full for a while.
+    pub launches_failing: bool,
 }
+
+/// The load per CPU at which a host takes no new agent. A host above it
+/// starves its launches: a secret resolve or a clone times out.
+pub const OVERLOAD_PER_CPU: f64 = 3.0;
 
 /// The free and the reserved memory of a host that has less free than it
 /// reserves. A host that reports no memory passes: a v0.7.0 host keeps working.
@@ -69,6 +79,10 @@ pub enum Reject {
     LowDisk {
         used_pct: u8,
     },
+    /// The load per CPU of the host is at or above [`OVERLOAD_PER_CPU`].
+    Overloaded {
+        load_per_cpu: u32,
+    },
     NoSandbox,
     RecentlyFailed,
 }
@@ -89,6 +103,9 @@ impl fmt::Display for Reject {
                 reserve_mb,
             } => write!(f, "low memory ({avail_mb} MB free, {reserve_mb} reserved)"),
             Self::LowDisk { used_pct } => write!(f, "disk full ({used_pct}%)"),
+            Self::Overloaded { load_per_cpu } => {
+                write!(f, "overloaded (load {load_per_cpu} per cpu)")
+            }
             Self::NoSandbox => f.write_str("no sandbox"),
             Self::RecentlyFailed => f.write_str("failed recently"),
         }
@@ -212,8 +229,15 @@ fn reject(
     if !h.has_repo_access {
         return Err(Reject::NoRepo);
     }
-    if h.recently_failed {
+    if h.recently_failed || h.launches_failing {
         return Err(Reject::RecentlyFailed);
+    }
+    if let Some(load) = h.load_per_cpu
+        && load >= OVERLOAD_PER_CPU
+    {
+        return Err(Reject::Overloaded {
+            load_per_cpu: load.round().clamp(0.0, f64::from(u32::MAX)) as u32,
+        });
     }
     if forced_harness.is_some_and(|f| !h.info.harnesses.contains(&f)) {
         return Err(Reject::NoHarness);
@@ -335,6 +359,8 @@ mod tests {
             pool: None,
             mem_avail_mb: None,
             disk_used_pct: None,
+            load_per_cpu: None,
+            launches_failing: false,
         }
     }
 
@@ -384,6 +410,37 @@ mod tests {
     /// the score tests ask which host wins, not why the others lost.
     fn pick(preferred: Harness, hosts: &[HostView]) -> Option<(HostName, Harness)> {
         place(preferred, None, &PlacementReq::default(), &[], hosts)
+    }
+
+    #[test]
+    fn skips_an_overloaded_host_and_one_with_failing_launches() {
+        let mut loaded = host("a", &[Harness::Pi], 0, true);
+        loaded.load_per_cpu = Some(11.0);
+        let mut failing = host("b", &[Harness::Pi], 0, true);
+        failing.launches_failing = true;
+        let ok = host("c", &[Harness::Pi], 3, false);
+        let hosts = [loaded.clone(), failing.clone(), ok];
+        assert_eq!(pick(Harness::Pi, &hosts), Some((name("c"), Harness::Pi)));
+        let err = super::place(
+            Harness::Pi,
+            None,
+            &PlacementReq::default(),
+            &[],
+            &[loaded, failing],
+        )
+        .unwrap_err();
+        let why: Vec<String> = err.iter().map(|(h, r)| format!("{h}: {r}")).collect();
+        assert_eq!(
+            why,
+            ["a: overloaded (load 11 per cpu)", "b: failed recently"]
+        );
+    }
+
+    #[test]
+    fn a_host_under_the_load_threshold_takes_agents() {
+        let mut h = host("a", &[Harness::Pi], 0, true);
+        h.load_per_cpu = Some(OVERLOAD_PER_CPU - 0.5);
+        assert!(pick(Harness::Pi, &[h]).is_some());
     }
 
     #[test]
