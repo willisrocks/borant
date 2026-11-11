@@ -655,6 +655,15 @@ impl Hub {
         }) {
             target.host = None;
         }
+        // A spawn pinned to a host that is gone (the pool reaped it while the
+        // spawn waited) fails now, not after the timeout of the queue.
+        if let Some(host) = &target.host
+            && self.host_is_gone(host).await?
+        {
+            self.fail_spawn_on_gone_host(mem, &record.agent, host)
+                .await?;
+            return Ok(false);
+        }
         let mut placed = self
             .place_agent_in(
                 mem,

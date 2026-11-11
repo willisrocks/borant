@@ -56,6 +56,24 @@ pub(crate) fn failed_recently(
         .is_some_and(|at| now.since(*at) < cfg.grace)
 }
 
+/// True when a launch of an agent other than `except` failed on `host` within
+/// the lease grace. A host that fails launches (starved of CPU or memory, say)
+/// takes no new agent for a while, whoever the agent is. The agent's own
+/// failures are `failed_recently`, which its last try may clear.
+pub(crate) fn host_failing(
+    mem: &Memory,
+    except: Option<&AgentId>,
+    host: &borant_core::HostName,
+    now: Timestamp,
+    cfg: &borant_core::rules::lease::LeaseConfig,
+) -> bool {
+    mem.failed_hosts
+        .iter()
+        .filter(|(agent, _)| Some(*agent) != except)
+        .filter_map(|(_, hosts)| hosts.get(host))
+        .any(|at| now.since(*at) < cfg.grace)
+}
+
 /// The agents of a tick, by id.
 pub(crate) fn agent_index(lists: &Lists) -> HashMap<&AgentId, &Agent> {
     lists

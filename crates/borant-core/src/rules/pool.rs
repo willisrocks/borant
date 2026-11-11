@@ -390,9 +390,10 @@ fn creates(
             *used.entry(pools[at].name.clone()).or_default() += 1;
             continue;
         }
-        // A reason that a new host cannot fix (a draining host, a host bound
-        // to another repo) must not grow the pool: the next host would refuse
-        // the same way. A pool with no live host grows, and a full host that
+        // A reason that a new host cannot fix (a host bound to another repo)
+        // must not grow the pool: the next host would refuse the same way. A
+        // draining host is the opposite case: it takes nothing, and a new
+        // host is exactly what the spawn or the move waits for. A pool with no live host grows, and a full host that
         // otherwise serves is exactly the case where a host is needed.
         let fixable = pools.iter().any(|p| {
             if !p.harnesses.contains(&need.harness) {
@@ -466,9 +467,10 @@ fn serving_slots(
 
 /// A refusal that a new host of the pool image may not repeat: the image can
 /// carry a bundle or a tag that the live hosts lack, and a fresh host has free
-/// memory and a full disk. A draining host, a host that cannot reach the repo,
-/// and a lost host are the host's own state, not the image's.
-fn fixable_reason(reason: &Reject) -> bool {
+/// memory and a full disk. A host that cannot reach the repo
+/// is the host's own state, not the image's. A draining host is no
+/// capacity, and a new host fixes that.
+pub fn fixable_reason(reason: &Reject) -> bool {
     matches!(
         reason,
         Reject::MissingBundle(_)
@@ -477,7 +479,10 @@ fn fixable_reason(reason: &Reject) -> bool {
             | Reject::NoHarness
             | Reject::LowMemory { .. }
             | Reject::LowDisk { .. }
+            | Reject::Overloaded { .. }
+            | Reject::RecentlyFailed
             | Reject::Offline
+            | Reject::Draining
     )
 }
 
@@ -650,6 +655,8 @@ mod tests {
             pool: Some("workers".parse().unwrap()),
             mem_avail_mb: None,
             disk_used_pct: None,
+            load_per_cpu: None,
+            launches_failing: false,
         }
     }
 
@@ -878,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn a_draining_host_does_not_grow_the_pool() {
+    fn a_draining_host_grows_the_pool() {
         let pools = [pool("workers")];
         let hosts = [ElasticHost {
             phase: Phase::Draining,
@@ -902,8 +909,8 @@ mod tests {
             NOW,
         );
         assert!(
-            !actions.iter().any(|a| matches!(a, Action::Create { .. })),
-            "a draining host is the host's own state: {actions:?}"
+            actions.iter().any(|a| matches!(a, Action::Create { .. })),
+            "a draining host is no capacity, and a new host fixes it: {actions:?}"
         );
     }
 

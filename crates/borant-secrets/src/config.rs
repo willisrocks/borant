@@ -34,8 +34,10 @@ pub enum StoreConfig {
     },
 }
 
+/// Long enough for a plugin on a host under load: a 1Password lookup of a
+/// host at load 40 on 4 CPUs took longer than 10 s.
 fn default_timeout_secs() -> u64 {
-    10
+    30
 }
 
 /// Prints key names and the command, never a value.
@@ -167,7 +169,7 @@ credential = "store-token"
                 assert_eq!(command, ["borant-secrets-1password"]);
                 assert!(env.is_empty());
                 assert_eq!(credential.as_deref(), Some("store-token"));
-                assert_eq!(timeout_secs, 10);
+                assert_eq!(timeout_secs, 30);
             }
             other => panic!("{other:?}"),
         }
