@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use borant_core::model::{
     Agent, Channel, Envelope, Lease, LeaseState, Member, Session, SessionEvent, SpawnRecord,
-    SpawnState, Task, TaskStatus,
+    SpawnState, Target, Task, TaskStatus,
 };
 use borant_core::ports::Entry;
 use borant_core::proto::{ApiError, ApiErrorCode};
@@ -490,6 +490,12 @@ async fn plan(
         // or its log.
         let fresh = |e: &Envelope| now.since(e.sent) < retention;
         let fresh_unacked = unacked.iter().any(fresh);
+        // An ended agent stays a member of its channels, so every broadcast
+        // lands in its inbox. Only a direct or urgent message is a reason to
+        // keep it; a broadcast alone is not.
+        let fresh_direct = unacked
+            .iter()
+            .any(|e| fresh(e) && (e.urgent || matches!(e.to, Target::Agent(_))));
         let fresh_undelivered = undelivered.iter().any(fresh);
         let reason = kept_reason(
             &scan,
@@ -498,7 +504,7 @@ async fn plan(
             agent,
             now,
             older_than,
-            fresh_unacked,
+            fresh_direct,
             fresh_undelivered,
         );
         let since = scan.lease(id).and_then(lease_since).copied();
@@ -778,7 +784,8 @@ fn kept_reason(
     agent: &Agent,
     now: Timestamp,
     older_than: Duration,
-    // True when an unacked message is inside the retention.
+    // True when an unacked direct or urgent message is inside the retention.
+    // A channel broadcast alone does not count: it reaches every member.
     fresh_unacked: bool,
     // True when an undelivered log message is inside the retention.
     fresh_undelivered: bool,
@@ -965,8 +972,12 @@ mod tests {
     use borant_core::model::{
         Agent, Harness, Lease, LeaseState, PauseReason, Sender, SessionEvent, SessionEventBody,
     };
+    use borant_core::model::{Envelope, EnvelopeKind, Target};
     use borant_core::ports::StateStore;
-    use borant_core::{AgentId, EventId, FencingToken, ManualClock, SessionId, Timestamp, keys};
+    use borant_core::{
+        AgentId, ChannelName, EventId, FencingToken, ManualClock, MessageId, SessionId, Timestamp,
+        keys, keys::subjects,
+    };
     use borant_memory::{MemoryBus, MemorySession, MemoryState};
 
     use crate::{Hub, HubConfig};
@@ -1027,6 +1038,132 @@ mod tests {
             HubConfig::default(),
         ));
         (hub, state)
+    }
+
+    /// An ended agent (lease expired long ago) with a fresh inbox message:
+    /// `to`/`urgent` shape the message, `paused`/`parked` the agent.
+    async fn plan_with_message(
+        to: Option<Target>,
+        urgent: bool,
+        paused: bool,
+        parked: bool,
+    ) -> Option<&'static str> {
+        let (hub, state) = hub();
+        let id: AgentId = "w".parse().unwrap();
+        let chan: ChannelName = "api".parse().unwrap();
+        let agent = Agent {
+            id: id.clone(),
+            session: None,
+            paused: paused.then(|| PauseReason {
+                by: Sender::Human,
+                why: "cap".into(),
+                at: Timestamp(1),
+            }),
+            ..Default::default()
+        };
+        state
+            .create(
+                &keys::agent(&id),
+                serde_json::to_vec(&agent).unwrap().into(),
+            )
+            .await
+            .unwrap();
+        let since = Timestamp(1);
+        let lease_state = if parked {
+            LeaseState::Released {
+                since,
+                parked: true,
+            }
+        } else {
+            LeaseState::Expired {
+                since,
+                last_session: None,
+            }
+        };
+        state
+            .create(
+                &keys::lease_agent(&id),
+                serde_json::to_vec(&Lease {
+                    agent: id.clone(),
+                    token: FencingToken(1),
+                    state: lease_state,
+                })
+                .unwrap()
+                .into(),
+            )
+            .await
+            .unwrap();
+        hub.bus
+            .ensure_inbox(&id, &subjects::inbox(&id, std::slice::from_ref(&chan)))
+            .await
+            .unwrap();
+        if let Some(to) = to {
+            let subject = match &to {
+                Target::Agent(a) => subjects::agent(a),
+                Target::Channel(c) => subjects::broadcast(c),
+            };
+            let kind = match &to {
+                Target::Agent(_) => EnvelopeKind::Direct,
+                Target::Channel(_) => EnvelopeKind::Broadcast,
+            };
+            hub.bus
+                .publish(
+                    &subject,
+                    &Envelope {
+                        id: MessageId::new(),
+                        from: Sender::Human,
+                        to,
+                        kind,
+                        text: "hi".into(),
+                        urgent,
+                        task: None,
+                        event: None,
+                        // Inside the retention of 30 days.
+                        sent: Timestamp(59 * DAY.as_millis() as i64),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let plan = super::plan(&hub, &HashSet::new(), DAY, DAY * 30)
+            .await
+            .unwrap();
+        plan.kept.first().map(|k| k.reason)
+    }
+
+    #[tokio::test]
+    async fn an_ended_agent_with_only_fresh_broadcasts_is_a_candidate() {
+        let chan: ChannelName = "api".parse().unwrap();
+        let r = plan_with_message(Some(Target::Channel(chan)), false, false, false).await;
+        assert_eq!(r, None);
+    }
+
+    #[tokio::test]
+    async fn an_ended_agent_with_a_fresh_direct_message_is_kept() {
+        let id: AgentId = "w".parse().unwrap();
+        let r = plan_with_message(Some(Target::Agent(id)), false, false, false).await;
+        assert_eq!(r, Some("unacked"));
+    }
+
+    #[tokio::test]
+    async fn an_ended_agent_with_a_fresh_urgent_broadcast_is_kept() {
+        let chan: ChannelName = "api".parse().unwrap();
+        let r = plan_with_message(Some(Target::Channel(chan)), true, false, false).await;
+        assert_eq!(r, Some("unacked"));
+    }
+
+    #[tokio::test]
+    async fn parked_and_paused_agents_stay_whatever_the_inbox_holds() {
+        let chan: ChannelName = "api".parse().unwrap();
+        let b = || Some(Target::Channel(chan.clone()));
+        assert_eq!(
+            plan_with_message(b(), false, false, true).await,
+            Some("parked")
+        );
+        assert_eq!(
+            plan_with_message(b(), false, true, false).await,
+            Some("paused")
+        );
     }
 
     #[tokio::test]
