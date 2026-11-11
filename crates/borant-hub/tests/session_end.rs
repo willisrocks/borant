@@ -322,3 +322,54 @@ async fn session_end_restores_the_branch_of_the_newest_checkpoint() {
         other => panic!("expected a relaunch, got {other:?}"),
     }
 }
+
+/// The relaunch prompt names the harness of the previous session from its
+/// session record. A host logs a late event of a session that it no longer
+/// knows with a placeholder harness, and that must not name the prompt.
+#[tokio::test]
+async fn the_relaunch_prompt_names_the_harness_of_the_session_record() {
+    let fx = Fx::new();
+    let (owner, w) = setup(&fx).await;
+    claim(&fx, &owner, &w).await;
+    let mut h1: BoxStream<'static, HostCommand> = fx.commands("h1").await;
+    let key = keys::session(&w.session);
+    let entry = fx.state.get(&key).await.unwrap().expect("the session");
+    let mut s: borant_core::model::Session = serde_json::from_slice(&entry.value).unwrap();
+    s.harness = Harness::ClaudeCode;
+    fx.state
+        .update(&key, serde_json::to_vec(&s).unwrap().into(), entry.revision)
+        .await
+        .unwrap();
+    fx.sessions
+        .append(
+            &w.agent,
+            &SessionEvent {
+                id: EventId::new(),
+                agent: w.agent.clone(),
+                session: Some(w.session),
+                harness: Harness::Fake,
+                host: "h1".parse().unwrap(),
+                turn: 0,
+                at: Timestamp(1_000_000),
+                body: SessionEventBody::Checkpoint {
+                    git_ref: format!("refs/borant/{}/wip", w.agent),
+                    sha: "aaa".into(),
+                    branch: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    end(&fx, &w, "session shutdown").await;
+
+    match next_cmd(&mut h1).await {
+        Some(HostCommand::Launch(o)) => assert!(
+            o.prompt
+                .contains(&format!("ran in {}", Harness::ClaudeCode)),
+            "the prompt names the harness of the record: {}",
+            o.prompt
+        ),
+        other => panic!("expected a relaunch, got {other:?}"),
+    }
+}
