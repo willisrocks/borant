@@ -96,7 +96,10 @@ impl PlacementPass {
         mem: &Memory,
         agent: &AgentId,
     ) -> Cow<'a, [HostView]> {
-        if mem.failed_hosts.get(agent).is_none_or(HashMap::is_empty) {
+        // The pass lists the hosts once, with the failures of every agent.
+        // The flags of this agent come from the memory of now, because an
+        // earlier try of the same spawn may have cleared its own failures.
+        if mem.failed_hosts.is_empty() && self.views.iter().all(|v| !v.launches_failing) {
             return Cow::Borrowed(&self.views);
         }
         let now = hub.now();
@@ -104,6 +107,8 @@ impl PlacementPass {
         for v in &mut views {
             v.recently_failed =
                 crate::liveness::failed_recently(mem, agent, &v.info.name, now, &hub.cfg.lease);
+            v.launches_failing =
+                crate::liveness::host_failing(mem, Some(agent), &v.info.name, now, &hub.cfg.lease);
         }
         Cow::Owned(views)
     }
@@ -363,6 +368,7 @@ impl Hub {
                         .map(|s| s.load1 / f64::from(s.cpus)),
                     launches_failing: crate::liveness::host_failing(
                         mem,
+                        agent,
                         &name,
                         now,
                         &self.cfg.lease,
@@ -1212,6 +1218,61 @@ impl Hub {
     /// The record that fails also retires its agent, by the path of a normal
     /// retire, so no takeover places it again; the record stays for `ps`.
     ///
+    /// True when `host` has no record and no pool host of that name is on its
+    /// way: a spawn that names it waits for nothing. A host that registered
+    /// once and is offline now still has its record, and the spawn waits for
+    /// it to come back.
+    pub(crate) async fn host_is_gone(&self, host: &HostName) -> Result<bool, ApiError> {
+        if self
+            .store
+            .get::<HostInfo>(&keys::host(host))
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        let booting = self
+            .store
+            .get::<borant_core::rules::pool::ElasticHost>(&keys::elastic(host))
+            .await?
+            .is_some_and(|d| {
+                matches!(
+                    d.value.phase,
+                    borant_core::rules::pool::Phase::Requested
+                        | borant_core::rules::pool::Phase::Booting
+                )
+            });
+        Ok(!booting)
+    }
+
+    /// Fails the spawn of `agent` at once because the host that it names is
+    /// gone: a launch that no host can take is no reason to wait for the
+    /// timeout of the queue. Goes through the path of the last failed try, so
+    /// the spawner hears of it and the agent is retired.
+    pub(crate) async fn fail_spawn_on_gone_host(
+        &self,
+        mem: &mut Memory,
+        agent: &AgentId,
+        host: &HostName,
+    ) -> Result<(), ApiError> {
+        let key = keys::spawn(agent);
+        let Some(doc) = self.store.get::<SpawnRecord>(&key).await? else {
+            return Ok(());
+        };
+        let mut record = doc.value;
+        if !matches!(record.state, SpawnState::Queued | SpawnState::Launching) {
+            return Ok(());
+        }
+        record.attempts = MAX_LAUNCH_TRIES - 1;
+        self.store
+            .put(&doc.key, &record, Some(doc.revision))
+            .await?;
+        let error = format!("host {host} is gone");
+        self.note_launch_failure(mem, agent, host, None, Some(&error))
+            .await?;
+        Ok(())
+    }
+
     /// The spawner gets one direct message, with the write that fails the
     /// record: a repeat on a `Failed` record counts nothing and sends
     /// nothing. A spawn by a person has no agent to tell.
