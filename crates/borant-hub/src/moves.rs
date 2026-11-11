@@ -505,7 +505,16 @@ impl Hub {
         ) {
             Ok(chosen) => chosen,
             Err(rejected) => {
-                tracing::debug!(agent = %agent.id, "no host qualifies for the agent now");
+                tracing::debug!(
+                    agent = %agent.id,
+                    hosts = views.len(),
+                    rejected = %rejected
+                        .iter()
+                        .map(|(h, why)| format!("{h}: {why}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    "no host qualifies for the agent now"
+                );
                 self.note_placement_refusal(mem, &agent.id, reason, &rejected, now)
                     .await?;
                 return Ok(None);
