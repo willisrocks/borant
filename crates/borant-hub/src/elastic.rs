@@ -1999,6 +1999,49 @@ mod tests {
         assert_eq!(created(&fx).await.len(), before, "an unreleased pin waits");
     }
 
+    /// The state of sp-c902349b08e2845e: not pinned, released lease, paused by
+    /// a stop, then resumed with no host that fits.
+    #[tokio::test]
+    async fn elastic_an_unplaced_resume_of_an_unpinned_agent_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        fx.hub.mem.lock().await.pending_moves.remove(&w);
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        assert!(!agent.pinned);
+        agent.paused = Some(borant_core::model::PauseReason {
+            by: Sender::Human,
+            why: "hung".to_owned(),
+            at: NOW,
+        });
+        fx.hub.store.upsert(&keys::agent(&w), &agent).await.unwrap();
+
+        let out = {
+            let mut mem = fx.hub.mem.lock().await;
+            fx.hub
+                .resume(
+                    &mut mem,
+                    None,
+                    borant_core::proto::PauseSelector::Agent(w.clone()),
+                    None,
+                )
+                .await
+                .unwrap()
+        };
+        assert_eq!(out["placed"], false);
+        assert!(fx.hub.mem.lock().await.pending_moves.contains_key(&w));
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the unplaced resume is demand");
+    }
+
     #[tokio::test]
     async fn elastic_an_idle_takeover_creates_no_host() {
         let prov = Arc::new(MemoryProvisioner::new());

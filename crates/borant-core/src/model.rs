@@ -1276,6 +1276,21 @@ pub struct InboxStatus {
 
 #[cfg(test)]
 mod tests {
+    /// A beat of a host from before the load and the memory fields: it
+    /// decodes, and it reports no CPUs, so the hub reads "load unknown".
+    #[test]
+    fn an_old_format_beat_decodes_with_the_load_unknown() {
+        let old = r#"{"version":"0.20.0"}"#;
+        let stats: HostStats = serde_json::from_str(old).unwrap();
+        assert_eq!(stats.cpus, 0);
+        assert_eq!(stats.load1, 0.0);
+        assert_eq!(stats.mem_avail_mb, None);
+        // A newer beat with a field this version does not know still decodes.
+        let newer = r#"{"version":"9.0.0","load1":2.5,"cpus":4,"future_field":1}"#;
+        let stats: HostStats = serde_json::from_str(newer).unwrap();
+        assert_eq!(stats.cpus, 4);
+    }
+
     use super::*;
 
     /// A v0.8.0 record has no durable-work fields; every new field is
