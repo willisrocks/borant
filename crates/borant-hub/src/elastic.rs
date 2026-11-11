@@ -466,7 +466,7 @@ impl Hub {
         // A pinned agent is placed only after a clean end, that is a released
         // lease: then it waits for a host like any other, and a resume or a
         // restart that fits nowhere is demand.
-        if agent.pinned || agent.retired || agent.paused.is_some() {
+        if (agent.pinned && !released) || agent.retired || agent.paused.is_some() {
             return Ok(None);
         }
         let harness = harness.unwrap_or(agent.preferred_harness);
@@ -1932,6 +1932,71 @@ mod tests {
         idle_agent(&fx, "w1", "h1", NOW, NOW).await;
         let mut mem = fx.hub.mem.lock().await;
         assert!(fx.hub.drain(&mut mem, &name("h1")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn elastic_an_unplaced_resume_of_a_pinned_agent_is_demand() {
+        let prov = Arc::new(MemoryProvisioner::new());
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        pending(&fx, "w1").await;
+        let w: AgentId = "w1".parse().unwrap();
+        // A spawned worker is pinned; its restart released the lease.
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        agent.pinned = true;
+        fx.hub.store.upsert(&keys::agent(&w), &agent).await.unwrap();
+        fx.hub.mem.lock().await.pending_moves.insert(
+            w.clone(),
+            PendingMove {
+                target: MoveTarget::default(),
+                reason: MoveReason::Resume,
+                prompt: None,
+            },
+        );
+
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), 1, "the resume orders a host");
+
+        // A pinned agent whose session may still run is no demand.
+        let fx = hub_with(Some(elastic(vec![pool()], &prov)), prov.clone());
+        let before = created(&fx).await.len();
+        pending(&fx, "w2").await;
+        let w2: AgentId = "w2".parse().unwrap();
+        let mut agent = fx
+            .hub
+            .store
+            .get::<Agent>(&keys::agent(&w2))
+            .await
+            .unwrap()
+            .expect("the agent")
+            .value;
+        agent.pinned = true;
+        fx.hub
+            .store
+            .upsert(&keys::agent(&w2), &agent)
+            .await
+            .unwrap();
+        let lease = Lease {
+            agent: w2.clone(),
+            token: FencingToken(2),
+            state: LeaseState::Expired {
+                since: NOW,
+                last_session: None,
+            },
+        };
+        fx.hub
+            .store
+            .upsert(&keys::lease_agent(&w2), &lease)
+            .await
+            .unwrap();
+        fx.hub.tick_elastic().await.unwrap();
+        assert_eq!(created(&fx).await.len(), before, "an unreleased pin waits");
     }
 
     #[tokio::test]
