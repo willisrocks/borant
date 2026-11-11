@@ -9,7 +9,7 @@ use borant_core::model::{
     Envelope, EnvelopeKind, Sender, SessionEvent, SessionEventBody, Target, TaskRef, TaskStatus,
 };
 use borant_core::ports::{Delivery, Notice, PortError, PortErrorKind};
-use borant_core::proto::{Actor, ApiError, CtlRequest, ToolCall};
+use borant_core::proto::{Actor, ApiError, CtlRequest, PRUNE_TIMEOUT, ToolCall};
 use borant_core::rules::{session_log, wake};
 use borant_core::{AgentId, EventId, MessageId, SessionId, subjects};
 use futures::StreamExt;
@@ -407,6 +407,19 @@ person to run /mcp to reconnect.";
                 page,
                 page_size,
             } => self.history(&agent, page, page_size).await,
+            // A prune plans over every agent of the hub, which takes minutes
+            // on a big one, so it waits longer than any other call.
+            call @ ToolCall::PruneAgents { .. } => {
+                self.hub_within(
+                    &CtlRequest::Call {
+                        actor,
+                        key: None,
+                        call,
+                    },
+                    PRUNE_TIMEOUT,
+                )
+                .await
+            }
             call => {
                 self.hub(&CtlRequest::Call {
                     actor,

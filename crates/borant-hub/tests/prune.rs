@@ -920,3 +920,21 @@ async fn prune_a_new_idle_log_changes_the_token() {
         "the refused apply deleted nothing"
     );
 }
+
+/// `session.started.{agent}` holds an integer. It is not a session record, so
+/// it neither changes the plan nor is listed as a key that an apply removes.
+#[tokio::test]
+async fn prune_ignores_session_started_keys() {
+    let fx = Fx::new();
+    let id = released_agent(&fx, "old", old(&fx)).await;
+    let before = dry(&fx).await;
+
+    put(&fx, &format!("session.started.{id}"), &old(&fx).0).await;
+    put(&fx, "session.started.ghost", &old(&fx).0).await;
+    let after = dry(&fx).await;
+
+    assert_eq!(after["token"], before["token"]);
+    assert_eq!(after["candidates"], before["candidates"]);
+    assert_eq!(after["kept"], before["kept"]);
+    assert_eq!(after["kinds"], before["kinds"]);
+}
