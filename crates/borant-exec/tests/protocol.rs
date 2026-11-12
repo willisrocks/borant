@@ -282,3 +282,35 @@ async fn the_stderr_of_the_program_goes_to_debug_when_enabled() {
     .await;
     assert!(!lines.contains("note for the log"), "{lines}");
 }
+
+#[tokio::test]
+async fn a_failed_call_names_the_code_and_warns_with_the_stderr() {
+    let mut cfg = cfg("error_stderr.sh");
+    cfg.log_stderr = true;
+    let mut err = None;
+    let lines = log_lines(tracing::Level::WARN, async {
+        err = Some(call(&cfg, "create", Value::Null).await.unwrap_err());
+    })
+    .await;
+    let err = err.unwrap().to_string();
+    assert!(err.contains("create failed: limit_reached"), "{err}");
+    assert!(err.contains("message-marker"), "{err}");
+    assert!(lines.contains("WARN"), "{lines}");
+    assert!(lines.contains("stderr-marker"), "{lines}");
+}
+
+#[tokio::test]
+async fn a_failed_secret_call_shows_the_code_but_no_text() {
+    let cfg = cfg("error_stderr.sh");
+    assert!(!cfg.log_stderr);
+    let mut err = None;
+    let lines = log_lines(tracing::Level::DEBUG, async {
+        err = Some(call(&cfg, "get", Value::Null).await.unwrap_err());
+    })
+    .await;
+    let err = err.unwrap().to_string();
+    assert!(err.contains("get failed: limit_reached"), "{err}");
+    assert!(!err.contains("message-marker"), "{err}");
+    assert!(!lines.contains("stderr-marker"), "{lines}");
+    assert!(!lines.contains("WARN"), "{lines}");
+}
