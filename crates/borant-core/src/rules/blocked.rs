@@ -48,6 +48,9 @@ pub enum Cause {
     RecentlyFailed,
     Offline,
     Draining,
+    /// Hosts that match the spawn exist and wait on capacity: a person has
+    /// nothing to fix, and a re-tag would be wrong advice.
+    WaitsForSlot,
     /// A refusal text that this version does not know, for example one from a
     /// newer hub.
     Other(String),
@@ -66,7 +69,8 @@ impl Cause {
             Self::RecentlyFailed => 6,
             Self::Offline => 7,
             Self::Draining => 8,
-            Self::Other(_) => 9,
+            Self::WaitsForSlot => 9,
+            Self::Other(_) => 10,
         }
     }
 
@@ -89,6 +93,9 @@ impl Cause {
             }
             Self::Offline => "bring a host online".to_owned(),
             Self::Draining => "undrain a host".to_owned(),
+            Self::WaitsForSlot => {
+                "none needed, a slot frees up or the pool retries; or free a host, or check why the pool create fails".to_owned()
+            }
             Self::Other(_) => "check the hosts for the refusal".to_owned(),
         }
     }
@@ -133,6 +140,7 @@ pub fn is_capacity(reason: &str) -> bool {
         || reason.starts_with("channel full (")
         || reason.starts_with("low memory (")
         || reason.starts_with("disk full (")
+        || reason.starts_with("overloaded (")
         // The pool ordered the host of this spawn, that host boots, or a
         // create failed and the pool retries: the wait clears each, and the
         // pool reports a failed create as a refusal of its own.
@@ -240,7 +248,15 @@ pub fn blocked(record: &SpawnRecord, now: Timestamp) -> Option<Blocked> {
         .filter(|why| !is_capacity(why))
         .min_by_key(|why| cause_of(why).rank())
     {
-        Some(why) => (cause_of(why), why.to_owned()),
+        Some(why) => match (cause_of(why), slot_wait(record)) {
+            // A host that lacks the tag does not explain the wait while a
+            // host that has it is full, overloaded, or waits on the pool.
+            (Cause::MissingTag(tag), Some(wait)) => (
+                Cause::WaitsForSlot,
+                format!("waits for a slot: {tag} hosts {wait}"),
+            ),
+            (cause, _) => (cause, why.to_owned()),
+        },
         // No refusal at all: no host is registered or online. A spawn that
         // only capacity refused was filtered out above.
         None if record.last_reject.is_empty() && record.queue_reason.is_none() => {
@@ -253,6 +269,42 @@ pub fn blocked(record: &SpawnRecord, now: Timestamp) -> Option<Blocked> {
         cause,
         reason,
     })
+}
+
+/// What the matching hosts wait on, as "full (a, b), c overloaded, pool
+/// create failing", or `None` when no host and no pool note shows capacity.
+fn slot_wait(record: &SpawnRecord) -> Option<String> {
+    let mut full: Vec<&str> = Vec::new();
+    let mut others: Vec<String> = Vec::new();
+    for (host, why) in &record.last_reject {
+        let host = host.as_str();
+        if why.starts_with("full (") {
+            full.push(host);
+        } else if why.starts_with("overloaded (") {
+            others.push(format!("{host} overloaded"));
+        } else if why.starts_with("low memory (") {
+            others.push(format!("{host} low on memory"));
+        } else if why.starts_with("disk full (") {
+            others.push(format!("{host} disk full"));
+        }
+    }
+    let pool = match record.queue_reason.as_deref() {
+        Some(POOL_RETRIES) => Some("pool create failing"),
+        Some(POOL_CREATING) => Some("pool creating a host"),
+        Some(POOL_BOOTING) => Some("pool host booting"),
+        Some(POOL_ON_ITS_WAY) => Some("pool host on its way"),
+        _ => None,
+    };
+    let mut parts = Vec::new();
+    if !full.is_empty() {
+        parts.push(format!("full ({})", full.join(", ")));
+    }
+    parts.extend(others);
+    parts.extend(pool.map(str::to_owned));
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(", "))
 }
 
 /// The state of a stalled task's claimer, as the alarm names it.
@@ -489,6 +541,37 @@ mod tests {
             b.action(&agent()),
             "tag a host with vps, or drop vps from the role"
         );
+    }
+
+    #[test]
+    fn full_and_overloaded_vps_hosts_beat_a_missing_tag() {
+        let mut r = record(SpawnState::Queued, 3_600, &[]);
+        r.queue_reason = Some(POOL_RETRIES.to_owned());
+        r.last_reject = [
+            ("borant-1", "missing tag vps"),
+            ("borant-2", "full (6/6)"),
+            ("borant-p2", "overloaded (load 7 per cpu)"),
+            ("borant-p3", "full (6/6)"),
+            ("macbook", "missing tag vps"),
+        ]
+        .iter()
+        .map(|(h, why)| (h.parse().unwrap(), (*why).to_owned()))
+        .collect();
+        let b = blocked(&r, Timestamp(1_000_000)).expect("blocked");
+        assert_eq!(b.cause, Cause::WaitsForSlot);
+        assert_eq!(
+            b.reason,
+            "waits for a slot: vps hosts full (borant-2, borant-p3), \
+             borant-p2 overloaded, pool create failing"
+        );
+        assert!(!b.text(&agent()).contains("tag a host"));
+    }
+
+    #[test]
+    fn a_missing_tag_alone_still_says_to_tag() {
+        let r = record(SpawnState::Queued, 3_600, &["missing tag vps", "offline"]);
+        let b = blocked(&r, Timestamp(1_000_000)).expect("blocked");
+        assert_eq!(b.cause, Cause::MissingTag("vps".parse().unwrap()));
     }
 
     #[test]
