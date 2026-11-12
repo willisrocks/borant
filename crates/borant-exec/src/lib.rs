@@ -54,8 +54,8 @@ pub async fn call(cfg: &ExecConfig, op: &str, args: Value) -> PortResult<Value> 
     let request = request(op, args)?;
     let bytes = serde_json::to_vec(&request)
         .map_err(|e| PortError::invalid(format!("the request of {op} is not JSON: {e}")))?;
-    let reply = match tokio::time::timeout(cfg.timeout, run(cfg, &program, &bytes)).await {
-        Ok(reply) => reply?,
+    let output = match tokio::time::timeout(cfg.timeout, run(cfg, &program, &bytes)).await {
+        Ok(output) => output?,
         Err(_) => {
             return Err(PortError::new(
                 PortErrorKind::Timeout,
@@ -63,7 +63,42 @@ pub async fn call(cfg: &ExecConfig, op: &str, args: Value) -> PortResult<Value> 
             ));
         }
     };
-    parse(&program, op, &reply)
+    let result = if !output.status.success() && output.stdout.is_empty() {
+        Err(PortError::other(format!(
+            "{program} exited with {} and wrote no reply",
+            output.status
+        )))
+    } else {
+        parse(&program, op, &output.stdout, cfg.log_stderr)
+    };
+    if result.is_err() || !output.status.success() {
+        warn_stderr(cfg, &program, op, &output);
+    }
+    result
+}
+
+/// The most bytes of stderr that a failed call puts in a warning.
+const STDERR_WARN_LIMIT: usize = 1024;
+
+/// Logs the stderr of a failed call at `warn`, trimmed, for a plugin whose
+/// stderr is logs. A plugin that can print a secret keeps it out of the log.
+fn warn_stderr(cfg: &ExecConfig, program: &str, op: &str, output: &Output) {
+    if !cfg.log_stderr || output.stderr.is_empty() {
+        return;
+    }
+    let mut end = output.stderr.len().min(STDERR_WARN_LIMIT);
+    while !output.stderr.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = if end < output.stderr.len() { "…" } else { "" };
+    tracing::warn!(status = %output.status, "{program} {op} failed, stderr: {}{cut}", &output.stderr[..end]);
+}
+
+/// What a finished program left: its stdout, its trimmed stderr, its status.
+struct Output {
+    stdout: Vec<u8>,
+    stderr: String,
+    status: std::process::ExitStatus,
 }
 
 /// Runs the `describe` handshake of a plugin of `kind` and returns its value.
@@ -101,7 +136,7 @@ fn request(op: &str, args: Value) -> PortResult<Value> {
 /// stdout. Its stderr goes to `debug` as text when `cfg.log_stderr`, else as a
 /// size and the status: a plugin that prints a secret value keeps it out of
 /// the log.
-async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Vec<u8>> {
+async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Output> {
     let mut cmd = Command::new(program);
     cmd.args(&cfg.command[1..]);
     cmd.env_clear();
@@ -154,7 +189,7 @@ async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Vec<
     let status = status.map_err(|e| PortError::other(format!("cannot wait for {program}: {e}")))?;
     let byte_count = stderr.len();
     let stderr = String::from_utf8_lossy(&stderr);
-    let note = stderr.trim();
+    let note = stderr.trim().to_owned();
     if !note.is_empty() {
         if cfg.log_stderr {
             tracing::debug!(%status, "{program} stderr: {note}");
@@ -162,18 +197,18 @@ async fn run(cfg: &ExecConfig, program: &str, request: &[u8]) -> PortResult<Vec<
             tracing::debug!(%status, bytes = byte_count, "{program} wrote {byte_count} bytes to stderr");
         }
     }
-    if !status.success() && stdout.is_empty() {
-        return Err(PortError::other(format!(
-            "{program} exited with {status} and wrote no reply"
-        )));
-    }
-    Ok(stdout)
+    Ok(Output {
+        stdout,
+        stderr: note,
+        status,
+    })
 }
 
-/// Reads the reply. Nothing of it goes into an error message, because the
-/// value of a secrets plugin holds values and the message of an error reply
-/// can hold any text.
-fn parse(program: &str, op: &str, stdout: &[u8]) -> PortResult<Value> {
+/// Reads the reply. Nothing of `ok` goes into an error message, because the
+/// value of a secrets plugin holds values. An error reply gives its `code`
+/// when that is a short machine code, and its `message` only when
+/// `with_message` is set: the message of a secrets plugin can hold values.
+fn parse(program: &str, op: &str, stdout: &[u8], with_message: bool) -> PortResult<Value> {
     let text = String::from_utf8_lossy(stdout);
     let reply: Value = match serde_json::from_str(text.trim()) {
         Ok(reply) => reply,
@@ -192,14 +227,34 @@ fn parse(program: &str, op: &str, stdout: &[u8]) -> PortResult<Value> {
         return Ok(ok.clone());
     }
     match reply.get("error") {
-        Some(error) => Err(PortError::new(
-            kind_of(error.get("code").and_then(Value::as_str)),
-            format!("{program} {op} failed"),
-        )),
+        Some(error) => {
+            let code = error.get("code").and_then(Value::as_str);
+            let mut text = format!("{program} {op} failed");
+            if let Some(code) = code.filter(|c| is_machine_code(c)) {
+                text.push_str(&format!(": {code}"));
+            }
+            if with_message
+                && let Some(message) = error.get("message").and_then(Value::as_str)
+                && !message.trim().is_empty()
+            {
+                let message: String = message.trim().chars().take(300).collect();
+                text.push_str(&format!(": {message}"));
+            }
+            Err(PortError::new(kind_of(code), text))
+        }
         None => Err(PortError::other(format!(
             "{program} {op} wrote a reply with neither ok nor error"
         ))),
     }
+}
+
+/// Whether `code` is a short machine code: letters, digits, `_`, `-`, `.`.
+fn is_machine_code(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 64
+        && code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 /// The kind of an error code of the protocol. An unknown code is `Other`.
