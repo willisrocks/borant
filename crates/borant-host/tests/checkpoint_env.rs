@@ -76,28 +76,26 @@ fn remote(dir: &Path) -> PathBuf {
     remote
 }
 
-/// A hooks directory whose `pre-push` hook records the environment of the
-/// git process. Only the bundle points git at it (through `GIT_CONFIG_*`), so
-/// a record exists exactly when a push runs with the variables of the launch.
+/// A hooks directory whose `pre-receive` hook records the environment of the
+/// push. A checkpoint push skips the pusher's own hooks (`--no-verify`), so
+/// the record comes from the remote's side, which [`watch`] turns on. A local
+/// remote runs its hook with the variables of the push.
 fn hooks(dir: &Path, record: &Path) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
-    let hook = dir.join("pre-push");
+    let hook = dir.join("pre-receive");
     std::fs::write(&hook, format!("#!/bin/sh\nenv > '{}'\n", record.display())).unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     dir.to_path_buf()
 }
 
-/// The variables that make git run the hooks in `dir`, plus the token.
-fn vars(dir: &Path) -> Vec<(String, String)> {
-    vec![
-        ("CHECKPOINT_TOKEN".into(), TOKEN.into()),
-        ("GIT_CONFIG_COUNT".into(), "1".into()),
-        ("GIT_CONFIG_KEY_0".into(), "core.hooksPath".into()),
-        (
-            "GIT_CONFIG_VALUE_0".into(),
-            dir.to_string_lossy().into_owned(),
-        ),
-    ]
+/// Makes `remote` run the hooks in `dir` on every push.
+fn watch(remote: &Path, dir: &Path) {
+    git(remote, &["config", "core.hooksPath", dir.to_str().unwrap()]);
+}
+
+/// The variables of the bundle: the token.
+fn vars() -> Vec<(String, String)> {
+    vec![("CHECKPOINT_TOKEN".into(), TOKEN.into())]
 }
 
 /// The host secrets of one bundle `work` of the store `env` whose variables
@@ -208,8 +206,9 @@ async fn the_checkpoint_of_a_launched_session_pushes_with_the_bundle_vars() {
     let root = tempfile::tempdir().unwrap();
     let record = root.path().join("env.txt");
     let dir = hooks(&root.path().join("hooks"), &record);
-    let fx = fx(root.path().join("agents"), Some(secrets(&vars(&dir)))).await;
+    let fx = fx(root.path().join("agents"), Some(secrets(&vars()))).await;
     let remote = remote(fx.dir.path());
+    watch(&remote, &dir);
     fx.host.launch(order(&remote)).await.unwrap();
     let work = launched_clone(&fx);
     let session = register(&fx, &work).await;
@@ -232,9 +231,10 @@ async fn the_checkpoint_of_a_launched_session_pushes_with_the_bundle_vars() {
 async fn the_checkpoint_of_a_session_without_bundles_pushes_without_variables() {
     let root = tempfile::tempdir().unwrap();
     let record = root.path().join("env.txt");
-    let _dir = hooks(&root.path().join("hooks"), &record);
+    let dir = hooks(&root.path().join("hooks"), &record);
     let fx = fx(root.path().join("agents"), None).await;
     let remote = remote(fx.dir.path());
+    watch(&remote, &dir);
     fx.host.launch(order(&remote)).await.unwrap();
     let work = launched_clone(&fx);
     let session = register(&fx, &work).await;
@@ -245,8 +245,9 @@ async fn the_checkpoint_of_a_session_without_bundles_pushes_without_variables() 
 
     let files = git(&remote, &["ls-tree", "--name-only", "refs/borant/w1/wip"]);
     assert!(files.contains("b.txt"), "the checkpoint: {files}");
+    let seen = std::fs::read_to_string(&record).expect("the remote saw no push");
     assert!(
-        !record.exists(),
+        !seen.contains("CHECKPOINT_TOKEN"),
         "a session without bundles pushed with variables"
     );
 }
@@ -275,10 +276,11 @@ async fn create_and_save_stale_push_with_the_given_vars() {
     let record = root.path().join("env.txt");
     let dir = hooks(&root.path().join("hooks"), &record);
     let remote = remote(root.path());
+    watch(&remote, &dir);
     let work = work_tree(root.path(), &remote);
     let r = remote.to_str().unwrap();
 
-    checkpoint::create(&work, r, &agent(), None, &vars(&dir))
+    checkpoint::create(&work, r, &agent(), None, &vars())
         .await
         .unwrap();
     let seen = std::fs::read_to_string(&record).expect("create pushed without the variables");
@@ -288,7 +290,7 @@ async fn create_and_save_stale_push_with_the_given_vars() {
     );
 
     std::fs::remove_file(&record).unwrap();
-    checkpoint::save_stale(&work, r, &agent(), Timestamp(42), &vars(&dir))
+    checkpoint::save_stale(&work, r, &agent(), Timestamp(42), &vars())
         .await
         .unwrap();
     let seen = std::fs::read_to_string(&record).expect("save_stale pushed without the variables");
@@ -320,8 +322,9 @@ async fn a_bundle_cannot_turn_off_the_prompt_guard() {
     let record = root.path().join("env.txt");
     let dir = hooks(&root.path().join("hooks"), &record);
     let remote = remote(root.path());
+    watch(&remote, &dir);
     let work = work_tree(root.path(), &remote);
-    let mut env = vars(&dir);
+    let mut env = vars();
     env.push(("GIT_TERMINAL_PROMPT".into(), "1".into()));
 
     checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None, &env)

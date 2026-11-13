@@ -358,3 +358,34 @@ async fn restore_of_a_parentless_wip_over_an_existing_branch() {
     assert!(!dir.join("a.txt").exists());
     assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), "main");
 }
+
+/// Installs a pre-push hook that fails, as a hook that type-checks the repo
+/// would after it ran for minutes.
+fn failing_pre_push(work: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = work.join(".git/hooks/pre-push");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test]
+async fn create_skips_the_pre_push_hook() {
+    let (_d, remote, work) = setup();
+    failing_pre_push(&work);
+    std::fs::write(work.join("a.txt"), "two\n").unwrap();
+    let (_, sha) = checkpoint::create(&work, remote.to_str().unwrap(), &agent(), None, &[])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(git(&remote, &["rev-parse", "refs/borant/w1/wip"]), sha);
+}
+
+#[tokio::test]
+async fn save_stale_skips_the_pre_push_hook() {
+    let (_d, remote, work) = setup();
+    failing_pre_push(&work);
+    let sha = checkpoint::save_stale(&work, remote.to_str().unwrap(), &agent(), Timestamp(7), &[])
+        .await
+        .unwrap();
+    assert_eq!(git(&remote, &["rev-parse", "refs/borant/w1/stale/7"]), sha);
+}
