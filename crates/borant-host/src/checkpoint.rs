@@ -208,9 +208,18 @@ pub async fn create(
         return Ok(None);
     }
     let refspec = format!("{sha}:{}", wip_ref(agent));
+    // A checkpoint is not a real push, so the repo's pre-push hook does not
+    // run: a hook that type-checks the repo, every minute, overloads the host.
     git(
         cwd,
-        &["push", "--force", "--quiet", remote, &refspec],
+        &[
+            "push",
+            "--force",
+            "--quiet",
+            "--no-verify",
+            remote,
+            &refspec,
+        ],
         None,
         env,
     )
@@ -231,7 +240,14 @@ pub async fn save_stale(
     let refspec = format!("{sha}:{}", stale_ref(agent, at));
     git(
         cwd,
-        &["push", "--force", "--quiet", remote, &refspec],
+        &[
+            "push",
+            "--force",
+            "--quiet",
+            "--no-verify",
+            remote,
+            &refspec,
+        ],
         None,
         env,
     )
