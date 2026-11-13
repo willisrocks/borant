@@ -407,7 +407,7 @@ names the session and the sandbox directly).
 | Policy | Versioned rules as data: who can originate work through each Source, the gate rules, standing permissions, accept mode (live or observe), and model choices. | Every Decision and Mandate records the Policy version. A change goes to each live Ticket as a notice. It revokes a Mandate only when the new allowed list no longer holds the Mandate's sender (section 8, `publish_policy`). |
 | Mandate | What an accept grants: strength (`explicit` or `inferred`), scope, Policy version, basis (the Trigger IDs and the exact text that asked), and sender. | Immutable. A wider scope needs a new Ticket. A revocation by `publish_policy` is a separate row. A stop is a state of the Ticket and does not change the Mandate. |
 | Scope | The structured part of a Mandate that code enforces: Project, repo, branch prefix, allowed gated actions, and secret bundles. The brief is free text next to it. | `authorize` and secret injection read the structured fields. Code fills them from the Project's Policy part: the repo, the prefix `cloud/<ticket id>/`, and the gated actions. The assessor only picks which of the Project's secret bundles the work needs. `decide` rejects a bundle outside the Policy. So a model cannot widen a scope or leave out `merge_pr`. (My call) |
-| Ticket | A unit of authorized work. | Only an Eval creates one. It holds its Mandate, Subscriptions, Channels, Inputs, Assignments, and stage. |
+| Ticket | A unit of work the person tracks: a row of kind `ticket` in `work_items`, which may sit under an Epic or a Saga. | A Ticket row may exist before it is authorized (a planned Ticket). Only an Eval's accept creates its Mandate, and nothing runs for a Ticket without one. Once accepted it holds its Mandate, Subscriptions, Channels, Inputs, Assignments, and stage. |
 | Assignment | The binding of a Ticket to one sandbox, under the Ticket's one conversation. | A Ticket has one live Assignment at a time and can have several over its life. States: running, ended. Section 29. |
 | Input | One message for a Ticket's session: the brief, a person's answer, a person's sentences from `send_to_worker`, a CI result, a Policy notice. | Has a `requestId`, unique per conversation: the Trigger ID or the Engine's own key. Submitted to pi-durable once. |
 | Report | A structured result from a session: `ready`, `blocked`, `ask_person`, `progress`, `done`. | Written by a report tool to an outbox document keyed by the tool task ID. The Engine consumes each one once. A stale report changes no stage (section 29). |
@@ -418,7 +418,7 @@ names the session and the sandbox directly).
 | Engine ID | The ID of a Ticket, Assignment, sandbox, or outbox message. | A ULID, not a counter, because a restore rewinds counters and a repeated ID can match an old branch, volume, or GitHub marker. (My call) |
 | Effect | One unit of work that runs after a commit: submit an Input, run an Eval, write a Channel, start a sandbox, and the others in section 8. | Written in the same transaction as the state change that needs it. Idempotent by its key. |
 | Router | The chief of staff, called the Chief in the Console: one model turn per person message or key moment, in a new pi-durable conversation each time. | Reads the board, sends Chris's own sentences, proposes briefs, and drafts plans. Grants nothing. Owns the Profile's chat Thread (sections 8 and 32). |
-| Work item | A saga, an epic, or a task in the `work_items` table. | Inert until an Eval starts a Ticket. A task is one Ticket and one PR (section 32). |
+| Work item | A Saga, an Epic, or a Ticket: one row in `work_items`, with a parent link, a stored handle (S, E or T) and one status: proposed, up next, running, in review, done, canceled. | A Saga or Epic has its own status. It goes running when its first child starts, in review when every child is done or in review and at least one is in review, and done when all its children are done. Marking a parent done by hand is refused while a child is open. A Ticket is one PR. |
 | Sandbox | The Fly Machine where a Ticket's tools run. | One per live Assignment. `sandboxd` does not store injected values (section 13). |
 
 ### Ticket and router sessions
@@ -570,7 +570,7 @@ model or an outside API inside a transaction.
 | `close(person, ticket)` | Section 29. | `abort_session`. `stop_sandbox`. |
 | `sandbox_lost(assignment)` | Section 29. | `ensure_sandbox`. `submit_input`. |
 | `send_to_worker(router, message, ticket, quote, ask?)` | After the checks of section 32: a `chat_sends` row, and the quote through the Ticket's chat Thread. Else a one-press chip. | `submit_input`. |
-| `plan_work(router, fromTrigger, items)` | Work item rows. Only in a person-started turn (section 32). | none |
+| `plan_work(router, fromTrigger, items)` | Saga, Epic and Ticket rows in status proposed, each Ticket with its T number. Only in a person-started turn (section 32). | none |
 | `advancePlan(root)` | In the transaction of an approval, a merge, a Close, or a Skip: a proposal for each ready task. | `run_eval` per task. |
 | `propose(router, fromTrigger, project, brief)` | A candidate on the Thread of `fromTrigger`, and `eval_pending = true`. Refused if `fromTrigger` is older than 1 hour. A reworded brief waits for a press of Start (section 32). | `run_eval`. |
 | `publish_policy(person, commitSha)` | New Policy version, from a logged-in session (section 11). For each live Ticket: if the new allowed list no longer holds the Mandate's sender, revoke the Mandate and stop the Ticket (section 26). Else, if a rule it used changed, a notice Input. | `submit_input` per notice. `abort_session` and `stop_sandbox` per stop. `channel_write` for each revocation. |
@@ -744,7 +744,9 @@ breaks.
 ## 10. Ticket stages and the board
 
 A Ticket's stage is derived by the Engine and stored on the Ticket for the
-board query. (Decided)
+board query. (Decided) The stage says how the work is going. Where the unit is in its
+life is its status (section 6, Work item), which is stored, and which decides its lane on
+the board. A stage never moves a lane.
 
 | Stage | Means | Set by |
 |---|---|---|
@@ -754,8 +756,9 @@ board query. (Decided)
 | `working` | A run is active, or an Input is on its way to start one. | `decide` accept, `ingest`, `resume` |
 | `idle` | Open, no run, nothing waits on a person: for example a PR waiting for CI. | `run_ended` with no report that needs a person |
 
-`ended` and `stopped` are Ticket states, not board stages. An ended Ticket
-leaves the open board and shows as recently ended.
+`ended` and `stopped` are states of the Ticket's worker session, not board stages and not
+statuses. A Ticket whose session ended without a merge keeps the status running, with a need,
+until the person closes or cancels it. A Ticket that is done or canceled leaves the open board and shows as recently ended.
 
 Two views read a `working` Ticket. Neither is a stage:
 
@@ -776,6 +779,7 @@ stage, title, who (the session name), since when, its open Ask, its PR state,
 and the last change. This replaces the "board task lines" read of the mod v3
 specs. The query also returns plans, stopped Tickets, and recently ended Tickets. The chat feed
 merges chat rows with allowlisted Engine events from the `events` table (section 19).
+Every row carries its stored status; the query derives no lane.
 
 ## 11. Authorization and Mandates
 
@@ -2246,17 +2250,18 @@ do not reach its workers. A merge there passes with no CI (section 14).
 
 ### Sagas, epics, and one-offs
 
-One `work_items` table holds sagas, epics, and tasks, with `blocked_by`. There are no channels
-and no orchestrator tier. A row stays inert until an Eval starts a Ticket. A plain one-off is a
-bare Ticket. A task is one Ticket and one PR.
+One `work_items` table holds Sagas, Epics and Tickets, with a parent link, `blocked_by` and one
+status. There are no channels and no orchestrator tier. A planned Ticket is a row in status up
+next with no Mandate; it stays inert until an Eval accepts it. A plain one-off is a Ticket with
+no parent. A Ticket is one PR.
 
 - `plan_work` runs only in person-started turns, and it refuses HTML, control, and zero-width
   characters. IDs derive from the Trigger, so a retry cannot plan twice.
 - Every plan has one gate. A sheet shows each task as plain text, and the server hashes the raw
   bodies, the Project, and the blockers. Approve posts the root ID and the hash. A changed hash
   refuses, and the sheet draws again. A plan has no `y` key.
-- Approval writes one Trigger per task. `advancePlan` runs in the same transaction as an
-  approval, a merge, a Close, or a Skip. It gives each ready task a proposal and a `run_eval`.
+- Approval writes one Trigger per Ticket. `advancePlan` runs in the same transaction as an
+  approval, a merge, a Close, or a Skip. It gives each ready Ticket a proposal and a `run_eval`.
   Each PR keeps its own SHA-bound approval.
 - A blocker clears only on a `merged` event, or on Chris's Close or Skip. `report_done` alone
   clears nothing, so nothing starts on unmerged work.
@@ -2266,6 +2271,8 @@ bare Ticket. A task is one Ticket and one PR.
 - Version 12 adds `chat_message_refs`, `chat_sends`, and `chat_messages.classification`. It
   rewrites pending router `submit_input` rows to `router_turn`.
 - Version 13 adds `work_items`, and `item_id` on `tickets` and `proposals`.
+- Version 36 (the number at build time) folds tickets into `work_items`: kind saga, epic or
+  ticket, one status, stored T handles; the tables that named tickets name `work_items`.
 
 ### What a hijacked Chief can do
 
