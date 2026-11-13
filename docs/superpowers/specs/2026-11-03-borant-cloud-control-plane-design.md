@@ -758,8 +758,7 @@ the board. A stage never moves a lane.
 
 `ended` and `stopped` are states of the Ticket's worker session, not board stages and not
 statuses. A Ticket whose session ended without a merge keeps the status running, with a need,
-until the person closes or cancels it. An ended Ticket
-leaves the open board and shows as recently ended.
+until the person closes or cancels it. A Ticket that is done or canceled leaves the open board and shows as recently ended.
 
 Two views read a `working` Ticket. Neither is a stage:
 
