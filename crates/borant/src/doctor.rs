@@ -12,6 +12,7 @@
 //! anywhere. The only program that a check starts is a plugin of `host.toml`,
 //! for its `describe` handshake.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -29,8 +30,15 @@ use crate::config::{self, HostFile};
 /// How long one network check waits for its reply.
 const NET_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// The env file of the host daemon, in `BORANT_HOME`: the file that the
+/// host's unit loads as its `EnvironmentFile` and, on a laptop, the file that
+/// the host's own start script loads before `borant host`. It holds the
+/// daemon's NATS login.
+const ENV_FILE: &str = "nats.env";
+
 /// The line of the NATS check when the server refused an anonymous
-/// connection: the host daemon's env file holds the login.
+/// connection: neither doctor's environment nor the host daemon's env file
+/// holds a login.
 const MISSING_CREDENTIALS: &str = concat!(
     "NATS credentials are missing: load the env file of the host daemon ",
     "(for example ~/.borant/nats.env, or the EnvironmentFile of the ",
@@ -129,7 +137,8 @@ async fn checks() -> Vec<Check> {
     let home = config::home();
     let mut out = Vec::new();
     out.push(daemon_check(&config::socket()).await);
-    out.push(nats_check(file.nats.to_config("borant-doctor"), NET_TIMEOUT).await);
+    let (nats, source) = nats_config(file.nats.to_config("borant-doctor"), &home.join(ENV_FILE));
+    out.push(nats_check(nats, source.as_deref(), NET_TIMEOUT).await);
     out.extend(harness_checks(&file));
     out.extend(launcher_checks(&file));
     out.push(disk_check(&home, &file));
@@ -169,23 +178,32 @@ async fn daemon_check(socket: &Path) -> Check {
 /// NATS is reachable with the host's credentials: a `ListHosts` request to
 /// the hub proves the whole path. The caller builds the config, from
 /// `[nats]` and the environment, so a test can point it at a closed port
-/// without touching `BORANT_NATS_URL`.
+/// without touching `BORANT_NATS_URL`. `source` is the env file that supplied
+/// the login when doctor's own environment had none: the line names it, and
+/// only it.
 ///
 /// The connection is a single attempt, so a server that refuses the login
 /// answers at once with an authorization error. That error means that the
 /// server wants credentials, not that it is down, so the check names the
 /// missing env file, or the refused login, instead of a request that timed
 /// out. No credential of `cfg` goes into the line.
-async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
+async fn nats_check(
+    cfg: borant_nats::NatsConfig,
+    source: Option<&Path>,
+    timeout: Duration,
+) -> Check {
     let urls = if cfg.urls.is_empty() {
         "nats://127.0.0.1:4222".to_owned()
     } else {
         cfg.urls.join(",")
     };
+    let from = source
+        .map(|p| format!(", credentials from {}", p.display()))
+        .unwrap_or_default();
     let nats = match tokio::time::timeout(timeout, borant_nats::connect_once(&cfg)).await {
         Ok(Ok(nats)) => nats,
         Ok(Err(e)) if e.kind == PortErrorKind::Denied => {
-            return Check::fail("nats", login_detail(&cfg, &urls));
+            return Check::fail("nats", login_detail(&cfg, &urls, &from));
         }
         Ok(Err(e)) => return Check::fail("nats", format!("{urls}: {e}")),
         Err(_) => {
@@ -221,7 +239,7 @@ async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
             let count = hosts.as_array().map_or(0, Vec::len);
             Check::ok(
                 "nats",
-                format!("the hub answered ListHosts over {urls} ({count} hosts)"),
+                format!("the hub answered ListHosts over {urls} ({count} hosts){from}"),
             )
         }
         Err(e) => Check::fail(
@@ -233,13 +251,91 @@ async fn nats_check(cfg: borant_nats::NatsConfig, timeout: Duration) -> Check {
 
 /// The line of a server that refused the login: the credentials of `cfg` are
 /// missing when it carries none, and refused when it does. Neither the user
-/// nor the password goes into the line.
-fn login_detail(cfg: &borant_nats::NatsConfig, urls: &str) -> String {
+/// nor the password goes into the line; `from` names the env file, by path
+/// only.
+fn login_detail(cfg: &borant_nats::NatsConfig, urls: &str, from: &str) -> String {
     if has_credentials(cfg) {
-        format!("NATS refused the credentials over {urls}")
+        format!("NATS refused the credentials over {urls}{from}")
     } else {
         format!("{MISSING_CREDENTIALS} ({urls})")
     }
+}
+
+/// The config of the NATS check, and the env file that supplied its login
+/// when doctor's own environment had none.
+///
+/// A login of doctor's own environment or of `host.toml` wins, so a shell
+/// that has one is unafraid of a stale file. Otherwise the file is read as the
+/// host daemon reads it, and only the fields that are unset are filled: the
+/// user, the password, and the credentials file. A file that is missing, or
+/// that holds no login, leaves the config alone, so the check keeps its
+/// missing-credentials line. No value of the file leaves this function except
+/// into `cfg`.
+fn nats_config(
+    mut cfg: borant_nats::NatsConfig,
+    env_file: &Path,
+) -> (borant_nats::NatsConfig, Option<PathBuf>) {
+    if has_credentials(&cfg) {
+        return (cfg, None);
+    }
+    let Ok(text) = std::fs::read_to_string(env_file) else {
+        return (cfg, None);
+    };
+    let vars = parse_env_file(&text);
+    let value = |name: &str| vars.get(name).filter(|v| !v.is_empty()).cloned();
+    if cfg.creds_file.is_none() {
+        cfg.creds_file = value("BORANT_NATS_CREDS").map(PathBuf::from);
+    }
+    if cfg.user.is_none() {
+        cfg.user = value("BORANT_NATS_USER");
+    }
+    if cfg.password.is_none() {
+        cfg.password = value("BORANT_NATS_PASSWORD");
+    }
+    if has_credentials(&cfg) {
+        (cfg, Some(env_file.to_path_buf()))
+    } else {
+        (cfg, None)
+    }
+}
+
+/// The variables of an env file, as systemd's `EnvironmentFile=` and a shell
+/// that sources it consume them: one `KEY=VALUE` per line, a line whose first
+/// character is `#` or `;` is a comment, an `export ` prefix is allowed, and
+/// one pair of surrounding quotes comes off the value. A line without `=` or
+/// without a name is skipped, and nothing is expanded.
+fn parse_env_file(text: &str) -> BTreeMap<String, String> {
+    let mut vars = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        vars.insert(name.to_owned(), unquoted(value.trim()).to_owned());
+    }
+    vars
+}
+
+/// A value without the one pair of surrounding quotes that a shell or systemd
+/// would remove.
+fn unquoted(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|v| v.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
 }
 
 /// Whether `cfg` carries a login: a credentials file, or a user and a
@@ -704,7 +800,7 @@ mod tests {
     async fn nats_without_credentials_names_the_env_file() {
         let (port, server) = refusing_nats();
         let started = std::time::Instant::now();
-        let check = nats_check(nats_cfg(port), Duration::from_secs(3)).await;
+        let check = nats_check(nats_cfg(port), None, Duration::from_secs(3)).await;
         server.join().unwrap();
         assert_eq!(check.level, Level::Fail);
         assert!(
@@ -738,7 +834,7 @@ mod tests {
             password: Some("p-doctor".to_owned()),
             ..nats_cfg(port)
         };
-        let check = nats_check(cfg, Duration::from_secs(3)).await;
+        let check = nats_check(cfg, None, Duration::from_secs(3)).await;
         server.join().unwrap();
         assert_eq!(check.level, Level::Fail);
         assert!(
@@ -759,9 +855,96 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
         };
-        let check = nats_check(nats_cfg(port), Duration::from_millis(100)).await;
+        let check = nats_check(nats_cfg(port), None, Duration::from_millis(100)).await;
         assert_eq!(check.level, Level::Fail);
         assert!(check.detail.contains(&port.to_string()), "{}", check.detail);
+    }
+
+    /// An env file as the host's start script writes it: comments, a blank
+    /// line, an `export` prefix, one pair of quotes, an empty value, and a
+    /// line that is not KEY=VALUE.
+    #[test]
+    fn env_file_is_parsed_as_the_daemon_reads_it() {
+        let vars = parse_env_file(
+            "# the login of this host\n\
+             \n\
+             BORANT_NATS_USER=host-user\n\
+             export BORANT_NATS_PASSWORD=\"host-password\"\n\
+             ; another comment\n\
+             BORANT_NATS_URL='nats://example:4222'\n\
+             not a pair\n\
+             = empty name\n\
+             EMPTY=\n",
+        );
+        let get = |name: &str| vars.get(name).map(String::as_str);
+        assert_eq!(get("BORANT_NATS_USER"), Some("host-user"));
+        assert_eq!(get("BORANT_NATS_PASSWORD"), Some("host-password"));
+        assert_eq!(get("BORANT_NATS_URL"), Some("nats://example:4222"));
+        assert_eq!(get("EMPTY"), Some(""));
+        assert_eq!(vars.len(), 4, "{vars:?}");
+        assert_eq!(unquoted("plain"), "plain");
+        assert_eq!(unquoted("\"one"), "\"one", "an unpaired quote stays");
+        assert_eq!(unquoted("\"one'"), "\"one'", "mismatched quotes stay");
+    }
+
+    /// The env file of the host daemon supplies the login when doctor's own
+    /// config has none, and the source names the file, by path only.
+    #[test]
+    fn env_file_credentials_fill_a_config_without_a_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nats.env");
+        std::fs::write(
+            &path,
+            "BORANT_NATS_USER=host-user\nBORANT_NATS_PASSWORD=host-secret\n",
+        )
+        .unwrap();
+        let (cfg, source) = nats_config(nats_cfg(4222), &path);
+        assert_eq!(cfg.user.as_deref(), Some("host-user"));
+        assert_eq!(cfg.password.as_deref(), Some("host-secret"));
+        assert!(has_credentials(&cfg));
+        assert_eq!(source.as_deref(), Some(path.as_path()));
+        let detail = login_detail(&cfg, "nats://example:4222", ", credentials from ");
+        assert!(!detail.contains("host-user"), "{detail}");
+        assert!(!detail.contains("host-secret"), "{detail}");
+    }
+
+    /// A login of doctor's own environment wins, and a file that is not there
+    /// or holds no login changes nothing.
+    #[test]
+    fn own_credentials_win_and_a_file_without_a_login_adds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nats.env");
+        std::fs::write(
+            &path,
+            "BORANT_NATS_USER=host-user\nBORANT_NATS_PASSWORD=host-secret\n",
+        )
+        .unwrap();
+        let own = borant_nats::NatsConfig {
+            user: Some("shell-user".to_owned()),
+            password: Some("shell-secret".to_owned()),
+            ..nats_cfg(4222)
+        };
+        let (cfg, source) = nats_config(own, &path);
+        assert_eq!(cfg.user.as_deref(), Some("shell-user"));
+        assert_eq!(cfg.password.as_deref(), Some("shell-secret"));
+        assert_eq!(source, None, "the file did not supply the login");
+
+        let missing = dir.path().join("absent.env");
+        let (cfg, source) = nats_config(nats_cfg(4222), &missing);
+        assert!(!has_credentials(&cfg));
+        assert_eq!(source, None);
+
+        std::fs::write(&path, "# no login here\nBORANT_POOL=box\n").unwrap();
+        let (cfg, source) = nats_config(nats_cfg(4222), &path);
+        assert!(!has_credentials(&cfg));
+        assert_eq!(source, None);
+
+        // A user without a password is not a login, and no source is named.
+        std::fs::write(&path, "BORANT_NATS_USER=host-user\n").unwrap();
+        let (cfg, source) = nats_config(nats_cfg(4222), &path);
+        assert_eq!(cfg.password, None);
+        assert!(!has_credentials(&cfg));
+        assert_eq!(source, None);
     }
 
     /// A detail is one line, whatever the error held.
