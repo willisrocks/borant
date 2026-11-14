@@ -260,6 +260,57 @@ fn refusing_nats() -> (u16, std::thread::JoinHandle<()>) {
     (port, server)
 }
 
+/// A NATS server that accepts whatever login it is offered and answers the
+/// `ListHosts` of the CTL subject with an empty host list. It returns the
+/// `CONNECT` line of the client, so a test sees which login reached it.
+fn accepting_nats() -> (u16, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(
+                b"INFO {\"server_id\":\"doctor\",\"auth_required\":true,\"max_payload\":1048576}\r\n",
+            )
+            .unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut connect = String::new();
+        let mut sid = "1".to_owned();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return connect;
+            }
+            let line = line.trim_end_matches(['\r', '\n']).to_owned();
+            if let Some(rest) = line.strip_prefix("CONNECT ") {
+                connect = rest.to_owned();
+            } else if let Some(rest) = line.strip_prefix("SUB ") {
+                if let Some((_, id)) = rest.rsplit_once(' ') {
+                    sid = id.trim().to_owned();
+                }
+            } else if line == "PING" {
+                stream.write_all(b"PONG\r\n").unwrap();
+                stream.flush().unwrap();
+            } else if let Some(rest) = line.strip_prefix("PUB ") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let size: usize = parts.last().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let reply = (parts.len() == 3).then(|| parts[1].to_owned());
+                let mut payload = vec![0; size + 2];
+                reader.read_exact(&mut payload).unwrap();
+                if let Some(reply) = reply {
+                    let body = br#"{"ok":[]}"#;
+                    write!(stream, "MSG {reply} {sid} {}\r\n", body.len()).unwrap();
+                    stream.write_all(body).unwrap();
+                    stream.write_all(b"\r\n").unwrap();
+                    stream.flush().unwrap();
+                }
+            }
+        }
+    });
+    (port, server)
+}
+
 /// The detail of the one check named `name` of a JSON run.
 fn detail_of(v: &serde_json::Value, name: &str) -> String {
     v["checks"]
@@ -271,6 +322,109 @@ fn detail_of(v: &serde_json::Value, name: &str) -> String {
         .as_str()
         .expect("a detail string")
         .to_owned()
+}
+
+/// A plain shell with no NATS login, and the host daemon's env file in
+/// `BORANT_HOME`: doctor runs the NATS check with the file's login, and the
+/// line names the file, not a value.
+#[test]
+fn doctor_uses_the_env_file_of_the_host_daemon() {
+    let (port, nats) = accepting_nats();
+    let (home, socket) = host_at(port);
+    let env_file = home.path().join("nats.env");
+    std::fs::write(
+        &env_file,
+        "# the host's own login\nBORANT_NATS_USER=\"file-user\"\nBORANT_NATS_PASSWORD='file-secret'\n",
+    )
+    .unwrap();
+    let server = fake_daemon(&socket);
+    let out = doctor(home.path(), &socket, true);
+    server.join().unwrap();
+    let connect = nats.join().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let detail = detail_of(&v, "nats");
+    assert!(detail.starts_with("the hub answered ListHosts"), "{detail}");
+    assert!(
+        detail.contains(&env_file.display().to_string()),
+        "the line does not name the env file: {detail}"
+    );
+    assert!(
+        connect.contains("file-user") && connect.contains("file-secret"),
+        "the login of the env file never reached the server: {connect}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for secret in ["file-user", "file-secret"] {
+        assert!(
+            !stdout.contains(secret),
+            "a credential of the env file is in the output:\n{stdout}"
+        );
+    }
+}
+
+/// A login of doctor's own environment wins over the env file: the server
+/// sees the shell's login, and the line names no file.
+#[test]
+fn doctor_own_credentials_win_over_the_env_file() {
+    let (port, nats) = accepting_nats();
+    let (home, socket) = host_at(port);
+    std::fs::write(
+        home.path().join("nats.env"),
+        "BORANT_NATS_USER=file-user\nBORANT_NATS_PASSWORD=file-secret\n",
+    )
+    .unwrap();
+    let server = fake_daemon(&socket);
+    let out = doctor_env(
+        home.path(),
+        &socket,
+        true,
+        &[
+            ("BORANT_NATS_USER", "shell-user"),
+            ("BORANT_NATS_PASSWORD", "shell-secret"),
+        ],
+    );
+    server.join().unwrap();
+    let connect = nats.join().unwrap();
+    assert!(
+        connect.contains("shell-user") && connect.contains("shell-secret"),
+        "the server saw the wrong login: {connect}"
+    );
+    assert!(!connect.contains("file-user"), "{connect}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let detail = detail_of(&v, "nats");
+    assert!(detail.starts_with("the hub answered ListHosts"), "{detail}");
+    assert!(
+        !detail.contains("nats.env"),
+        "the line names a file that did not supply the login: {detail}"
+    );
+}
+
+/// An env file without a NATS login leaves the check with today's
+/// missing-credentials line.
+#[test]
+fn doctor_env_file_without_a_login_keeps_the_missing_line() {
+    let (port, nats) = refusing_nats();
+    let (home, socket) = host_at(port);
+    std::fs::write(
+        home.path().join("nats.env"),
+        "# the pool of this host\nBORANT_POOL=box\n",
+    )
+    .unwrap();
+    let server = fake_daemon(&socket);
+    let out = doctor(home.path(), &socket, true);
+    server.join().unwrap();
+    nats.join().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let detail = detail_of(&v, "nats");
+    assert!(
+        detail.starts_with("NATS credentials are missing"),
+        "{detail}"
+    );
 }
 
 /// A shell without NATS credentials against a server that wants a login: the
