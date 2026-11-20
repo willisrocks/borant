@@ -273,6 +273,19 @@ fn env_of(spec: &LaunchSpec) -> BTreeMap<String, String> {
     spec.env.iter().cloned().collect()
 }
 
+/// The secret directory of the last launch.
+fn launch_dir(rig: &Rig) -> PathBuf {
+    PathBuf::from(&env_of(&rig.rec.last())["BORANT_SECRETS_DIR"])
+}
+
+/// The entries left in an agent's folder of the secret root.
+fn left_in(rig: &Rig, name: &str) -> Vec<PathBuf> {
+    match std::fs::read_dir(rig.root.join(name)) {
+        Ok(entries) => entries.flatten().map(|e| e.path()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// The names of the `SecretsIssued` event of a log.
 fn issued(events: &[(u64, SessionEvent)]) -> (Vec<BundleName>, BTreeMap<BundleName, MemberName>) {
     events
@@ -291,7 +304,9 @@ async fn resolver_launch_writes_the_directory_and_hides_the_values() {
     let rig = rig(Some(secrets())).await;
     rig.host.launch(order("w1", member_order())).await.unwrap();
     let spec = rig.rec.last();
-    let dir = rig.root.join("w1");
+    let dir = launch_dir(&rig);
+    // Each launch gets its own directory in the agent's folder.
+    assert_eq!(dir.parent(), Some(rig.root.join("w1").as_path()));
 
     // The program is the shim in front of the harness.
     let exe = std::env::current_exe().unwrap();
@@ -365,7 +380,7 @@ async fn resolver_resolves_the_order_bundles_after_the_defaults() {
     o.bundles = vec![bundle_name("extra"), bundle_name("undefined_bundle")];
     rig.host.launch(o).await.unwrap();
 
-    let text = std::fs::read_to_string(rig.root.join("w1/env")).unwrap();
+    let text = std::fs::read_to_string(launch_dir(&rig).join("env")).unwrap();
     assert!(text.contains(&format!("GITHUB_TOKEN={EXTRA}")), "{text}");
     assert!(!text.contains(GITHUB), "the default won: {text}");
 
@@ -418,8 +433,9 @@ async fn resolver_logs_the_names_only_and_redacts_the_values() {
     assert!(logged.contains("[redacted]"), "{logged}");
 
     // The end of the session deletes the directory.
+    let dir = launch_dir(&rig);
     rig.host.end_session(session.session, "test").await;
-    assert!(!rig.root.join("w1").exists(), "the directory survived");
+    assert!(!dir.exists(), "the directory survived");
 }
 
 #[tokio::test]
@@ -459,16 +475,20 @@ async fn resolver_removes_the_directories_of_no_live_session() {
     let rig = rig(Some(secrets())).await;
     // A directory whose session ended while the daemon was down.
     std::fs::create_dir_all(rig.root.join("w-gone")).unwrap();
+    // An older launch of a live agent.
+    std::fs::create_dir_all(rig.root.join("w1/old-launch")).unwrap();
     // A name that is not an agent id is not ours to delete.
     std::fs::create_dir_all(rig.root.join("not an agent")).unwrap();
     rig.host.launch(order("w1", member_order())).await.unwrap();
     let session = register(&rig, "w1").await;
-    assert!(rig.root.join("w1").exists());
+    let dir = launch_dir(&rig);
+    assert!(dir.exists());
 
     rig.host.remove_stale_secret_dirs().await;
+    assert!(dir.exists(), "a live session keeps its values");
     assert!(
-        rig.root.join("w1").exists(),
-        "a live session keeps its values"
+        !rig.root.join("w1/old-launch").exists(),
+        "an older launch kept its values"
     );
     assert!(!rig.root.join("w-gone").exists(), "a stale directory went");
     assert!(
@@ -477,7 +497,7 @@ async fn resolver_removes_the_directories_of_no_live_session() {
     );
 
     rig.host.end_session(session.session, "test").await;
-    assert!(!rig.root.join("w1").exists());
+    assert!(!dir.exists());
 }
 
 /// A session table row as the daemon writes it: this process is alive, so a
@@ -594,8 +614,9 @@ async fn resolver_deletes_the_directory_of_a_failed_write() {
     let port = err.downcast_ref::<PortError>().expect("a port error");
     assert_eq!(port.kind, PortErrorKind::Invalid, "{port}");
     assert!(port.message.contains("not a file name"), "{port}");
-    assert!(
-        !rig.root.join("w1").exists(),
+    assert_eq!(
+        left_in(&rig, "w1"),
+        Vec::<PathBuf>::new(),
         "a failed write left values on disk"
     );
     assert!(rig.rec.specs.lock().unwrap().is_empty(), "the harness ran");
@@ -607,7 +628,7 @@ async fn resolver_deletes_the_directory_of_a_launch_that_never_registers() {
     let mut o = order("w1", member_order());
     o.reserve_secs = Some(1);
     rig.host.launch(o).await.unwrap();
-    let dir = rig.root.join("w1");
+    let dir = launch_dir(&rig);
     assert!(dir.exists(), "the launch wrote no directory");
     eventually(
         || {
@@ -622,11 +643,11 @@ async fn resolver_deletes_the_directory_of_a_launch_that_never_registers() {
 #[tokio::test]
 async fn resolver_keeps_the_values_of_a_newer_launch() {
     let rig = rig(Some(secrets())).await;
-    let dir = rig.root.join("w1");
     // The first launch: member `a`, and a reservation that ends right away.
     let mut first = order("w1", member_order());
     first.reserve_secs = Some(1);
     rig.host.launch(first).await.unwrap();
+    let dir = launch_dir(&rig);
     assert!(
         std::fs::read_to_string(dir.join("env"))
             .unwrap()
@@ -641,6 +662,7 @@ async fn resolver_keeps_the_values_of_a_newer_launch() {
     );
     second.reserve_secs = Some(30);
     rig.host.launch(second).await.unwrap();
+    let dir = launch_dir(&rig);
     let env = std::fs::read_to_string(dir.join("env")).unwrap();
     assert!(env.contains(CLAUDE_B), "{env}");
 
@@ -667,6 +689,50 @@ async fn resolver_keeps_the_values_of_a_newer_launch() {
     assert!(
         !logged.contains(CLAUDE_B),
         "the redactor of the second launch is gone: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn resolver_keeps_the_values_of_a_resume_when_the_old_session_ends_late() {
+    // `borant restart`: the hub stops the agent and resumes it at once. The
+    // new launch writes its values before the old session's end reaches the
+    // host, and that end must not delete them: the shim of the new launch
+    // has not read `env` yet.
+    let rig = rig(Some(secrets())).await;
+    rig.host.launch(order("w1", member_order())).await.unwrap();
+    let old_dir = launch_dir(&rig);
+    let old = register(&rig, "w1").await;
+
+    let mut resume = order(
+        "w1",
+        BTreeMap::from([(bundle_name("claude_auth"), member("b"))]),
+    );
+    resume.reason = MoveReason::Resume;
+    resume.reserve_secs = Some(30);
+    rig.host.launch(resume).await.unwrap();
+    let new_dir = launch_dir(&rig);
+
+    rig.host.end_session(old.session, "the pane exited").await;
+    let env = std::fs::read_to_string(new_dir.join("env"))
+        .expect("the end of the old session deleted the values of the resume");
+    assert!(env.contains(CLAUDE_B), "{env}");
+    assert!(!old_dir.exists(), "the old session kept its values");
+
+    // The resume registers and still has its redactor.
+    let session = register(&rig, "w1").await;
+    rig.host
+        .event(
+            session.session,
+            LocalEvent::UserPrompt {
+                text: format!("the token is {CLAUDE_B}"),
+            },
+        )
+        .await
+        .unwrap();
+    let logged = format!("{:?}", rig.sessions.read(&agent("w1")).await.unwrap());
+    assert!(
+        !logged.contains(CLAUDE_B),
+        "the redactor of the resume is gone: {logged}"
     );
 }
 

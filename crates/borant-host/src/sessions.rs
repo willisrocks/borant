@@ -691,7 +691,8 @@ impl Host {
             self.tell_end(req, id).await;
         }
         if let Some(agent) = s.agent() {
-            self.forget_secrets(&agent, s.secrets_dir.clone()).await;
+            self.forget_session_secrets(&agent, s.secrets_dir.clone())
+                .await;
             self.note_ended(&agent);
         }
         tracing::info!(session = %id, reason, "session ended");

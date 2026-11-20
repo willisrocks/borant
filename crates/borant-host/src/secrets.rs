@@ -20,7 +20,7 @@ use borant_core::proto::LaunchOrder;
 use borant_core::rules::redact::redact;
 use borant_core::{AgentId, SessionId};
 
-use crate::{Host, HostSecrets, LocalSess};
+use crate::{Host, HostSecrets};
 
 /// The file that holds the variables, as the shim reads it.
 const ENV_FILE: &str = "env";
@@ -140,7 +140,7 @@ impl Host {
         for (name, r) in &planned.vars {
             vars.push((name.clone(), value_of(&values, r)?.to_owned()));
         }
-        let dir = self.secret_dir(&o.agent);
+        let dir = self.launch_secret_dir(&o.agent);
         // A failure after the `env` file is written must not leave values on
         // disk: the caller cannot clean up what it does not see.
         if let Err(e) = write_dir(&dir, &planned, &values) {
@@ -259,9 +259,14 @@ impl Host {
             .unwrap_or_else(default_secrets_root)
     }
 
-    /// The secret directory of one agent.
-    pub(crate) fn secret_dir(&self, agent: &AgentId) -> PathBuf {
-        self.secrets_root().join(agent.as_str())
+    /// A new secret directory for one launch of an agent:
+    /// `<root>/<agent>/<launch>`. Each launch gets its own, so the end of an
+    /// older session of the agent cannot delete the values of a newer launch
+    /// whose shim has not read `env` yet, as a stop-then-resume does.
+    pub(crate) fn launch_secret_dir(&self, agent: &AgentId) -> PathBuf {
+        self.secrets_root()
+            .join(agent.as_str())
+            .join(ulid::Ulid::generate().to_string())
     }
 
     /// Deletes every secret directory that no live session of this host uses,
@@ -270,10 +275,14 @@ impl Host {
     /// tests.
     pub async fn remove_stale_secret_dirs(&self) {
         let root = self.secrets_root();
-        let live: HashSet<AgentId> = {
+        let live: HashSet<PathBuf> = {
             let st = self.state();
-            let mut live: HashSet<AgentId> = st.launched.keys().cloned().collect();
-            live.extend(st.sessions.values().filter_map(LocalSess::agent));
+            let mut live: HashSet<PathBuf> = st
+                .launched
+                .values()
+                .map(|issued| issued.dir.clone())
+                .collect();
+            live.extend(st.sessions.values().filter_map(|s| s.secrets_dir.clone()));
             live
         };
         let entries = match std::fs::read_dir(&root) {
@@ -292,43 +301,103 @@ impl Host {
             let Ok(agent) = name.parse::<AgentId>() else {
                 continue;
             };
-            if live.contains(&agent) {
+            let agent_dir = entry.path();
+            // A session from before the per-launch directories uses the
+            // agent's directory itself.
+            if live.contains(&agent_dir) {
                 continue;
             }
-            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                tracing::warn!(%agent, "cannot delete the secret directory: {e}");
+            let launches = match std::fs::read_dir(&agent_dir) {
+                Ok(launches) => launches,
+                Err(e) => {
+                    tracing::warn!(%agent, "cannot read the secret directory: {e}");
+                    continue;
+                }
+            };
+            for launch in launches.flatten() {
+                let path = launch.path();
+                if live.contains(&path) {
+                    continue;
+                }
+                let removed = if launch.file_type().is_ok_and(|t| t.is_dir()) {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if let Err(e) = removed {
+                    tracing::warn!(%agent, "cannot delete a stale secret directory: {e}");
+                }
             }
+            // Fails while a live launch is still inside: that is fine.
+            let _ = std::fs::remove_dir(&agent_dir);
         }
     }
 
-    /// Drops the values of an agent whose last session ended, and deletes its
-    /// directory. A directory that another live session of the agent still
-    /// uses stays.
-    pub(crate) async fn forget_secrets(&self, agent: &AgentId, extra: Option<PathBuf>) {
-        let (issued, live) = {
+    /// Drops the values of the current launch of an agent that will never
+    /// register, and deletes its directory, unless a live session of the
+    /// agent uses it.
+    pub(crate) async fn forget_secrets(&self, agent: &AgentId) {
+        let dir = {
             let mut st = self.state();
-            let live: Vec<PathBuf> = st
+            if st
                 .sessions
                 .values()
-                .filter(|s| s.agent().as_ref() == Some(agent))
-                .filter_map(|s| s.secrets_dir.clone())
-                .collect();
-            if live.is_empty() {
-                st.redactors.remove(agent);
-                (
-                    st.launched.remove(agent).map(|issued| issued.dir.clone()),
-                    live,
-                )
-            } else {
-                (None, live)
+                .any(|s| s.agent().as_ref() == Some(agent))
+            {
+                return;
             }
+            st.redactors.remove(agent);
+            st.launched.remove(agent).map(|issued| issued.dir.clone())
         };
-        for dir in [issued, extra].into_iter().flatten() {
-            if live.contains(&dir) {
-                continue;
-            }
+        if let Some(dir) = dir {
             remove_dir(&dir).await;
         }
+    }
+
+    /// Drops the values of a session that ended, and deletes its directory.
+    /// The launch of a newer session of the agent keeps its values: a restart
+    /// launches the new session before the old one ends here, and its shim
+    /// may not have read `env` yet. A directory that another live session
+    /// still uses stays.
+    pub(crate) async fn forget_session_secrets(&self, agent: &AgentId, dir: Option<PathBuf>) {
+        let Some(dir) = dir else {
+            // No values on disk. The redactor goes only with the last user.
+            let mut st = self.state();
+            let in_use = st.launched.contains_key(agent)
+                || st
+                    .sessions
+                    .values()
+                    .any(|s| s.agent().as_ref() == Some(agent));
+            if !in_use {
+                st.redactors.remove(agent);
+            }
+            return;
+        };
+        {
+            let mut st = self.state();
+            if st
+                .launched
+                .get(agent)
+                .is_some_and(|issued| issued.dir == dir)
+            {
+                st.launched.remove(agent);
+            }
+            let others = st
+                .sessions
+                .values()
+                .any(|s| s.agent().as_ref() == Some(agent));
+            if !others && !st.launched.contains_key(agent) {
+                st.redactors.remove(agent);
+            }
+            if st
+                .sessions
+                .values()
+                .any(|s| s.secrets_dir.as_deref() == Some(dir.as_path()))
+            {
+                return;
+            }
+        }
+        remove_dir(&dir).await;
     }
 
     /// The shim in front of a harness program: `borant secret-exec <dir> --

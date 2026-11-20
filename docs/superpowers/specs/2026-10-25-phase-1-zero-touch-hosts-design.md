@@ -185,8 +185,10 @@ runner. The provisioner of roadmap phase 4 is the next one.
 ### The secret directory and the shim
 
 As in section 4.1 of the secrets doc. The directory is
-`/run/borant/agents/<agent>/` (0700) on Linux and `$TMPDIR/borant/agents/<agent>/`
-on macOS. It holds an `env` file (`KEY=VALUE` lines, values without newlines,
+`/run/borant/agents/<agent>/<launch>/` (0700) on Linux and
+`$TMPDIR/borant/agents/<agent>/<launch>/` on macOS, where `<launch>` is a new
+ULID for each launch: the end of an older session of the agent then cannot
+delete the values of a newer launch, as a stop-then-resume does. It holds an `env` file (`KEY=VALUE` lines, values without newlines,
 0600), a `pre.json` file (a JSON list of argv lists, the `pre` commands of the
 bundles in order, no values), and one file for each `files` entry (0600). The launch sets only
 `BORANT_SECRETS_DIR` and runs `borant secret-exec <dir> -- <program> <args>`.
