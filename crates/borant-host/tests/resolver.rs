@@ -8,6 +8,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -124,6 +125,8 @@ fn secrets() -> HostSecrets {
 #[derive(Debug, Default)]
 struct Recording {
     specs: Mutex<Vec<LaunchSpec>>,
+    /// When set, the launcher records the launch and then fails it.
+    fail: AtomicBool,
 }
 
 impl Recording {
@@ -148,6 +151,9 @@ impl Launcher for RecordingLauncher {
 
     async fn launch(&self, spec: &LaunchSpec) -> PortResult<LaunchHandle> {
         self.0.specs.lock().unwrap().push(spec.clone());
+        if self.0.fail.load(Ordering::SeqCst) {
+            return Err(PortError::other("the launcher failed"));
+        }
         Ok(LaunchHandle {
             kind: "recording".into(),
             id: spec.agent.to_string(),
@@ -557,9 +563,16 @@ async fn resolver_restores_the_names_and_the_directory_of_a_session() {
         serde_json::json!(dir.display().to_string())
     );
 
-    // The restored session still owns its directory.
+    // The restored session still owns its directory, and its end deletes the
+    // files in it. The folder stays: newer launches put their directories in
+    // it.
+    std::fs::write(dir.join("env"), "OLD=1\n").unwrap();
     rig.host.end_session(id, "test").await;
-    assert!(!dir.exists(), "the restored directory survived");
+    assert_eq!(
+        left_in(&rig, "w1"),
+        Vec::<PathBuf>::new(),
+        "the restored directory kept its files"
+    );
 }
 
 #[tokio::test]
@@ -647,7 +660,8 @@ async fn resolver_keeps_the_values_of_a_newer_launch() {
     let mut first = order("w1", member_order());
     first.reserve_secs = Some(1);
     rig.host.launch(first).await.unwrap();
-    let dir = launch_dir(&rig);
+    let first_dir = launch_dir(&rig);
+    let dir = first_dir.clone();
     assert!(
         std::fs::read_to_string(dir.join("env"))
             .unwrap()
@@ -666,9 +680,17 @@ async fn resolver_keeps_the_values_of_a_newer_launch() {
     let env = std::fs::read_to_string(dir.join("env")).unwrap();
     assert!(env.contains(CLAUDE_B), "{env}");
 
-    // The timer of the first launch passes, and must leave the second launch
-    // alone: its shim may not have read `env` yet.
-    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    // The timer of the first launch passes. It deletes the first directory,
+    // and must leave the second launch alone: its shim may not have read
+    // `env` yet.
+    eventually(
+        || {
+            let first_dir = first_dir.clone();
+            async move { !first_dir.exists() }
+        },
+        "the timer of the first launch to delete its directory",
+    )
+    .await;
     let env = std::fs::read_to_string(dir.join("env"))
         .expect("the timer of the first launch deleted the second directory");
     assert!(env.contains(CLAUDE_B), "{env}");
@@ -734,6 +756,113 @@ async fn resolver_keeps_the_values_of_a_resume_when_the_old_session_ends_late() 
         !logged.contains(CLAUDE_B),
         "the redactor of the resume is gone: {logged}"
     );
+}
+
+#[tokio::test]
+async fn resolver_keeps_a_resume_when_a_restored_flat_session_ends_late() {
+    // A session restored from before the per-launch directories owns the
+    // agent's folder itself, which is the parent of the resume's directory.
+    let rig = rig(Some(secrets())).await;
+    let flat = rig.root.join("w1");
+    std::fs::create_dir_all(&flat).unwrap();
+    std::fs::write(flat.join("env"), "OLD=1\n").unwrap();
+    std::fs::write(flat.join("gh.pem"), "old").unwrap();
+    let cwd = rig.dir.path().join("work/w1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let id = SessionId::new();
+    let reg = serde_json::json!({
+        "agent": "w1",
+        "session": id,
+        "token": 1,
+        "movable": true,
+        "channels": []
+    });
+    let table = serde_json::json!([table_row(id, &cwd, &flat, Some(reg))]);
+    std::fs::write(
+        rig.dir.path().join("sessions.json"),
+        serde_json::to_vec(&table).unwrap(),
+    )
+    .unwrap();
+    rig.host.restore().await;
+
+    let mut resume = order(
+        "w1",
+        BTreeMap::from([(bundle_name("claude_auth"), member("b"))]),
+    );
+    resume.reason = MoveReason::Resume;
+    resume.reserve_secs = Some(30);
+    rig.host.launch(resume).await.unwrap();
+    let new_dir = launch_dir(&rig);
+    assert_eq!(new_dir.parent(), Some(flat.as_path()));
+
+    rig.host.end_session(id, "the pane exited").await;
+    let env = std::fs::read_to_string(new_dir.join("env"))
+        .expect("the end of the restored session deleted the values of the resume");
+    assert!(env.contains(CLAUDE_B), "{env}");
+    assert!(
+        !flat.join("env").exists(),
+        "the restored session kept its env"
+    );
+    assert!(
+        !flat.join("gh.pem").exists(),
+        "the restored session kept its file"
+    );
+
+    // The resume registers and still has its redactor.
+    let session = register(&rig, "w1").await;
+    rig.host
+        .event(
+            session.session,
+            LocalEvent::UserPrompt {
+                text: format!("the token is {CLAUDE_B}"),
+            },
+        )
+        .await
+        .unwrap();
+    let logged = format!("{:?}", rig.sessions.read(&agent("w1")).await.unwrap());
+    assert!(
+        !logged.contains(CLAUDE_B),
+        "the redactor of the resume is gone: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn resolver_deletes_a_failed_resume_while_the_old_session_lives() {
+    let rig = rig(Some(secrets())).await;
+    rig.host.launch(order("w1", member_order())).await.unwrap();
+    let old_dir = launch_dir(&rig);
+    let old = register(&rig, "w1").await;
+
+    // The resume writes its own directory, and then the launcher fails.
+    rig.rec.fail.store(true, Ordering::SeqCst);
+    let mut resume = order(
+        "w1",
+        BTreeMap::from([(bundle_name("claude_auth"), member("b"))]),
+    );
+    resume.reason = MoveReason::Resume;
+    resume.reserve_secs = Some(30);
+    rig.host.launch(resume).await.unwrap_err();
+    let new_dir = launch_dir(&rig);
+    assert_ne!(new_dir, old_dir);
+    assert!(!new_dir.exists(), "the failed resume kept its values");
+    assert!(old_dir.exists(), "the live session lost its values");
+
+    // The old session still redacts its values.
+    rig.host
+        .event(
+            old.session,
+            LocalEvent::UserPrompt {
+                text: format!("the token is {GITHUB}"),
+            },
+        )
+        .await
+        .unwrap();
+    let logged = format!("{:?}", rig.sessions.read(&agent("w1")).await.unwrap());
+    assert!(!logged.contains(GITHUB), "the redactor is gone: {logged}");
+
+    // When the old session ends, nothing of either launch is left.
+    rig.host.end_session(old.session, "test").await;
+    assert_eq!(left_in(&rig, "w1"), Vec::<PathBuf>::new());
 }
 
 #[tokio::test]

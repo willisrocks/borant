@@ -207,25 +207,13 @@ impl Host {
     }
 
     /// Deletes the directory of a launch that ended without a registration,
-    /// when the reservation of that launch passes. The check names the launch,
-    /// not only the path: the hub retries a launch that did not register, the
-    /// retry writes the same directory, and this timer must not delete values
-    /// that a newer launch wrote and whose shim has not read `env` yet.
+    /// when the reservation of that launch passes. Each launch has its own
+    /// directory, so the directory always goes unless a session took it. The
+    /// launch entry and the redactor go only while this launch is still the
+    /// current one: a newer launch of the agent keeps its own.
     pub(crate) async fn expire_launch_secrets(&self, agent: &AgentId, issued: &Arc<LaunchSecrets>) {
         {
             let mut st = self.state();
-            // A launch of this agent runs now: its own timer decides.
-            if st.launching.contains(agent) {
-                return;
-            }
-            // A newer launch replaced this one.
-            if !st
-                .launched
-                .get(agent)
-                .is_some_and(|current| Arc::ptr_eq(current, issued))
-            {
-                return;
-            }
             // A session took these values.
             if st
                 .sessions
@@ -234,13 +222,21 @@ impl Host {
             {
                 return;
             }
-            st.launched.remove(agent);
-            if !st
-                .sessions
-                .values()
-                .any(|s| s.agent().as_ref() == Some(agent))
-            {
-                st.redactors.remove(agent);
+            let current = st
+                .launched
+                .get(agent)
+                .is_some_and(|current| Arc::ptr_eq(current, issued));
+            // While a newer launch of the agent runs, it replaces the entry
+            // and the redactor itself.
+            if current && !st.launching.contains(agent) {
+                st.launched.remove(agent);
+                if !st
+                    .sessions
+                    .values()
+                    .any(|s| s.agent().as_ref() == Some(agent))
+                {
+                    st.redactors.remove(agent);
+                }
             }
         }
         tracing::warn!(
@@ -334,20 +330,30 @@ impl Host {
     }
 
     /// Drops the values of the current launch of an agent that will never
-    /// register, and deletes its directory, unless a live session of the
-    /// agent uses it.
+    /// register, and deletes its directory, unless a session uses it. An
+    /// older live session of the agent keeps its own directory, and keeps the
+    /// redactor.
     pub(crate) async fn forget_secrets(&self, agent: &AgentId) {
         let dir = {
             let mut st = self.state();
-            if st
+            let issued = st.launched.get(agent).cloned();
+            if let Some(issued) = &issued
+                && st
+                    .sessions
+                    .values()
+                    .any(|s| s.secrets_dir.as_deref() == Some(issued.dir.as_path()))
+            {
+                return;
+            }
+            st.launched.remove(agent);
+            if !st
                 .sessions
                 .values()
                 .any(|s| s.agent().as_ref() == Some(agent))
             {
-                return;
+                st.redactors.remove(agent);
             }
-            st.redactors.remove(agent);
-            st.launched.remove(agent).map(|issued| issued.dir.clone())
+            issued.map(|issued| issued.dir.clone())
         };
         if let Some(dir) = dir {
             remove_dir(&dir).await;
@@ -397,7 +403,15 @@ impl Host {
                 return;
             }
         }
-        remove_dir(&dir).await;
+        // A session restored from before the per-launch directories owns the
+        // agent's folder itself, which now also holds the launch directories
+        // of newer launches: delete its own files only, never a directory
+        // in it, and leave the folder.
+        if dir.parent() == Some(self.secrets_root().as_path()) {
+            remove_files_in(&dir).await;
+        } else {
+            remove_dir(&dir).await;
+        }
     }
 
     /// The shim in front of a harness program: `borant secret-exec <dir> --
@@ -446,6 +460,29 @@ pub(crate) async fn remove_dir(dir: &Path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => tracing::warn!("cannot delete {:?}: {e}", dir.display()),
+    }
+}
+
+/// Deletes the files directly in `dir` and nothing else: no directory in it,
+/// and not `dir` itself.
+async fn remove_files_in(dir: &Path) {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!("cannot read {:?}: {e}", dir.display());
+            return;
+        }
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        match tokio::fs::remove_file(entry.path()).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("cannot delete {:?}: {e}", entry.path().display()),
+        }
     }
 }
 
