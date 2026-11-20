@@ -311,9 +311,14 @@ async fn a_failed_restore_of_a_launch_removes_its_values() {
         !format!("{err:#}").contains(TOKEN),
         "the error holds a value: {err:#}"
     );
+    // The agent's folder can stay, empty: only the launch's own directory
+    // holds values.
+    let left: Vec<_> = std::fs::read_dir(dir.join("w1"))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
     assert!(
-        !dir.join("w1").exists(),
-        "a launch that failed left its values on disk"
+        left.is_empty(),
+        "a launch that failed left its values on disk: {left:?}"
     );
 }
 

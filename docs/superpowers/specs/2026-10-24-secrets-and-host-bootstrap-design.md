@@ -223,8 +223,9 @@ The host daemon reads the values through the store and starts the harness
 with them. This is the default.
 
 1. The daemon calls `resolve` once for each store, with all its refs.
-2. It creates `/run/borant/agents/<agent>/` (0700) on the `/run` tmpfs. On
-   macOS the directory is under `$TMPDIR`, which is not a tmpfs.
+2. It creates `/run/borant/agents/<agent>/<launch>/` (0700) on the `/run`
+   tmpfs, with a new `<launch>` for each launch. On macOS the directory is
+   under `$TMPDIR`, which is not a tmpfs.
 3. It writes each `files` entry, and the env vars to an `env` file, all 0600.
 4. It sets only `BORANT_SECRETS_DIR` in `LaunchSpec.env`, and puts a shim in
    front of the program: `borant secret-exec <dir> -- claude ...`.
@@ -516,7 +517,7 @@ retention limit that.
 ### 8.4 Sandboxes and the audit log
 
 The bubblewrap plan of the orchestration doc (section 6) binds
-`/run/borant/agents/<agent>` read-only through `SandboxPlan.ro`, and nothing
+`/run/borant/agents/<agent>/<launch>` read-only through `SandboxPlan.ro`, and nothing
 else under `/run/borant` or `/run/credentials`. A sandboxed agent thus sees
 only its own files.
 

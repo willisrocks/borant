@@ -1322,7 +1322,7 @@ impl Host {
             tracing::warn!(%agent, "cannot stop a launch that did not register: {e}");
         }
         // Values that no session will read go with the launch.
-        self.forget_secrets(agent, None).await;
+        self.forget_secrets(agent).await;
         Some((pending.handle, screen, snapshot))
     }
 

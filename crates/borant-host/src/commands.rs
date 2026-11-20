@@ -277,7 +277,7 @@ impl Host {
             Ok(handle) => handle,
             Err(e) => {
                 // The directory holds values that no session will read.
-                self.forget_secrets(&o.agent, None).await;
+                self.forget_secrets(&o.agent).await;
                 return Err(e.into());
             }
         };
