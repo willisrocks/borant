@@ -346,10 +346,8 @@ impl Host {
         // One deadline covers every git command and mirror-lock wait of the
         // preparation, so the commands together stay inside the reservation.
         let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
-        let git_deadline = tokio::time::Instant::now()
-            + reserve
-                .saturating_sub(SETUP_MARGIN)
-                .saturating_sub(started.elapsed());
+        let (git_deadline, setup_deadline) =
+            prep_deadlines(tokio::time::Instant::now(), reserve, started.elapsed());
         // Setup preparation (its git directory, the marker) runs inside the
         // same scope, and the setup command gets what is left of it.
         let dir = checkpoint::with_deadline(git_deadline, async {
@@ -371,7 +369,7 @@ impl Host {
             if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
                 // The session must register before the hub reservation ends,
                 // or the hub launches the agent again.
-                run_setup(&dir, cmd, git_deadline, vars).await?;
+                run_setup(&dir, cmd, setup_deadline, vars).await?;
             }
             checkpoint::check_deadline()?;
             anyhow::Ok(dir)
@@ -427,6 +425,20 @@ impl Drop for LaunchLock {
 const DEFAULT_RESERVE: Duration = Duration::from_secs(300);
 /// The time that the harness keeps, after the setup, to start and register.
 const SETUP_MARGIN: Duration = Duration::from_secs(60);
+/// The deadlines of a preparation, from the reservation of the launch and
+/// the time already spent: the git commands may use all of what is left of
+/// the reservation, and the setup command stops `SETUP_MARGIN` earlier. The
+/// margin must not shorten the git deadline: a short reservation (the e2e
+/// hosts use 30s) would otherwise expire before the first command.
+fn prep_deadlines(
+    now: tokio::time::Instant,
+    reserve: Duration,
+    elapsed: Duration,
+) -> (tokio::time::Instant, tokio::time::Instant) {
+    let left = reserve.saturating_sub(elapsed);
+    (now + left, now + left.saturating_sub(SETUP_MARGIN))
+}
+
 /// The most output of a failed setup command that goes into the error.
 const SETUP_OUTPUT_CHARS: usize = 4000;
 
@@ -578,6 +590,22 @@ mod setup_deadline_tests {
             .success();
         assert!(ok);
         d
+    }
+
+    #[test]
+    fn a_short_reservation_keeps_its_git_deadline() {
+        // A takeover or move with a 30s reservation (shorter than the setup
+        // margin) still gives git the whole 30s; only setup gets nothing.
+        let now = tokio::time::Instant::now();
+        let (git, setup) = prep_deadlines(now, Duration::from_secs(30), Duration::from_secs(2));
+        assert_eq!(git, now + Duration::from_secs(28));
+        assert_eq!(setup, now);
+        let (git, setup) = prep_deadlines(now, Duration::from_secs(300), Duration::ZERO);
+        assert_eq!(git, now + Duration::from_secs(300));
+        assert_eq!(setup, now + Duration::from_secs(240));
+        // Spent past the reservation: both are expired.
+        let (git, _) = prep_deadlines(now, Duration::from_secs(30), Duration::from_secs(40));
+        assert_eq!(git, now);
     }
 
     #[tokio::test]
