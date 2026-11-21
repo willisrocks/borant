@@ -343,25 +343,35 @@ impl Host {
             root: mirrors.as_path(),
             name: &p.name,
         });
-        let dir = checkpoint::restore(
-            &work_root,
-            repo,
-            &o.agent,
-            &remote,
-            o.wip.as_deref(),
-            o.wip_branch.as_deref(),
-            base,
-            mirror,
-            vars,
-        )
+        // One deadline covers every git command and mirror-lock wait of the
+        // preparation, so the commands together stay inside the reservation.
+        let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
+        let git_deadline = tokio::time::Instant::now()
+            + reserve
+                .saturating_sub(SETUP_MARGIN)
+                .saturating_sub(started.elapsed());
+        let dir = checkpoint::with_deadline(git_deadline, async {
+            let dir = checkpoint::restore(
+                &work_root,
+                repo,
+                &o.agent,
+                &remote,
+                o.wip.as_deref(),
+                o.wip_branch.as_deref(),
+                base,
+                mirror,
+                vars,
+            )
+            .await?;
+            if let Some(r) = project_remote {
+                checkpoint::set_checkpoint_remote(&dir, r).await?;
+            }
+            anyhow::Ok(dir)
+        })
         .await?;
-        if let Some(r) = project_remote {
-            checkpoint::set_checkpoint_remote(&dir, r).await?;
-        }
         if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
             // The session must register before the hub reservation ends, or
             // the hub launches the agent again.
-            let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
             let budget = reserve
                 .saturating_sub(SETUP_MARGIN)
                 .saturating_sub(started.elapsed());
