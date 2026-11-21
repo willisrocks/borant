@@ -12,8 +12,90 @@ use borant_core::model::RepoInfo;
 use borant_core::{AgentId, Clock, ProjectName, SystemClock, Timestamp};
 use tokio::process::Command;
 
-/// The limit for one git command, including a push over the network.
+/// The limit for one local git command (no network).
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The limit for one git command that talks to a remote (`clone`, `fetch`,
+/// `push`). A large history on a slow or shared link needs far more than the
+/// local limit: a 348 MB bare clone at 5 MB/s takes over a minute.
+const GIT_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The limit that applies to a git command, from its subcommand.
+fn limit_for(args: &[&str]) -> std::time::Duration {
+    match args.first().copied() {
+        Some("clone" | "fetch" | "push") => GIT_NETWORK_TIMEOUT,
+        _ => GIT_TIMEOUT,
+    }
+}
+
+tokio::task_local! {
+    /// The instant by which the git commands of the current preparation must
+    /// all be done, set by `with_deadline`.
+    static DEADLINE: tokio::time::Instant;
+}
+
+/// Runs `fut` so that every git command in it, and every wait for a mirror
+/// lock, shares one absolute `deadline`: a command gets the smaller of its
+/// own limit and the time left, and none starts once the deadline passed.
+pub async fn with_deadline<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    fut: F,
+) -> F::Output {
+    DEADLINE.scope(deadline, fut).await
+}
+
+/// The deadline of the current preparation, if any.
+fn deadline() -> Option<tokio::time::Instant> {
+    DEADLINE.try_with(|d| *d).ok()
+}
+
+/// Fails once the deadline of the current preparation has passed. A
+/// preparation checks it before it accepts its result, so an expiry is never
+/// taken for a success.
+pub fn check_deadline() -> anyhow::Result<()> {
+    match deadline() {
+        Some(d) if tokio::time::Instant::now() >= d => {
+            anyhow::bail!("the preparation deadline has passed")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Run `cmd` to completion, killing it when it outlives `limit` or the
+/// deadline of the preparation, whichever is first. The kill reaches the
+/// direct git child only.
+async fn run_limited(
+    mut cmd: Command,
+    limit: std::time::Duration,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    let mut limit = limit;
+    let mut by_deadline = false;
+    if let Some(d) = deadline() {
+        let left = d.saturating_duration_since(tokio::time::Instant::now());
+        if left <= limit {
+            limit = left;
+            by_deadline = true;
+        }
+    }
+    if by_deadline && limit.is_zero() {
+        anyhow::bail!(
+            "git {} not started: the preparation deadline has passed",
+            args.join(" ")
+        );
+    }
+    cmd.kill_on_drop(true);
+    tokio::time::timeout(limit, cmd.output())
+        .await
+        .map_err(|_| {
+            if by_deadline {
+                anyhow::anyhow!("git {} stopped at the preparation deadline", args.join(" "))
+            } else {
+                anyhow::anyhow!("git {} timed out after {limit:?}", args.join(" "))
+            }
+        })?
+        .with_context(|| format!("run git {}", args.join(" ")))
+}
 
 /// The variables that the git commands of a restore run with: the resolved
 /// bundles of the launch, so the credential of a collection's bundle reaches
@@ -46,11 +128,7 @@ async fn git(
     if let Some(i) = index {
         cmd.env("GIT_INDEX_FILE", i);
     }
-    cmd.kill_on_drop(true);
-    let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("git {} timed out after {GIT_TIMEOUT:?}", args.join(" ")))?
-        .with_context(|| format!("run git {}", args.join(" ")))?;
+    let out = run_limited(cmd, limit_for(args), args).await?;
     if !out.status.success() {
         bail!(
             "git {} failed: {}",
@@ -59,6 +137,19 @@ async fn git(
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Runs an optional git command: `None` when git fails (the ref is not
+/// there), but an error when the preparation deadline has passed, so an
+/// expiry is never read as "missing".
+async fn probe(dir: &Path, args: &[&str], env: &GitEnv) -> anyhow::Result<Option<String>> {
+    match git(dir, args, None, env).await {
+        Ok(out) => Ok(Some(out)),
+        Err(e) => {
+            check_deadline().with_context(|| format!("{e}"))?;
+            Ok(None)
+        }
+    }
 }
 
 /// Facts about the git repository of a directory.
@@ -319,7 +410,12 @@ pub async fn ensure_mirror(
 ) -> anyhow::Result<PathBuf> {
     let dir = mirror_dir(root, name);
     let lock = project_lock(name);
-    let _guard = lock.lock().await;
+    let _guard = match deadline() {
+        Some(d) => tokio::time::timeout_at(d, lock.lock()).await.map_err(|_| {
+            anyhow::anyhow!("the preparation deadline passed waiting for the mirror of {name}")
+        })?,
+        None => lock.lock().await,
+    };
     if dir.join("HEAD").exists() {
         git(&dir, &["fetch", "--quiet", "origin"], None, env)
             .await
@@ -413,15 +509,16 @@ pub async fn restore(
     } else {
         tokio::fs::create_dir_all(dir.parent().unwrap_or(work_root)).await?;
         let mut cmd = Command::new("git");
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
-        // After our own variables, so a bundle cannot turn off the guard
-        // against an interactive prompt.
+        // The bundle first, then the guard: a bundle cannot turn off the
+        // guard against an interactive prompt.
         cmd.envs(env.iter().map(|(k, v)| (k, v)));
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.args(["clone", "--quiet"]);
         if let Some(r) = &reference {
             cmd.arg("--reference").arg(r);
         }
-        let out = cmd.arg(&repo.remote_url).arg(&dir).output().await?;
+        cmd.arg(&repo.remote_url).arg(&dir);
+        let out = run_limited(cmd, GIT_NETWORK_TIMEOUT, &["clone", &repo.remote_url]).await?;
         if !out.status.success() {
             bail!(
                 "git clone {} failed: {}",
@@ -440,14 +537,12 @@ pub async fn restore(
                 env,
             )
             .await?;
-            let parent = git(
+            let parent = probe(
                 &dir,
                 &["rev-parse", "--verify", "-q", &format!("{sha}^")],
-                None,
                 env,
             )
-            .await
-            .ok();
+            .await?;
             match &parent {
                 Some(p) => {
                     git(
@@ -463,9 +558,9 @@ pub async fn restore(
                     // fresh clone already has the default branch. Point HEAD
                     // at an unborn branch instead and keep the index.
                     let head = format!("refs/heads/{branch}");
-                    if git(&dir, &["rev-parse", "--verify", "-q", &head], None, env)
-                        .await
-                        .is_ok()
+                    if probe(&dir, &["rev-parse", "--verify", "-q", &head], env)
+                        .await?
+                        .is_some()
                     {
                         git(&dir, &["update-ref", "-d", &head], None, env).await?;
                     }
@@ -480,14 +575,9 @@ pub async fn restore(
         }
         None => {
             let remote_branch = format!("origin/{branch}");
-            if git(
-                &dir,
-                &["rev-parse", "--verify", "-q", &remote_branch],
-                None,
-                env,
-            )
-            .await
-            .is_ok()
+            if probe(&dir, &["rev-parse", "--verify", "-q", &remote_branch], env)
+                .await?
+                .is_some()
             {
                 git(
                     &dir,
@@ -498,9 +588,9 @@ pub async fn restore(
                 .await?;
             } else if let Some(base) = base {
                 let local = format!("refs/heads/{branch}");
-                if git(&dir, &["rev-parse", "--verify", "-q", &local], None, env)
-                    .await
-                    .is_ok()
+                if probe(&dir, &["rev-parse", "--verify", "-q", &local], env)
+                    .await?
+                    .is_some()
                 {
                     git(&dir, &["checkout", "--quiet", branch], None, env).await?;
                 } else {
@@ -516,9 +606,182 @@ pub async fn restore(
             }
         }
     }
+    check_deadline()?;
     Ok(if repo.subdir.is_empty() {
         dir
     } else {
         dir.join(&repo.subdir)
     })
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn sleeper(secs: &str) -> Command {
+        let mut c = Command::new("sleep");
+        c.arg(secs);
+        c
+    }
+
+    #[test]
+    fn network_subcommands_get_the_long_limit() {
+        for sub in ["clone", "fetch", "push"] {
+            assert_eq!(limit_for(&[sub, "--quiet"]), GIT_NETWORK_TIMEOUT);
+        }
+        for sub in ["rev-parse", "add", "checkout", "worktree", "config"] {
+            assert_eq!(limit_for(&[sub]), GIT_TIMEOUT);
+        }
+        assert!(GIT_NETWORK_TIMEOUT > GIT_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn slow_op_within_a_longer_limit_succeeds() {
+        // Slower than the short limit below, inside the long one.
+        let out = run_limited(sleeper("1"), Duration::from_secs(10), &["clone"]).await;
+        assert!(out.unwrap().status.success());
+    }
+
+    #[tokio::test]
+    async fn op_past_its_limit_is_killed() {
+        let started = std::time::Instant::now();
+        let r = run_limited(sleeper("30"), Duration::from_millis(200), &["rev-parse"]).await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    fn after(ms: u64) -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_millis(ms)
+    }
+
+    #[tokio::test]
+    async fn one_deadline_holds_across_successive_commands() {
+        let started = std::time::Instant::now();
+        let ran = with_deadline(after(900), async {
+            let mut ok = 0;
+            // Each command fits its own limit; together they do not fit the
+            // deadline.
+            for _ in 0..10 {
+                if run_limited(sleeper("0.4"), Duration::from_secs(60), &["fetch"])
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                ok += 1;
+            }
+            ok
+        })
+        .await;
+        assert!((1..=2).contains(&ran), "ran {ran}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn no_command_starts_after_the_deadline() {
+        let r = with_deadline(
+            after(0),
+            run_limited(sleeper("30"), Duration::from_secs(60), &["fetch"]),
+        )
+        .await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_mirror_lock_wait_honors_the_deadline() {
+        let name: ProjectName = "lockwait".parse().unwrap();
+        let held = project_lock(&name);
+        let _g = held.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let r = with_deadline(
+            after(300),
+            ensure_mirror(root.path(), &name, "file:///nowhere", &[]),
+        )
+        .await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A remote whose transport never answers, so a clone hangs until it is
+    /// killed. The bundle env allows the `ext` transport.
+    fn hanging_remote() -> (String, Vec<(String, String)>) {
+        let env = [
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "protocol.ext.allow"),
+            ("GIT_CONFIG_VALUE_0", "always"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .to_vec();
+        ("ext::sleep 30".to_owned(), env)
+    }
+
+    #[tokio::test]
+    async fn the_working_clone_of_a_restore_is_bounded() {
+        let (url, env) = hanging_remote();
+        let work = tempfile::tempdir().unwrap();
+        let repo = RepoInfo {
+            remote_url: url.clone(),
+            branch: "main".into(),
+            subdir: String::new(),
+        };
+        let agent: AgentId = "w1".parse().unwrap();
+        let started = std::time::Instant::now();
+        let r = with_deadline(
+            after(500),
+            restore(
+                work.path(),
+                &repo,
+                &agent,
+                &url,
+                None,
+                None,
+                None,
+                None,
+                &env,
+            ),
+        )
+        .await;
+        // The 15 minute network limit alone would hang here: the clone ends
+        // only because the restore bounds it and kills its git child.
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(d.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        d
+    }
+
+    #[tokio::test]
+    async fn a_probe_reads_a_missing_ref_as_none_without_a_deadline() {
+        let d = init_repo();
+        let r = probe(d.path(), &["rev-parse", "--verify", "-q", "origin/x"], &[]).await;
+        assert_eq!(r.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_expired_deadline_on_the_final_probe_is_fatal() {
+        // The last optional probe of a restore with no project and no base:
+        // an expiry must not read as "the branch is missing".
+        let d = init_repo();
+        let r = with_deadline(
+            after(0),
+            probe(d.path(), &["rev-parse", "--verify", "-q", "origin/x"], &[]),
+        )
+        .await;
+        assert!(r.is_err(), "expiry was swallowed: {r:?}");
+        let r = with_deadline(after(0), async { check_deadline() }).await;
+        assert!(r.is_err());
+        assert!(check_deadline().is_ok());
+    }
 }

@@ -283,7 +283,7 @@ scenario_fencing() {
   docker network connect "$NETWORK" "$(container host-b)" || return 1
   wait_for "the old session on host-b stopped" log_has host-b w1 SIGTERM || return 1
   wait_for "stale ref saved" ref_exists refs/borant/w1/stale/ || return 1
-  is_at w1 "$W1_HOST" || { echo "  w1 must stay on $W1_HOST" >&2; return 1; }
+  is_at w1 "${W1_HOST:-}" || { echo "  w1 must stay on ${W1_HOST:-?}" >&2; return 1; }
 }
 
 scenario_planned_move() {

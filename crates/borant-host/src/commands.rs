@@ -343,30 +343,38 @@ impl Host {
             root: mirrors.as_path(),
             name: &p.name,
         });
-        let dir = checkpoint::restore(
-            &work_root,
-            repo,
-            &o.agent,
-            &remote,
-            o.wip.as_deref(),
-            o.wip_branch.as_deref(),
-            base,
-            mirror,
-            vars,
-        )
+        // One deadline covers every git command and mirror-lock wait of the
+        // preparation, so the commands together stay inside the reservation.
+        let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
+        let (git_deadline, setup_deadline) =
+            prep_deadlines(tokio::time::Instant::now(), reserve, started.elapsed());
+        // Setup preparation (its git directory, the marker) runs inside the
+        // same scope, and the setup command gets what is left of it.
+        let dir = checkpoint::with_deadline(git_deadline, async {
+            let dir = checkpoint::restore(
+                &work_root,
+                repo,
+                &o.agent,
+                &remote,
+                o.wip.as_deref(),
+                o.wip_branch.as_deref(),
+                base,
+                mirror,
+                vars,
+            )
+            .await?;
+            if let Some(r) = project_remote {
+                checkpoint::set_checkpoint_remote(&dir, r).await?;
+            }
+            if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
+                // The session must register before the hub reservation ends,
+                // or the hub launches the agent again.
+                run_setup(&dir, cmd, setup_deadline, vars).await?;
+            }
+            checkpoint::check_deadline()?;
+            anyhow::Ok(dir)
+        })
         .await?;
-        if let Some(r) = project_remote {
-            checkpoint::set_checkpoint_remote(&dir, r).await?;
-        }
-        if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
-            // The session must register before the hub reservation ends, or
-            // the hub launches the agent again.
-            let reserve = o.reserve_secs.map_or(DEFAULT_RESERVE, Duration::from_secs);
-            let budget = reserve
-                .saturating_sub(SETUP_MARGIN)
-                .saturating_sub(started.elapsed());
-            run_setup(&dir, cmd, budget, vars).await?;
-        }
         Ok(dir)
     }
 
@@ -417,10 +425,25 @@ impl Drop for LaunchLock {
 const DEFAULT_RESERVE: Duration = Duration::from_secs(300);
 /// The time that the harness keeps, after the setup, to start and register.
 const SETUP_MARGIN: Duration = Duration::from_secs(60);
+/// The deadlines of a preparation, from the reservation of the launch and
+/// the time already spent: the git commands may use all of what is left of
+/// the reservation, and the setup command stops `SETUP_MARGIN` earlier. The
+/// margin must not shorten the git deadline: a short reservation (the e2e
+/// hosts use 30s) would otherwise expire before the first command.
+fn prep_deadlines(
+    now: tokio::time::Instant,
+    reserve: Duration,
+    elapsed: Duration,
+) -> (tokio::time::Instant, tokio::time::Instant) {
+    let left = reserve.saturating_sub(elapsed);
+    (now + left, now + left.saturating_sub(SETUP_MARGIN))
+}
+
 /// The most output of a failed setup command that goes into the error.
 const SETUP_OUTPUT_CHARS: usize = 4000;
 
-/// Runs the setup command of a project once in a clone, within `budget`.
+/// Runs the setup command of a project once in a clone, by `deadline`.
+/// Runs inside the deadline scope of the preparation.
 /// A marker in the git directory records a success, so a restore of the
 /// same clone skips it, and a clone whose setup failed runs it again. The
 /// output goes to a file in the git directory, so a process that the
@@ -429,20 +452,26 @@ const SETUP_OUTPUT_CHARS: usize = 4000;
 async fn run_setup(
     dir: &Path,
     cmd: &str,
-    budget: Duration,
+    deadline: tokio::time::Instant,
     vars: &checkpoint::GitEnv,
 ) -> anyhow::Result<()> {
     let git_dir = checkpoint::git_dir(dir).await?;
     let marker = git_dir.join("borant-setup-done");
+    let hint = "raise BORANT_RESERVE_SECS on the hub for a longer setup";
+    // The git deadline is fatal, cached or not. A valid marker needs no
+    // setup command, so only an uncached setup needs budget before `deadline`.
+    checkpoint::check_deadline()?;
     if marker.exists() {
         return Ok(());
     }
-    let hint = "raise BORANT_RESERVE_SECS on the hub for a longer setup";
+    let log_path = git_dir.join("borant-setup.log");
+    let log = std::fs::File::create(&log_path).context("create the setup log")?;
+    // The preparation above took time: check the setup deadline again now,
+    // right before the spawn.
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
     if budget.is_zero() {
         anyhow::bail!("no time is left for setup `{cmd}` in the launch reservation; {hint}");
     }
-    let log_path = git_dir.join("borant-setup.log");
-    let log = std::fs::File::create(&log_path).context("create the setup log")?;
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -455,7 +484,7 @@ async fn run_setup(
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("run setup `{cmd}`"))?;
-    let status = match tokio::time::timeout(budget, child.wait()).await {
+    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(s) => s?,
         Err(_) => {
             if let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) {
@@ -548,4 +577,139 @@ async fn dir_size(dir: &Path) -> u64 {
 
 fn apple_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod setup_deadline_tests {
+    use super::*;
+
+    fn init_repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(d.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        d
+    }
+
+    #[test]
+    fn a_short_reservation_keeps_its_git_deadline() {
+        // A takeover or move with a 30s reservation (shorter than the setup
+        // margin) still gives git the whole 30s; only setup gets nothing.
+        let now = tokio::time::Instant::now();
+        let (git, setup) = prep_deadlines(now, Duration::from_secs(30), Duration::from_secs(2));
+        assert_eq!(git, now + Duration::from_secs(28));
+        assert_eq!(setup, now);
+        let (git, setup) = prep_deadlines(now, Duration::from_secs(300), Duration::ZERO);
+        assert_eq!(git, now + Duration::from_secs(300));
+        assert_eq!(setup, now + Duration::from_secs(240));
+        // Spent past the reservation: both are expired.
+        let (git, _) = prep_deadlines(now, Duration::from_secs(30), Duration::from_secs(40));
+        assert_eq!(git, now);
+    }
+
+    #[tokio::test]
+    async fn a_cached_marker_does_not_escape_the_deadline() {
+        let d = init_repo();
+        std::fs::write(d.path().join(".git/borant-setup-done"), b"").unwrap();
+        let now = tokio::time::Instant::now();
+        // Time left: the cached marker skips the setup.
+        let ok = checkpoint::with_deadline(
+            now + Duration::from_secs(30),
+            run_setup(d.path(), "true", now + Duration::from_secs(30), &[]),
+        )
+        .await;
+        assert!(ok.is_ok(), "{ok:?}");
+        // No time left: the marker is no excuse.
+        let r = checkpoint::with_deadline(now, run_setup(d.path(), "true", now, &[])).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_an_uncached_setup_needs_the_setup_budget() {
+        let d = init_repo();
+        let now = tokio::time::Instant::now();
+        let g = now + Duration::from_secs(30);
+        // Setup deadline expired, git deadline in the future.
+        // Uncached: fails clearly and never runs.
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), "touch ran", now, &[])).await;
+        assert!(r.is_err(), "an uncached setup with S expired must fail");
+        assert!(!d.path().join("ran").exists());
+        // Cached: passes without running the command.
+        std::fs::write(d.path().join(".git/borant-setup-done"), b"").unwrap();
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), "touch ran", now, &[])).await;
+        assert!(r.is_ok(), "{r:?}");
+        assert!(!d.path().join("ran").exists());
+    }
+
+    /// True while the process can still run. A zombie (killed, not yet
+    /// reaped by its new parent) counts as dead.
+    fn is_running(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // The state is the first field after the parenthesized name.
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                .is_some_and(|st| st != 'Z' && st != 'X'),
+            Err(_) if std::path::Path::new("/proc/self").exists() => false,
+            Err(_) => nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok(),
+        }
+    }
+
+    /// Proves the process-group kill: the orphaned background child of a
+    /// timed-out setup is killed, not just the direct shell. The direct
+    /// shell is reaped by `run_setup`; the child is reparented, so we accept
+    /// a zombie. This does not prove the absolute-deadline (R2b) wiring:
+    /// it also passes with a relative timer when preparation is fast.
+    #[tokio::test]
+    async fn a_timed_out_setup_kills_its_whole_process_group() {
+        let d = init_repo();
+        // Generous: the shell must reach `ready` before this expires, even
+        // when the git-dir probe is slow. The test ends at the deadline.
+        let s = tokio::time::Instant::now() + Duration::from_secs(3);
+        let g = s + Duration::from_secs(30);
+        let cmd = "sleep 60 & echo $! > bg.pid; touch ready; wait";
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), cmd, s, &[])).await;
+        assert!(r.is_err(), "a setup past S must fail");
+        assert!(d.path().join("ready").exists(), "setup never became ready");
+        assert!(!d.path().join(".git/borant-setup-done").exists());
+        let pid: i32 = std::fs::read_to_string(d.path().join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Bounded poll for the kill to land and for a zombie to be reaped.
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while is_running(pid) && std::time::Instant::now() < end {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!is_running(pid), "background child outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn setup_git_dir_probe_shares_the_deadline() {
+        let d = init_repo();
+        let now = tokio::time::Instant::now();
+        let started = std::time::Instant::now();
+        // The deadline has passed: the git directory probe does not start
+        // with a fresh limit, and the setup command never runs.
+        let r = checkpoint::with_deadline(now, run_setup(d.path(), "touch ran", now, &[])).await;
+        assert!(r.is_err());
+        assert!(!d.path().join("ran").exists());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn the_setup_budget_is_what_is_left_of_the_deadline() {
+        let d = init_repo();
+        let dl = tokio::time::Instant::now() + Duration::from_millis(800);
+        let started = std::time::Instant::now();
+        let r = checkpoint::with_deadline(dl, run_setup(d.path(), "sleep 30", dl, &[])).await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 }
