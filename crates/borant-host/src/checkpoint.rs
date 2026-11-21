@@ -12,8 +12,34 @@ use borant_core::model::RepoInfo;
 use borant_core::{AgentId, Clock, ProjectName, SystemClock, Timestamp};
 use tokio::process::Command;
 
-/// The limit for one git command, including a push over the network.
+/// The limit for one local git command (no network).
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The limit for one git command that talks to a remote (`clone`, `fetch`,
+/// `push`). A large history on a slow or shared link needs far more than the
+/// local limit: a 348 MB bare clone at 5 MB/s takes over a minute.
+const GIT_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The limit that applies to a git command, from its subcommand.
+fn limit_for(args: &[&str]) -> std::time::Duration {
+    match args.first().copied() {
+        Some("clone" | "fetch" | "push") => GIT_NETWORK_TIMEOUT,
+        _ => GIT_TIMEOUT,
+    }
+}
+
+/// Run `cmd` to completion, killing it when it outlives `limit`.
+async fn run_limited(
+    mut cmd: Command,
+    limit: std::time::Duration,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    cmd.kill_on_drop(true);
+    tokio::time::timeout(limit, cmd.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("git {} timed out after {limit:?}", args.join(" ")))?
+        .with_context(|| format!("run git {}", args.join(" ")))
+}
 
 /// The variables that the git commands of a restore run with: the resolved
 /// bundles of the launch, so the credential of a collection's bundle reaches
@@ -46,11 +72,7 @@ async fn git(
     if let Some(i) = index {
         cmd.env("GIT_INDEX_FILE", i);
     }
-    cmd.kill_on_drop(true);
-    let out = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("git {} timed out after {GIT_TIMEOUT:?}", args.join(" ")))?
-        .with_context(|| format!("run git {}", args.join(" ")))?;
+    let out = run_limited(cmd, limit_for(args), args).await?;
     if !out.status.success() {
         bail!(
             "git {} failed: {}",
@@ -521,4 +543,43 @@ pub async fn restore(
     } else {
         dir.join(&repo.subdir)
     })
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn sleeper(secs: &str) -> Command {
+        let mut c = Command::new("sleep");
+        c.arg(secs);
+        c
+    }
+
+    #[test]
+    fn network_subcommands_get_the_long_limit() {
+        for sub in ["clone", "fetch", "push"] {
+            assert_eq!(limit_for(&[sub, "--quiet"]), GIT_NETWORK_TIMEOUT);
+        }
+        for sub in ["rev-parse", "add", "checkout", "worktree", "config"] {
+            assert_eq!(limit_for(&[sub]), GIT_TIMEOUT);
+        }
+        assert!(GIT_NETWORK_TIMEOUT > GIT_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn slow_op_within_a_longer_limit_succeeds() {
+        // Slower than the short limit below, inside the long one.
+        let out = run_limited(sleeper("1"), Duration::from_secs(10), &["clone"]).await;
+        assert!(out.unwrap().status.success());
+    }
+
+    #[tokio::test]
+    async fn op_past_its_limit_times_out_and_names_it() {
+        let err = run_limited(sleeper("5"), Duration::from_millis(200), &["rev-parse"])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("git rev-parse timed out after 200ms"), "{err}");
+    }
 }
