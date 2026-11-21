@@ -458,16 +458,20 @@ async fn run_setup(
     let git_dir = checkpoint::git_dir(dir).await?;
     let marker = git_dir.join("borant-setup-done");
     let hint = "raise BORANT_RESERVE_SECS on the hub for a longer setup";
-    // A cached marker does not excuse a preparation that is out of time.
-    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    if budget.is_zero() {
-        anyhow::bail!("no time is left for setup `{cmd}` in the launch reservation; {hint}");
-    }
+    // The git deadline is fatal, cached or not. A valid marker needs no
+    // setup command, so only an uncached setup needs budget before `deadline`.
+    checkpoint::check_deadline()?;
     if marker.exists() {
         return Ok(());
     }
     let log_path = git_dir.join("borant-setup.log");
     let log = std::fs::File::create(&log_path).context("create the setup log")?;
+    // The preparation above took time: check the setup deadline again now,
+    // right before the spawn.
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if budget.is_zero() {
+        anyhow::bail!("no time is left for setup `{cmd}` in the launch reservation; {hint}");
+    }
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -480,7 +484,7 @@ async fn run_setup(
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("run setup `{cmd}`"))?;
-    let status = match tokio::time::timeout(budget, child.wait()).await {
+    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(s) => s?,
         Err(_) => {
             if let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) {
@@ -623,6 +627,47 @@ mod setup_deadline_tests {
         // No time left: the marker is no excuse.
         let r = checkpoint::with_deadline(now, run_setup(d.path(), "true", now, &[])).await;
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_an_uncached_setup_needs_the_setup_budget() {
+        let d = init_repo();
+        let now = tokio::time::Instant::now();
+        let g = now + Duration::from_secs(30);
+        // Setup deadline expired, git deadline in the future.
+        // Uncached: fails clearly and never runs.
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), "touch ran", now, &[])).await;
+        let e = format!("{:#}", r.unwrap_err());
+        assert!(e.contains("no time is left for setup"), "{e}");
+        assert!(!d.path().join("ran").exists());
+        // Cached: passes without running the command.
+        std::fs::write(d.path().join(".git/borant-setup-done"), b"").unwrap();
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), "touch ran", now, &[])).await;
+        assert!(r.is_ok(), "{r:?}");
+        assert!(!d.path().join("ran").exists());
+    }
+
+    #[tokio::test]
+    async fn setup_stops_at_the_absolute_deadline_and_reaps_the_group() {
+        let d = init_repo();
+        let s = tokio::time::Instant::now() + Duration::from_millis(600);
+        let g = s + Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        // A background child in the process group must die with the setup.
+        let cmd = "sleep 30 & echo $! > bg.pid; wait";
+        let r = checkpoint::with_deadline(g, run_setup(d.path(), cmd, s, &[])).await;
+        let e = format!("{:#}", r.unwrap_err());
+        assert!(e.contains("timed out"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!d.path().join(".git/borant-setup-done").exists());
+        let pid: i32 = std::fs::read_to_string(d.path().join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(!alive, "background child outlived the timeout");
     }
 
     #[tokio::test]
