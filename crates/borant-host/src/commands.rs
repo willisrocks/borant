@@ -350,6 +350,8 @@ impl Host {
             + reserve
                 .saturating_sub(SETUP_MARGIN)
                 .saturating_sub(started.elapsed());
+        // Setup preparation (its git directory, the marker) runs inside the
+        // same scope, and the setup command gets what is left of it.
         let dir = checkpoint::with_deadline(git_deadline, async {
             let dir = checkpoint::restore(
                 &work_root,
@@ -366,17 +368,15 @@ impl Host {
             if let Some(r) = project_remote {
                 checkpoint::set_checkpoint_remote(&dir, r).await?;
             }
+            if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
+                // The session must register before the hub reservation ends,
+                // or the hub launches the agent again.
+                run_setup(&dir, cmd, git_deadline, vars).await?;
+            }
+            checkpoint::check_deadline()?;
             anyhow::Ok(dir)
         })
         .await?;
-        if let Some(cmd) = project.and_then(|p| p.setup.as_deref()) {
-            // The session must register before the hub reservation ends, or
-            // the hub launches the agent again.
-            let budget = reserve
-                .saturating_sub(SETUP_MARGIN)
-                .saturating_sub(started.elapsed());
-            run_setup(&dir, cmd, budget, vars).await?;
-        }
         Ok(dir)
     }
 
@@ -430,7 +430,8 @@ const SETUP_MARGIN: Duration = Duration::from_secs(60);
 /// The most output of a failed setup command that goes into the error.
 const SETUP_OUTPUT_CHARS: usize = 4000;
 
-/// Runs the setup command of a project once in a clone, within `budget`.
+/// Runs the setup command of a project once in a clone, by `deadline`.
+/// Runs inside the deadline scope of the preparation.
 /// A marker in the git directory records a success, so a restore of the
 /// same clone skips it, and a clone whose setup failed runs it again. The
 /// output goes to a file in the git directory, so a process that the
@@ -439,17 +440,19 @@ const SETUP_OUTPUT_CHARS: usize = 4000;
 async fn run_setup(
     dir: &Path,
     cmd: &str,
-    budget: Duration,
+    deadline: tokio::time::Instant,
     vars: &checkpoint::GitEnv,
 ) -> anyhow::Result<()> {
     let git_dir = checkpoint::git_dir(dir).await?;
     let marker = git_dir.join("borant-setup-done");
-    if marker.exists() {
-        return Ok(());
-    }
     let hint = "raise BORANT_RESERVE_SECS on the hub for a longer setup";
+    // A cached marker does not excuse a preparation that is out of time.
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
     if budget.is_zero() {
         anyhow::bail!("no time is left for setup `{cmd}` in the launch reservation; {hint}");
+    }
+    if marker.exists() {
+        return Ok(());
     }
     let log_path = git_dir.join("borant-setup.log");
     let log = std::fs::File::create(&log_path).context("create the setup log")?;
@@ -558,4 +561,62 @@ async fn dir_size(dir: &Path) -> u64 {
 
 fn apple_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod setup_deadline_tests {
+    use super::*;
+
+    fn init_repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(d.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        d
+    }
+
+    #[tokio::test]
+    async fn a_cached_marker_does_not_escape_the_deadline() {
+        let d = init_repo();
+        std::fs::write(d.path().join(".git/borant-setup-done"), b"").unwrap();
+        let now = tokio::time::Instant::now();
+        // Time left: the cached marker skips the setup.
+        let ok = checkpoint::with_deadline(
+            now + Duration::from_secs(30),
+            run_setup(d.path(), "true", now + Duration::from_secs(30), &[]),
+        )
+        .await;
+        assert!(ok.is_ok(), "{ok:?}");
+        // No time left: the marker is no excuse.
+        let r = checkpoint::with_deadline(now, run_setup(d.path(), "true", now, &[])).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn setup_git_dir_probe_shares_the_deadline() {
+        let d = init_repo();
+        let now = tokio::time::Instant::now();
+        let started = std::time::Instant::now();
+        // The deadline has passed: the git directory probe does not start
+        // with a fresh limit, and the setup command never runs.
+        let r = checkpoint::with_deadline(now, run_setup(d.path(), "touch ran", now, &[])).await;
+        assert!(r.is_err());
+        assert!(!d.path().join("ran").exists());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn the_setup_budget_is_what_is_left_of_the_deadline() {
+        let d = init_repo();
+        let dl = tokio::time::Instant::now() + Duration::from_millis(800);
+        let started = std::time::Instant::now();
+        let r = checkpoint::with_deadline(dl, run_setup(d.path(), "sleep 30", dl, &[])).await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 }

@@ -49,6 +49,18 @@ fn deadline() -> Option<tokio::time::Instant> {
     DEADLINE.try_with(|d| *d).ok()
 }
 
+/// Fails once the deadline of the current preparation has passed. A
+/// preparation checks it before it accepts its result, so an expiry is never
+/// taken for a success.
+pub fn check_deadline() -> anyhow::Result<()> {
+    match deadline() {
+        Some(d) if tokio::time::Instant::now() >= d => {
+            anyhow::bail!("the preparation deadline has passed")
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Run `cmd` to completion, killing it when it outlives `limit` or the
 /// deadline of the preparation, whichever is first. The kill reaches the
 /// direct git child only.
@@ -125,6 +137,19 @@ async fn git(
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Runs an optional git command: `None` when git fails (the ref is not
+/// there), but an error when the preparation deadline has passed, so an
+/// expiry is never read as "missing".
+async fn probe(dir: &Path, args: &[&str], env: &GitEnv) -> anyhow::Result<Option<String>> {
+    match git(dir, args, None, env).await {
+        Ok(out) => Ok(Some(out)),
+        Err(e) => {
+            check_deadline().with_context(|| format!("{e}"))?;
+            Ok(None)
+        }
+    }
 }
 
 /// Facts about the git repository of a directory.
@@ -512,14 +537,12 @@ pub async fn restore(
                 env,
             )
             .await?;
-            let parent = git(
+            let parent = probe(
                 &dir,
                 &["rev-parse", "--verify", "-q", &format!("{sha}^")],
-                None,
                 env,
             )
-            .await
-            .ok();
+            .await?;
             match &parent {
                 Some(p) => {
                     git(
@@ -535,9 +558,9 @@ pub async fn restore(
                     // fresh clone already has the default branch. Point HEAD
                     // at an unborn branch instead and keep the index.
                     let head = format!("refs/heads/{branch}");
-                    if git(&dir, &["rev-parse", "--verify", "-q", &head], None, env)
-                        .await
-                        .is_ok()
+                    if probe(&dir, &["rev-parse", "--verify", "-q", &head], env)
+                        .await?
+                        .is_some()
                     {
                         git(&dir, &["update-ref", "-d", &head], None, env).await?;
                     }
@@ -552,14 +575,9 @@ pub async fn restore(
         }
         None => {
             let remote_branch = format!("origin/{branch}");
-            if git(
-                &dir,
-                &["rev-parse", "--verify", "-q", &remote_branch],
-                None,
-                env,
-            )
-            .await
-            .is_ok()
+            if probe(&dir, &["rev-parse", "--verify", "-q", &remote_branch], env)
+                .await?
+                .is_some()
             {
                 git(
                     &dir,
@@ -570,9 +588,9 @@ pub async fn restore(
                 .await?;
             } else if let Some(base) = base {
                 let local = format!("refs/heads/{branch}");
-                if git(&dir, &["rev-parse", "--verify", "-q", &local], None, env)
-                    .await
-                    .is_ok()
+                if probe(&dir, &["rev-parse", "--verify", "-q", &local], env)
+                    .await?
+                    .is_some()
                 {
                     git(&dir, &["checkout", "--quiet", branch], None, env).await?;
                 } else {
@@ -588,6 +606,7 @@ pub async fn restore(
             }
         }
     }
+    check_deadline()?;
     Ok(if repo.subdir.is_empty() {
         dir
     } else {
@@ -728,5 +747,41 @@ mod limit_tests {
         // only because the restore bounds it and kills its git child.
         assert!(r.is_err());
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(d.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        d
+    }
+
+    #[tokio::test]
+    async fn a_probe_reads_a_missing_ref_as_none_without_a_deadline() {
+        let d = init_repo();
+        let r = probe(d.path(), &["rev-parse", "--verify", "-q", "origin/x"], &[]).await;
+        assert_eq!(r.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_expired_deadline_on_the_final_probe_is_fatal() {
+        // The last optional probe of a restore with no project and no base:
+        // an expiry must not read as "the branch is missing".
+        let d = init_repo();
+        let r = with_deadline(
+            after(0),
+            probe(d.path(), &["rev-parse", "--verify", "-q", "origin/x"], &[]),
+        )
+        .await;
+        assert!(r.is_err(), "expiry was swallowed: {r:?}");
+        let r = with_deadline(after(0), async { check_deadline() }).await;
+        assert!(r.is_err());
+        assert!(check_deadline().is_ok());
     }
 }
